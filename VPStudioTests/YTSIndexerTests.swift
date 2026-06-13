@@ -3,7 +3,7 @@ import Testing
 @testable import VPStudio
 
 @Suite(.serialized)
-struct YTSIndexerTests {
+struct YTSIndexerTestsYtsindexertests {
     @Test
     func searchByQueryFallsBackToSecondaryHostWhenPrimaryFails() async throws {
         final class RequestState: @unchecked Sendable {

@@ -174,8 +174,10 @@ struct HDRIEnvironmentTypeTests {
     @Test func playerCinemaEnvironmentRequiresPlayableAVPlayer() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
 
-        #expect(source.contains("guard PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil),"))
-        #expect(source.contains("playbackMessage = PlayerCinemaEnvironmentPolicy.unavailableMessage"))
+        #expect(source.contains("let canOpen = PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil)"))
+        #expect(source.contains("PlayerImmersiveTransitionPolicy.cinemaOpenPlan("))
+        #expect(source.contains("case .unavailable(let message):"))
+        #expect(source.contains("playbackMessage = message"))
         #expect(source.contains("openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)"))
     }
 
@@ -208,9 +210,11 @@ struct HDRIEnvironmentTypeTests {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerEnvironmentMenu.swift")
 
         #expect(source.contains("let onSelectCinema: () -> Void"))
-        #expect(source.contains("onSelectCinema()"))
-        #expect(source.contains("Label(\"Cinema Environment\", systemImage: \"theatermasks\")"))
-        #expect(source.contains("Label(\"Cinema Environment\", systemImage: \"checkmark\")"))
+        #expect(source.contains("PlayerEnvironmentCinemaRow("))
+        #expect(source.contains("spec: .cinema("))
+        #expect(source.contains("action: onSelectCinema"))
+        #expect(source.contains("title: \"Cinema Environment\""))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.cinemaIconName("))
         #expect(source.contains("if !assets.isEmpty || appState.isImmersiveSpaceOpen") == false)
     }
 
@@ -219,7 +223,9 @@ struct HDRIEnvironmentTypeTests {
 
         let policyCall = "PlayerCinemaEnvironmentPolicy.canOpen(\n                            activeEngine: activeEngine,\n                            hasAVPlayer: avPlayer != nil\n                        )"
         #expect(source.contains(policyCall))
-        #expect(source.contains("guard PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil),"))
+        #expect(source.contains("let canOpen = PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil)"))
+        #expect(source.contains("PlayerImmersiveTransitionPolicy.cinemaOpenPlan("))
+        #expect(source.contains("PlayerImmersiveTransitionPolicy.openReadiness(isTransitionInFlight: appState.isImmersiveTransitionInFlight)"))
     }
 
     @Test func cinemaImmersiveSpaceIsRegisteredWithSettingsEnvironment() throws {

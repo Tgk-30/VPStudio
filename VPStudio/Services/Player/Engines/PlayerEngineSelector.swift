@@ -74,6 +74,7 @@ struct PlayerEngineSelector {
         }
     }
 
+    #if !os(visionOS)
     private func streamNeedsCompatibilityDecodeAdaptive(_ stream: StreamInfo) -> Bool {
         let ext = stream.streamURL.pathExtension.lowercased()
         let compatibilityExtensions: Set<String> = ["avi", "wmv", "flv", "ts", "m2ts", "mpeg", "mpg"]
@@ -89,6 +90,7 @@ struct PlayerEngineSelector {
         let highRiskTokens = ["xvid", "vc1", "realvideo", "rmvb"]
         return highRiskTokens.contains(where: { lower.contains($0) })
     }
+    #endif
 
     private func shouldPreferNativePipeline(_ stream: StreamInfo) -> Bool {
         if stream.hdr == .dolbyVision || stream.hdr == .hdr10Plus {

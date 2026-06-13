@@ -1570,6 +1570,23 @@ actor DatabaseManager {
         }
     }
 
+    func claimDownloadTaskForDownloadStart(id: String) async throws -> Bool {
+        try await dbPool.write { db in
+            guard var task = try DownloadTask.fetchOne(db, key: id) else {
+                return false
+            }
+            guard task.status == .queued else {
+                return false
+            }
+
+            task.status = .downloading
+            task.errorMessage = nil
+            task.updatedAt = Date()
+            try task.sanitizedForPersistence.save(db)
+            return true
+        }
+    }
+
     func updateDownloadTaskProgress(
         id: String,
         progress: Double,

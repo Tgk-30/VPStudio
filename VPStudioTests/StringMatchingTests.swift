@@ -3,7 +3,7 @@ import Foundation
 @testable import VPStudio
 
 @Suite("String.containsStandaloneToken")
-struct StringMatchingTests {
+struct StringMatchingTestsStringmatchingtests {
 
     // MARK: - Basic Matching
 
@@ -127,5 +127,29 @@ struct StringMatchingTests {
 
     @Test func avcDoesNotMatchInAdvanced() {
         #expect("Advanced.Video.Coding".containsStandaloneToken("avc") == false)
+    }
+
+    // MARK: - Numeric Boundaries
+
+    @Test func alphabeticTokenMatchesWhenFollowedBySingleNumericSuffix() {
+        #expect("movie.sbs2.1080p".containsStandaloneToken("sbs") == true)
+    }
+
+    @Test func alphabeticTokenMatchesWhenPrecededBySingleNumericPrefix() {
+        #expect("movie.2sbs.1080p".containsStandaloneToken("sbs") == true)
+    }
+
+    @Test func alphabeticTokenDoesNotMatchWhenNumericPrefixIsEmbeddedInWord() {
+        #expect("movie2sbs.1080p".containsStandaloneToken("sbs") == false)
+    }
+
+    @Test func alphabeticTokenDoesNotMatchWhenNumericSuffixContinuesIntoWord() {
+        #expect("movie.sbs2extended.1080p".containsStandaloneToken("sbs") == false)
+    }
+
+    @Test func numericTokenRequiresNonAlphanumericBoundaries() {
+        #expect("movie.2160.uhd".containsStandaloneToken("2160") == true)
+        #expect("movie.2160p.uhd".containsStandaloneToken("2160") == false)
+        #expect("movie.p2160.uhd".containsStandaloneToken("2160") == false)
     }
 }

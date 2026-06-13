@@ -199,6 +199,65 @@ struct DownloadsViewModelTests {
 
     @Test
     @MainActor
+    func loadSortsTasksWithSameEpisodeSortKeyByCreationDate() async {
+        let appState = AppState()
+        let stubManager = StubDownloadManager()
+        let older = DownloadTask(
+            mediaId: "tt301",
+            streamURL: "https://cdn.example.com/s01e01-a.mkv",
+            fileName: "s01e01-a.mkv",
+            mediaTitle: "Show",
+            mediaType: "series",
+            seasonNumber: 1,
+            episodeNumber: 1,
+            episodeTitle: "Ep 1",
+            createdAt: Date(timeIntervalSinceReferenceDate: 100)
+        )
+        let newer = DownloadTask(
+            mediaId: "tt301",
+            streamURL: "https://cdn.example.com/s01e01-b.mkv",
+            fileName: "s01e01-b.mkv",
+            mediaTitle: "Show",
+            mediaType: "series",
+            seasonNumber: 1,
+            episodeNumber: 1,
+            episodeTitle: "Ep 1",
+            createdAt: Date(timeIntervalSinceReferenceDate: 200)
+        )
+        await stubManager.setDownloads([newer, older])
+
+        let vm = DownloadsViewModel(appState: appState, downloadManager: stubManager)
+        await vm.load()
+
+        #expect(vm.groups.first?.tasks.map(\.id) == [older.id, newer.id])
+    }
+
+    @Test
+    @MainActor
+    func loadNormalizesTaskProgressFromByteCountsBeforeGrouping() async {
+        let appState = AppState()
+        let stubManager = StubDownloadManager()
+        let task = DownloadTask(
+            mediaId: "tt302",
+            streamURL: "https://cdn.example.com/movie.mkv",
+            fileName: "movie.mkv",
+            status: .downloading,
+            progress: 0.1,
+            bytesWritten: 750,
+            totalBytes: 1_000,
+            mediaTitle: "Movie"
+        )
+        await stubManager.setDownloads([task])
+
+        let vm = DownloadsViewModel(appState: appState, downloadManager: stubManager)
+        await vm.load()
+
+        #expect(vm.tasks.first?.progress == 0.75)
+        #expect(vm.groups.first?.overallProgress == 0.75)
+    }
+
+    @Test
+    @MainActor
     func loadWithEmptyResultsSetsEmptyGroupsAndTasks() async {
         let appState = AppState()
         let stubManager = StubDownloadManager()
@@ -298,9 +357,11 @@ struct DownloadsViewModelTests {
 
         let vm = DownloadsViewModel(appState: appState, downloadManager: stubManager)
         await vm.load()
+        vm.rootError = .unknown("stale retry error")
         await vm.retry(task)
 
         #expect(vm.tasks.first?.status == .queued)
+        #expect(vm.rootError == nil)
     }
 
     @Test

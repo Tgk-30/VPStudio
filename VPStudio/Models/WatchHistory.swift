@@ -15,10 +15,11 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
     var streamURL: String?
     var watchedAt: Date
     var isCompleted: Bool
+    var hasFiniteNumericValues: Bool = true
 
     var progressPercent: Double {
-        guard duration > 0 else { return 0 }
-        return min(progress / duration, 1.0)
+        guard duration.isFinite, duration > 0, progress.isFinite else { return 0 }
+        return min(max(0, progress / duration), 1.0)
     }
 
     var progressString: String {
@@ -65,22 +66,25 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
         self.streamURL = Self.normalizedOptionalString(streamURL)
         self.watchedAt = watchedAt
         self.isCompleted = isCompleted
+        self.hasFiniteNumericValues = progress.isFinite && duration.isFinite
     }
 
     init(row: Row) {
         let decodedDuration = (row[Columns.duration] as Double?) ?? 0
+        let decodedProgress = (row[Columns.progress] as Double?) ?? 0
 
         id = (row[Columns.id] as String?) ?? UUID().uuidString
         mediaId = (row[Columns.mediaId] as String?) ?? ""
         episodeId = row[Columns.episodeId]
         title = (row[Columns.title] as String?) ?? ""
         duration = Self.normalizedDuration(decodedDuration)
-        progress = Self.normalizedProgress((row[Columns.progress] as Double?) ?? 0, duration: duration)
+        progress = Self.normalizedProgress(decodedProgress, duration: duration)
         quality = Self.normalizedOptionalString(row[Columns.quality] as String?)
         debridService = Self.normalizedOptionalString(row[Columns.debridService] as String?)
         streamURL = Self.normalizedOptionalString(row[Columns.streamURL] as String?)
         watchedAt = Self.valueAsDate(row[Columns.watchedAt.rawValue])
         isCompleted = Self.valueAsBool(row[Columns.isCompleted.rawValue])
+        hasFiniteNumericValues = decodedDuration.isFinite && decodedProgress.isFinite
     }
 
     func encode(to container: inout PersistenceContainer) {
@@ -115,10 +119,12 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
     }
 
     private static func normalizedDuration(_ duration: Double) -> Double {
-        max(duration, 0)
+        guard duration.isFinite else { return 0 }
+        return max(duration, 0)
     }
 
     private static func normalizedProgress(_ progress: Double, duration: Double) -> Double {
+        guard progress.isFinite else { return 0 }
         let normalizedProgress = max(progress, 0)
         guard duration > 0 else { return normalizedProgress }
         return min(normalizedProgress, duration)

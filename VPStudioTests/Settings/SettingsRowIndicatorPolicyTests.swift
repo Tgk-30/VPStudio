@@ -39,4 +39,11 @@ struct SettingsRowIndicatorPolicyTests {
     func shouldShowIndicatorFalseForDisabled() {
         #expect(SettingsRowIndicatorPolicy.shouldShowIndicator(for: .disabled) == false)
     }
+
+    @Test
+    func statusKindMapsFormatterStatusesToIndicatorStatuses() {
+        #expect(SettingsRowIndicatorPolicy.statusKind(from: .positive) == .configured)
+        #expect(SettingsRowIndicatorPolicy.statusKind(from: .warning) == .warning)
+        #expect(SettingsRowIndicatorPolicy.statusKind(from: .neutral) == .unconfigured)
+    }
 }

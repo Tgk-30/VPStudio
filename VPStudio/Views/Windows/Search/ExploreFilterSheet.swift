@@ -1,5 +1,32 @@
 import SwiftUI
 
+enum ExploreFilterSheetLanguageSelectionPolicy {
+    static let defaultLanguageCode = "en-US"
+
+    static func normalizedSelection(from codes: Set<String>) -> Set<String> {
+        SearchLanguageOption.normalizeSelection(from: codes)
+    }
+
+    static func selection(afterToggling code: String, in currentSelection: Set<String>) -> Set<String> {
+        if code == defaultLanguageCode {
+            return [defaultLanguageCode]
+        }
+
+        if currentSelection.contains(code) {
+            var updatedSelection = currentSelection
+            updatedSelection.remove(code)
+            return updatedSelection.isEmpty ? [defaultLanguageCode] : updatedSelection
+        }
+
+        var updatedSelection = currentSelection
+        if updatedSelection == [defaultLanguageCode] {
+            updatedSelection.remove(defaultLanguageCode)
+        }
+        updatedSelection.insert(code)
+        return updatedSelection
+    }
+}
+
 struct ExploreFilterSheet: View {
     @Binding var sortOption: DiscoverFilters.SortOption
     @Binding var selectedYear: Int?
@@ -61,7 +88,7 @@ struct ExploreFilterSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .onAppear {
-                selectedLanguages = SearchLanguageOption.normalizeSelection(from: selectedLanguages)
+                selectedLanguages = ExploreFilterSheetLanguageSelectionPolicy.normalizedSelection(from: selectedLanguages)
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -81,39 +108,22 @@ struct ExploreFilterSheet: View {
     }
 
     private var languageRows: some View {
-        ForEach(SearchLanguageOption.common, id: \SearchLanguageOption.Option.code) { option in
+        ForEach(SearchLanguageOption.common, id: \.code) { option in
             LanguageToggleRow(
                 name: option.name,
                 isSelected: selectedLanguages.contains(option.code),
-                onTap: { toggleLanguage(option.code) }
+                onTap: {
+                    selectedLanguages = ExploreFilterSheetLanguageSelectionPolicy.selection(
+                        afterToggling: option.code,
+                        in: selectedLanguages
+                    )
+                }
             )
         }
     }
-
-    private func toggleLanguage(_ code: String) {
-        let defaultLanguageCode = "en-US"
-
-        if code == defaultLanguageCode {
-            selectedLanguages = [defaultLanguageCode]
-            return
-        }
-
-        if selectedLanguages.contains(code) {
-            selectedLanguages.remove(code)
-            if selectedLanguages.isEmpty {
-                selectedLanguages = [defaultLanguageCode]
-            }
-            return
-        }
-
-        if selectedLanguages == [defaultLanguageCode] {
-            selectedLanguages = []
-        }
-        selectedLanguages.insert(code)
-    }
 }
 
-private struct LanguageToggleRow: View {
+struct LanguageToggleRow: View {
     let name: String
     let isSelected: Bool
     let onTap: () -> Void

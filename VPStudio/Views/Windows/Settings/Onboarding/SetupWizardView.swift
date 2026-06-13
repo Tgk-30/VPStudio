@@ -3,6 +3,8 @@ import SwiftUI
 // MARK: - Setup Wizard View
 
 struct SetupWizardView: View {
+    private static let totalStepCount = 5
+
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openURL) private var openURL
@@ -18,7 +20,31 @@ struct SetupWizardView: View {
     @State private var appeared = false
     @State private var didRunQAAutoAdvance = false
 
-    private let totalSteps = 5
+    private let totalSteps = Self.totalStepCount
+
+    init(
+        initialStep: Int = 0,
+        initialDebridApiKey: String = "",
+        initialSelectedService: DebridServiceType = .realDebrid,
+        initialTMDBApiKey: String = "",
+        initialSelectedAIProvider: AIProviderOption = .none,
+        initialAIAPIKey: String = "",
+        initialSelectedQuality: VideoQuality = .hd1080p,
+        initialSelectedSubtitleLanguage: SubtitleLanguageOption = .none
+    ) {
+        _currentStep = State(initialValue: SetupWizardNavigationPolicy.clampedStep(
+            initialStep,
+            totalSteps: Self.totalStepCount
+        ))
+        _debridApiKey = State(initialValue: initialDebridApiKey)
+        _selectedService = State(initialValue: initialSelectedService)
+        _tmdbApiKey = State(initialValue: initialTMDBApiKey)
+        _selectedAIProvider = State(initialValue: initialSelectedAIProvider)
+        _aiApiKey = State(initialValue: initialAIAPIKey)
+        _selectedQuality = State(initialValue: initialSelectedQuality)
+        _selectedSubtitleLanguage = State(initialValue: initialSelectedSubtitleLanguage)
+    }
+
     private var stepTransition: AnyTransition {
         reduceMotion
             ? .opacity
@@ -81,19 +107,23 @@ struct SetupWizardView: View {
                 }
             }
 
-            guard QARuntimeOptions.setupAutoAdvance else { return }
-            guard !didRunQAAutoAdvance else { return }
+            guard SetupWizardQAAutoAdvancePolicy.shouldStartAutoAdvance(
+                isEnabled: QARuntimeOptions.setupAutoAdvance,
+                didRun: didRunQAAutoAdvance
+            ) else { return }
             didRunQAAutoAdvance = true
 
-            if let tmdbKey = QARuntimeOptions.setupTMDBApiKey {
-                tmdbApiKey = tmdbKey
-            }
-            if let preferredQuality = QARuntimeOptions.setupPreferredQuality {
-                selectedQuality = preferredQuality
-            }
-            if let subtitleLanguage = QARuntimeOptions.setupSubtitleLanguage {
-                selectedSubtitleLanguage = subtitleLanguage
-            }
+            let defaults = SetupWizardQAAutoAdvancePolicy.appliedDefaults(
+                tmdbApiKey: tmdbApiKey,
+                selectedQuality: selectedQuality,
+                selectedSubtitleLanguage: selectedSubtitleLanguage,
+                overrideTMDBApiKey: QARuntimeOptions.setupTMDBApiKey,
+                overridePreferredQuality: QARuntimeOptions.setupPreferredQuality,
+                overrideSubtitleLanguage: QARuntimeOptions.setupSubtitleLanguage
+            )
+            tmdbApiKey = defaults.tmdbApiKey
+            selectedQuality = defaults.selectedQuality
+            selectedSubtitleLanguage = defaults.selectedSubtitleLanguage
 
             Task {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -106,7 +136,10 @@ struct SetupWizardView: View {
                     let stepBeforeAdvance = await MainActor.run {
                         currentStep
                     }
-                    guard stepBeforeAdvance > 0 && stepBeforeAdvance < totalSteps - 1 else { break }
+                    guard SetupWizardQAAutoAdvancePolicy.shouldContinueAutoAdvance(
+                        currentStep: stepBeforeAdvance,
+                        totalSteps: totalSteps
+                    ) else { break }
                     try? await Task.sleep(for: .milliseconds(250))
                     await handleNextStep()
                     let stepAfterAdvance = await MainActor.run {
@@ -115,7 +148,12 @@ struct SetupWizardView: View {
                     guard stepAfterAdvance > stepBeforeAdvance else { break }
                 }
 
-                let isCompleteStep = await MainActor.run { currentStep == totalSteps - 1 }
+                let isCompleteStep = await MainActor.run {
+                    SetupWizardQAAutoAdvancePolicy.shouldDismissAfterAutoAdvance(
+                        currentStep: currentStep,
+                        totalSteps: totalSteps
+                    )
+                }
                 guard !Task.isCancelled, isCompleteStep else { return }
                 try? await Task.sleep(for: .milliseconds(250))
                 await MainActor.run {
@@ -541,7 +579,7 @@ struct SetupWizardView: View {
 
     private var wizardNavigation: some View {
         HStack {
-            if currentStep > 0 && currentStep < totalSteps - 1 {
+            if SetupWizardNavigationPolicy.showsBackButton(currentStep: currentStep, totalSteps: totalSteps) {
                 Button {
                     moveToStep(currentStep - 1)
                 } label: {
@@ -561,7 +599,7 @@ struct SetupWizardView: View {
 
             Spacer()
 
-            if currentStep > 0 && currentStep < totalSteps - 1 {
+            if SetupWizardNavigationPolicy.showsContinueButton(currentStep: currentStep, totalSteps: totalSteps) {
                 WizardAccentButton(
                     title: continueButtonTitle,
                     icon: continueButtonIcon
@@ -569,7 +607,7 @@ struct SetupWizardView: View {
                     Task { await handleNextStep() }
                 }
                 .accessibilityHint("Saves this step and continues.")
-            } else if currentStep == totalSteps - 1 {
+            } else if SetupWizardNavigationPolicy.showsStartExploringButton(currentStep: currentStep, totalSteps: totalSteps) {
                 WizardAccentButton(title: "Start Exploring", icon: "sparkles") {
                     appState.isShowingSetup = false
                 }
@@ -585,14 +623,19 @@ struct SetupWizardView: View {
     }
 
     private func moveToStep(_ nextStep: Int) {
-        let clampedStep = min(max(nextStep, 0), totalSteps - 1)
-        guard clampedStep != currentStep else { return }
-        guard !reduceMotion else {
-            currentStep = clampedStep
+        let transition = SetupWizardTransitionPolicy.transition(
+            currentStep: currentStep,
+            requestedStep: nextStep,
+            totalSteps: totalSteps,
+            reduceMotion: reduceMotion
+        )
+        guard transition.shouldUpdate else { return }
+        guard transition.shouldAnimate else {
+            currentStep = transition.targetStep
             return
         }
         withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
-            currentStep = clampedStep
+            currentStep = transition.targetStep
         }
     }
 
@@ -625,35 +668,36 @@ struct SetupWizardView: View {
         }
 
         if currentStep == 2 {
-            let normalizedTmdbKey = tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedAiKey = aiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: normalizedTmdbKey) else {
-                saveError = SetupWizardValidationPolicy.requiredTMDBMessage
+            let plan = SetupWizardPersistencePolicy.metadataSavePlan(
+                tmdbApiKey: tmdbApiKey,
+                selectedAIProvider: selectedAIProvider,
+                aiApiKey: aiApiKey
+            )
+            guard case .save(let metadata) = plan else {
+                if case .invalid(let message) = plan {
+                    saveError = message
+                }
                 return
             }
 
             do {
                 try await appState.settingsManager.setValue(
-                    normalizedTmdbKey,
+                    metadata.tmdbApiKey,
                     forKey: SettingsKeys.tmdbApiKey
                 )
                 NotificationCenter.default.post(name: .tmdbApiKeyDidChange, object: nil)
 
                 // Save AI provider selection
                 try await appState.settingsManager.setValue(
-                    selectedAIProvider == .none ? nil : selectedAIProvider.rawValue,
+                    metadata.defaultAIProviderRawValue,
                     forKey: SettingsKeys.defaultAIProvider
                 )
 
                 // Save AI key if a provider is selected and key is provided
-                if SetupWizardValidationPolicy.shouldSaveAIKey(
-                    provider: selectedAIProvider,
-                    apiKey: normalizedAiKey
-                ), let aiSettingsKey = SetupWizardValidationPolicy.settingsKey(for: selectedAIProvider) {
+                if let aiKeyWrite = metadata.aiKeyWrite {
                     try await appState.settingsManager.setValue(
-                        normalizedAiKey,
-                        forKey: aiSettingsKey
+                        aiKeyWrite.apiKey,
+                        forKey: aiKeyWrite.settingsKey
                     )
                 }
                 NotificationCenter.default.post(name: .settingsDidChange, object: nil)
@@ -665,17 +709,19 @@ struct SetupWizardView: View {
         }
 
         if currentStep == 3 {
+            let plan = SetupWizardPersistencePolicy.preferencesSavePlan(
+                selectedQuality: selectedQuality,
+                selectedSubtitleLanguage: selectedSubtitleLanguage
+            )
             do {
                 try await appState.settingsManager.setValue(
-                    selectedQuality.rawValue,
+                    plan.preferredQualityRawValue,
                     forKey: SettingsKeys.preferredQuality
                 )
-                if selectedSubtitleLanguage != .none {
-                    try await appState.settingsManager.setValue(
-                        selectedSubtitleLanguage.rawValue,
-                        forKey: SettingsKeys.subtitleLanguage
-                    )
-                }
+                try await appState.settingsManager.setValue(
+                    plan.subtitleLanguageValue,
+                    forKey: SettingsKeys.subtitleLanguage
+                )
             } catch {
                 saveError = error.localizedDescription
                 return
@@ -797,7 +843,12 @@ private struct WizardStepIndicator: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Setup progress")
-        .accessibilityValue("Step \(currentStep + 1) of \(totalSteps)")
+        .accessibilityValue(
+            SetupWizardNavigationPolicy.stepIndicatorAccessibilityValue(
+                currentStep: currentStep,
+                totalSteps: totalSteps
+            )
+        )
         .accessibilityHint("The highlighted capsule shows your current setup step.")
     }
 }
@@ -1209,6 +1260,10 @@ enum SetupWizardValidationPolicy {
         provider != .none && !trimmedValue(apiKey).isEmpty
     }
 
+    static func storedSubtitleLanguageValue(_ language: SubtitleLanguageOption) -> String? {
+        language == .none ? nil : language.rawValue
+    }
+
     static func completionSummaryRows(
         selectedService: DebridServiceType,
         debridApiKey: String,
@@ -1232,6 +1287,163 @@ enum SetupWizardValidationPolicy {
             rows.append(SummaryRow(icon: "captions.bubble", text: "\(selectedSubtitleLanguage.displayName) subtitles"))
         }
         return rows
+    }
+}
+
+enum SetupWizardNavigationPolicy {
+    static func clampedStep(_ requestedStep: Int, totalSteps: Int) -> Int {
+        guard totalSteps > 0 else { return 0 }
+        return min(max(requestedStep, 0), totalSteps - 1)
+    }
+
+    static func showsBackButton(currentStep: Int, totalSteps: Int) -> Bool {
+        currentStep > 0 && currentStep < totalSteps - 1
+    }
+
+    static func showsContinueButton(currentStep: Int, totalSteps: Int) -> Bool {
+        currentStep > 0 && currentStep < totalSteps - 1
+    }
+
+    static func showsStartExploringButton(currentStep: Int, totalSteps: Int) -> Bool {
+        totalSteps > 0 && currentStep == totalSteps - 1
+    }
+
+    static func stepIndicatorAccessibilityValue(currentStep: Int, totalSteps: Int) -> String {
+        let displayedTotal = max(totalSteps, 1)
+        let displayedStep = clampedStep(currentStep, totalSteps: displayedTotal) + 1
+        return "Step \(displayedStep) of \(displayedTotal)"
+    }
+}
+
+enum SetupWizardTransitionPolicy {
+    struct StepTransition: Equatable, Sendable {
+        let targetStep: Int
+        let shouldUpdate: Bool
+        let shouldAnimate: Bool
+    }
+
+    static func transition(
+        currentStep: Int,
+        requestedStep: Int,
+        totalSteps: Int,
+        reduceMotion: Bool
+    ) -> StepTransition {
+        let targetStep = SetupWizardNavigationPolicy.clampedStep(requestedStep, totalSteps: totalSteps)
+        let shouldUpdate = targetStep != currentStep
+        return StepTransition(
+            targetStep: targetStep,
+            shouldUpdate: shouldUpdate,
+            shouldAnimate: shouldUpdate && !reduceMotion
+        )
+    }
+
+    static func advancedTransition(
+        currentStep: Int,
+        totalSteps: Int,
+        reduceMotion: Bool
+    ) -> StepTransition {
+        transition(
+            currentStep: currentStep,
+            requestedStep: currentStep + 1,
+            totalSteps: totalSteps,
+            reduceMotion: reduceMotion
+        )
+    }
+}
+
+enum SetupWizardQAAutoAdvancePolicy {
+    struct Defaults: Equatable, Sendable {
+        let tmdbApiKey: String
+        let selectedQuality: VideoQuality
+        let selectedSubtitleLanguage: SubtitleLanguageOption
+    }
+
+    static func shouldStartAutoAdvance(isEnabled: Bool, didRun: Bool) -> Bool {
+        isEnabled && !didRun
+    }
+
+    static func shouldContinueAutoAdvance(currentStep: Int, totalSteps: Int) -> Bool {
+        currentStep > 0 && currentStep < totalSteps - 1
+    }
+
+    static func shouldDismissAfterAutoAdvance(currentStep: Int, totalSteps: Int) -> Bool {
+        totalSteps > 0 && currentStep == totalSteps - 1
+    }
+
+    static func appliedDefaults(
+        tmdbApiKey: String,
+        selectedQuality: VideoQuality,
+        selectedSubtitleLanguage: SubtitleLanguageOption,
+        overrideTMDBApiKey: String?,
+        overridePreferredQuality: VideoQuality?,
+        overrideSubtitleLanguage: SubtitleLanguageOption?
+    ) -> Defaults {
+        Defaults(
+            tmdbApiKey: overrideTMDBApiKey ?? tmdbApiKey,
+            selectedQuality: overridePreferredQuality ?? selectedQuality,
+            selectedSubtitleLanguage: overrideSubtitleLanguage ?? selectedSubtitleLanguage
+        )
+    }
+}
+
+enum SetupWizardPersistencePolicy {
+    struct AIKeyWrite: Equatable, Sendable {
+        let settingsKey: String
+        let apiKey: String
+    }
+
+    struct MetadataSavePlan: Equatable, Sendable {
+        let tmdbApiKey: String
+        let defaultAIProviderRawValue: String?
+        let aiKeyWrite: AIKeyWrite?
+    }
+
+    enum MetadataDecision: Equatable, Sendable {
+        case invalid(message: String)
+        case save(MetadataSavePlan)
+    }
+
+    struct PreferencesSavePlan: Equatable, Sendable {
+        let preferredQualityRawValue: String
+        let subtitleLanguageValue: String?
+    }
+
+    static func metadataSavePlan(
+        tmdbApiKey: String,
+        selectedAIProvider: AIProviderOption,
+        aiApiKey: String
+    ) -> MetadataDecision {
+        let normalizedTMDBKey = SetupWizardValidationPolicy.trimmedValue(tmdbApiKey)
+        guard SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: normalizedTMDBKey) else {
+            return .invalid(message: SetupWizardValidationPolicy.requiredTMDBMessage)
+        }
+
+        let normalizedAIKey = SetupWizardValidationPolicy.trimmedValue(aiApiKey)
+        let aiKeyWrite: AIKeyWrite?
+        if SetupWizardValidationPolicy.shouldSaveAIKey(provider: selectedAIProvider, apiKey: normalizedAIKey),
+           let settingsKey = SetupWizardValidationPolicy.settingsKey(for: selectedAIProvider) {
+            aiKeyWrite = AIKeyWrite(settingsKey: settingsKey, apiKey: normalizedAIKey)
+        } else {
+            aiKeyWrite = nil
+        }
+
+        return .save(
+            MetadataSavePlan(
+                tmdbApiKey: normalizedTMDBKey,
+                defaultAIProviderRawValue: selectedAIProvider == .none ? nil : selectedAIProvider.rawValue,
+                aiKeyWrite: aiKeyWrite
+            )
+        )
+    }
+
+    static func preferencesSavePlan(
+        selectedQuality: VideoQuality,
+        selectedSubtitleLanguage: SubtitleLanguageOption
+    ) -> PreferencesSavePlan {
+        PreferencesSavePlan(
+            preferredQualityRawValue: selectedQuality.rawValue,
+            subtitleLanguageValue: SetupWizardValidationPolicy.storedSubtitleLanguageValue(selectedSubtitleLanguage)
+        )
     }
 }
 

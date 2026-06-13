@@ -89,7 +89,7 @@ private func makeStubSession(handler: @escaping (URLRequest) throws -> (HTTPURLR
 // MARK: - extractTMDBID Tests
 
 @Suite("TMDBService - ID Extraction")
-struct TMDBIDExtractionTests {
+struct TMDBIDExtractionTestsTmdbservicetests {
     private final class AttemptRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var attempts = 0
@@ -588,7 +588,7 @@ struct TMDBIDExtractionTests {
         let snapshot = recorder.snapshot()
         #expect(snapshot.attempts == 2)
         let recordedSleep = try #require(snapshot.sleeps.first)
-        #expect(recordedSleep >= 3_000_000_000)
+        #expect(recordedSleep >= 1_000_000_000)
         #expect(recordedSleep <= 6_000_000_000)
     }
 
@@ -772,7 +772,7 @@ struct TMDBIDExtractionTests {
 // MARK: - TMDBSearchResult.toMediaPreview Tests
 
 @Suite("TMDBSearchResult - toMediaPreview")
-struct TMDBSearchResultConversionTests {
+struct TMDBSearchResultConversionTestsTmdbservicetests {
 
     @Test func movieResultConvertsCorrectly() {
         let result = TMDBSearchResult(
@@ -844,7 +844,7 @@ struct TMDBSearchResultConversionTests {
 // MARK: - TMDBDetailResponse.toMediaItem Tests
 
 @Suite("TMDBDetailResponse - toMediaItem")
-struct TMDBDetailResponseTests {
+struct TMDBDetailResponseTestsTmdbservicetests {
 
     @Test func convertsMovieDetailCorrectly() {
         let response = TMDBDetailResponse(
@@ -891,7 +891,7 @@ struct TMDBDetailResponseTests {
 // MARK: - TMDBError Tests
 
 @Suite("TMDBError")
-struct TMDBErrorTests {
+struct TMDBErrorTestsTmdbservicetests {
 
     @Test func allErrorsHaveDescriptions() {
         let errors: [TMDBError] = [

@@ -3,6 +3,10 @@ import Foundation
 /// Shared JSON value-extraction helpers used by indexer parsers that process
 /// untyped `JSONSerialization` payloads (Stremio, Torznab/Prowlarr, etc.).
 enum JSONValueParsing {
+    private static let infoHashRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: "(?i)[0-9a-f]{40,64}")
+    }()
+
     /// Coerce a loosely-typed JSON value to `Int`.
     /// Handles `Int`, `Int64`, `Double`, and numeric `String` representations.
     static func parseInt(_ value: Any?) -> Int? {
@@ -24,29 +28,78 @@ enum JSONValueParsing {
     }
 
     /// Extract a BitTorrent info-hash from a magnet URI or resolve URL.
-    /// Returns `nil` when no 40-hex hash can be resolved.
+    /// Returns `nil` when no 40-or-64 hex hash can be resolved.
     static func extractInfoHash(from magnetURI: String?) -> String? {
         guard let magnetURI else { return nil }
 
-        if let components = URLComponents(string: magnetURI),
-           let xt = components.queryItems?.first(where: { $0.name.lowercased() == "xt" })?.value,
-           xt.lowercased().hasPrefix("urn:btih:") {
-            return String(xt.dropFirst("urn:btih:".count)).lowercased()
+        if let components = URLComponents(string: magnetURI) {
+            if let xt = components.queryItems?.compactMap({ (item: URLQueryItem) -> String? in
+                guard item.name.lowercased() == "xt",
+                      let value = item.value,
+                      value.lowercased().hasPrefix("urn:btih:") else {
+                    return nil
+                }
+
+                return normalizedHexHash(from: String(value.dropFirst("urn:btih:".count)))
+            }).first {
+                return xt
+            }
         }
 
         return extractInfoHashFromTorrentURL(magnetURI)
     }
 
-    private static func extractInfoHashFromTorrentURL(_ value: String) -> String? {
-        let pattern = "(?i)(?:[/?#&=])([0-9a-f]{40})(?:[/?#&=]|$)"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-
-        let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        guard let match = regex.firstMatch(in: value, range: range),
-              match.numberOfRanges > 1,
-              let matchRange = Range(match.range(at: 1), in: value) else {
+    private static func normalizedHexHash(from value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let validLengths = Set([40, 64])
+        guard validLengths.contains(trimmed.count) else {
             return nil
         }
-        return String(value[matchRange]).lowercased()
+
+        let hexCharacters = CharacterSet(charactersIn: "0123456789abcdef")
+        guard trimmed.unicodeScalars.allSatisfy({ hexCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return trimmed
+    }
+
+    private static func extractInfoHashFromTorrentURL(_ value: String) -> String? {
+        if let components = URLComponents(string: value),
+           let queryItems = components.queryItems {
+            let candidates = queryItems.compactMap { item -> String? in
+                guard ["hash", "infohash", "info_hash", "xt"].contains(item.name.lowercased()),
+                      let value = item.value else {
+                    return nil
+                }
+                return normalizedHexHash(from: value)
+            }
+            if let directCandidate = candidates.first(where: { $0.count == 40 || $0.count == 64 }) {
+                return directCandidate
+            }
+        }
+
+        let regex = infoHashRegex
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        let matches = regex.matches(in: value, range: range)
+        for match in matches {
+            if let matchRange = Range(match.range, in: value) {
+                let candidate = String(value[matchRange]).lowercased()
+                guard candidate.count == 40 || candidate.count == 64,
+                      let lowerBound = Range(match.range, in: value)?.lowerBound,
+                      let upperBound = Range(match.range, in: value)?.upperBound else {
+                    continue
+                }
+
+                let validLowerBoundary = lowerBound == value.startIndex || "/?#&=.".contains(value[value.index(before: lowerBound)])
+                let validUpperBoundary = upperBound == value.endIndex || "/?#&=.".contains(value[upperBound])
+
+                if validLowerBoundary && validUpperBoundary {
+                    return candidate
+                }
+            }
+        }
+        return nil
     }
 }

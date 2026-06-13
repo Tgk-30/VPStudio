@@ -20,10 +20,27 @@ struct EnvironmentPickerSheet: View {
     @State private var importError: String?
     @State private var environmentLoadTask: Task<Void, Never>?
     @State private var pendingDeletion: PendingDeletion?
+    private let disablesAutomaticTasks: Bool
 
     private struct PendingDeletion: Identifiable {
         let id: String
         let name: String
+    }
+
+    init(
+        onSelect: @escaping (EnvironmentAsset) -> Void,
+        onDismiss: @escaping () -> Void,
+        onSelectCinema: (() -> Void)? = nil,
+        initialEnvironments: [EnvironmentAsset] = [],
+        initialImportError: String? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        self.onSelect = onSelect
+        self.onDismiss = onDismiss
+        self.onSelectCinema = onSelectCinema
+        _environments = State(initialValue: initialEnvironments)
+        _importError = State(initialValue: initialImportError)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
     }
 
     var body: some View {
@@ -70,8 +87,12 @@ struct EnvironmentPickerSheet: View {
                 }
             }
         }
-        .task { await coalescedLoadEnvironments() }
+        .task {
+            guard !disablesAutomaticTasks else { return }
+            await coalescedLoadEnvironments()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleEnvironmentLoad()
         }
         .onDisappear {
@@ -279,10 +300,13 @@ struct EnvironmentPreviewCard: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 5) {
-                        Image(systemName: assetTypeIcon)
+                        Image(systemName: EnvironmentPreviewRowPolicy.assetTypeIconName(forAssetPath: asset.assetPath))
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.75))
-                        Text(assetTypeLabel)
+                        Text(EnvironmentPreviewRowPolicy.assetTypeLabel(
+                            sourceType: asset.sourceType,
+                            assetPath: asset.assetPath
+                        ))
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.75))
                     }
@@ -320,7 +344,7 @@ struct EnvironmentPreviewCard: View {
         }
         // Thumbnail load failure warning
         .overlay(alignment: .topLeading) {
-            if thumbnailFailed && isHDRIAsset {
+            if thumbnailFailed && EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: asset.assetPath) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.yellow)
@@ -374,7 +398,7 @@ struct EnvironmentPreviewCard: View {
     }
 
     private var placeholderGradient: some View {
-        let isHDRI = isHDRIAsset
+        let isHDRI = EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: asset.assetPath)
         return LinearGradient(
             colors: isHDRI
                 ? [Color(red: 0.04, green: 0.07, blue: 0.18), Color(red: 0.08, green: 0.18, blue: 0.38)]
@@ -391,17 +415,6 @@ struct EnvironmentPreviewCard: View {
 
     // MARK: Helpers
 
-    private var isHDRIAsset: Bool {
-        let ext = URL(fileURLWithPath: asset.assetPath).pathExtension.lowercased()
-        return ["hdr", "exr"].contains(ext)
-    }
-
-    private var assetTypeIcon: String { isHDRIAsset ? "pano" : "cube.transparent" }
-
-    private var assetTypeLabel: String {
-        asset.sourceType == .bundled ? "Built-in" : (isHDRIAsset ? "HDRI" : "3D Scene")
-    }
-
     private var activeBorderTop: Color {
         isActive ? .blue.opacity(0.9) : .white.opacity(isHovered ? 0.4 : 0.18)
     }
@@ -415,7 +428,7 @@ struct EnvironmentPreviewCard: View {
     private func loadThumbnail() async {
         thumbnailImage = nil
         thumbnailFailed = false
-        guard isHDRIAsset else { return }
+        guard EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: asset.assetPath) else { return }
         let url = URL(fileURLWithPath: asset.assetPath)
         guard FileManager.default.fileExists(atPath: url.path) else {
             thumbnailFailed = true
@@ -448,7 +461,9 @@ struct EnvironmentPreviewCard: View {
     }
 
     nonisolated private static func loadHDRThumbnail(from url: URL, maxDimension: Int) -> CGImage? {
+        guard fileLooksDecodableByImageIO(url: url) else { return nil }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        guard imageSourceHasReadableImage(at: source, index: 0) else { return nil }
 
         let thumbOptions: [CFString: Any] = [
             kCGImageSourceShouldCache: false,
@@ -466,6 +481,106 @@ struct EnvironmentPreviewCard: View {
             kCGImageSourceShouldAllowFloat: true,
         ]
         return CGImageSourceCreateImageAtIndex(source, 0, fullOptions as CFDictionary)
+    }
+
+    nonisolated private static func fileLooksDecodableByImageIO(url: URL) -> Bool {
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              FileManager.default.isReadableFile(atPath: url.path) else {
+            return false
+        }
+
+        let fileSize = fileSize(at: url)
+        guard fileSize > 0,
+              let header = readPrefix(at: url, count: 512),
+              !header.isEmpty else {
+            return false
+        }
+
+        if header.starts(with: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) {
+            guard fileSize >= 12,
+                  let trailer = readSuffix(at: url, count: 12),
+                  trailer.count == 12 else {
+                return false
+            }
+            let chunkType = trailer[
+                trailer.index(trailer.startIndex, offsetBy: 4)..<trailer.index(trailer.startIndex, offsetBy: 8)
+            ]
+            return Data(chunkType) == Data("IEND".utf8)
+        }
+
+        if header.starts(with: Data([0x76, 0x2F, 0x31, 0x01])) {
+            return fileSize > 32
+        }
+
+        if let asciiHeader = String(data: header, encoding: .ascii),
+           asciiHeader.hasPrefix("#?RADIANCE") || asciiHeader.hasPrefix("#?RGBE") {
+            return asciiHeader.contains("FORMAT=")
+        }
+
+        return false
+    }
+
+    nonisolated private static func fileSize(at url: URL) -> UInt64 {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+        return UInt64(max(values?.fileSize ?? 0, 0))
+    }
+
+    nonisolated private static func readPrefix(at url: URL, count: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        return try? handle.read(upToCount: count) ?? Data()
+    }
+
+    nonisolated private static func readSuffix(at url: URL, count: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return nil }
+        let offset = end > UInt64(count) ? end - UInt64(count) : 0
+        do {
+            try handle.seek(toOffset: offset)
+            return try handle.read(upToCount: count) ?? Data()
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated private static func imageSourceHasReadableImage(at source: CGImageSource, index: Int) -> Bool {
+        guard CGImageSourceGetCount(source) > index else { return false }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any] else {
+            return false
+        }
+
+        let width = imageDimension(from: properties[kCGImagePropertyPixelWidth])
+        let height = imageDimension(from: properties[kCGImagePropertyPixelHeight])
+        return width > 0 && height > 0
+    }
+
+    nonisolated private static func imageDimension(from value: Any?) -> Int {
+        switch value {
+        case let number as NSNumber:
+            return number.intValue
+        case let intValue as Int:
+            return intValue
+        default:
+            return 0
+        }
+    }
+}
+
+enum EnvironmentPreviewRowPolicy {
+    static func isHDRIAsset(assetPath: String) -> Bool {
+        let ext = URL(fileURLWithPath: assetPath).pathExtension.lowercased()
+        return ["hdr", "exr"].contains(ext)
+    }
+
+    static func assetTypeIconName(forAssetPath assetPath: String) -> String {
+        isHDRIAsset(assetPath: assetPath) ? "pano" : "cube.transparent"
+    }
+
+    static func assetTypeLabel(sourceType: EnvironmentAssetSourceType, assetPath: String) -> String {
+        sourceType == .bundled ? "Built-in" : (isHDRIAsset(assetPath: assetPath) ? "HDRI" : "3D Scene")
     }
 }
 

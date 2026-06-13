@@ -30,9 +30,85 @@ enum DetailAutoSearchPolicy {
 enum DetailInitialRenderPolicy {
     static func shouldShowContent(
         hasViewModel: Bool,
-        isPreparingInitialPresentation: Bool
+        isPreparingInitialPresentation: Bool,
+        hasResolvedPrimaryMedia: Bool = false
     ) -> Bool {
-        hasViewModel && !isPreparingInitialPresentation
+        hasViewModel && (!isPreparingInitialPresentation || hasResolvedPrimaryMedia)
+    }
+}
+
+enum DetailInitialActionPolicy {
+    enum ResumePlaybackOutcome: Equatable {
+        case ignore
+        case deferUntilMediaLoads
+        case missingEpisode
+        case activeSession
+        case searchAndPlay
+    }
+
+    static func shouldDeferUntilMediaLoads(
+        action: DetailInitialAction,
+        hasMediaItem: Bool
+    ) -> Bool {
+        action == .resumePlayback && !hasMediaItem
+    }
+
+    static func shouldAttemptResumePlayback(
+        action: DetailInitialAction,
+        hasMediaItem: Bool
+    ) -> Bool {
+        action == .resumePlayback && hasMediaItem
+    }
+
+    static func resumePlaybackOutcome(
+        action: DetailInitialAction,
+        hasMediaItem: Bool,
+        previewType: MediaType,
+        hasSelectedEpisode: Bool,
+        hasActivePlayerSession: Bool
+    ) -> ResumePlaybackOutcome {
+        if shouldDeferUntilMediaLoads(action: action, hasMediaItem: hasMediaItem) {
+            return .deferUntilMediaLoads
+        }
+
+        guard shouldAttemptResumePlayback(action: action, hasMediaItem: hasMediaItem) else {
+            return .ignore
+        }
+
+        if hasActivePlayerSession {
+            return .activeSession
+        }
+
+        if previewType == .series, !hasSelectedEpisode {
+            return .missingEpisode
+        }
+
+        return .searchAndPlay
+    }
+}
+
+enum DetailInitialActionHandlingPolicy {
+    enum Handling: Equatable {
+        case deferUntilMediaLoads
+        case ignore
+        case showMissingEpisodeError
+        case showActiveSessionToast
+        case beginPlayback
+    }
+
+    static func handling(for outcome: DetailInitialActionPolicy.ResumePlaybackOutcome) -> Handling {
+        switch outcome {
+        case .deferUntilMediaLoads:
+            return .deferUntilMediaLoads
+        case .ignore:
+            return .ignore
+        case .missingEpisode:
+            return .showMissingEpisodeError
+        case .activeSession:
+            return .showActiveSessionToast
+        case .searchAndPlay:
+            return .beginPlayback
+        }
     }
 }
 
@@ -54,6 +130,10 @@ enum DetailRefreshLoadingPresentationPolicy {
         hasMediaItem: Bool
     ) -> Bool {
         isLoadingDetail && hasMediaItem && !isLoadingSeasonEpisodes
+    }
+
+    static func blockingOverlayTitle(isLoadingSeasonEpisodes: Bool) -> String {
+        isLoadingSeasonEpisodes ? "Loading Episodes" : "Loading Details"
     }
 }
 
@@ -101,6 +181,220 @@ enum DetailPresentationPolicy {
     }
 }
 
+enum DetailPlaybackCopyPolicy {
+    enum PlaybackAction: Equatable {
+        case cast
+        case playTorrent
+        case resumePlayback
+    }
+
+    static let missingEpisodeMessage = "Pick an episode to continue watching."
+
+    static func noStreamsMessage(for action: PlaybackAction) -> String {
+        switch action {
+        case .cast:
+            return "No streams available to cast right now."
+        case .playTorrent:
+            return "Could not open stream. Please try another result."
+        case .resumePlayback:
+            return "No streams are available to resume right now."
+        }
+    }
+
+    static func streamResolutionFailedMessage(for action: PlaybackAction) -> String {
+        switch action {
+        case .cast:
+            return "Could not open stream for casting."
+        case .playTorrent:
+            return "Could not open stream. Please try another result."
+        case .resumePlayback:
+            return "Could not resume playback right now."
+        }
+    }
+}
+
+enum DetailQASamplePolicy {
+    struct DownloadArguments: Equatable, Sendable {
+        let mediaId: String
+        let episodeId: String?
+        let mediaTitle: String
+        let mediaType: String
+        let posterPath: String?
+        let seasonNumber: Int?
+        let episodeNumber: Int?
+        let episodeTitle: String?
+    }
+
+    static func previewTaskIdentity(
+        preview: MediaPreview,
+        initialAction: DetailInitialAction
+    ) -> String {
+        [
+            preview.type.rawValue,
+            preview.id,
+            preview.tmdbId.map(String.init) ?? "none",
+            preview.episodeId ?? "none",
+            preview.seasonNumber.map(String.init) ?? "none",
+            preview.episodeNumber.map(String.init) ?? "none",
+            initialAction.rawValue
+        ].joined(separator: "-")
+    }
+
+    static func sampleFileName(
+        mediaTitle: String,
+        previewType: MediaType,
+        selectedEpisode: Episode?
+    ) -> String {
+        if previewType == .series, let selectedEpisode {
+            return "\(mediaTitle)-S\(String(format: "%02d", selectedEpisode.seasonNumber))E\(String(format: "%02d", selectedEpisode.episodeNumber)).mp4"
+        }
+        return "\(mediaTitle).mp4"
+    }
+
+    static func makeSampleStreams(
+        sampleURLs: [URL],
+        mediaTitle: String,
+        previewType: MediaType,
+        selectedEpisode: Episode?
+    ) -> [StreamInfo]? {
+        guard !sampleURLs.isEmpty else { return nil }
+        let fileName = sampleFileName(
+            mediaTitle: mediaTitle,
+            previewType: previewType,
+            selectedEpisode: selectedEpisode
+        )
+
+        return sampleURLs.map { sampleURL in
+            StreamInfo(
+                streamURL: sampleURL,
+                quality: .hd720p,
+                codec: .h264,
+                audio: .aac,
+                source: .webDL,
+                hdr: .sdr,
+                fileName: fileName,
+                sizeBytes: nil,
+                debridService: "qa-sample"
+            )
+        }
+    }
+
+    static func downloadArguments(
+        mediaItem: MediaItem?,
+        previewType: MediaType,
+        selectedEpisode: Episode?
+    ) -> DownloadArguments? {
+        guard let mediaItem else { return nil }
+        let isSeries = previewType == .series
+        return DownloadArguments(
+            mediaId: mediaItem.id,
+            episodeId: isSeries ? selectedEpisode?.id : nil,
+            mediaTitle: mediaItem.title,
+            mediaType: mediaItem.type.rawValue,
+            posterPath: mediaItem.posterPath,
+            seasonNumber: isSeries ? selectedEpisode?.seasonNumber : nil,
+            episodeNumber: isSeries ? selectedEpisode?.episodeNumber : nil,
+            episodeTitle: isSeries ? selectedEpisode?.title : nil
+        )
+    }
+}
+
+enum DetailQAActionsPolicy {
+    enum LibraryMutation: Equatable {
+        case addWatchlist
+        case addFavorites
+        case removeWatchlist
+        case removeFavorites
+    }
+
+    static func shouldRun(
+        isQAEnabled: Bool,
+        didRunQAActions: Bool,
+        hasMediaItem: Bool
+    ) -> Bool {
+        isQAEnabled && !didRunQAActions && hasMediaItem
+    }
+
+    static func seasonToLoad(
+        previewType: MediaType,
+        selectedSeason: Int?,
+        currentSeason: Int
+    ) -> Int? {
+        guard previewType == .series else { return nil }
+        guard let selectedSeason, selectedSeason != currentSeason else { return nil }
+        return selectedSeason
+    }
+
+    static func selectedEpisodeNumber(
+        previewType: MediaType,
+        selectedEpisode: Int?
+    ) -> Int? {
+        guard previewType == .series else { return nil }
+        return selectedEpisode
+    }
+
+    static func episodeToSelect(
+        previewType: MediaType,
+        selectedEpisode: Int?,
+        episodes: [Episode]
+    ) -> Episode? {
+        guard let episodeNumber = selectedEpisodeNumber(
+            previewType: previewType,
+            selectedEpisode: selectedEpisode
+        ) else {
+            return nil
+        }
+        return episodes.first(where: { $0.episodeNumber == episodeNumber })
+    }
+
+    static func libraryMutations(
+        autoAddWatchlist: Bool,
+        autoAddFavorites: Bool,
+        autoRemoveWatchlist: Bool,
+        autoRemoveFavorites: Bool,
+        isInWatchlist: Bool,
+        isInFavorites: Bool
+    ) -> [LibraryMutation] {
+        var mutations: [LibraryMutation] = []
+
+        if autoAddWatchlist, !isInWatchlist {
+            mutations.append(.addWatchlist)
+        }
+        if autoAddFavorites, !isInFavorites {
+            mutations.append(.addFavorites)
+        }
+        if autoRemoveWatchlist, isInWatchlist {
+            mutations.append(.removeWatchlist)
+        }
+        if autoRemoveFavorites, isInFavorites {
+            mutations.append(.removeFavorites)
+        }
+
+        return mutations
+    }
+}
+
+enum DetailPlayerHandoffPolicy {
+    enum Route: Equatable {
+        case showActiveSessionToast
+        case launchedExternally
+        case openInternalPlayerWindow
+    }
+
+    static func route(
+        hasActivePlayerSession: Bool,
+        didLaunchPreferredExternalPlayer: Bool
+    ) -> Route {
+        if hasActivePlayerSession {
+            return .showActiveSessionToast
+        }
+        if didLaunchPreferredExternalPlayer {
+            return .launchedExternally
+        }
+        return .openInternalPlayerWindow
+    }
+}
+
 struct DetailView: View {
     let preview: MediaPreview
     let initialAction: DetailInitialAction
@@ -115,6 +409,7 @@ struct DetailView: View {
     @State private var libraryReloadTask: Task<Void, Never>?
     @State private var feedbackReloadTask: Task<Void, Never>?
     @State private var downloadsReloadTask: Task<Void, Never>?
+    @State private var torrentAutoSearchTask: Task<Void, Never>?
     @State private var streamResolutionTask: Task<Void, Never>?
     @State private var showActiveSessionToast = false
     @State private var activeSessionToastTask: Task<Void, Never>?
@@ -127,16 +422,41 @@ struct DetailView: View {
     @State private var isPreparingInitialPresentation = true
     @State private var hasHandledInitialAction = false
     private let streamResultsAnchor = "detail-stream-results-anchor"
+    private let disablesAutomaticLoading: Bool
 
-    init(preview: MediaPreview, initialAction: DetailInitialAction = .none) {
+    init(
+        preview: MediaPreview,
+        initialAction: DetailInitialAction = .none,
+        initialViewModel: DetailViewModel? = nil,
+        initialTMDBApiKey: String = "",
+        initialIsShowingRatingSheet: Bool = false,
+        initialDraftFeedbackValue: Double = 1,
+        initialShowActiveSessionToast: Bool = false,
+        initialIsPlayerOpening: Bool = false,
+        initialPlayerOpeningError: String? = nil,
+        initialIsPreparingInitialPresentation: Bool? = nil,
+        disablesAutomaticLoading: Bool = false
+    ) {
         self.preview = preview
         self.initialAction = initialAction
+        self.disablesAutomaticLoading = disablesAutomaticLoading
+        _viewModel = State(initialValue: initialViewModel)
+        _tmdbApiKey = State(initialValue: initialTMDBApiKey)
+        _isShowingRatingSheet = State(initialValue: initialIsShowingRatingSheet)
+        _draftFeedbackValue = State(initialValue: initialDraftFeedbackValue)
+        _showActiveSessionToast = State(initialValue: initialShowActiveSessionToast)
+        _isPlayerOpening = State(initialValue: initialIsPlayerOpening)
+        _playerOpeningError = State(initialValue: initialPlayerOpeningError)
+        _isPreparingInitialPresentation = State(
+            initialValue: initialIsPreparingInitialPresentation ?? (initialViewModel == nil)
+        )
     }
 
     private var shouldShowDetailContent: Bool {
         return DetailInitialRenderPolicy.shouldShowContent(
             hasViewModel: viewModel != nil,
-            isPreparingInitialPresentation: isPreparingInitialPresentation
+            isPreparingInitialPresentation: isPreparingInitialPresentation,
+            hasResolvedPrimaryMedia: viewModel?.mediaItem != nil
         )
     }
 
@@ -152,9 +472,12 @@ struct DetailView: View {
         }
         .animation(.easeInOut(duration: 0.35), value: shouldShowDetailContent)
         .task(id: previewTaskIdentity) {
+            guard !disablesAutomaticLoading else { return }
             isPreparingInitialPresentation = true
             didRunQAActions = false
             hasHandledInitialAction = false
+            torrentAutoSearchTask?.cancel()
+            torrentAutoSearchTask = nil
             await reloadDetailForLatestTMDBKey()
             guard !Task.isCancelled else { return }
             isPreparingInitialPresentation = false
@@ -169,6 +492,8 @@ struct DetailView: View {
             feedbackReloadTask = nil
             downloadsReloadTask?.cancel()
             downloadsReloadTask = nil
+            torrentAutoSearchTask?.cancel()
+            torrentAutoSearchTask = nil
             streamResolutionTask?.cancel()
             streamResolutionTask = nil
             activeSessionToastTask?.cancel()
@@ -211,6 +536,9 @@ struct DetailView: View {
 
     @MainActor
     private func reloadDetailForLatestTMDBKey() async {
+        torrentAutoSearchTask?.cancel()
+        torrentAutoSearchTask = nil
+
         let key = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
         tmdbApiKey = key
 
@@ -226,22 +554,24 @@ struct DetailView: View {
         vm.setPreviewContext(preview)
         await vm.loadDetail(preview: preview, apiKey: key)
 
-        // Auto-search streams once metadata loads for movies only.
-        // Series wait for an explicit follow-up action such as Play or episode tap.
-        if DetailAutoSearchPolicy.shouldAutoSearch(
+        // Auto-search streams once metadata loads for movies only, but do not
+        // keep first content render blocked behind indexer/network work.
+        let shouldAutoSearchTorrents = initialAction == .none && !QARuntimeOptions.isEnabled && DetailAutoSearchPolicy.shouldAutoSearch(
             previewType: preview.type,
             hasMediaItem: vm.mediaItem != nil,
             hasSelectedEpisode: vm.selectedEpisode != nil,
             hasExplicitEpisodeContext: preview.episodeId != nil || preview.episodeNumber != nil
-        ) {
-            await vm.searchTorrents()
-        }
+        )
 
         if !QARuntimeOptions.isEnabled {
             await runInitialActionIfNeeded(vm)
         }
 
         await runQAActionsIfNeeded(vm)
+
+        if shouldAutoSearchTorrents {
+            scheduleAutoTorrentSearch(vm)
+        }
     }
 
     @ViewBuilder
@@ -277,7 +607,9 @@ struct DetailView: View {
                 hasMediaItem: vm.mediaItem != nil
             ) {
                 LoadingOverlay(
-                    title: vm.isLoading(.seasonEpisodes) ? "Loading Episodes" : "Loading Details",
+                    title: DetailRefreshLoadingPresentationPolicy.blockingOverlayTitle(
+                        isLoadingSeasonEpisodes: vm.isLoading(.seasonEpisodes)
+                    ),
                     message: "Fetching metadata and availability."
                 )
             } else {
@@ -333,29 +665,6 @@ struct DetailView: View {
         .animation(.easeInOut(duration: 0.25), value: showActiveSessionToast)
     }
 
-    @ViewBuilder
-    private func metadataRow(_ vm: DetailViewModel) -> some View {
-        HStack(spacing: 16) {
-            if let year = vm.mediaItem?.year {
-                Label(DetailPresentationPolicy.yearText(year) ?? "", systemImage: "calendar")
-                    .font(.subheadline)
-            }
-            if let rating = DetailPresentationPolicy.imdbRatingText(vm.mediaItem?.imdbRating) {
-                Label(rating, systemImage: "star.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.yellow)
-            }
-            if let runtime = DetailPresentationPolicy.runtimeText(vm.mediaItem?.runtimeString) {
-                Label(runtime, systemImage: "clock")
-                    .font(.subheadline)
-            }
-            if let status = vm.mediaItem?.status {
-                GlassTag(text: status)
-            }
-        }
-        .foregroundStyle(.secondary)
-    }
-
     private func prepareFeedbackDraft(_ vm: DetailViewModel) {
         draftFeedbackValue = DetailPresentationPolicy.feedbackDraftValue(
             currentValue: vm.currentFeedbackValue,
@@ -392,14 +701,14 @@ struct DetailView: View {
             }
 
             guard let torrent = vm.torrentSearch.results.first else {
-                playerOpeningError = "No streams available to cast right now."
+                playerOpeningError = DetailPlaybackCopyPolicy.noStreamsMessage(for: .cast)
                 return
             }
 
             if let stream = await vm.resolveStream(torrent: torrent) {
                 await openPlayer(for: stream, vm: vm)
             } else {
-                playerOpeningError = "Could not open stream for casting."
+                playerOpeningError = DetailPlaybackCopyPolicy.streamResolutionFailedMessage(for: .cast)
             }
         }
     }
@@ -421,7 +730,7 @@ struct DetailView: View {
                 await openPlayer(for: stream, vm: vm)
             } else {
                 // Stream resolution returned nil — show error in the row
-                playerOpeningError = "Could not open stream. Please try another result."
+                playerOpeningError = DetailPlaybackCopyPolicy.streamResolutionFailedMessage(for: .playTorrent)
             }
         }
     }
@@ -429,33 +738,40 @@ struct DetailView: View {
 
 private extension DetailView {
     var previewTaskIdentity: String {
-        [
-            preview.type.rawValue,
-            preview.id,
-            preview.tmdbId.map(String.init) ?? "none",
-            preview.episodeId ?? "none",
-            preview.seasonNumber.map(String.init) ?? "none",
-            preview.episodeNumber.map(String.init) ?? "none",
-            initialAction.rawValue
-        ].joined(separator: "-")
+        DetailQASamplePolicy.previewTaskIdentity(
+            preview: preview,
+            initialAction: initialAction
+        )
     }
 
     @MainActor
     func runInitialActionIfNeeded(_ vm: DetailViewModel) async {
         guard !hasHandledInitialAction else { return }
-        hasHandledInitialAction = true
+        let outcome = DetailInitialActionPolicy.resumePlaybackOutcome(
+            action: initialAction,
+            hasMediaItem: vm.mediaItem != nil,
+            previewType: preview.type,
+            hasSelectedEpisode: vm.selectedEpisode != nil,
+            hasActivePlayerSession: appState.activePlayerSession != nil
+        )
+        let handling = DetailInitialActionHandlingPolicy.handling(for: outcome)
 
-        guard initialAction == .resumePlayback else { return }
-        guard vm.mediaItem != nil else { return }
-
-        if preview.type == .series, vm.selectedEpisode == nil {
-            playerOpeningError = "Pick an episode to continue watching."
+        guard handling != .deferUntilMediaLoads else {
             return
         }
+        hasHandledInitialAction = true
 
-        guard appState.activePlayerSession == nil else {
+        switch handling {
+        case .deferUntilMediaLoads, .ignore:
+            return
+        case .showMissingEpisodeError:
+            playerOpeningError = DetailPlaybackCopyPolicy.missingEpisodeMessage
+            return
+        case .showActiveSessionToast:
             showActiveSessionToast(for: appState.activePlayerSession)
             return
+        case .beginPlayback:
+            break
         }
 
         isPlayerOpening = true
@@ -467,47 +783,61 @@ private extension DetailView {
         }
 
         guard let torrent = vm.torrentSearch.results.first else {
-            playerOpeningError = "No streams are available to resume right now."
+            playerOpeningError = DetailPlaybackCopyPolicy.noStreamsMessage(for: .resumePlayback)
             return
         }
 
         if let stream = await vm.resolveStream(torrent: torrent) {
             await openPlayer(for: stream, vm: vm)
         } else {
-            playerOpeningError = "Could not resume playback right now."
+            playerOpeningError = DetailPlaybackCopyPolicy.streamResolutionFailedMessage(for: .resumePlayback)
         }
     }
 
     @MainActor
     func runQAActionsIfNeeded(_ vm: DetailViewModel) async {
-        guard QARuntimeOptions.isEnabled else { return }
-        guard !didRunQAActions else { return }
-        guard vm.mediaItem != nil else { return }
+        guard DetailQAActionsPolicy.shouldRun(
+            isQAEnabled: QARuntimeOptions.isEnabled,
+            didRunQAActions: didRunQAActions,
+            hasMediaItem: vm.mediaItem != nil
+        ) else { return }
         didRunQAActions = true
 
-        if preview.type == .series {
-            if let season = QARuntimeOptions.selectedSeason, season != vm.selectedSeason {
-                await vm.loadSeason(season, apiKey: tmdbApiKey)
-            }
-
-            if let episodeNumber = QARuntimeOptions.selectedEpisode,
-               let episode = vm.episodes.first(where: { $0.episodeNumber == episodeNumber }) {
-                vm.selectEpisode(episode)
-                await vm.searchTorrents()
-            }
+        if let season = DetailQAActionsPolicy.seasonToLoad(
+            previewType: preview.type,
+            selectedSeason: QARuntimeOptions.selectedSeason,
+            currentSeason: vm.selectedSeason
+        ) {
+            await vm.loadSeason(season, apiKey: tmdbApiKey)
         }
 
-        if QARuntimeOptions.autoAddWatchlist, !vm.isInWatchlist {
-            await vm.toggleWatchlist()
+        if let episode = DetailQAActionsPolicy.episodeToSelect(
+            previewType: preview.type,
+            selectedEpisode: QARuntimeOptions.selectedEpisode,
+            episodes: vm.episodes
+        ) {
+            vm.selectEpisode(episode)
+            await vm.searchTorrents()
         }
-        if QARuntimeOptions.autoAddFavorites, !vm.isInFavorites {
-            await vm.toggleFavorites()
-        }
-        if QARuntimeOptions.autoRemoveWatchlist, vm.isInWatchlist {
-            await vm.removeFromLibrary(listType: .watchlist)
-        }
-        if QARuntimeOptions.autoRemoveFavorites, vm.isInFavorites {
-            await vm.removeFromLibrary(listType: .favorites)
+
+        for mutation in DetailQAActionsPolicy.libraryMutations(
+            autoAddWatchlist: QARuntimeOptions.autoAddWatchlist,
+            autoAddFavorites: QARuntimeOptions.autoAddFavorites,
+            autoRemoveWatchlist: QARuntimeOptions.autoRemoveWatchlist,
+            autoRemoveFavorites: QARuntimeOptions.autoRemoveFavorites,
+            isInWatchlist: vm.isInWatchlist,
+            isInFavorites: vm.isInFavorites
+        ) {
+            switch mutation {
+            case .addWatchlist:
+                await vm.toggleWatchlist()
+            case .addFavorites:
+                await vm.toggleFavorites()
+            case .removeWatchlist:
+                await vm.removeFromLibrary(listType: .watchlist)
+            case .removeFavorites:
+                await vm.removeFromLibrary(listType: .favorites)
+            }
         }
 
         if let syntheticTorrent = QARuntimeOptions.syntheticTorrent {
@@ -534,45 +864,31 @@ private extension DetailView {
     }
 
     func makeQASampleStreams(using vm: DetailViewModel) -> [StreamInfo]? {
-        let sampleURLs = QARuntimeOptions.sampleURLs
-        guard !sampleURLs.isEmpty else { return nil }
-        let mediaTitle = vm.mediaItem?.title ?? preview.title
-        let fileName: String
-        if preview.type == .series,
-           let selectedEpisode = vm.selectedEpisode {
-            fileName = "\(mediaTitle)-S\(String(format: "%02d", selectedEpisode.seasonNumber))E\(String(format: "%02d", selectedEpisode.episodeNumber)).mp4"
-        } else {
-            fileName = "\(mediaTitle).mp4"
-        }
-
-        return sampleURLs.map { sampleURL in
-            StreamInfo(
-                streamURL: sampleURL,
-                quality: .hd720p,
-                codec: .h264,
-                audio: .aac,
-                source: .webDL,
-                hdr: .sdr,
-                fileName: fileName,
-                sizeBytes: nil,
-                debridService: "qa-sample"
-            )
-        }
+        DetailQASamplePolicy.makeSampleStreams(
+            sampleURLs: QARuntimeOptions.sampleURLs,
+            mediaTitle: vm.mediaItem?.title ?? preview.title,
+            previewType: preview.type,
+            selectedEpisode: vm.selectedEpisode
+        )
     }
 
     @MainActor
     func queueQASampleDownload(_ stream: StreamInfo, vm: DetailViewModel) async {
-        guard let item = vm.mediaItem else { return }
+        guard let arguments = DetailQASamplePolicy.downloadArguments(
+            mediaItem: vm.mediaItem,
+            previewType: preview.type,
+            selectedEpisode: vm.selectedEpisode
+        ) else { return }
         _ = try? await appState.downloadManager.enqueueDownload(
             stream: stream,
-            mediaId: item.id,
-            episodeId: preview.type == .series ? vm.selectedEpisode?.id : nil,
-            mediaTitle: item.title,
-            mediaType: item.type.rawValue,
-            posterPath: item.posterPath,
-            seasonNumber: preview.type == .series ? vm.selectedEpisode?.seasonNumber : nil,
-            episodeNumber: preview.type == .series ? vm.selectedEpisode?.episodeNumber : nil,
-            episodeTitle: preview.type == .series ? vm.selectedEpisode?.title : nil
+            mediaId: arguments.mediaId,
+            episodeId: arguments.episodeId,
+            mediaTitle: arguments.mediaTitle,
+            mediaType: arguments.mediaType,
+            posterPath: arguments.posterPath,
+            seasonNumber: arguments.seasonNumber,
+            episodeNumber: arguments.episodeNumber,
+            episodeTitle: arguments.episodeTitle
         )
         NotificationCenter.default.post(name: .downloadsDidChange, object: nil)
     }
@@ -582,7 +898,10 @@ private extension DetailView {
         availableStreams: [StreamInfo]? = nil,
         vm: DetailViewModel
     ) async {
-        guard appState.activePlayerSession == nil else {
+        guard DetailPlayerHandoffPolicy.route(
+            hasActivePlayerSession: appState.activePlayerSession != nil,
+            didLaunchPreferredExternalPlayer: false
+        ) != .showActiveSessionToast else {
             showActiveSessionToast(for: appState.activePlayerSession)
             return
         }
@@ -593,7 +912,15 @@ private extension DetailView {
             preview: preview,
             availableStreams: availableStreams
         )
-        if await launchWithPreferredPlayer(for: request.stream.streamURL) {
+        let route = DetailPlayerHandoffPolicy.route(
+            hasActivePlayerSession: appState.activePlayerSession != nil,
+            didLaunchPreferredExternalPlayer: await launchWithPreferredPlayer(for: request.stream.streamURL)
+        )
+        if route == .showActiveSessionToast {
+            showActiveSessionToast(for: appState.activePlayerSession)
+            return
+        }
+        if route == .launchedExternally {
             return
         }
         guard !Task.isCancelled else { return }
@@ -628,4 +955,12 @@ private extension DetailView {
         }
     }
 
+    func scheduleAutoTorrentSearch(_ vm: DetailViewModel) {
+        torrentAutoSearchTask?.cancel()
+        torrentAutoSearchTask = Task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            await vm.searchTorrents()
+        }
+    }
 }

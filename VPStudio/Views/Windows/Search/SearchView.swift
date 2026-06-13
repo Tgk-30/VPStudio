@@ -78,11 +78,166 @@ enum SearchLoadingPresentationPolicy {
     }
 }
 
+enum SearchAutoOpenPolicy {
+    static func selectedResult(
+        from results: [MediaPreview],
+        preferredTitle: String?
+    ) -> MediaPreview? {
+        let normalizedPreferredTitle = preferredTitle?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if let normalizedPreferredTitle, !normalizedPreferredTitle.isEmpty,
+           let preferredResult = results.first(where: {
+               $0.title.lowercased().contains(normalizedPreferredTitle)
+           }) {
+            return preferredResult
+        }
+
+        return results.first
+    }
+}
+
+enum SearchResultsPresentationPolicy {
+    static func shouldShowTypeFilterSection(
+        submittedQuery: String,
+        hasSelectedGenre: Bool,
+        hasActiveMoodCard: Bool,
+        explorePhase: ExplorePhase,
+        hasActiveFilters: Bool
+    ) -> Bool {
+        !submittedQuery.isEmpty
+            || hasSelectedGenre
+            || hasActiveMoodCard
+            || explorePhase == .results
+            || hasActiveFilters
+    }
+
+    static func shouldShowFilterSummary(
+        hasActiveMoodCard: Bool,
+        hasSelectedGenre: Bool,
+        sortOption: DiscoverFilters.SortOption,
+        languageFilters: Set<String>,
+        yearFilter: Int?,
+        yearRangePreset: YearRangePreset?
+    ) -> Bool {
+        hasActiveMoodCard
+            || hasSelectedGenre
+            || sortOption != .popularityDesc
+            || isExplicitLanguageSelection(languageFilters)
+            || yearFilter != nil
+            || yearRangePreset != nil
+    }
+
+    static func shouldShowResultsFilterSummary(
+        hasSelectedGenre: Bool,
+        sortOption: DiscoverFilters.SortOption,
+        languageFilters: Set<String>,
+        yearFilter: Int?,
+        yearRangePreset: YearRangePreset?
+    ) -> Bool {
+        sortOption != .popularityDesc
+            || hasSelectedGenre
+            || isExplicitLanguageSelection(languageFilters)
+            || yearFilter != nil
+            || yearRangePreset != nil
+    }
+
+    static func selectedContentDescriptor(selectedType: MediaType?) -> String {
+        switch selectedType {
+        case .movie?: return "movies"
+        case .series?: return "TV shows"
+        case nil: return "movies and TV shows"
+        }
+    }
+
+    static func resultsContextTitle(
+        activeMoodCardTitle: String?,
+        selectedGenreName: String?,
+        submittedQuery: String
+    ) -> String {
+        if let activeMoodCardTitle {
+            return activeMoodCardTitle
+        }
+
+        if let selectedGenreName {
+            return selectedGenreName
+        }
+
+        if !submittedQuery.isEmpty {
+            return "Results for \"\(submittedQuery)\""
+        }
+
+        return "Browse Results"
+    }
+
+    static func resultsContextSubtitle(
+        activeMoodCardTitle: String?,
+        activeMoodCardIsNewReleases: Bool,
+        activeMoodCardIsFutureReleases: Bool,
+        selectedGenreName: String?,
+        submittedQuery: String,
+        selectedType: MediaType?
+    ) -> String {
+        let descriptor = selectedContentDescriptor(selectedType: selectedType)
+
+        if activeMoodCardTitle != nil {
+            if activeMoodCardIsNewReleases {
+                return "Fresh \(descriptor) sorted to surface what just landed."
+            }
+
+            if activeMoodCardIsFutureReleases {
+                return "Upcoming \(descriptor) worth tracking before release."
+            }
+
+            return "Mood-led \(descriptor) you can tighten with filters or a direct search."
+        }
+
+        if let selectedGenreName {
+            return "Popular \(descriptor) in \(selectedGenreName), ready for deeper filtering."
+        }
+
+        if !submittedQuery.isEmpty {
+            return "Refine the query or switch type without losing the current poster wall."
+        }
+
+        return "Browse rails and direct search stay in the same place so you can pivot quickly."
+    }
+
+    static func emptyStateQuery(from query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "this selection" : trimmed
+    }
+
+    static func displayedSortOptions() -> [DiscoverFilters.SortOption] {
+        [.popularityDesc, .ratingDesc, .releaseDateDesc, .titleAsc]
+    }
+
+    private static func isExplicitLanguageSelection(_ languageFilters: Set<String>) -> Bool {
+        languageFilters != ["en-US"] && !languageFilters.isEmpty
+    }
+}
+
+enum SearchQueryBarPolicy {
+    static func trimmedDraft(_ draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func showsClearButton(localDraft: String, submittedQuery: String) -> Bool {
+        !trimmedDraft(localDraft).isEmpty || !submittedQuery.isEmpty
+    }
+
+    static func canSubmit(localDraft: String) -> Bool {
+        !trimmedDraft(localDraft).isEmpty
+    }
+}
+
 struct SearchView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel = SearchViewModel()
     @State private var selectedItem: MediaPreview?
     @State private var tmdbReloadTask: Task<Void, Never>?
+    @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var selectedYear: Int? = nil
     @State private var selectedLanguages: Set<String> = ["en-US"]
     @State private var isShowingFilters = false
@@ -94,15 +249,17 @@ struct SearchView: View {
     @State private var suppressNextSearchDraftDebounce = false
     @State private var searchDraft = ""
     private let contentMaxWidth: CGFloat = 1080
-    private let celestialSurface = Color(red: 0.09, green: 0.09, blue: 0.11)
-    private let celestialSurfaceRaised = Color(red: 0.15, green: 0.15, blue: 0.18)
-    private let celestialPurple = Color(red: 0.56, green: 0.58, blue: 1.0)
-    private let celestialPurpleDeep = Color(red: 0.44, green: 0.45, blue: 1.0)
-    private let celestialMint = Color(red: 0.80, green: 0.92, blue: 0.92)
-    private let atmosphericBlue = Color(red: 0.08, green: 0.42, blue: 0.94)
-    private let atmosphericGreen = Color(red: 0.14, green: 0.90, blue: 0.56)
-    private let atmosphericPink = Color(red: 0.72, green: 0.24, blue: 0.96)
-    private let atmosphericGold = Color(red: 0.92, green: 0.74, blue: 0.26)
+    private let disablesAutomaticTasks: Bool
+
+    init(
+        initialViewModel: SearchViewModel? = nil,
+        initialSearchDraft: String = "",
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _viewModel = State(initialValue: initialViewModel ?? SearchViewModel())
+        _searchDraft = State(initialValue: initialSearchDraft)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     private var searchLoadingPresentation: SearchLoadingPresentationMode {
         SearchLoadingPresentationPolicy.presentationMode(
@@ -153,18 +310,22 @@ struct SearchView: View {
             DetailView(preview: item)
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             if searchDraft.isEmpty {
                 searchDraft = viewModel.queryDraft
             }
-            hydrateRecentSearchesIfNeeded()
+            await hydrateRecentSearchesIfNeeded()
             await reloadTMDBConfigurationAndSearch()
             applySearchQARuntimeIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tasteProfileDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             guard hasLoadedUserRatings else { return }
-            Task { await loadUserRatings(force: true) }
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = Task { await loadUserRatings(force: true) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             tmdbReloadTask?.cancel()
             tmdbReloadTask = Task { await reloadTMDBConfigurationAndSearch() }
         }
@@ -172,7 +333,11 @@ struct SearchView: View {
             viewModel.cancelInFlightWork()
             tmdbReloadTask?.cancel()
             tmdbReloadTask = nil
-            viewModel.saveRecentSearches(to: appState.settingsManager)
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = nil
+            if !disablesAutomaticTasks {
+                viewModel.saveRecentSearches(to: appState.settingsManager)
+            }
         }
         .onChange(of: viewModel.results.map(\.id)) { _, _ in
             applySearchResultQARuntimeIfNeeded()
@@ -211,164 +376,6 @@ struct SearchView: View {
         content()
             .frame(maxWidth: contentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private var searchAtmosphereBackground: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-
-            ZStack {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.02, green: 0.04, blue: 0.09),
-                        Color(red: 0.06, green: 0.09, blue: 0.17),
-                        Color(red: 0.02, green: 0.03, blue: 0.08),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-
-                atmosphericGlow(color: atmosphericBlue, width: size.width * 0.42, height: size.height * 0.50)
-                    .offset(x: -size.width * 0.18, y: -size.height * 0.08)
-
-                atmosphericGlow(color: atmosphericPink, width: size.width * 0.32, height: size.height * 0.40)
-                    .offset(x: -size.width * 0.02, y: -size.height * 0.10)
-
-                atmosphericGlow(color: atmosphericGreen, width: size.width * 0.34, height: size.height * 0.42)
-                    .offset(x: size.width * 0.12, y: -size.height * 0.08)
-
-                atmosphericGlow(color: atmosphericPink, width: size.width * 0.30, height: size.height * 0.40)
-                    .offset(x: size.width * 0.16, y: size.height * 0.12)
-
-                atmosphericGlow(color: atmosphericGreen, width: size.width * 0.34, height: size.height * 0.42)
-                    .offset(x: size.width * 0.30, y: size.height * 0.10)
-
-                atmosphericGlow(color: atmosphericGold, width: size.width * 0.28, height: size.height * 0.34)
-                    .offset(x: size.width * 0.38, y: size.height * 0.22)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.10, blur: 20)
-                    .offset(x: -size.width * 0.11, y: -size.height * 0.31)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.09, blur: 18)
-                    .offset(x: size.width * 0.00, y: -size.height * 0.30)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.10, blur: 20)
-                    .offset(x: size.width * 0.10, y: -size.height * 0.30)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.09, blur: 20)
-                    .offset(x: size.width * 0.25, y: size.height * 0.02)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.09, blur: 18)
-                    .offset(x: size.width * 0.34, y: size.height * 0.06)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.08, blur: 18)
-                    .offset(x: size.width * 0.39, y: -size.height * 0.02)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.10, blur: 34)
-                    .offset(x: -size.width * 0.36, y: -size.height * 0.26)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.07, blur: 20)
-                    .offset(x: -size.width * 0.12, y: -size.height * 0.28)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: size.width * 0.00, y: -size.height * 0.29)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.08, blur: 20)
-                    .offset(x: size.width * 0.13, y: -size.height * 0.25)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.08, blur: 26)
-                    .offset(x: -size.width * 0.25, y: -size.height * 0.07)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: -size.width * 0.19, y: -size.height * 0.17)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: -size.width * 0.18, y: size.height * 0.07)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.08, blur: 22)
-                    .offset(x: -size.width * 0.08, y: size.height * 0.17)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: size.width * 0.12, y: size.height * 0.23)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.09, blur: 30)
-                    .offset(x: -size.width * 0.06, y: -size.height * 0.02)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.11, blur: 34)
-                    .offset(x: size.width * 0.08, y: -size.height * 0.18)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.10, blur: 30)
-                    .offset(x: size.width * 0.24, y: -size.height * 0.04)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.09, blur: 28)
-                    .offset(x: size.width * 0.34, y: -size.height * 0.22)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.08, blur: 20)
-                    .offset(x: size.width * 0.44, y: -size.height * 0.03)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.08, blur: 20)
-                    .offset(x: -size.width * 0.33, y: size.height * 0.09)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.08, blur: 22)
-                    .offset(x: size.width * 0.24, y: size.height * 0.17)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.08, blur: 22)
-                    .offset(x: size.width * 0.36, y: size.height * 0.11)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: size.width * 0.45, y: size.height * 0.20)
-
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.black.opacity(0.01),
-                                Color.black.opacity(0.14),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            }
-        }
-    }
-
-    private func atmosphericGlow(color: Color, width: CGFloat, height: CGFloat) -> some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [
-                        color.opacity(0.70),
-                        color.opacity(0.20),
-                        .clear,
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: max(width, height) * 0.5
-                )
-            )
-            .frame(width: width, height: height)
-            .blur(radius: 88)
-            .blendMode(.screen)
-    }
-
-    private func atmosphericOrb(color: Color, diameter: CGFloat, blur: CGFloat) -> some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [
-                        color.opacity(0.95),
-                        color.opacity(0.36),
-                        .clear,
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: diameter * 0.5
-                )
-            )
-            .frame(width: diameter, height: diameter)
-            .blur(radius: blur)
-            .blendMode(.screen)
     }
 
     // MARK: - Search Bar
@@ -433,88 +440,16 @@ struct SearchView: View {
         .padding(.bottom, 10)
     }
 
-
-    private var searchHeroCompanionPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(viewModel.aiRecommendations.isEmpty ? "Curator" : "AI picks ready")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(
-                viewModel.aiRecommendations.isEmpty
-                    ? "Use the AI curator once you have the lane roughly framed."
-                    : "\(viewModel.aiRecommendations.count) curated picks are ready below if you want a fast jump."
-            )
-            .font(.subheadline)
-            .foregroundStyle(Color.primary.opacity(0.9))
-            .fixedSize(horizontal: false, vertical: true)
-
-            askAIButton
-        }
-        .frame(maxWidth: 278, alignment: .leading)
-        .padding(18)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(celestialSurfaceRaised.opacity(0.78))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    .white.opacity(0.08),
-                                    celestialPurple.opacity(0.14),
-                                    .clear,
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-        }
-        .shadow(color: celestialPurple.opacity(0.08), radius: 22, y: 10)
-    }
-
-    private var searchHeroSupportPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(shouldShowTypeFilterSection ? "Focus" : "How To Start")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            if shouldShowTypeFilterSection {
-                typeFilterSection
-                    .frame(maxWidth: 560, alignment: .leading)
-            } else {
-                Text("Search by title, performer, or keyword first. The browse composition below stays live so you can widen the search without resetting the page.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(18)
-        .background {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(celestialSurfaceRaised.opacity(0.52))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [.white.opacity(0.06), .clear],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-        }
-    }
-
     // MARK: - AI Button
 
     private var shouldShowTypeFilterSection: Bool {
-        !viewModel.submittedQuery.isEmpty
-            || viewModel.selectedGenre != nil
-            || viewModel.activeMoodCard != nil
-            || viewModel.explorePhase == .results
-            || viewModel.hasActiveFilters
+        SearchResultsPresentationPolicy.shouldShowTypeFilterSection(
+            submittedQuery: viewModel.submittedQuery,
+            hasSelectedGenre: viewModel.selectedGenre != nil,
+            hasActiveMoodCard: viewModel.activeMoodCard != nil,
+            explorePhase: viewModel.explorePhase,
+            hasActiveFilters: viewModel.hasActiveFilters
+        )
     }
 
     private var aiButtonEnabled: Bool {
@@ -618,109 +553,10 @@ struct SearchView: View {
         }
         .buttonStyle(.plain)
         .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
-        .accessibilityLabel("Open Filters")
+        .accessibilityLabel("Open more search filters")
         .accessibilityHint("Opens the search filters.")
         #if os(visionOS)
         .hoverEffect(.highlight)
-        #endif
-    }
-
-
-    private var curationBanner: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("AI CURATION")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(celestialPurple.opacity(0.92))
-                    .tracking(1.4)
-                Text("Need a stronger nudge?")
-                    .font(.headline)
-                Text("Let VPStudio assemble a short list from your taste profile after you browse the rails.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 24)
-
-            askAIButton
-        }
-        .padding(22)
-        .background {
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    celestialSurface.opacity(0.72),
-                                    celestialPurpleDeep.opacity(0.24),
-                                    .white.opacity(0.05),
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-        }
-        .shadow(color: celestialPurple.opacity(0.12), radius: 24, y: 10)
-    }
-
-    // MARK: - More Filters Button
-
-    private var moreFiltersButton: some View {
-        Button {
-            isShowingFilters = true
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Refine")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 10) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 14, weight: .semibold))
-
-                    Text("Filters")
-                        .font(.subheadline.weight(.semibold))
-
-                    if viewModel.activeFilterCount > 0 {
-                        Text("\(viewModel.activeFilterCount)")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 18, height: 18)
-                            .background(celestialSurfaceRaised, in: Circle())
-                            .transition(.scale.combined(with: .opacity))
-                    }
-                }
-                .foregroundStyle(.primary)
-            }
-            .frame(width: 134, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 18)
-            .background {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(celestialSurfaceRaised.opacity(0.82))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [.white.opacity(0.08), .clear],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    }
-            }
-            .shadow(color: .black.opacity(0.14), radius: 20, y: 10)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: viewModel.activeFilterCount)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open more search filters")
-        .accessibilityHint("Opens additional sort, year, genre, and language filters.")
-        #if os(visionOS)
-        .hoverEffect(.lift)
         #endif
     }
 
@@ -729,8 +565,10 @@ struct SearchView: View {
     private var inlineFilterBar: some View {
         centeredStage {
             VStack(spacing: shouldShowCompactFilterSummary ? 8 : 0) {
-                typeFilterSection
-                    .frame(maxWidth: .infinity, alignment: .center)
+                if shouldShowTypeFilterSection {
+                    typeFilterSection
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
 
                 if shouldShowCompactFilterSummary {
                     compactFilterSummaryRow
@@ -749,12 +587,9 @@ struct SearchView: View {
             .padding(.horizontal, 4)
     }
 
-    /// Language chips currently shown as active (non-default selections).
-    private var activeLanguageChips: [SearchLanguageOption.Option] {
-        // Show removable chips for all selected languages except the default "en-US"
-        // when it's the only one selected
-        if viewModel.languageFilters == ["en-US"] { return [] }
-        return SearchLanguageOption.common.filter { viewModel.languageFilters.contains($0.code) }
+    /// Language options currently shown as active (non-default selections).
+    private var activeLanguageOptions: [SearchLanguageOption.Option] {
+        SearchLanguageOption.activeOptions(for: viewModel.languageFilters)
     }
 
     /// Menu button to add additional languages.
@@ -794,12 +629,14 @@ struct SearchView: View {
     }
 
     private var shouldShowCompactFilterSummary: Bool {
-        viewModel.activeMoodCard != nil
-            || viewModel.selectedGenre != nil
-            || viewModel.sortOption != .popularityDesc
-            || (viewModel.languageFilters != ["en-US"] && !viewModel.languageFilters.isEmpty)
-            || viewModel.yearFilter != nil
-            || viewModel.yearRangePreset != nil
+        SearchResultsPresentationPolicy.shouldShowFilterSummary(
+            hasActiveMoodCard: viewModel.activeMoodCard != nil,
+            hasSelectedGenre: viewModel.selectedGenre != nil,
+            sortOption: viewModel.sortOption,
+            languageFilters: viewModel.languageFilters,
+            yearFilter: viewModel.yearFilter,
+            yearRangePreset: viewModel.yearRangePreset
+        )
     }
 
     private var compactFilterSummaryRow: some View {
@@ -833,7 +670,7 @@ struct SearchView: View {
                 )
             }
 
-            if viewModel.languageFilters != ["en-US"], !viewModel.languageFilters.isEmpty {
+            if !activeLanguageOptions.isEmpty {
                 compactSummaryChip(
                     title: SearchLanguageOption.summaryName(for: viewModel.languageFilters),
                     symbol: "globe",
@@ -854,6 +691,8 @@ struct SearchView: View {
                     tint: Color.white.opacity(0.10)
                 )
             }
+
+            addLanguageMenu
 
             if viewModel.hasActiveFilters {
                 Button {
@@ -1036,59 +875,36 @@ struct SearchView: View {
     // MARK: - Active Filter Summary
 
     private var selectedContentDescriptor: String {
-        switch viewModel.selectedType {
-        case .movie?: return "movies"
-        case .series?: return "TV shows"
-        case nil: return "movies and TV shows"
-        }
+        SearchResultsPresentationPolicy.selectedContentDescriptor(selectedType: viewModel.selectedType)
     }
 
     private var resultsContextTitle: String {
-        if let card = viewModel.activeMoodCard {
-            return card.title
-        }
-
-        if let genre = viewModel.selectedGenre {
-            return genre.name
-        }
-
-        if !viewModel.submittedQuery.isEmpty {
-            return "Results for \"\(viewModel.submittedQuery)\""
-        }
-
-        return "Browse Results"
+        SearchResultsPresentationPolicy.resultsContextTitle(
+            activeMoodCardTitle: viewModel.activeMoodCard?.title,
+            selectedGenreName: viewModel.selectedGenre?.name,
+            submittedQuery: viewModel.submittedQuery
+        )
     }
 
     private var resultsContextSubtitle: String {
-        if let card = viewModel.activeMoodCard {
-            if card.isNewReleases {
-                return "Fresh \(selectedContentDescriptor) sorted to surface what just landed."
-            }
-
-            if card.isFutureReleases {
-                return "Upcoming \(selectedContentDescriptor) worth tracking before release."
-            }
-
-            return "Mood-led \(selectedContentDescriptor) you can tighten with filters or a direct search."
-        }
-
-        if let genre = viewModel.selectedGenre {
-            return "Popular \(selectedContentDescriptor) in \(genre.name), ready for deeper filtering."
-        }
-
-        if !viewModel.submittedQuery.isEmpty {
-            return "Refine the query or switch type without losing the current poster wall."
-        }
-
-        return "Browse rails and direct search stay in the same place so you can pivot quickly."
+        SearchResultsPresentationPolicy.resultsContextSubtitle(
+            activeMoodCardTitle: viewModel.activeMoodCard?.title,
+            activeMoodCardIsNewReleases: viewModel.activeMoodCard?.isNewReleases == true,
+            activeMoodCardIsFutureReleases: viewModel.activeMoodCard?.isFutureReleases == true,
+            selectedGenreName: viewModel.selectedGenre?.name,
+            submittedQuery: viewModel.submittedQuery,
+            selectedType: viewModel.selectedType
+        )
     }
 
     private var shouldShowResultsFilterSummary: Bool {
-        viewModel.sortOption != .popularityDesc
-            || viewModel.selectedGenre != nil
-            || (viewModel.languageFilters != ["en-US"] && !viewModel.languageFilters.isEmpty)
-            || viewModel.yearFilter != nil
-            || viewModel.yearRangePreset != nil
+        SearchResultsPresentationPolicy.shouldShowResultsFilterSummary(
+            hasSelectedGenre: viewModel.selectedGenre != nil,
+            sortOption: viewModel.sortOption,
+            languageFilters: viewModel.languageFilters,
+            yearFilter: viewModel.yearFilter,
+            yearRangePreset: viewModel.yearRangePreset
+        )
     }
 
     private var activeFilterSummary: some View {
@@ -1104,7 +920,7 @@ struct SearchView: View {
                 .buttonStyle(.plain)
             }
 
-            if viewModel.languageFilters != ["en-US"], !viewModel.languageFilters.isEmpty {
+            if !activeLanguageOptions.isEmpty {
                 GlassTag(
                     text: SearchLanguageOption.summaryName(for: viewModel.languageFilters),
                     tintColor: .accentColor,
@@ -1162,7 +978,7 @@ struct SearchView: View {
 
     /// Expose a useful subset of sort options for the menu.
     private var displayedSortOptions: [DiscoverFilters.SortOption] {
-        [.popularityDesc, .ratingDesc, .releaseDateDesc, .titleAsc]
+        SearchResultsPresentationPolicy.displayedSortOptions()
     }
 
     // MARK: - Results
@@ -1236,8 +1052,7 @@ struct SearchView: View {
     }
 
     private var emptyStateQuery: String {
-        let query = viewModel.emptyStateQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? "this selection" : query
+        SearchResultsPresentationPolicy.emptyStateQuery(from: viewModel.emptyStateQuery)
     }
 
     @ViewBuilder
@@ -1315,10 +1130,10 @@ struct SearchView: View {
 
     // MARK: - Helpers
 
-    private func hydrateRecentSearchesIfNeeded() {
+    private func hydrateRecentSearchesIfNeeded() async {
         guard !hasHydratedRecentSearches else { return }
         hasHydratedRecentSearches = true
-        viewModel.loadRecentSearches(from: appState.settingsManager)
+        await viewModel.loadRecentSearchesAndAwait(from: appState.settingsManager)
     }
 
     @MainActor
@@ -1332,6 +1147,7 @@ struct SearchView: View {
         guard force || !hasLoadedUserRatings else { return }
 
         let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
+        guard !Task.isCancelled else { return }
         var dict: [String: TasteEvent] = [:]
         for event in events {
             if let mediaId = event.mediaId {
@@ -1381,17 +1197,10 @@ struct SearchView: View {
         guard selectedItem == nil else { return }
         guard !viewModel.results.isEmpty else { return }
 
-        let preferredTitle = QARuntimeOptions.preferredResultTitle?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        let selectedResult =
-            viewModel.results.first { result in
-                guard let preferredTitle else { return false }
-                return result.title.lowercased().contains(preferredTitle)
-            }
-            ?? viewModel.results.first
-
+        let selectedResult = SearchAutoOpenPolicy.selectedResult(
+            from: viewModel.results,
+            preferredTitle: QARuntimeOptions.preferredResultTitle
+        )
         guard let selectedResult else { return }
         hasAutoOpenedQAResult = true
         selectedItem = selectedResult
@@ -1443,15 +1252,18 @@ private struct SearchQueryBar: View {
     }
 
     private var showsClearButton: Bool {
-        !localDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !viewModel.submittedQuery.isEmpty
+        SearchQueryBarPolicy.showsClearButton(
+            localDraft: localDraft,
+            submittedQuery: viewModel.submittedQuery
+        )
     }
 
     private var trimmedDraft: String {
-        localDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        SearchQueryBarPolicy.trimmedDraft(localDraft)
     }
 
     private var canSubmit: Bool {
-        !trimmedDraft.isEmpty
+        SearchQueryBarPolicy.canSubmit(localDraft: localDraft)
     }
 
     private var leadingIndicator: some View {
@@ -1688,5 +1500,15 @@ enum SearchLanguageOption {
         }
 
         return ["en-US"]
+    }
+
+    static func activeOptions(for codes: Set<String>) -> [Option] {
+        let normalized = normalizeSelection(from: codes)
+
+        guard normalized != ["en-US"] else {
+            return []
+        }
+
+        return common.filter { normalized.contains($0.code) }
     }
 }

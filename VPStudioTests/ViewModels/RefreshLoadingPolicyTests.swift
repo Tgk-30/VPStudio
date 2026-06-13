@@ -41,6 +41,33 @@ struct RefreshLoadingPolicyTests {
     }
 
     @Test
+    func discoverUsesRefreshingModeWhenContinueWatchingContentExists() {
+        #expect(
+            DiscoverLoadingPresentationPolicy.presentationMode(
+                isLoading: true,
+                featuredBackdropCount: 0,
+                continueWatchingCount: 1,
+                catalogRowCount: 0,
+                aiRecommendationCount: 0
+            ) == .refreshingRetainedContent
+        )
+    }
+
+    @Test
+    func discoverUsesRefreshingModeWhenAIRecommendationsExist() {
+        #expect(
+            DiscoverLoadingPresentationPolicy.presentationMode(
+                isLoading: true,
+                featuredBackdropCount: 0,
+                continueWatchingCount: 0,
+                catalogRowCount: 0,
+                aiRecommendationCount: 2
+            ) == .refreshingRetainedContent
+        )
+        #expect(DiscoverLoadingPresentationPolicy.refreshTitle == "Refreshing Discover")
+    }
+
+    @Test
     func discoverUsesContentModeWhenNotLoading() {
         #expect(
             DiscoverLoadingPresentationPolicy.presentationMode(
@@ -78,6 +105,14 @@ struct RefreshLoadingPolicyTests {
             SearchLoadingPresentationPolicy.presentationMode(
                 explorePhase: .searching,
                 resultCount: 0,
+                aiRecommendationCount: 2
+            ) == .refreshingRetainedResults
+        )
+
+        #expect(
+            SearchLoadingPresentationPolicy.presentationMode(
+                explorePhase: .searching,
+                resultCount: 4,
                 aiRecommendationCount: 2
             ) == .refreshingRetainedResults
         )

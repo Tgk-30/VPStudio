@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var destinationStatuses: [SettingsDestination: SettingsDestinationStatus] = [:]
     @State private var isShowingResetSheet = false
     @State private var didTriggerQAAutoReset = false
+    private let seededRecentDestination: SettingsDestination?
+    private let disablesAutomaticTasks: Bool
 
     @AppStorage("settings.last_destination") private var lastDestinationRawValue = ""
     @AppStorage("settings.search_query") private var persistedSearchQuery = ""
@@ -33,7 +35,7 @@ struct SettingsView: View {
     }
 
     private var recentDestination: SettingsDestination? {
-        SettingsNavigationCatalog.destination(from: lastDestinationRawValue)
+        seededRecentDestination ?? SettingsNavigationCatalog.destination(from: lastDestinationRawValue)
     }
 
     private var indicatorStatuses: [SettingsRowIndicatorPolicy.StatusKind] {
@@ -60,6 +62,24 @@ struct SettingsView: View {
         if healthProgress >= 0.75 { return .green }
         if healthProgress >= 0.45 { return .orange }
         return .yellow
+    }
+
+    init(
+        initialQuery: String = "",
+        initialDidLoadInitialSearch: Bool = false,
+        initialIsRefreshingStatuses: Bool = false,
+        initialDestinationStatuses: [SettingsDestination: SettingsDestinationStatus] = [:],
+        initialIsShowingResetSheet: Bool = false,
+        initialRecentDestination: SettingsDestination? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _query = State(initialValue: initialQuery)
+        _didLoadInitialSearch = State(initialValue: initialDidLoadInitialSearch)
+        _isRefreshingStatuses = State(initialValue: initialIsRefreshingStatuses)
+        _destinationStatuses = State(initialValue: initialDestinationStatuses)
+        _isShowingResetSheet = State(initialValue: initialIsShowingResetSheet)
+        self.seededRecentDestination = initialRecentDestination
+        self.disablesAutomaticTasks = disablesAutomaticTasks
     }
 
     var body: some View {
@@ -198,8 +218,12 @@ struct SettingsView: View {
                     )
                 }
         }
-        .searchable(text: $query, prompt: "Search settings, providers, AI, downloads")
+        .searchable(text: $query, prompt: "Search settings")
         .task {
+            guard !disablesAutomaticTasks else {
+                didLoadInitialSearch = true
+                return
+            }
             if !didLoadInitialSearch {
                 query = persistedSearchQuery
                 didLoadInitialSearch = true
@@ -361,6 +385,8 @@ struct SettingsView: View {
             fallback: "http://localhost:11434"
         )
         snapshot.hasOpenRouterKey = await hasNonEmptyString(for: SettingsKeys.openRouterApiKey)
+        snapshot.hasMistralKey = await hasNonEmptyString(for: SettingsKeys.mistralApiKey)
+        snapshot.hasMiniMaxKey = await hasNonEmptyString(for: SettingsKeys.minimaxApiKey)
         let userTraktClient = try? await appState.settingsManager.getString(key: SettingsKeys.traktClientId)
         let userTraktSecret = try? await appState.settingsManager.getString(key: SettingsKeys.traktClientSecret)
         snapshot.hasTraktCredentials = TraktDefaults.resolvedCredentials(

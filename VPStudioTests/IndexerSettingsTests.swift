@@ -84,7 +84,7 @@ struct IndexerSettingsTests {
 
         try await database.saveIndexerConfigs([inactive, second, first])
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: InMemorySecretStore())
         try await manager.initialize()
 
         let names = await manager.configuredIndexerNames()
@@ -99,7 +99,7 @@ struct IndexerSettingsTests {
         let inactive = makeTorznab(id: "inactive", name: "Inactive", priority: 0, isActive: false)
         try await database.saveIndexerConfig(inactive)
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: InMemorySecretStore())
         try await manager.initialize()
 
         let names = await manager.configuredIndexerNames()
@@ -110,7 +110,7 @@ struct IndexerSettingsTests {
         let (database, rootDir) = try await makeDatabase(named: "indexer-settings-builtins-default.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: InMemorySecretStore())
         try await manager.initialize()
 
         let names = await manager.configuredIndexerNames()
@@ -201,12 +201,59 @@ struct IndexerSettingsTests {
         #expect(draft.validationError == nil)
     }
 
+    @Test func indexerURLSecurityPolicyAllowsOnlyHTTPSOrLocalHTTP() {
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("https://indexer.example"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://localhost:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://127.0.0.1:9117"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://192.168.1.50:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://10.0.0.25:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://172.16.4.20:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://jackett.local:9117"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://prowlarr:9696"))
+
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://indexer.example"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://[2001:db8::1]:9696"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("ftp://localhost:9696"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("not a url"))
+    }
+
+    @Test func indexerURLSecurityPolicyCoversPrivateHostEdges() {
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://[::1]:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://[fe80::1]:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://[fc00::1]:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://[fd12::1]:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://169.254.10.20:9696"))
+        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://172.31.255.255:9696"))
+
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://172.15.0.1:9696"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://192.169.0.1:9696"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://999.1.1.1:9696"))
+        #expect(!IndexerURLSecurityPolicy.permits(scheme: nil, host: "localhost"))
+        #expect(!IndexerURLSecurityPolicy.permits(scheme: "http", host: nil))
+        #expect(!IndexerURLSecurityPolicy.permits(scheme: "http", host: ""))
+    }
+
+    @Test func indexerURLSecurityPolicyNormalizesCaseAndLocalhostSuffixes() {
+        #expect(IndexerURLSecurityPolicy.permits(scheme: "HTTPS", host: "Indexer.Example"))
+        #expect(IndexerURLSecurityPolicy.permits(scheme: "HTTP", host: "JACKETT.LOCALHOST"))
+        #expect(IndexerURLSecurityPolicy.permits(scheme: "http", host: "[FD12::1]"))
+
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https:///missing-host"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://172.32.0.1:9696"))
+    }
+
     @Test func draftValidationCoversUrlApiKeyAndStremioManifestRules() {
         var draft = IndexerSettingsView.IndexerDraft.new()
         draft.name = "Custom"
         draft.baseURL = "http://insecure.example"
         draft.apiKey = "token"
-        #expect(draft.validationError == "Enter a valid HTTPS base URL.")
+        #expect(draft.validationError == IndexerURLSecurityPolicy.validationMessage)
+
+        draft.baseURL = "http://localhost:9117"
+        #expect(draft.validationError == nil)
+
+        draft.baseURL = "http://192.168.50.10:9696"
+        #expect(draft.validationError == nil)
 
         draft.baseURL = "https://secure.example"
         draft.apiKey = "   "
@@ -221,6 +268,10 @@ struct IndexerSettingsTests {
         #expect(draft.showsCategoryField == false)
         #expect(draft.providerSubtype == .stremioAddon)
         #expect(draft.normalizedEndpointPath == "/manifest.json")
+        #expect(draft.validationError == nil)
+
+        draft.baseURL = " stremio://stremio.example/config/user-token/manifest.json "
+        #expect(draft.normalizedURL == "https://stremio.example/config/user-token/manifest.json")
         #expect(draft.validationError == nil)
 
         draft.endpointPath = "/catalog/movie/top.json"
@@ -281,8 +332,7 @@ struct IndexerSettingsTests {
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }

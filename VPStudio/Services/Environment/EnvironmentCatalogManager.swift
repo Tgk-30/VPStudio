@@ -221,8 +221,9 @@ actor EnvironmentCatalogManager {
             throw EnvironmentCatalogError.missingFile
         }
 
-        let ext = sourceURL.pathExtension.lowercased()
-        try Self.validateExtension(ext)
+        let originalExt = sourceURL.pathExtension
+        let normalizedExt = originalExt.lowercased()
+        try Self.validateExtension(normalizedExt)
 
         guard await assetValidator(sourceURL) else {
             throw EnvironmentCatalogError.invalidAsset
@@ -230,7 +231,7 @@ actor EnvironmentCatalogManager {
 
         return try await persistImportedAsset(
             sourceURL: sourceURL,
-            extension: ext,
+            extension: originalExt,
             preferredName: nil,
             licenseName: "User Imported",
             sourceAttributionURL: nil,
@@ -265,8 +266,9 @@ actor EnvironmentCatalogManager {
         previewImagePath: String? = nil,
         hdriYawOffset: Float? = nil
     ) async throws -> EnvironmentAsset {
-        let ext = sourceURL.pathExtension.lowercased()
-        try Self.validateExtension(ext)
+        let originalExt = sourceURL.pathExtension
+        let normalizedExt = originalExt.lowercased()
+        try Self.validateExtension(normalizedExt)
 
         let data: Data
         let response: URLResponse
@@ -287,7 +289,14 @@ actor EnvironmentCatalogManager {
 
         try fileManager.createDirectory(at: environmentsDirectory, withIntermediateDirectories: true)
 
-        let temporaryURL = environmentsDirectory.appendingPathComponent("remote-\(UUID().uuidString).\(ext)")
+        let sourceName = sourceURL.deletingPathExtension().lastPathComponent
+        let sanitizedSourceName = sourceName
+            .removingPercentEncoding?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let temporaryFileNameBase = sanitizedSourceName.isEmpty ? "remote-\(UUID().uuidString)" : "remote-\(UUID().uuidString)-\(sanitizedSourceName)"
+        let temporaryFileName = originalExt.isEmpty ? temporaryFileNameBase : "\(temporaryFileNameBase).\(originalExt)"
+        let temporaryURL = environmentsDirectory.appendingPathComponent(temporaryFileName)
         try data.write(to: temporaryURL, options: .atomic)
         defer {
             if fileManager.fileExists(atPath: temporaryURL.path) {
@@ -301,7 +310,8 @@ actor EnvironmentCatalogManager {
 
         return try await persistImportedAsset(
             sourceURL: temporaryURL,
-            extension: ext,
+            extension: originalExt,
+            sourceNameHint: sourceURL.deletingPathExtension().lastPathComponent,
             preferredName: preferredName,
             licenseName: licenseName,
             sourceAttributionURL: sourceAttributionURL,
@@ -313,6 +323,7 @@ actor EnvironmentCatalogManager {
     private func persistImportedAsset(
         sourceURL: URL,
         extension ext: String,
+        sourceNameHint: String? = nil,
         preferredName: String?,
         licenseName: String?,
         sourceAttributionURL: String?,
@@ -322,15 +333,27 @@ actor EnvironmentCatalogManager {
         try fileManager.createDirectory(at: environmentsDirectory, withIntermediateDirectories: true)
 
         let id = UUID().uuidString
-        let sourceName = sourceURL.deletingPathExtension().lastPathComponent
+        let sourceName = sourceNameHint
+            ?? sourceURL.deletingPathExtension().lastPathComponent
+        let cleanedSourceName = sourceName
+            .removingPercentEncoding
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            ?? sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+
         let cleanedPreferredName = preferredName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName: String
-        if let cleanedPreferredName, !cleanedPreferredName.isEmpty {
+        if let cleanedPreferredName,
+           !cleanedPreferredName.isEmpty {
             resolvedName = cleanedPreferredName
+        } else if preferredName == nil,
+                  !cleanedSourceName.isEmpty {
+            resolvedName = cleanedSourceName
         } else {
-            resolvedName = sourceName.isEmpty ? "Imported Environment" : sourceName
+            let sourcePathName = sourceURL.deletingPathExtension().lastPathComponent
+            resolvedName = sourcePathName.isEmpty ? "Imported Environment" : sourcePathName
         }
-        let targetURL = environmentsDirectory.appendingPathComponent("\(id).\(ext)", isDirectory: false)
+        let targetFileName = ext.isEmpty ? id : "\(id).\(ext)"
+        let targetURL = environmentsDirectory.appendingPathComponent(targetFileName, isDirectory: false)
         if fileManager.fileExists(atPath: targetURL.path) {
             // Use replaceItemAt for atomic replacement, avoiding TOCTOU race.
             _ = try fileManager.replaceItemAt(targetURL, withItemAt: sourceURL)
@@ -438,8 +461,13 @@ actor EnvironmentCatalogManager {
         let ext = url.pathExtension.lowercased()
         guard supportedExtensions.contains(ext) else { return false }
 
-        let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey, .isReadableKey])
-        guard resourceValues?.isReadable == true else { return false }
+        guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
+
+        if ext == "reality" {
+            return true
+        }
+
+        let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey])
         let fileSize = resourceValues?.fileSize ?? 0
         guard fileSize > 0 else { return false }
 

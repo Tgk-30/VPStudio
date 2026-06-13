@@ -26,7 +26,11 @@ struct OpenRouterProvider: AIProvider, Sendable {
     func complete(system: String, userMessage: String) async throws -> AIProviderResponse {
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAPIKey.isEmpty, !trimmedModel.isEmpty else {
+            throw AIError.invalidResponse
+        }
+        guard !trimmedBaseURL.isEmpty else {
             throw AIError.invalidResponse
         }
 
@@ -39,7 +43,7 @@ struct OpenRouterProvider: AIProvider, Sendable {
             ]
         ]
 
-        guard let url = URL(string: baseURL) else {
+        guard let url = URL(string: trimmedBaseURL) else {
             throw AIError.invalidResponse
         }
         var request = URLRequest(url: url)

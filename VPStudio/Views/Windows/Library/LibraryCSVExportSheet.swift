@@ -11,6 +11,18 @@ struct LibraryCSVExportSheet: View {
     @State private var errorMessage: String?
     @State private var isShowingShareSheet = false
 
+    init(
+        initialIsExporting: Bool = false,
+        initialExportSummary: LibraryCSVExportSummary? = nil,
+        initialExportDirectoryURL: URL? = nil,
+        initialErrorMessage: String? = nil
+    ) {
+        _isExporting = State(initialValue: initialIsExporting)
+        _exportSummary = State(initialValue: initialExportSummary)
+        _exportDirectoryURL = State(initialValue: initialExportDirectoryURL)
+        _errorMessage = State(initialValue: initialErrorMessage)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 20) {

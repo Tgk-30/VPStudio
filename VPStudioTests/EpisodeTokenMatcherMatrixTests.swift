@@ -83,4 +83,52 @@ struct EpisodeTokenMatcherMatrixTests {
         #expect(EpisodeTokenMatcher.context(fromQuery: "Some.Show.1x02.WEBRip") == .init(season: 1, episode: 2))
         #expect(EpisodeTokenMatcher.matches(title: "Some.Show.1x02.WEBRip", season: 1, episode: 2))
     }
+
+    @Test func episodeWordsPatternParsesSeasonAndEpisodeContext() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Some Show Season 2 Episode 11") == .init(season: 2, episode: 11))
+        #expect(EpisodeTokenMatcher.matches(title: "Some Show Season 2 Episode 11", season: 2, episode: 11))
+    }
+
+    @Test func episodeWordsPatternRejectsInvalidEpisodeLength() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Some Show Season 2 Episode 1234") == nil)
+        #expect(EpisodeTokenMatcher.matches(title: "Some Show Season 2 Episode 1234", season: 2, episode: 1234) == false)
+    }
+
+    @Test func seasonEpisodePatternRejectsInvalidEpisodeLength() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Show S02E1234") == nil)
+        #expect(EpisodeTokenMatcher.matches(title: "Show S02E1234", season: 2, episode: 1234) == false)
+    }
+
+    @Test func episodeWordsPatternIsCaseInsensitive() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "some show season 03 episode 05") == .init(season: 3, episode: 5))
+        #expect(EpisodeTokenMatcher.matches(title: "some show SEASON 03 EPISODE 05", season: 3, episode: 5))
+    }
+
+    @Test func seasonEpisodePatternRejectsInvalidSeasonLength() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Show S123E05") == nil)
+        #expect(EpisodeTokenMatcher.matches(title: "Show S123E05", season: 123, episode: 5) == false)
+    }
+
+    @Test func episodeWordsPatternRejectsInvalidSeasonLength() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Some Show Season 123 Episode 05") == nil)
+        #expect(EpisodeTokenMatcher.matches(title: "Some Show Season 123 Episode 05", season: 123, episode: 5) == false)
+    }
+
+    @Test func episodeWordsPatternRespectsGapBoundary() {
+        let withinLimit = "Show Season 02" + String(repeating: "x", count: 20) + "Episode 08"
+        #expect(EpisodeTokenMatcher.context(fromQuery: withinLimit) == .init(season: 2, episode: 8))
+
+        let overLimit = "Show Season 02" + String(repeating: "x", count: 21) + "Episode 08"
+        #expect(EpisodeTokenMatcher.context(fromQuery: overLimit) == nil)
+    }
+
+    @Test func episodeWordsPatternRejectsReversedWordOrder() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Show Episode 08 Season 02") == nil)
+        #expect(EpisodeTokenMatcher.matches(title: "Show Episode 08 Season 02", season: 2, episode: 8) == false)
+    }
+
+    @Test func seasonEpisodePatternParsesUnpaddedValuesAndExtraWhitespace() {
+        #expect(EpisodeTokenMatcher.context(fromQuery: "Show s 1 e 2") == .init(season: 1, episode: 2))
+        #expect(EpisodeTokenMatcher.matches(title: "Show s 1 e 2", season: 1, episode: 2))
+    }
 }

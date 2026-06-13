@@ -144,12 +144,8 @@ enum HDRMetadataExtractor {
     private static func parseMasteringDisplayColorVolume(_ data: Data) -> (maxLuminance: Float?, minLuminance: Float?) {
         // 6 UInt16 (primaries) + 2 UInt16 (white point) + 2 UInt32 (luminance) = 24 bytes
         guard data.count >= 24 else { return (nil, nil) }
-        let maxRaw = data.withUnsafeBytes { ptr -> UInt32 in
-            ptr.load(fromByteOffset: 16, as: UInt32.self).bigEndian
-        }
-        let minRaw = data.withUnsafeBytes { ptr -> UInt32 in
-            ptr.load(fromByteOffset: 20, as: UInt32.self).bigEndian
-        }
+        let maxRaw = Self.readUInt32BE(data, offset: 16)
+        let minRaw = Self.readUInt32BE(data, offset: 20)
         // Convert from 0.0001 cd/m^2 to nits
         return (Float(maxRaw) / 10_000.0, Float(minRaw) / 10_000.0)
     }
@@ -159,12 +155,8 @@ enum HDRMetadataExtractor {
     ///   - MaxFALL — UInt16 (big-endian), cd/m^2
     private static func parseContentLightLevelInfo(_ data: Data) -> (maxCLL: Float?, maxFALL: Float?) {
         guard data.count >= 4 else { return (nil, nil) }
-        let cll = data.withUnsafeBytes { ptr -> UInt16 in
-            ptr.load(fromByteOffset: 0, as: UInt16.self).bigEndian
-        }
-        let fall = data.withUnsafeBytes { ptr -> UInt16 in
-            ptr.load(fromByteOffset: 2, as: UInt16.self).bigEndian
-        }
+        let cll = Self.readUInt16BE(data, offset: 0)
+        let fall = Self.readUInt16BE(data, offset: 2)
         return (Float(cll), Float(fall))
     }
 
@@ -203,5 +195,24 @@ enum HDRMetadataExtractor {
             code = (code << 8) | FourCharCode(char)
         }
         return code
+    }
+
+    private static func readUInt16BE(_ data: Data, offset: Int) -> UInt16 {
+        guard data.count >= offset + 2 else { return 0 }
+        return data.withUnsafeBytes { rawBuffer -> UInt16 in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+        }
+    }
+
+    private static func readUInt32BE(_ data: Data, offset: Int) -> UInt32 {
+        guard data.count >= offset + 4 else { return 0 }
+        return data.withUnsafeBytes { rawBuffer -> UInt32 in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            return (UInt32(bytes[offset]) << 24)
+                | (UInt32(bytes[offset + 1]) << 16)
+                | (UInt32(bytes[offset + 2]) << 8)
+                | UInt32(bytes[offset + 3])
+        }
     }
 }

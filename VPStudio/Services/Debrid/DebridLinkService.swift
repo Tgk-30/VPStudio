@@ -47,8 +47,14 @@ actor DebridLinkService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
-        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: hash,
+            suppliedMagnetURI: magnetURI
+        )
         let body = formBody([
             URLQueryItem(name: "url", value: magnet),
             URLQueryItem(name: "async", value: "true"),
@@ -131,6 +137,7 @@ actor DebridLinkService: DebridServiceProtocol {
         selectedFileIDsByTorrent.removeValue(forKey: torrentId)
         episodeSelectionByTorrent.removeValue(forKey: torrentId)
         let fileName = chosenFile?.name ?? chosenFile?.downloadUrl.flatMap { URL(string: $0)?.lastPathComponent } ?? torrent.name ?? "Unknown"
+        let sizeBytes = chosenFile?.size ?? torrent.totalSize
         return StreamInfo(
             streamURL: url,
             quality: VideoQuality.parse(from: fileName),
@@ -139,7 +146,7 @@ actor DebridLinkService: DebridServiceProtocol {
             source: SourceType.parse(from: fileName),
             hdr: HDRFormat.parse(from: fileName),
             fileName: fileName,
-            sizeBytes: torrent.totalSize,
+            sizeBytes: sizeBytes,
             debridService: serviceType.rawValue
         )
     }

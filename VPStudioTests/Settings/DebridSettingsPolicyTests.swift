@@ -60,6 +60,28 @@ struct DebridSettingsPolicyTests {
         #expect(normalized.map(\.createdAt) == configs.sorted { $0.priority < $1.priority }.map(\.createdAt))
     }
 
+    @Test func makeDebridServiceMapsEveryProviderToTheExpectedLiveService() {
+        let cases: [(DebridServiceType, any DebridServiceProtocol.Type)] = [
+            (.realDebrid, RealDebridService.self),
+            (.allDebrid, AllDebridService.self),
+            (.premiumize, PremiumizeService.self),
+            (.torBox, TorBoxService.self),
+            (.debridLink, DebridLinkService.self),
+            (.offcloud, OffcloudService.self),
+            (.easyNews, EasyNewsService.self),
+        ]
+
+        for (serviceType, expectedType) in cases {
+            let service = DebridSettingsPolicy.makeDebridService(
+                type: serviceType,
+                token: "token-\(serviceType.rawValue)"
+            )
+
+            #expect(type(of: service) == expectedType)
+            #expect(service.serviceType == serviceType)
+        }
+    }
+
     private func makeConfig(
         id: String,
         serviceType: DebridServiceType,

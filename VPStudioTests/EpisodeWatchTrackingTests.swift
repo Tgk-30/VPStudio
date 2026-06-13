@@ -11,8 +11,7 @@ struct EpisodeWatchTrackingDatabaseTests {
         let rootDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent("episode_watch_test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "episode-watch-test-\(UUID().uuidString)")
         try await database.migrate()
         return database
     }
@@ -321,8 +320,7 @@ struct EpisodeWatchTrackingViewModelTests {
         let rootDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent("episode_vm_test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "episode-vm-test-\(UUID().uuidString)")
         try await database.migrate()
         return database
     }

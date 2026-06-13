@@ -12,9 +12,51 @@ struct LibraryTaskLifecycleTests {
         #expect(source.contains("loadTask = nil"))
     }
 
+    @Test
+    func folderReorderPersistsAgainstTheListSelectedWhenTheDropCommitted() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Library/LibraryView.swift")
+        let body = try functionBody(named: "persistFolderOrder", in: source)
+
+        #expect(body.contains("let listType = selectedList"))
+        #expect(body.contains("let loadToken = selectionLoadToken"))
+        #expect(body.contains("listType: listType"))
+        #expect(body.contains("if selectedList == listType"))
+        #expect(body.contains("await loadFolders(loadToken: loadToken)"))
+    }
+
     private func contents(of relativePath: String) throws -> String {
         let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
         return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func functionBody(named name: String, in source: String) throws -> String {
+        guard let nameRange = source.range(of: "private func \(name)") else {
+            Issue.record("Missing function \(name)")
+            return ""
+        }
+
+        guard let openingBrace = source[nameRange.upperBound...].firstIndex(of: "{") else {
+            Issue.record("Missing opening brace for \(name)")
+            return ""
+        }
+
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            let character = source[index]
+            if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return String(source[openingBrace...index])
+                }
+            }
+            index = source.index(after: index)
+        }
+
+        Issue.record("Could not parse function \(name)")
+        return ""
     }
 
     private func repoRootURL() -> URL {

@@ -24,6 +24,25 @@ enum BottomTabRoutingPolicy {
     }
 }
 
+enum RootTabSelectionPolicy {
+    enum NavigationAction: Equatable {
+        case clearPath
+        case resetStack
+    }
+
+    static func navigationAction(currentTab: SidebarTab, selectedTab: SidebarTab) -> NavigationAction {
+        currentTab == selectedTab ? .resetStack : .clearPath
+    }
+
+    static func shouldResetNavigationStack(currentTab: SidebarTab, selectedTab: SidebarTab) -> Bool {
+        navigationAction(currentTab: currentTab, selectedTab: selectedTab) == .resetStack
+    }
+
+    static func shouldClearNavigationPath(currentTab: SidebarTab, selectedTab: SidebarTab) -> Bool {
+        navigationAction(currentTab: currentTab, selectedTab: selectedTab) == .clearPath
+    }
+}
+
 enum RootNavigationBadgePolicy {
     static func activeDownloadCount(from tasks: [DownloadTask]) -> Int {
         tasks.filter { !$0.status.isTerminal }.count
@@ -40,12 +59,51 @@ enum QuickStartPromptPolicy {
     static let skipSetupDestination: SidebarTab = .library
     static let skipSetupTitle = "Browse Library"
     static let bodyCopy = "Skip setup for now and browse Library, or run setup to unlock Discover, Search, and streaming features."
+
+    static func restoredTab(from rawValue: String) -> SidebarTab? {
+        SidebarTab(rawValue: rawValue) ?? (rawValue == "Search" ? .search : nil)
+    }
+
+    static func shouldShowPrompt(
+        setupRecommendationNeeded: Bool,
+        promptDismissed: Bool,
+        selectedTab: SidebarTab,
+        promptSuppressed: Bool = false
+    ) -> Bool {
+        setupRecommendationNeeded && !promptDismissed && !promptSuppressed && selectedTab == .discover
+    }
 }
+
+enum RootLaunchOverlayPolicy {
+    static func shouldShowLaunchOverlay(
+        isBootstrapping: Bool,
+        qaTestScreenRawValue: String?
+    ) -> Bool {
+        isBootstrapping && TestScreenLaunchPolicy.screen(for: qaTestScreenRawValue) == nil
+    }
+}
+
+#if os(macOS) || os(visionOS)
+private struct MainWindowPlayerTerminationModifier: ViewModifier {
+    let scenePhase: ScenePhase
+    let terminate: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear(perform: terminate)
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                terminate()
+            }
+    }
+}
+#endif
 
 // MARK: - ContentView
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboarding.soft_setup_dismissed") private var softSetupPromptDismissed = false
 
     #if os(macOS) || os(visionOS)
@@ -56,6 +114,12 @@ struct ContentView: View {
     @State private var isShowingQuickStartPrompt = false
     @State private var activeDownloadCount = 0
     @State private var settingsWarningCount = 0
+    @State private var rootNavigationPath = NavigationPath()
+    @State private var qaPresentedTestScreen: TestScreen?
+    @State private var downloadBadgeRefreshTask: Task<Void, Never>?
+    @State private var settingsBadgeRefreshTask: Task<Void, Never>?
+    @State private var rootBadgeRefreshTask: Task<Void, Never>?
+    private let disablesAutomaticTasks: Bool
 
     #if os(visionOS)
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -63,11 +127,26 @@ struct ContentView: View {
     @State private var isShowingEnvironmentPicker = false
     #endif
 
+    @MainActor
+    init(
+        initialDiscoverViewModel: DiscoverViewModel? = nil,
+        initialIsShowingQuickStartPrompt: Bool = false,
+        initialActiveDownloadCount: Int = 0,
+        initialSettingsWarningCount: Int = 0,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _discoverViewModel = State(initialValue: initialDiscoverViewModel ?? DiscoverViewModel())
+        _isShowingQuickStartPrompt = State(initialValue: initialIsShowingQuickStartPrompt)
+        _activeDownloadCount = State(initialValue: initialActiveDownloadCount)
+        _settingsWarningCount = State(initialValue: initialSettingsWarningCount)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
+
     var body: some View {
         @Bindable var state = appState
 
         ZStack {
-            NavigationStack {
+            NavigationStack(path: $rootNavigationPath) {
                 contentView(for: state.selectedTab)
             }
             .id(state.navigationResetID)
@@ -85,7 +164,10 @@ struct ContentView: View {
             )
 
             // Launch screen overlay — fades out once bootstrap completes
-            if appState.isBootstrapping {
+            if RootLaunchOverlayPolicy.shouldShowLaunchOverlay(
+                isBootstrapping: appState.isBootstrapping,
+                qaTestScreenRawValue: QARuntimeOptions.testScreenRawValue
+            ) {
                 LaunchScreen()
                     .transition(.opacity)
                     .zIndex(100)
@@ -111,13 +193,17 @@ struct ContentView: View {
         .sheet(isPresented: $state.isShowingSetup) {
             SetupWizardView()
         }
+        .sheet(item: $qaPresentedTestScreen) { screen in
+            TestScreenSheet(screen: screen)
+                .environment(appState)
+        }
         .overlay(alignment: .top) {
             if isShowingQuickStartPrompt, state.selectedTab == .discover {
                 QuickStartPromptView(
                     onExploreNow: {
                         softSetupPromptDismissed = true
                         isShowingQuickStartPrompt = false
-                        appState.selectedTab = QuickStartPromptPolicy.skipSetupDestination
+                        selectRootTab(QuickStartPromptPolicy.skipSetupDestination, state: state)
                     },
                     onRunSetup: {
                         softSetupPromptDismissed = true
@@ -137,15 +223,21 @@ struct ContentView: View {
         }
         .frame(minWidth: 900, minHeight: 600)
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: isShowingQuickStartPrompt)
+        #if os(macOS) || os(visionOS)
+        .modifier(MainWindowPlayerTerminationModifier(
+            scenePhase: scenePhase,
+            terminate: { terminatePlayerIfMainWindowOpened() }
+        ))
+        #endif
         .task {
+            guard !disablesAutomaticTasks else { return }
+            presentQATestScreenIfRequested()
             discoverViewModel.configure(database: appState.database)
             await appState.bootstrap()
             // Restore persisted tab selection after bootstrap (settings DB is now ready)
             if let savedTab = try? await appState.settingsManager.getString(key: SettingsKeys.lastSelectedTab) {
                 // Backward compat: accept legacy "Search" raw value after rename to "Explore"
-                let tab = SidebarTab(rawValue: savedTab)
-                    ?? (savedTab == "Search" ? .search : nil)
-                if let tab {
+                if let tab = QuickStartPromptPolicy.restoredTab(from: savedTab) {
                     appState.selectedTab = tab
                 }
             }
@@ -160,16 +252,26 @@ struct ContentView: View {
                 event: .appBootstrapCompleted,
                 enabled: appState.runtimeDiagnosticsEnabled
             )
-            if appState.setupRecommendationNeeded,
-               !softSetupPromptDismissed,
-               state.selectedTab == .discover {
+            presentQATestScreenIfRequested()
+            if QuickStartPromptPolicy.shouldShowPrompt(
+                setupRecommendationNeeded: appState.setupRecommendationNeeded,
+                promptDismissed: softSetupPromptDismissed,
+                selectedTab: state.selectedTab,
+                promptSuppressed: QARuntimeOptions.suppressQuickStartPrompt
+            ) {
                 isShowingQuickStartPrompt = true
             }
         }
         .task(id: state.selectedTab) {
+            guard !disablesAutomaticTasks else { return }
             guard !appState.isBootstrapping else { return }
             if appState.setupRecommendationNeeded, !softSetupPromptDismissed {
-                isShowingQuickStartPrompt = (state.selectedTab == .discover)
+                isShowingQuickStartPrompt = QuickStartPromptPolicy.shouldShowPrompt(
+                    setupRecommendationNeeded: appState.setupRecommendationNeeded,
+                    promptDismissed: softSetupPromptDismissed,
+                    selectedTab: state.selectedTab,
+                    promptSuppressed: QARuntimeOptions.suppressQuickStartPrompt
+                )
             }
             await refreshRootBadgeCounts()
         }
@@ -179,26 +281,41 @@ struct ContentView: View {
                 isShowingQuickStartPrompt = false
             }
         }
+        .onChange(of: state.selectedTab) { previous, next in
+            if RootTabSelectionPolicy.shouldClearNavigationPath(currentTab: previous, selectedTab: next) {
+                rootNavigationPath = NavigationPath()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .downloadsDidChange)) { _ in
-            Task { await refreshDownloadBadgeCount() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleDownloadBadgeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
-            Task { await refreshSettingsBadgeCount() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleSettingsBadgeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .indexersDidChange)) { _ in
-            Task { await refreshSettingsBadgeCount() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleSettingsBadgeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
-            Task { await refreshSettingsBadgeCount() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleSettingsBadgeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .localModelsDidChange)) { _ in
-            Task { await refreshSettingsBadgeCount() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleSettingsBadgeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSubtitlesDidChange)) { _ in
-            Task { await refreshSettingsBadgeCount() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleSettingsBadgeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .appDidResetAllData)) { _ in
-            Task { await refreshRootBadgeCounts() }
+            guard !disablesAutomaticTasks else { return }
+            scheduleRootBadgeRefresh()
+        }
+        .onDisappear {
+            cancelBadgeRefreshTasks()
         }
         #if os(visionOS)
         .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
@@ -274,24 +391,57 @@ struct ContentView: View {
         #endif
     }
 
+    #if os(macOS) || os(visionOS)
+    private func terminatePlayerIfMainWindowOpened() {
+        guard appState.activePlayerSession != nil || appState.isMainWindowSuppressedForPlayer else { return }
+
+        if let activeSession = appState.activePlayerSession {
+            dismissWindow(id: "player", value: activeSession)
+        }
+        dismissWindow(id: "player")
+        appState.terminateActivePlayerSession()
+    }
+    #endif
+
     private func handleTabSelection(_ tab: SidebarTab, state: AppState) {
-        let isReselectingCurrentTab = (state.selectedTab == tab)
+        selectRootTab(tab, state: state)
+    }
+
+    private func selectRootTab(_ tab: SidebarTab, state: AppState) {
+        let navigationAction = RootTabSelectionPolicy.navigationAction(
+            currentTab: state.selectedTab,
+            selectedTab: tab
+        )
+
+        if navigationAction == .clearPath {
+            rootNavigationPath = NavigationPath()
+        }
 
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             state.selectedTab = tab
 
-            // Only hard-reset the navigation stack when re-selecting the already-active tab.
-            // Resetting on every tab change causes unnecessary full-stack rebuilds and visible hitches.
-            if isReselectingCurrentTab {
+            if navigationAction == .resetStack {
+                rootNavigationPath = NavigationPath()
                 state.navigationResetID = UUID()
             }
         }
+
         Task { try? await appState.settingsManager.setValue(tab.rawValue, forKey: SettingsKeys.lastSelectedTab) }
         RuntimeMemoryDiagnostics.capture(
             event: .tabSelectionChanged,
             enabled: appState.runtimeDiagnosticsEnabled,
             context: tab.rawValue
         )
+    }
+
+    private func presentQATestScreenIfRequested() {
+        guard let screen = TestScreenLaunchPolicy.screen(for: QARuntimeOptions.testScreenRawValue) else { return }
+
+        softSetupPromptDismissed = true
+        isShowingQuickStartPrompt = false
+        appState.isShowingSetup = false
+        appState.isBootstrapping = false
+        qaPresentedTestScreen = screen
     }
 
     private func refreshRootBadgeCounts() async {
@@ -301,12 +451,40 @@ struct ContentView: View {
 
     private func refreshDownloadBadgeCount() async {
         guard let tasks = try? await appState.downloadManager.listDownloads() else { return }
+        guard !Task.isCancelled else { return }
         activeDownloadCount = RootNavigationBadgePolicy.activeDownloadCount(from: tasks)
     }
 
     private func refreshSettingsBadgeCount() async {
         let snapshot = await captureSettingsStatusSnapshot()
+        guard !Task.isCancelled else { return }
         settingsWarningCount = RootNavigationBadgePolicy.settingsWarningCount(from: snapshot)
+    }
+
+    private func scheduleDownloadBadgeRefresh() {
+        downloadBadgeRefreshTask?.cancel()
+        downloadBadgeRefreshTask = Task { await refreshDownloadBadgeCount() }
+    }
+
+    private func scheduleSettingsBadgeRefresh() {
+        settingsBadgeRefreshTask?.cancel()
+        settingsBadgeRefreshTask = Task { await refreshSettingsBadgeCount() }
+    }
+
+    private func scheduleRootBadgeRefresh() {
+        downloadBadgeRefreshTask?.cancel()
+        settingsBadgeRefreshTask?.cancel()
+        rootBadgeRefreshTask?.cancel()
+        rootBadgeRefreshTask = Task { await refreshRootBadgeCounts() }
+    }
+
+    private func cancelBadgeRefreshTasks() {
+        downloadBadgeRefreshTask?.cancel()
+        downloadBadgeRefreshTask = nil
+        settingsBadgeRefreshTask?.cancel()
+        settingsBadgeRefreshTask = nil
+        rootBadgeRefreshTask?.cancel()
+        rootBadgeRefreshTask = nil
     }
 
     @ViewBuilder
@@ -357,6 +535,8 @@ struct ContentView: View {
             fallback: "http://localhost:11434"
         )
         snapshot.hasOpenRouterKey = await hasNonEmptyString(for: SettingsKeys.openRouterApiKey)
+        snapshot.hasMistralKey = await hasNonEmptyString(for: SettingsKeys.mistralApiKey)
+        snapshot.hasMiniMaxKey = await hasNonEmptyString(for: SettingsKeys.minimaxApiKey)
 
         let localConfiguration = await appState.localAIProviderConfiguration()
         snapshot.isLocalAIEnabled = localConfiguration.isEnabled
@@ -654,6 +834,17 @@ struct EnvironmentsTabView: View {
     @State private var environments: [EnvironmentAsset] = []
     @State private var isLoading = true
     @State private var environmentLoadTask: Task<Void, Never>?
+    private let disablesAutomaticTasks: Bool
+
+    init(
+        initialEnvironments: [EnvironmentAsset] = [],
+        initialIsLoading: Bool = true,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _environments = State(initialValue: initialEnvironments)
+        _isLoading = State(initialValue: initialIsLoading)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     var body: some View {
         ScrollView {
@@ -707,8 +898,12 @@ struct EnvironmentsTabView: View {
             .padding(24)
         }
         .navigationTitle("Environments")
-        .task { await coalescedLoadEnvironments() }
+        .task {
+            guard !disablesAutomaticTasks else { return }
+            await coalescedLoadEnvironments()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleEnvironmentLoad()
         }
         .onDisappear {

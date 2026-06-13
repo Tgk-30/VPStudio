@@ -86,15 +86,35 @@ struct APIBayIndexer: TorrentIndexer {
     }
 
     private func buildSearchURL(query: String) throws -> URL {
-        guard var components = URLComponents(string: "\(baseURL)/q.php") else {
-            throw URLError(.badURL)
-        }
-        components.queryItems = [
+        try buildURL(path: "q.php", queryItems: [
             URLQueryItem(name: "q", value: query),
             URLQueryItem(name: "cat", value: "0"),
-        ]
-        guard let url = components.url else {
+        ])
+    }
+
+    private func buildURL(path: String, queryItems: [URLQueryItem]) throws -> URL {
+        guard var components = URLComponents(string: baseURL) else {
             throw URLError(.badURL)
+        }
+
+        let normalizedBasePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        switch (normalizedBasePath.isEmpty, normalizedPath.isEmpty) {
+        case (true, false):
+            components.path = "/\(normalizedPath)"
+        case (false, true):
+            components.path = "/\(normalizedBasePath)"
+        case (false, false):
+            components.path = "/\(normalizedBasePath)/\(normalizedPath)"
+        default:
+            components.path = ""
+        }
+
+        components.queryItems = queryItems
+        guard let url = components.url,
+              IndexerURLSecurityPolicy.permits(url: url) else {
+            throw URLError(.unsupportedURL)
         }
         return url
     }

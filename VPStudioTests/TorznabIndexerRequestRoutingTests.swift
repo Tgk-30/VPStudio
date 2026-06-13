@@ -32,6 +32,100 @@ struct TorznabIndexerRequestRoutingTests {
         #expect(state.queryItems.first(where: { $0.name == "query" })?.value == "Dune")
     }
 
+    @Test func prowlarrSearchByQueryUsesApiKeyTransportForQueryMode() async throws {
+        final class RequestState: @unchecked Sendable {
+            var queryItems: [URLQueryItem] = []
+            var headerValue: String?
+        }
+        let state = RequestState()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            state.queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            state.headerValue = request.value(forHTTPHeaderField: "X-Api-Key")
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("[]".utf8))
+        }
+
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "https://prowlarr.example",
+            endpointPath: "/api/v1/search",
+            apiKey: "query-key",
+            apiKeyTransport: .query,
+            session: session
+        )
+
+        _ = try await indexer.searchByQuery(query: "Dune", type: .movie)
+
+        #expect(state.headerValue == nil)
+        #expect(state.queryItems.first(where: { $0.name == "type" })?.value == "moviesearch")
+        #expect(state.queryItems.first(where: { $0.name == "query" })?.value == "Dune")
+        #expect(state.queryItems.first(where: { $0.name == "apikey" })?.value == "query-key")
+    }
+
+    @Test func prowlarrEndpointDetectionRequiresTrailingApiV1SearchPath() async throws {
+        final class RequestState: @unchecked Sendable {
+            var queryItems: [URLQueryItem] = []
+        }
+        let state = RequestState()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            state.queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("[]".utf8))
+        }
+
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "https://prowlarr.example/api/v1/searcher",
+            endpointPath: "/api",
+            apiKey: "api-key",
+            apiKeyTransport: .header,
+            session: session
+        )
+
+        _ = try await indexer.searchByQuery(query: "Dune", type: .movie)
+
+        let tParameter = state.queryItems.first(where: { $0.name == "t" })?.value
+        let typeParameter = state.queryItems.first(where: { $0.name == "type" })?.value
+
+        #expect(tParameter == "search")
+        #expect(typeParameter == nil)
+    }
+
+    @Test func prowlarrEndpointDetectionWorksWhenBaseURLIncludesPathPrefix() async throws {
+        final class RequestState: @unchecked Sendable {
+            var queryItems: [URLQueryItem] = []
+        }
+        let state = RequestState()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            state.queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("[]".utf8))
+        }
+
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "https://prowlarr.example/base",
+            endpointPath: "/api/v1/search",
+            apiKey: "api-key",
+            apiKeyTransport: .header,
+            session: session
+        )
+
+        _ = try await indexer.search(imdbId: "tt0944947", type: .series, season: 2, episode: 7)
+
+        #expect(state.queryItems.first(where: { $0.name == "type" })?.value == "tvsearch")
+        #expect(
+            state.queryItems.first(where: { $0.name == "query" })?.value
+                == "{ImdbId:tt0944947} {Season:2} {Episode:7}"
+        )
+    }
+
     @Test func prowlarrImdbSearchUsesStructuredSeriesTokens() async throws {
         final class RequestState: @unchecked Sendable {
             var queryItems: [URLQueryItem] = []
@@ -63,7 +157,7 @@ struct TorznabIndexerRequestRoutingTests {
         )
     }
 
-    @Test func torznabIndexerRejectsHttpBaseURLs() async {
+    @Test func torznabIndexerRejectsRemoteHttpBaseURLs() async {
         let session = makeStubSession { request in
             Issue.record("Unexpected network request: \(request.url?.absoluteString ?? "nil")")
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -87,6 +181,35 @@ struct TorznabIndexerRequestRoutingTests {
         } catch {
             Issue.record("Unexpected error type: \(error)")
         }
+    }
+
+    @Test func torznabIndexerAllowsLocalHttpBaseURLs() async throws {
+        final class RequestState: @unchecked Sendable {
+            var url: URL?
+        }
+        let state = RequestState()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            state.url = url
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("<rss><channel></channel></rss>".utf8))
+        }
+
+        let indexer = TorznabIndexer(
+            name: "Local Jackett",
+            baseURL: "http://localhost:9117",
+            endpointPath: "/api/v2.0/indexers/all/results/torznab/api",
+            apiKey: "api-key",
+            apiKeyTransport: .query,
+            session: session
+        )
+
+        let results = try await indexer.searchByQuery(query: "Dune", type: .movie)
+
+        #expect(results.isEmpty)
+        #expect(state.url?.scheme == "http")
+        #expect(state.url?.host == "localhost")
     }
 
     @Test func torznabQuerySearchFiltersSeriesResultsByEpisodeTokens() async throws {

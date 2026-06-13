@@ -247,7 +247,7 @@ struct HDRFormatParsingTests {
 // MARK: - StreamInfo Tests
 
 @Suite("StreamInfo")
-struct StreamInfoTests {
+struct StreamInfoTestsModeltests {
 
     @Test func sizeStringFormatsGigabytes() {
         let stream = StreamInfo(
@@ -515,6 +515,116 @@ struct TorrentResultTests {
             indexerName: "APIBay"
         )
         #expect(result.infoHash == "abcdef123456")
+    }
+
+    @Test func fromSearchNormalizesDirectStreamURL() {
+        let result = TorrentResult.fromSearch(
+            infoHash: "ABCDEF123456",
+            title: "Movie.2025.1080p.WEB-DL.mkv",
+            sizeBytes: 1_500_000_000,
+            seeders: 5,
+            leechers: 1,
+            indexerName: "Stremio",
+            directStreamURL: " https://cdn.example.com/path/Movie.2025.1080p.WEB-DL.mkv?token=abc "
+        )
+
+        #expect(result.directStreamURL == "https://cdn.example.com/path/Movie.2025.1080p.WEB-DL.mkv?token=abc")
+        #expect(result.directStreamInfo?.streamURL.absoluteString == result.directStreamURL)
+        #expect(result.directStreamInfo?.fileName == "Movie.2025.1080p.WEB-DL.mkv")
+        #expect(result.directStreamInfo?.recoveryContext == nil)
+        #expect(result.requiresDebridResolution == false)
+    }
+
+    @Test func directStreamURLRejectsNonHTTPValues() {
+        #expect(TorrentResult.normalizedDirectStreamURLString("magnet:?xt=urn:btih:abc") == nil)
+        #expect(TorrentResult.normalizedDirectStreamURLString("ftp://cdn.example.com/file.mkv") == nil)
+        #expect(TorrentResult.normalizedDirectStreamURLString("not a url") == nil)
+    }
+
+    @Test func stremioResolverURLWithHashPrefersLocalDebridResolution() {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let result = TorrentResult.fromSearch(
+            infoHash: hash,
+            title: "Regional.2025.1080p.WEB-DL.mkv",
+            sizeBytes: 1_500_000_000,
+            seeders: 5,
+            leechers: 1,
+            indexerName: "Stremio Torrentio",
+            magnetURI: "magnet:?xt=urn:btih:\(hash)",
+            directStreamURL: "https://torrentio.strem.fun/resolve/rd/\(hash)/Regional.2025.1080p.WEB-DL.mkv"
+        )
+
+        #expect(result.directStreamInfo != nil)
+        #expect(result.prefersDebridResolutionOverDirectURL == true)
+        #expect(result.requiresDebridResolution == true)
+    }
+
+    @Test func mediaFusionResolverURLWithHashPrefersLocalDebridResolution() {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let result = TorrentResult.fromSearch(
+            infoHash: hash,
+            title: "Regional.2025.1080p.WEB-DL.mkv",
+            sizeBytes: 1_500_000_000,
+            seeders: 5,
+            leechers: 1,
+            indexerName: "Stremio MediaFusion",
+            magnetURI: "magnet:?xt=urn:btih:\(hash)",
+            directStreamURL: "https://mediafusion.elfhosted.com/streaming_provider/rd/\(hash)/Regional.2025.1080p.WEB-DL.mkv"
+        )
+
+        #expect(result.prefersDebridResolutionOverDirectURL == true)
+        #expect(result.requiresDebridResolution == true)
+    }
+
+    @Test func stremioRealDebridGeneratedURLWithHashUsesDirectURLFirst() {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let result = TorrentResult.fromSearch(
+            infoHash: hash,
+            title: "Regional.2025.1080p.WEB-DL.mkv",
+            sizeBytes: 1_500_000_000,
+            seeders: 5,
+            leechers: 1,
+            indexerName: "Stremio Torrentio",
+            magnetURI: "magnet:?xt=urn:btih:\(hash)",
+            directStreamURL: "https://sea1.download.real-debrid.com/d/abc/Regional.2025.1080p.WEB-DL.mkv"
+        )
+
+        #expect(result.directStreamInfo != nil)
+        #expect(result.hasResolvableDebridHash == true)
+        #expect(result.prefersDebridResolutionOverDirectURL == false)
+        #expect(result.requiresDebridResolution == false)
+    }
+
+    @Test func stremioRealDebridGeneratedURLWithoutHashUsesDirectURLFirst() {
+        let result = TorrentResult.fromSearch(
+            infoHash: "direct-regional",
+            title: "Regional.2025.1080p.WEB-DL.mkv",
+            sizeBytes: 1_500_000_000,
+            seeders: 5,
+            leechers: 1,
+            indexerName: "Stremio Torrentio",
+            directStreamURL: "https://sea1.download.real-debrid.com/d/abc/Regional.2025.1080p.WEB-DL.mkv"
+        )
+
+        #expect(result.directStreamInfo != nil)
+        #expect(result.hasResolvableDebridHash == false)
+        #expect(result.prefersDebridResolutionOverDirectURL == false)
+        #expect(result.requiresDebridResolution == false)
+    }
+
+    @Test func stremioResolverURLWithoutValidHashDoesNotForceDebridResolution() {
+        let result = TorrentResult.fromSearch(
+            infoHash: "direct-regional",
+            title: "Regional.2025.1080p.WEB-DL.mkv",
+            sizeBytes: 1_500_000_000,
+            seeders: 5,
+            leechers: 1,
+            indexerName: "Stremio Torrentio",
+            directStreamURL: "https://torrentio.strem.fun/resolve/rd/hashless/Regional.2025.1080p.WEB-DL.mkv"
+        )
+
+        #expect(result.directStreamInfo != nil)
+        #expect(result.prefersDebridResolutionOverDirectURL == false)
     }
 
     @Test func sizeStringFormatsCorrectly() {
@@ -902,7 +1012,7 @@ struct SubtitleTests {
 // MARK: - DownloadStatus Tests
 
 @Suite("DownloadStatus")
-struct DownloadStatusTests {
+struct DownloadStatusTestsModeltests {
 
     @Test func terminalStatesAreCorrect() {
         #expect(DownloadStatus.completed.isTerminal == true)
@@ -920,7 +1030,7 @@ struct DownloadStatusTests {
 // MARK: - DownloadTask Tests
 
 @Suite("DownloadTask")
-struct DownloadTaskTests {
+struct DownloadTaskTestsModeltests {
 
     @Test func destinationURLConstructsFromPath() {
         let task = DownloadTask(
@@ -1042,7 +1152,7 @@ struct FeedbackScaleModeTests {
 // MARK: - DebridServiceType Tests
 
 @Suite("DebridServiceType")
-struct DebridServiceTypeTests {
+struct DebridServiceTypeTestsModeltests {
 
     @Test func allServicesHaveDisplayNames() {
         for service in DebridServiceType.allCases {
@@ -1416,7 +1526,7 @@ struct FolderKindTests {
 // MARK: - PlayerEngineKind Tests
 
 @Suite("PlayerEngineKind")
-struct PlayerEngineKindTests {
+struct PlayerEngineKindTestsModeltests {
 
     @Test func displayNamesAreNonEmpty() {
         for kind in PlayerEngineKind.allCases {
@@ -1438,7 +1548,7 @@ struct PlayerEngineKindTests {
 // MARK: - PlayerPlaybackState Tests
 
 @Suite("PlayerPlaybackState")
-struct PlayerPlaybackStateTests {
+struct PlayerPlaybackStateTestsModeltests {
 
     @Test func rawValuesAreUnique() {
         let all: [PlayerPlaybackState] = [.preparing, .buffering, .playing, .failed]

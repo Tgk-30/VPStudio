@@ -1,7 +1,7 @@
 import Testing
 @testable import VPStudio
 
-struct SettingsNavigationCatalogTests {
+struct SettingsNavigationCatalogTestsSettingsSettingsnavigationcatalogtests {
     @Test
     func categoryMetadataCoversEverySection() {
         let expected: [(SettingsCategory, String, String)] = [
@@ -107,6 +107,15 @@ struct SettingsNavigationCatalogTests {
 
         #expect(matched.contains(.ai))
         #expect(unmatched.isEmpty)
+    }
+
+    @Test
+    func queryMatchingTrimsWhitespaceAndIgnoresCase() {
+        let aiMatches = SettingsNavigationCatalog.groups(matching: "  AI   ").flatMap(\.destinations)
+        let providerMatches = SettingsNavigationCatalog.groups(matching: "  OpenRouter  ").flatMap(\.destinations)
+
+        #expect(aiMatches.contains(.ai))
+        #expect(providerMatches == [.ai])
     }
 
     @Test

@@ -219,6 +219,45 @@ struct SubtitleParserVTTTests {
         #expect(cues.count == 1)
         #expect(cues[0].text == "Line one\nLine two")
     }
+
+    @Test func preservesLiteralOpenBracketWhenVTTTagIsUnclosed() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000
+        A literal < bracket survives
+        """
+
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "A literal < bracket survives")
+    }
+
+    @Test func voiceTagsUseSpeakerNamesAndDropEmptyVoiceTags() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000
+        <v Narrator>Hello</v> <v>world</v>
+        """
+
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "NarratorHello world")
+    }
+
+    @Test func interiorBOMIsNormalizedToPrefixForVTTParsing() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000
+        \u{FEFF}Interior BOM
+        """
+
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text.contains("Interior BOM"))
+    }
 }
 
 // MARK: - ASS/SSA Parsing Tests
@@ -445,16 +484,446 @@ struct SubtitleParserActiveCueTests {
         let cues = [
             SubtitleParser.SubtitleCue(id: 1, startTime: 5.0, endTime: 5.0, text: "Marker"),
         ]
-        // Exactly at the timestamp — should match
         let atExact = SubtitleParser.activeCue(at: 5.0, in: cues)
         #expect(atExact?.text == "Marker")
 
-        // Just before — should not match
         let justBefore = SubtitleParser.activeCue(at: 4.999, in: cues)
         #expect(justBefore == nil)
 
-        // Just after — should not match
         let justAfter = SubtitleParser.activeCue(at: 5.001, in: cues)
         #expect(justAfter == nil)
+    }
+
+    @Test func returnsFirstCueWhenMultipleOverlap() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 1, startTime: 1.0, endTime: 10.0, text: "First"),
+            SubtitleParser.SubtitleCue(id: 2, startTime: 3.0, endTime: 8.0, text: "Second"),
+            SubtitleParser.SubtitleCue(id: 3, startTime: 5.0, endTime: 7.0, text: "Third"),
+        ]
+        let cue = SubtitleParser.activeCue(at: 6.0, in: cues)
+        #expect(cue?.id == 1)
+        #expect(cue?.text == "First")
+    }
+}
+
+// MARK: - SRT Edge Cases
+
+@Suite("SubtitleParser - SRT Edge Cases")
+struct SubtitleParserSRTEdgeCaseTests {
+
+    @Test func parsesSRTWithEmptyTextBlock() {
+        let content = """
+        1
+        00:00:01,000 --> 00:00:02,000
+
+        2
+        00:00:03,000 --> 00:00:04,000
+        Actual text
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.count == 2)
+        #expect(cues[0].text == "")
+    }
+
+    @Test func parsesSRTWithWhitespaceOnlyText() {
+        let content = "1\n00:00:01,000 --> 00:00:02,000\n   \t  \n\n2\n00:00:03,000 --> 00:00:04,000\nText\n"
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.count == 2)
+    }
+
+    @Test func parsesSRTAtZeroTimestamp() {
+        let content = """
+        1
+        00:00:00,000 --> 00:00:02,000
+        Start of file
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.count == 1)
+        #expect(abs(cues[0].startTime) < 0.001)
+    }
+
+    @Test func parsesSRTWithVeryLargeHoursValue() {
+        let content = """
+        1
+        99:59:59,999 --> 100:00:00,000
+        Very long timestamp
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.count == 1)
+        let expectedStart = 99.0 * 3600 + 59.0 * 60 + 59.999
+        #expect(abs(cues[0].startTime - expectedStart) < 0.001)
+    }
+
+    @Test func skipsInvalidTimestampFormat() {
+        let content = """
+        1
+        invalid --> timestamp
+        Should skip
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.isEmpty)
+    }
+
+    @Test func skipsTimestampLineWithoutRequiredArrowSpacing() {
+        let content = """
+        1
+        00:00:01,000-->00:00:02,000
+        Missing delimiter spacing
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.isEmpty)
+    }
+
+    @Test func skipsTimestampWithoutColonSeparatedComponents() {
+        let content = """
+        1
+        1.000 --> 2.000
+        Missing minute component
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.isEmpty)
+    }
+
+    @Test func skipsWhenTimestampEndBeforeStart() {
+        let content = """
+        1
+        00:00:05,000 --> 00:00:01,000
+        Invalid range
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].startTime < cues[0].endTime)
+    }
+
+    @Test func parsesSRTWithMissingCommaInTimestamp() {
+        let content = """
+        1
+        00:00:01.000 --> 00:00:03.000
+        Uses dots instead of commas
+        """
+        let cues = SubtitleParser.parseSRT(content)
+        #expect(cues.count == 1)
+        #expect(abs(cues[0].startTime - 1.0) < 0.001)
+    }
+}
+
+// MARK: - VTT Edge Cases
+
+@Suite("SubtitleParser - VTT Edge Cases")
+struct SubtitleParserVTDutchCaseTests {
+
+    @Test func parsesVTTWithPositioningSettings() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000 line:50% position:50%
+        Positioned subtitle
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Positioned subtitle")
+    }
+
+    @Test func parsesVTTWithAlignSettings() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000 align:center
+        Centered subtitle
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Centered subtitle")
+    }
+
+    @Test func parsesVTTWithVoiceSpans() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000
+        <v Speaker>Text with voice</v>
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "SpeakerText with voice")
+    }
+
+    @Test func parsesVTTWithLanguageSpans() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000
+        <lang en>English text</lang>
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "English text")
+    }
+
+    @Test func parsesVTTWithTimestampSpans() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> 00:00:03.000
+        Text <00:00:01.500>with timestamp</00:00:02.000>
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text.contains("with timestamp"))
+    }
+
+    @Test func parsesVTTNoteBlockIsIgnored() {
+        let content = """
+        WEBVTT
+
+        NOTE This is a comment block
+
+        00:00:01.000 --> 00:00:03.000
+        Actual subtitle
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Actual subtitle")
+    }
+
+    @Test func parsesVTTWithNoHeader() {
+        let content = """
+        00:00:01.000 --> 00:00:03.000
+        No WEBVTT header
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "No WEBVTT header")
+    }
+
+    @Test func parsesVTTWithOnlyHeaderAndEmpty() {
+        let cues = SubtitleParser.parseVTT("WEBVTT")
+        #expect(cues.isEmpty)
+    }
+
+    @Test func parsesVTTMultipleBlocks() {
+        let content = """
+        WEBVTT
+
+        intro
+        00:00:00.500 --> 00:00:02.000
+        Introduction
+
+        00:00:02.500 --> 00:00:05.000
+        Second block
+
+        third-cue
+        00:00:06.000 --> 00:00:08.000
+        Third block
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 3)
+    }
+
+    @Test func swapsReversedVTTTimestamps() {
+        let content = """
+        WEBVTT
+
+        00:00:05.000 --> 00:00:01.000
+        Reversed cue
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.count == 1)
+        #expect(abs(cues[0].startTime - 1.0) < 0.001)
+        #expect(abs(cues[0].endTime - 5.0) < 0.001)
+    }
+
+    @Test func skipsVTTWhenEndTimestampIsOnlySettings() {
+        let content = """
+        WEBVTT
+
+        00:00:01.000 --> align:center
+        Missing end timestamp
+        """
+        let cues = SubtitleParser.parseVTT(content)
+        #expect(cues.isEmpty)
+    }
+}
+
+// MARK: - ASS/SSA Edge Cases
+
+@Suite("SubtitleParser - ASS/SSA Edge Cases")
+struct SubtitleParserASSEdgeCaseTests {
+
+    @Test func parsesASSOverlappingDialoguesSortedByTime() {
+        let content = """
+        [Events]
+        Dialogue: 0,0:00:05.00,0:00:10.00,Default,,0,0,0,,Later dialogue
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Earlier dialogue
+        Dialogue: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,Middle dialogue
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 3)
+        #expect(cues[0].text == "Earlier dialogue")
+        #expect(cues[1].text == "Middle dialogue")
+        #expect(cues[2].text == "Later dialogue")
+    }
+
+    @Test func parsesASSWithEmptyTextField() {
+        let content = """
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "")
+    }
+
+    @Test func parsesASSWithTextContainingNewlines() {
+        let content = """
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Line 1\\NLine 2\\NLine 3
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Line 1\nLine 2\nLine 3")
+    }
+
+    @Test func parsesASSWithDrawCommandsInText() {
+        let content = """
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Normal text {\\p0}after draw
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Normal text after draw")
+    }
+
+    @Test func parsesASSWithClipping() {
+        let content = """
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\clip(100,100,200,200)}Clipped text
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Clipped text")
+    }
+
+    @Test func skipsMalformedASSDialogueWithFewerThanTenFields() {
+        let content = """
+        [Events]
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default
+        Dialogue: 0,0:00:05.00,0:00:07.00,Default,,0,0,0,,Valid dialogue
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Valid dialogue")
+    }
+
+    @Test func parsesASSDialogueWithNegativeTimes() {
+        let content = """
+        Dialogue: 0,-0:00:01.00,0:00:03.00,Default,,0,0,0,,Negative start
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 0)
+    }
+
+    @Test func handlesMixedNewlinesInASS() {
+        let content = "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,First\r\nDialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,Second"
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 2)
+    }
+
+    @Test func swapsReversedASSTimestamps() {
+        let content = """
+        Dialogue: 0,0:00:05.00,0:00:01.00,Default,,0,0,0,,Reversed ASS
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(abs(cues[0].startTime - 1.0) < 0.001)
+        #expect(abs(cues[0].endTime - 5.0) < 0.001)
+    }
+
+    @Test func skipsASSDialogueWithInvalidEndTime() {
+        let content = """
+        Dialogue: 0,0:00:01.00,bad-end,Default,,0,0,0,,Invalid end
+        Dialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,,Valid end
+        """
+        let cues = SubtitleParser.parseASS(content)
+        #expect(cues.count == 1)
+        #expect(cues[0].text == "Valid end")
+    }
+}
+
+// MARK: - Active Cue Edge Cases
+
+@Suite("SubtitleParser - Active Cue Edge Cases")
+struct SubtitleParserActiveCueEdgeCaseTests {
+
+    @Test func returnsFirstMatchingOfOverlappingCues() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 1, startTime: 1.0, endTime: 5.0, text: "First"),
+            SubtitleParser.SubtitleCue(id: 2, startTime: 2.0, endTime: 4.0, text: "Second"),
+        ]
+        let cue = SubtitleParser.activeCue(at: 3.0, in: cues)
+        #expect(cue?.id == 1)
+    }
+
+    @Test func handlesConsecutiveCuesWithoutGap() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 1, startTime: 1.0, endTime: 3.0, text: "First"),
+            SubtitleParser.SubtitleCue(id: 2, startTime: 3.0, endTime: 5.0, text: "Second"),
+        ]
+        #expect(SubtitleParser.activeCue(at: 3.0, in: cues)?.id == 1)
+    }
+
+    @Test func handlesLargeNumberOfCues() {
+        var cues: [SubtitleParser.SubtitleCue] = []
+        for i in 0..<100 {
+            cues.append(SubtitleParser.SubtitleCue(
+                id: i,
+                startTime: Double(i),
+                endTime: Double(i) + 1.0,
+                text: "Cue \(i)"
+            ))
+        }
+        let cue = SubtitleParser.activeCue(at: 50.5, in: cues)
+        #expect(cue?.id == 50)
+    }
+
+    @Test func returnsLastCueAtExactEndTime() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 1, startTime: 1.0, endTime: 3.0, text: "First"),
+            SubtitleParser.SubtitleCue(id: 2, startTime: 3.0, endTime: 5.0, text: "Second"),
+        ]
+        let atEnd = SubtitleParser.activeCue(at: 5.0, in: cues)
+        #expect(atEnd?.id == 2)
+    }
+
+    @Test func handlesCueSpanningEntireRange() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 1, startTime: 0.0, endTime: Double.infinity, text: "Infinite"),
+        ]
+        let cue = SubtitleParser.activeCue(at: 1000000.0, in: cues)
+        #expect(cue?.text == "Infinite")
+    }
+
+    @Test func returnsNilForNegativeTime() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 1, startTime: 1.0, endTime: 3.0, text: "First"),
+        ]
+        let cue = SubtitleParser.activeCue(at: -1.0, in: cues)
+        #expect(cue == nil)
+    }
+
+    @Test func handlesUnsortedCues() {
+        let cues = [
+            SubtitleParser.SubtitleCue(id: 2, startTime: 10.0, endTime: 12.0, text: "Second"),
+            SubtitleParser.SubtitleCue(id: 1, startTime: 1.0, endTime: 3.0, text: "First"),
+        ]
+        let cue = SubtitleParser.activeCue(at: 2.0, in: cues)
+        #expect(cue?.id == 1)
+    }
+}
+
+// MARK: - SubtitleCue Identifiable Conformance
+
+@Suite("SubtitleCue Identifiable")
+struct SubtitleCueIdentifiableTests {
+    @Test func subtitleCueIdMatchesIdProperty() {
+        let cue = SubtitleParser.SubtitleCue(id: 42, startTime: 1.0, endTime: 3.0, text: "Test")
+        #expect(cue.id == 42)
+        #expect(cue.id == cue.id)
     }
 }

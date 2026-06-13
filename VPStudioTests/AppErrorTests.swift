@@ -77,6 +77,11 @@ struct AppErrorInitMappingTests {
         #expect(mapped == .network(.invalidURL("bad://url")))
     }
 
+    @Test func urlErrorUnsupportedURLWithoutFailingURLUsesUnknownFallback() {
+        let mapped = AppError(URLError(.unsupportedURL))
+        #expect(mapped == .network(.invalidURL("unknown")))
+    }
+
     @Test func urlErrorOtherCodeMappedToTransport() {
         let urlErr = URLError(.cannotConnectToHost)
         let mapped = AppError(urlErr)
@@ -339,6 +344,11 @@ struct AppErrorDebridRecoverySuggestionsTests {
 
     @Test func rateLimitedHasSuggestion() {
         let err = AppError.debrid(.rateLimited)
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func unavailableForLegalReasonsHasSuggestion() {
+        let err = AppError.debrid(.unavailableForLegalReasons("blocked"))
         #expect(err.recoverySuggestion?.isEmpty == false)
     }
 

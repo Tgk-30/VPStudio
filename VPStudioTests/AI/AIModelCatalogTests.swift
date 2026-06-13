@@ -161,6 +161,17 @@ struct AIModelCatalogTests {
         }
     }
 
+    @Test func costCalculationForAllLocalModelsIsZero() {
+        for model in AIModelCatalog.models(for: .local) {
+            let cost = AIModelCatalog.estimateCost(
+                model: model,
+                inputTokens: 1_000_000,
+                outputTokens: 1_000_000
+            )
+            #expect(cost == 0, "Expected zero cost for local model \(model.id)")
+        }
+    }
+
     @Test func costCalculationForZeroTokens() {
         let cost = AIModelCatalog.estimateCost(
             modelID: "claude-sonnet-4-20250514",
@@ -255,6 +266,31 @@ struct AIModelCatalogTests {
         #expect(def?.id.hasPrefix("openrouter/") == false)
     }
 
+    @Test func defaultMistralModelIsSmallLatest() {
+        let def = AIModelCatalog.defaultModel(for: .mistral)
+        #expect(def?.id == "mistral-small-latest")
+    }
+
+    @Test func defaultMiniMaxModelIsM27() {
+        let def = AIModelCatalog.defaultModel(for: .minimax)
+        #expect(def?.id == "MiniMax-M2.7")
+    }
+
+    @Test func defaultLocalModelIsSmolLM2() {
+        let def = AIModelCatalog.defaultModel(for: .local)
+        #expect(def?.id == "apple/SmolLM2-360M-Instruct-CoreML")
+    }
+
+    @Test func miniMaxFallbackCatalogIncludesCurrentM2Family() {
+        let ids = AIModelCatalog.models(for: .minimax).map(\.id)
+        #expect(ids.contains("MiniMax-M2.7"))
+        #expect(ids.contains("MiniMax-M2.7-highspeed"))
+        #expect(ids.contains("MiniMax-M2.5"))
+        #expect(ids.contains("MiniMax-M2.5-highspeed"))
+        #expect(ids.contains("MiniMax-M2.1"))
+        #expect(ids.contains("MiniMax-M2.1-highspeed"))
+    }
+
     @Test func bundledOpenRouterModelsUseProviderNativeIDs() {
         for model in AIModelCatalog.models(for: .openRouter) {
             #expect(model.id.hasPrefix("openrouter/") == false)
@@ -342,6 +378,19 @@ struct AIModelCatalogTests {
 
 @Suite("AIModelFetcher - OpenRouter")
 struct OpenRouterModelFetcherTests {
+    @Test func fetchOpenRouterModelsTrimsAPIKeyBeforeRequest() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer openrouter-key")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: ["data": []])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchOpenRouterModels(apiKey: "  openrouter-key ", session: session)
+
+        #expect(models.isEmpty)
+    }
+
     @Test func fetchOpenRouterModelsReturnsEmptyForBlankAPIKeyWithoutNetwork() async {
         let session = URLProtocolHarness.makeSession { _ in
             Issue.record("Blank API key should not issue a request")
@@ -470,6 +519,46 @@ struct OpenRouterModelFetcherTests {
         }
     }
 
+    @Test func fetchOpenRouterModelsUsesStringPricingAndLiveContextForUnknownModels() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.url?.absoluteString == "https://openrouter.ai/api/v1/models")
+            #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "data": [
+                    [
+                        "id": "openrouter/acme/edge_model-v3",
+                        "context_length": 32_768,
+                        "pricing": [
+                            "prompt": "0.0000015",
+                            "completion": "0.000002",
+                        ],
+                    ],
+                    [
+                        "id": "openrouter/",
+                        "name": "Empty Native ID",
+                    ],
+                ],
+            ])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchOpenRouterModels(apiKey: "test-key", session: session)
+
+        #expect(models.count == 1)
+        #expect(models.first?.id == "acme/edge_model-v3")
+        #expect(models.first?.displayName == "Acme/edge Model V3")
+        #expect(models.first?.inputCostPer1MTokens == 1.5)
+        #expect(models.first?.outputCostPer1MTokens == 2)
+        #expect(models.first?.maxContextTokens == 32_768)
+        #expect(models.first?.isDefault == false)
+    }
+
     @Test func fetchOpenRouterModelsNormalizesLegacyPrefixedIDs() async {
         let session = URLProtocolHarness.makeSession { request in
             let response = HTTPURLResponse(
@@ -502,15 +591,24 @@ struct OpenRouterModelFetcherTests {
 struct AIModelFetcherGuardPathTests {
     @Test func fetchOpenAIModelsReturnsEmptyForBlankAPIKey() async {
         #expect(await AIModelFetcher.fetchOpenAIModels(apiKey: "").isEmpty)
+        #expect(await AIModelFetcher.fetchOpenAIModels(apiKey: "   ").isEmpty)
     }
 
     @Test func fetchAnthropicModelsReturnsEmptyForBlankAPIKey() async {
         #expect(await AIModelFetcher.fetchAnthropicModels(apiKey: "").isEmpty)
+        #expect(await AIModelFetcher.fetchAnthropicModels(apiKey: "   ").isEmpty)
     }
 
     @Test func fetchGeminiModelsReturnsEmptyForBlankAPIKey() async {
         #expect(await AIModelFetcher.fetchGeminiModels(apiKey: "").isEmpty)
         #expect(await AIModelFetcher.fetchGeminiModels(apiKey: "   ").isEmpty)
+    }
+
+    @Test func fetchMistralAndMiniMaxModelsReturnEmptyForBlankAPIKeys() async {
+        #expect(await AIModelFetcher.fetchMistralModels(apiKey: "").isEmpty)
+        #expect(await AIModelFetcher.fetchMistralModels(apiKey: "   ").isEmpty)
+        #expect(await AIModelFetcher.fetchMiniMaxModels(apiKey: "").isEmpty)
+        #expect(await AIModelFetcher.fetchMiniMaxModels(apiKey: "   ").isEmpty)
     }
 
     @Test func fetchOllamaModelsRejectsDisallowedBaseURLs() async {
@@ -535,7 +633,11 @@ struct OpenAIModelFetcherTests {
                 "data": [
                     ["id": "gpt-5.4"],
                     ["id": "chatgpt-custom_model"],
+                    ["id": "o3-mini"],
+                    ["id": "o4-mini"],
                     ["id": "gpt-4o-realtime-preview"],
+                    ["id": "gpt-4o-audio-preview"],
+                    ["id": "gpt-4o-search-preview"],
                     ["id": "text-embedding-3-large"],
                     ["name": "missing id"],
                 ],
@@ -545,9 +647,34 @@ struct OpenAIModelFetcherTests {
 
         let models = await AIModelFetcher.fetchOpenAIModels(apiKey: "openai-key", session: session)
 
-        #expect(models.map(\.id) == ["chatgpt-custom_model", "gpt-5.4"])
+        #expect(models.map(\.id) == ["chatgpt-custom_model", "gpt-5.4", "o3-mini", "o4-mini"])
         #expect(models.first(where: { $0.id == "gpt-5.4" })?.displayName == "GPT-5.4")
         #expect(models.first(where: { $0.id == "chatgpt-custom_model" })?.displayName == "Chatgpt Custom Model")
+        #expect(models.first(where: { $0.id == "o3-mini" })?.displayName == "O3 Mini")
+        #expect(models.first(where: { $0.id == "o4-mini" })?.displayName == "O4 Mini")
+    }
+
+    @Test func fetchOpenAIModelsTrimsAuthorizationAndAcceptsTrimmedKey() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer trimmed-key")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "data": [
+                    ["id": "gpt-5.4"]
+                ]
+            ])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchOpenAIModels(apiKey: "  trimmed-key  ", session: session)
+
+        #expect(models.count == 1)
+        #expect(models.first?.id == "gpt-5.4")
     }
 
     @Test func fetchOpenAIModelsReturnsEmptyForHTTPFailureAndMalformedPayload() async {
@@ -567,6 +694,19 @@ struct OpenAIModelFetcherTests {
 
 @Suite("AIModelFetcher - Anthropic")
 struct AnthropicModelFetcherTests {
+    @Test func fetchAnthropicModelsTrimsAPIKeyBeforeRequest() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.value(forHTTPHeaderField: "x-api-key") == "anthropic-key")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: ["data": []])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchAnthropicModels(apiKey: "  anthropic-key ", session: session)
+
+        #expect(models.isEmpty)
+    }
+
     @Test func fetchAnthropicModelsParsesDisplayNamesAndCatalogFallbacks() async {
         let session = URLProtocolHarness.makeSession { request in
             #expect(request.url?.absoluteString == "https://api.anthropic.com/v1/models?limit=50")
@@ -576,6 +716,7 @@ struct AnthropicModelFetcherTests {
             let data = try JSONSerialization.data(withJSONObject: [
                 "data": [
                     ["id": "custom-haiku", "display_name": "Custom Haiku"],
+                    ["id": "claude_custom_model"],
                     ["id": "claude-sonnet-4-6", "display_name": "Stale Live Name"],
                     ["display_name": "Missing ID"],
                 ],
@@ -585,7 +726,8 @@ struct AnthropicModelFetcherTests {
 
         let models = await AIModelFetcher.fetchAnthropicModels(apiKey: "anthropic-key", session: session)
 
-        #expect(models.map(\.id) == ["claude-sonnet-4-6", "custom-haiku"])
+        #expect(models.map(\.id) == ["claude_custom_model", "claude-sonnet-4-6", "custom-haiku"])
+        #expect(models.first(where: { $0.id == "claude_custom_model" })?.displayName == "Claude Custom Model")
         #expect(models.first(where: { $0.id == "claude-sonnet-4-6" })?.displayName == "Claude Sonnet 4.6")
         #expect(models.first(where: { $0.id == "custom-haiku" })?.displayName == "Custom Haiku")
     }
@@ -628,6 +770,35 @@ struct OllamaModelFetcherTests {
         #expect(models.last?.displayName == "Zeta Model:Q4 K M")
     }
 
+    @Test func fetchOllamaModelsAppendsToExistingApiPath() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.url?.path == "/api/tags")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "models": [
+                    ["name": "llama3.1:latest"]
+                ],
+            ])
+            return (response, data)
+        }
+
+        _ = await AIModelFetcher.fetchOllamaModels(baseURL: "http://localhost:11434/api", session: session)
+    }
+
+    @Test func fetchOllamaModelsPreservesQueryParameters() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.url?.path == "/api/tags")
+            #expect(request.url?.query == "source=cli")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "models": [],
+            ])
+            return (response, data)
+        }
+
+        _ = await AIModelFetcher.fetchOllamaModels(baseURL: "http://localhost:11434?source=cli", session: session)
+    }
+
     @Test func fetchOllamaModelsReturnsEmptyForHTTPFailureAndMalformedPayload() async {
         let failingSession = URLProtocolHarness.makeSession { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
@@ -645,6 +816,19 @@ struct OllamaModelFetcherTests {
 
 @Suite("AIModelFetcher - Gemini")
 struct GeminiModelFetcherTests {
+    @Test func fetchGeminiModelsTrimsAPIKeyBeforeRequest() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.value(forHTTPHeaderField: "x-goog-api-key") == "gemini-key")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: ["models": []])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchGeminiModels(apiKey: "   gemini-key  ", session: session)
+
+        #expect(models.isEmpty)
+    }
+
     @Test func fetchGeminiModelsParsesModelNamesAndFiltersNonGeminiEntries() async {
         let session = URLProtocolHarness.makeSession { request in
             #expect(request.url?.absoluteString == "https://generativelanguage.googleapis.com/v1beta/models")
@@ -680,5 +864,87 @@ struct GeminiModelFetcherTests {
 
         #expect(await AIModelFetcher.fetchGeminiModels(apiKey: "key", session: failingSession).isEmpty)
         #expect(await AIModelFetcher.fetchGeminiModels(apiKey: "key", session: malformedSession).isEmpty)
+    }
+}
+
+@Suite("AIModelFetcher - Mistral")
+struct MistralModelFetcherTests {
+    @Test func fetchMistralModelsUsesModelsEndpointAndParsesChatModels() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.url?.absoluteString == "https://api.mistral.ai/v1/models")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer mistral-key")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "data": [
+                    ["id": "mistral-small-latest"],
+                    ["id": "codestral-latest"],
+                    ["id": "text-embedding-mistral"],
+                    ["id": "custom-model"],
+                    ["display_name": "Missing ID"],
+                ],
+            ])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchMistralModels(apiKey: " mistral-key ", session: session)
+
+        #expect(models.map(\.id) == ["codestral-latest", "mistral-small-latest"])
+        #expect(models.first(where: { $0.id == "mistral-small-latest" })?.displayName == "Mistral Small")
+        #expect(models.first(where: { $0.id == "codestral-latest" })?.displayName == "Codestral")
+    }
+
+    @Test func fetchMistralModelsReturnsEmptyForHTTPFailureAndMalformedPayload() async {
+        let failingSession = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+        let malformedSession = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("{\"data\":false}".utf8))
+        }
+
+        #expect(await AIModelFetcher.fetchMistralModels(apiKey: "key", session: failingSession).isEmpty)
+        #expect(await AIModelFetcher.fetchMistralModels(apiKey: "key", session: malformedSession).isEmpty)
+    }
+}
+
+@Suite("AIModelFetcher - MiniMax")
+struct MiniMaxModelFetcherTests {
+    @Test func fetchMiniMaxModelsUsesModelsEndpointAndParsesCatalogModels() async {
+        let session = URLProtocolHarness.makeSession { request in
+            #expect(request.url?.absoluteString == "https://api.minimax.io/v1/models")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer minimax-key")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "data": [
+                    ["id": "MiniMax-M2.7"],
+                    ["id": "MiniMax-M2.7-highspeed"],
+                    ["id": "custom-minimax_model"],
+                    ["name": "Missing ID"],
+                ],
+            ])
+            return (response, data)
+        }
+
+        let models = await AIModelFetcher.fetchMiniMaxModels(apiKey: " minimax-key ", session: session)
+
+        #expect(models.map(\.id) == ["custom-minimax_model", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"])
+        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.displayName == "MiniMax M2.7")
+        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.isDefault == true)
+        #expect(models.first(where: { $0.id == "custom-minimax_model" })?.maxContextTokens == 204_800)
+    }
+
+    @Test func fetchMiniMaxModelsReturnsEmptyForHTTPFailureAndMalformedPayload() async {
+        let failingSession = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 429, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+        let malformedSession = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("{\"data\":null}".utf8))
+        }
+
+        #expect(await AIModelFetcher.fetchMiniMaxModels(apiKey: "key", session: failingSession).isEmpty)
+        #expect(await AIModelFetcher.fetchMiniMaxModels(apiKey: "key", session: malformedSession).isEmpty)
     }
 }

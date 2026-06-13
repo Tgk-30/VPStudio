@@ -3,6 +3,9 @@ import SwiftUI
 import RealityKit
 import simd
 import AVFoundation
+import os
+
+private let logger = Logger(subsystem: "com.vpstudio", category: "CinemaImmersiveContent")
 
 private final class CinemaSceneEntities {
     var screenBackplateEntity: ModelEntity?
@@ -24,6 +27,7 @@ private final class CinemaSceneEntities {
     var lastEnvironmentDarkness: Double = -1
     var lastAmbientLighting: Double = -1
     var lastMaterialSourceID: ObjectIdentifier?
+    var didAnchorScreenToHead = false
 }
 
 enum CinemaImmersivePlacementPolicy {
@@ -105,7 +109,18 @@ public struct CinemaImmersiveContent: View {
 
     @State private var scene = CinemaSceneEntities()
     @State private var headTracker = HeadTracker()
-    @State private var didAnchorScreenToHead = false
+
+    private var validatedScreenSize: CGSize {
+        let defaultSize = CGSize(width: 6.0, height: 3.375)
+        let width = settings.screenSize.width
+        let height = settings.screenSize.height
+        guard !width.isNaN, width.isFinite, width > 0,
+              !height.isNaN, height.isFinite, height > 0 else {
+            logger.warning("Invalid screen size (\(width, privacy: .public) x \(height, privacy: .public)); clamping to \(defaultSize.width, privacy: .public) x \(defaultSize.height, privacy: .public)")
+            return defaultSize
+        }
+        return settings.screenSize
+    }
 
     public init(settings: CinemaSettings) {
         self.settings = settings
@@ -113,10 +128,8 @@ public struct CinemaImmersiveContent: View {
 
     public var body: some View {
         RealityView { content in
-            let anchor = AnchorEntity(world: matrix_identity_float4x4)
-
             // ---- Screen ----
-            let screenSize = settings.screenSize
+            let screenSize = validatedScreenSize
             let planeWidth = Float(screenSize.width)
             let planeHeight = Float(screenSize.height)
 
@@ -127,7 +140,7 @@ public struct CinemaImmersiveContent: View {
             )
             let screenBackplateEntity = ModelEntity(
                 mesh: backplateMesh,
-                materials: [Self.makeShellMaterial(red: 0.008, green: 0.009, blue: 0.012, alpha: 1.0)]
+                materials: [Self.makeShellMaterial(red: 0.025, green: 0.028, blue: 0.035, alpha: 1.0)]
             )
             screenBackplateEntity.name = "cinemaScreenBackplate"
             scene.screenBackplateEntity = screenBackplateEntity
@@ -151,7 +164,7 @@ public struct CinemaImmersiveContent: View {
             // ---- Visible cinema shell ----
             let backdropMesh = MeshResource.generateSphere(radius: CinemaImmersivePlacementPolicy.backdropRadius)
             var backdropMaterial = UnlitMaterial()
-            backdropMaterial.color.tint = UIColor(red: 0.018, green: 0.020, blue: 0.032, alpha: 1)
+            backdropMaterial.color.tint = UIColor(red: 0.045, green: 0.050, blue: 0.080, alpha: 1)
             let backdropEntity = ModelEntity(mesh: backdropMesh, materials: [backdropMaterial])
             backdropEntity.components[OpacityComponent.self] = OpacityComponent(opacity: 0.0)
             backdropEntity.name = "cinemaBackdrop"
@@ -163,7 +176,7 @@ public struct CinemaImmersiveContent: View {
                     width: CinemaImmersivePlacementPolicy.floorWidth,
                     depth: CinemaImmersivePlacementPolicy.floorDepth
                 ),
-                materials: [Self.makeShellMaterial(red: 0.090, green: 0.085, blue: 0.095, alpha: 1.0)]
+                materials: [Self.makeShellMaterial(red: 0.140, green: 0.130, blue: 0.145, alpha: 1.0)]
             )
             floorEntity.name = "cinemaFloor"
             scene.floorEntity = floorEntity
@@ -173,7 +186,7 @@ public struct CinemaImmersiveContent: View {
                     width: CinemaImmersivePlacementPolicy.wallWidth,
                     height: CinemaImmersivePlacementPolicy.wallHeight
                 ),
-                materials: [Self.makeShellMaterial(red: 0.085, green: 0.030, blue: 0.040, alpha: 1.0)]
+                materials: [Self.makeShellMaterial(red: 0.120, green: 0.050, blue: 0.065, alpha: 1.0)]
             )
             rearWallEntity.name = "cinemaRearWall"
             scene.rearWallEntity = rearWallEntity
@@ -185,14 +198,14 @@ public struct CinemaImmersiveContent: View {
             )
             let leftWallEntity = ModelEntity(
                 mesh: sideWallMesh,
-                materials: [Self.makeShellMaterial(red: 0.060, green: 0.026, blue: 0.036, alpha: 1.0)]
+                materials: [Self.makeShellMaterial(red: 0.090, green: 0.045, blue: 0.060, alpha: 1.0)]
             )
             leftWallEntity.name = "cinemaLeftWall"
             scene.leftWallEntity = leftWallEntity
 
             let rightWallEntity = ModelEntity(
                 mesh: sideWallMesh,
-                materials: [Self.makeShellMaterial(red: 0.060, green: 0.026, blue: 0.036, alpha: 1.0)]
+                materials: [Self.makeShellMaterial(red: 0.090, green: 0.045, blue: 0.060, alpha: 1.0)]
             )
             rightWallEntity.name = "cinemaRightWall"
             scene.rightWallEntity = rightWallEntity
@@ -203,7 +216,7 @@ public struct CinemaImmersiveContent: View {
                     height: 0.04,
                     depth: CinemaImmersivePlacementPolicy.floorDepth
                 ),
-                materials: [Self.makeShellMaterial(red: 0.035, green: 0.034, blue: 0.045, alpha: 1.0)]
+                materials: [Self.makeShellMaterial(red: 0.060, green: 0.058, blue: 0.075, alpha: 1.0)]
             )
             ceilingEntity.name = "cinemaCeiling"
             scene.ceilingEntity = ceilingEntity
@@ -218,7 +231,7 @@ public struct CinemaImmersiveContent: View {
             dirLight.name = "directionalLight"
             dirLight.components[DirectionalLightComponent.self] = DirectionalLightComponent(
                 color: .white,
-                intensity: Float(settings.ambientLighting)
+                intensity: max(Float(settings.ambientLighting), 0.25)
             )
             dirLight.orientation = simd_quatf(
                 angle: Float.pi / 4,
@@ -232,16 +245,16 @@ public struct CinemaImmersiveContent: View {
             pointLight.name = "pointLight"
             pointLight.components[PointLightComponent.self] = PointLightComponent(
                 color: .white,
-                intensity: Float(settings.ambientLighting),
-                attenuationRadius: 10.0
+                intensity: max(Float(settings.ambientLighting), 0.25),
+                attenuationRadius: 12.0
             )
             scene.pointLight = pointLight
 
-            // ---- Root with IBL suppression ----
-            let root = Entity()
+            // ---- Root entity ----
+            let root = AnchorEntity(world: matrix_identity_float4x4)
             root.name = "root"
             root.components[EnvironmentLightingConfigurationComponent.self] = EnvironmentLightingConfigurationComponent(
-                environmentLightingWeight: 0.0
+                environmentLightingWeight: 0.15
             )
             root.addChild(backdropEntity)
             root.addChild(floorEntity)
@@ -264,21 +277,21 @@ public struct CinemaImmersiveContent: View {
             root.addChild(pointLight)
             scene.rootEntity = root
 
-            anchor.addChild(root)
-            content.add(anchor)
+            content.add(root)
 
             // Initial transform / material updates
             updateScreenTransform()
             updateSphere()
             updateLights()
 
-        } update: { _ in
+        } update: { content in
             guard scene.rootEntity != nil else { return }
             updateScreenMaterialIfNeeded()
 
             // Rebuild mesh only when aspect ratio (screenSize) changes
-            let currentScreenSize = settings.screenSize
+            let currentScreenSize = validatedScreenSize
             if currentScreenSize != scene.lastScreenSize {
+                logger.info("Rebuilding screen mesh for new size: \(currentScreenSize.width, privacy: .public) x \(currentScreenSize.height, privacy: .public)")
                 let newMesh = MeshResource.generatePlane(
                     width: Float(currentScreenSize.width),
                     height: Float(currentScreenSize.height),
@@ -303,20 +316,29 @@ public struct CinemaImmersiveContent: View {
             updateScreenTransform()
             updateSphere()
             updateLights()
+
+            // Ensure root remains in content (defensive for visionOS RealityKit lifecycle)
+            if let root = scene.rootEntity, root.parent == nil {
+                content.add(root)
+            }
         }
         .preferredSurroundingsEffect(
             settings.useSurroundingsEffect && settings.environmentDarkness >= 0.5 ? .systemDark : nil
         )
         .onAppear {
+            logger.info("Cinema immersive space appeared")
             appState.immersiveSpaceDidAppear(.cinemaEnvironment)
             appState.spatialAudioManager.enterImmersiveMode()
             headTracker.start()
+            logger.debug("Head tracking started")
         }
         .onDisappear {
+            logger.info("Cinema immersive space disappeared")
             appState.immersiveSpaceDidDisappear()
             appState.spatialAudioManager.exitImmersiveMode()
             headTracker.stop()
-            didAnchorScreenToHead = false
+            logger.debug("Head tracking stopped")
+            scene.didAnchorScreenToHead = false
         }
     }
 
@@ -329,6 +351,16 @@ public struct CinemaImmersiveContent: View {
             settings: settings,
             headTransform: headTransform
         )
+
+        let wasAnchored = scene.didAnchorScreenToHead
+        let isAnchored = headTransform != nil
+        if wasAnchored != isAnchored {
+            if isAnchored {
+                logger.info("Screen anchored to head tracking")
+            } else {
+                logger.info("Screen placement reverted to fallback (head tracking lost or unavailable)")
+            }
+        }
 
         screen.look(at: placement.lookAt, from: placement.position, relativeTo: nil, forward: .positiveZ)
         if settings.screenTilt != 0 {
@@ -353,7 +385,7 @@ public struct CinemaImmersiveContent: View {
             right: normalizeOrFallback(vector3(screen.transform.matrix.columns.0), fallback: SIMD3<Float>(1, 0, 0)),
             up: normalizeOrFallback(vector3(screen.transform.matrix.columns.1), fallback: SIMD3<Float>(0, 1, 0))
         )
-        didAnchorScreenToHead = headTransform != nil
+        scene.didAnchorScreenToHead = isAnchored
     }
 
     private func updateSphere() {
@@ -445,15 +477,36 @@ public struct CinemaImmersiveContent: View {
 
     private func makeScreenMaterial() -> RealityKit.Material {
         if let renderer = appState.activeVideoRenderer {
-            return VideoMaterial(videoRenderer: renderer)
+            if let material = attemptVideoMaterial({ VideoMaterial(videoRenderer: renderer) }) {
+                logger.debug("Created VideoMaterial from videoRenderer")
+                return material
+            }
+            logger.warning("VideoMaterial(videoRenderer:) failed; using fallback")
         }
         if let player = appState.activeAVPlayer {
-            return VideoMaterial(avPlayer: player)
+            if let material = attemptVideoMaterial({ VideoMaterial(avPlayer: player) }) {
+                logger.debug("Created VideoMaterial from avPlayer")
+                return material
+            }
+            logger.warning("VideoMaterial(avPlayer:) failed; using fallback")
         }
+        logger.debug("No active video source; using fallback screen material")
+        return makeFallbackScreenMaterial()
+    }
 
+    private func makeFallbackScreenMaterial() -> RealityKit.Material {
         var material = UnlitMaterial()
         material.color = .init(tint: UIColor(red: 0.78, green: 0.80, blue: 0.86, alpha: 1.0))
         return material
+    }
+
+    private func attemptVideoMaterial(_ factory: () throws -> VideoMaterial) -> VideoMaterial? {
+        do {
+            return try factory()
+        } catch {
+            logger.error("VideoMaterial creation failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     private static func makeShellMaterial(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> RealityKit.Material {
@@ -523,8 +576,8 @@ public struct CinemaImmersiveContent: View {
         up: SIMD3<Float>
     ) {
         guard scene.screenFrameEntities.count == 4 else { return }
-        let width = Float(settings.screenSize.width)
-        let height = Float(settings.screenSize.height)
+        let width = Float(validatedScreenSize.width)
+        let height = Float(validatedScreenSize.height)
         let frameOffset = CinemaImmersivePlacementPolicy.frameThickness / 2
         let front = center + forward * 0.03
         scene.screenFrameEntities[0].position = front + up * (height / 2 + frameOffset)
@@ -577,6 +630,7 @@ public struct CinemaImmersiveContent: View {
         guard sourceID != scene.lastMaterialSourceID else { return }
         scene.screenEntity?.model?.materials = [makeScreenMaterial()]
         scene.lastMaterialSourceID = sourceID
+        logger.debug("Screen material updated")
     }
 }
 #endif

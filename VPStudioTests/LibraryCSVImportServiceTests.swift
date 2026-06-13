@@ -695,6 +695,43 @@ struct LibraryCSVImportServiceTests {
     }
 
     @Test
+    func importsURLOnlyRowsUsingIMDbIDAsFallbackTitleAndMediaID() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-url-only-fallback.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let csvURL = try writeCSV(
+            """
+            URL,Title Type,Year,Rating,Watched At
+            https://www.imdb.com/title/tt7654321/?ref_=watch,tvEpisode,Released 2025,4/10,11-06-2026
+            """,
+            name: "url-only-history.csv",
+            in: tempDir
+        )
+
+        let service = LibraryCSVImportService(database: database)
+        let summary = try await service.importCSV(
+            from: csvURL,
+            options: LibraryCSVImportOptions(destination: .history, importRatings: true)
+        )
+
+        #expect(summary.rowsRead == 1)
+        #expect(summary.rowsImported == 1)
+        #expect(summary.historyImported == 1)
+        #expect(summary.watchlistImported == 1)
+        #expect(summary.ratingsImported == 1)
+
+        let item = try #require(try await database.fetchMediaItem(id: "tt7654321"))
+        #expect(item.title == "tt7654321")
+        #expect(item.type == .series)
+        #expect(item.year == 2025)
+
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 20)
+        #expect(ratings.count == 1)
+        #expect(ratings.first?.feedbackValue == 4)
+        #expect(ratings.first?.feedbackScale?.canonicalMode == .oneToTen)
+    }
+
+    @Test
     func throwsWhenFileHasNoRecognizableColumns() async throws {
         let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-no-columns.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -733,8 +770,7 @@ struct LibraryCSVImportServiceTests {
     private func makeTemporaryDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }

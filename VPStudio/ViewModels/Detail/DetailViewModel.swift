@@ -60,7 +60,20 @@ extension DetailIndexerManaging {
 
 protocol DetailDebridManaging: Sendable {
     func checkCacheAcrossServices(hashes: [String]) async throws -> [String: (CacheStatus, DebridServiceType)]
-    func resolveStream(hash: String, preferredService: DebridServiceType?, seasonNumber: Int?, episodeNumber: Int?) async throws -> StreamInfo
+    func resolveStream(
+        hash: String,
+        preferredService: DebridServiceType?,
+        magnetURI: String?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) async throws -> StreamInfo
+    func unrestrict(link: String, serviceType: DebridServiceType) async throws -> StreamInfo
+}
+
+extension DetailDebridManaging {
+    func unrestrict(link: String, serviceType: DebridServiceType) async throws -> StreamInfo {
+        throw DebridError.networkError("Direct debrid link refresh is not supported.")
+    }
 }
 
 protocol DetailDownloadManaging: Sendable {
@@ -594,6 +607,19 @@ final class DetailViewModel {
         beginLoading(.streamResolution)
         defer { finishLoadingIfNeeded(for: .streamResolution) }
 
+        if let directStream = immediateDirectStream(for: torrent) {
+            let stream = attachDirectStreamRecoveryContextIfPossible(
+                to: directStream,
+                torrent: torrent,
+                preferredService: nil,
+                seasonNumber: mediaItem?.type == .series ? selectedEpisode?.seasonNumber : nil,
+                episodeNumber: mediaItem?.type == .series ? selectedEpisode?.episodeNumber : nil
+            )
+            debridResolver.appendStreamIfNeeded(stream)
+            lastFailedTorrent = nil
+            return stream
+        }
+
         do {
             let preferredService = torrent.cachedOnService.flatMap(DebridServiceType.init(rawValue:))
             let seasonNumber = mediaItem?.type == .series ? selectedEpisode?.seasonNumber : nil
@@ -601,6 +627,7 @@ final class DetailViewModel {
             let resolvedStream = try await debridManager.resolveStream(
                 hash: torrent.infoHash,
                 preferredService: preferredService,
+                magnetURI: torrent.magnetURI,
                 seasonNumber: seasonNumber,
                 episodeNumber: episodeNumber
             )
@@ -630,22 +657,34 @@ final class DetailViewModel {
         defer { finishLoadingIfNeeded(for: .downloadQueue) }
 
         do {
-            let preferredService = torrent.cachedOnService.flatMap(DebridServiceType.init(rawValue:))
             let seasonNumber = item.type == .series ? selectedEpisode?.seasonNumber : nil
             let episodeNumber = item.type == .series ? selectedEpisode?.episodeNumber : nil
-            let resolvedStream = try await debridManager.resolveStream(
-                hash: torrent.infoHash,
-                preferredService: preferredService,
-                seasonNumber: seasonNumber,
-                episodeNumber: episodeNumber
-            )
-            let stream = attachRecoveryContext(
-                to: resolvedStream,
-                torrent: torrent,
-                preferredService: preferredService,
-                seasonNumber: seasonNumber,
-                episodeNumber: episodeNumber
-            )
+            let stream: StreamInfo
+            if let directStream = immediateDirectStream(for: torrent) {
+                stream = attachDirectStreamRecoveryContextIfPossible(
+                    to: directStream,
+                    torrent: torrent,
+                    preferredService: nil,
+                    seasonNumber: seasonNumber,
+                    episodeNumber: episodeNumber
+                )
+            } else {
+                let preferredService = torrent.cachedOnService.flatMap(DebridServiceType.init(rawValue:))
+                let resolvedStream = try await debridManager.resolveStream(
+                    hash: torrent.infoHash,
+                    preferredService: preferredService,
+                    magnetURI: torrent.magnetURI,
+                    seasonNumber: seasonNumber,
+                    episodeNumber: episodeNumber
+                )
+                stream = attachRecoveryContext(
+                    to: resolvedStream,
+                    torrent: torrent,
+                    preferredService: preferredService,
+                    seasonNumber: seasonNumber,
+                    episodeNumber: episodeNumber
+                )
+            }
             guard mediaItem?.id == item.id else { return }
             downloadStates[hash] = .downloading
             let enqueuedTask = try await downloadManager.enqueueDownload(
@@ -671,6 +710,12 @@ final class DetailViewModel {
 
     func downloadState(for torrent: TorrentResult) -> DownloadButtonState {
         downloadStates[torrent.infoHash] ?? .idle
+    }
+
+    private func immediateDirectStream(for torrent: TorrentResult) -> StreamInfo? {
+        guard let directStream = torrent.directStreamInfo else { return nil }
+        guard !torrent.prefersDebridResolutionOverDirectURL else { return nil }
+        return directStream
     }
 
     func refreshDownloadStates() async {
@@ -1046,7 +1091,9 @@ final class DetailViewModel {
     ) -> PlayerSessionRequest {
         let title = mediaItem?.title ?? preview.title
         let mediaIdentifier = mediaItem?.id ?? preview.id
+        let tmdbId = mediaItem?.tmdbId ?? preview.tmdbId
         let activeEpisodeId = (mediaItem?.type == .series ? selectedEpisode?.id : nil)
+        let nextEpisode = nextEpisodeCandidate()
         let streamPool = PlayerSessionRouting.sessionStreams(
             primary: stream,
             available: availableStreams ?? debridResolver.streams
@@ -1057,7 +1104,30 @@ final class DetailViewModel {
             availableStreams: streamPool,
             mediaTitle: title,
             mediaId: mediaIdentifier,
-            episodeId: activeEpisodeId
+            tmdbId: tmdbId,
+            episodeId: activeEpisodeId,
+            nextEpisode: nextEpisode
+        )
+    }
+
+    private func nextEpisodeCandidate() -> PlayerSessionRequest.NextEpisodeCandidate? {
+        guard mediaItem?.type == .series, let selectedEpisode else { return nil }
+        let sortedEpisodes = episodes.sorted {
+            if $0.seasonNumber != $1.seasonNumber {
+                return $0.seasonNumber < $1.seasonNumber
+            }
+            return $0.episodeNumber < $1.episodeNumber
+        }
+        guard let currentIndex = sortedEpisodes.firstIndex(where: { $0.id == selectedEpisode.id }),
+              sortedEpisodes.indices.contains(currentIndex + 1) else {
+            return nil
+        }
+        let next = sortedEpisodes[currentIndex + 1]
+        return PlayerSessionRequest.NextEpisodeCandidate(
+            episodeId: next.id,
+            seasonNumber: next.seasonNumber,
+            episodeNumber: next.episodeNumber,
+            title: next.displayTitle
         )
     }
 
@@ -1072,9 +1142,38 @@ final class DetailViewModel {
         let recoveryContext = StreamRecoveryContext(
             infoHash: torrent.infoHash,
             preferredService: actualService,
+            magnetURI: torrent.magnetURI,
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber
         )
+        return stream.withRecoveryContext(recoveryContext)
+    }
+
+    private func attachDirectStreamRecoveryContextIfPossible(
+        to stream: StreamInfo,
+        torrent: TorrentResult,
+        preferredService: DebridServiceType?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) -> StreamInfo {
+        let magnetHash = JSONValueParsing.extractInfoHash(from: torrent.magnetURI)
+            .flatMap(DebridHashValidator.normalizedInfoHash)
+        let recoveryHash = DebridHashValidator.normalizedInfoHash(torrent.infoHash)
+            ?? magnetHash
+        guard let recoveryHash else {
+            return stream
+        }
+
+        guard let recoveryContext = StreamRecoveryContext(
+            infoHash: recoveryHash,
+            preferredService: preferredService,
+            magnetURI: torrent.magnetURI,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber
+        ) else {
+            return stream
+        }
+
         return stream.withRecoveryContext(recoveryContext)
     }
 

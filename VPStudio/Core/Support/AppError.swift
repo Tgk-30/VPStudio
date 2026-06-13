@@ -215,6 +215,8 @@ enum AppError: LocalizedError, Equatable, Sendable {
             return "The file is still processing. Retry shortly."
         case .rateLimited:
             return "Wait briefly, then retry."
+        case .unavailableForLegalReasons:
+            return "Try another source or switch to another active debrid provider."
         case .httpError:
             return "Verify debrid service availability and API token settings."
         case .networkError, .timeout:

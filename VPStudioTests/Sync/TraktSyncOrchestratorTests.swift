@@ -90,11 +90,7 @@ private func makeStubSession(
 // MARK: - Test Helpers
 
 private func makeTempDatabase() async throws -> DatabaseManager {
-    let tempDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbPath = tempDir.appendingPathComponent("orchestrator-test.sqlite").path
-    let database = try DatabaseManager(path: dbPath)
+    let database = try DatabaseManager(inMemoryNamed: "orchestrator-test-\(UUID().uuidString)")
     try await database.migrate()
     return database
 }

@@ -198,43 +198,35 @@ enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
     }
 
     var displayName: String {
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return "Like / Dislike"
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return "1-10"
         case .oneToHundred:
             return "1-100"
-        case .fiveStar, .tenPoint:
-            return "1-10"
         }
     }
 
     var minimumValue: Double {
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return 0
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return 1
         case .oneToHundred:
-            return 1
-        case .fiveStar, .tenPoint:
             return 1
         }
     }
 
     var maximumValue: Double {
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return 1
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return 10
         case .oneToHundred:
             return 100
-        case .fiveStar:
-            return 5
-        case .tenPoint:
-            return 10
         }
     }
 
@@ -244,33 +236,25 @@ enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
 
     func normalizedValue(_ value: Double) -> Double {
         let clamped = clamp(value)
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return clamped >= 0.5 ? 1.0 : 0.0
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return (clamped - 1.0) / 9.0
         case .oneToHundred:
             return (clamped - 1.0) / 99.0
-        case .fiveStar:
-            return (clamped - 1.0) / 4.0
-        case .tenPoint:
-            return (clamped - 1.0) / 9.0
         }
     }
 
     func value(fromNormalized normalized: Double) -> Double {
         let bounded = min(max(normalized, 0.0), 1.0)
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return bounded >= 0.5 ? 1.0 : 0.0
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return round((bounded * 9.0) + 1.0)
         case .oneToHundred:
             return round((bounded * 99.0) + 1.0)
-        case .fiveStar:
-            return round((bounded * 4.0) + 1.0)
-        case .tenPoint:
-            return round((bounded * 9.0) + 1.0)
         }
     }
 
@@ -287,17 +271,13 @@ enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
 
     func format(_ value: Double) -> String {
         let clamped = clamp(value)
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return clamped >= 0.5 ? "Liked" : "Disliked"
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return "\(Int(clamped))/10"
         case .oneToHundred:
             return "\(Int(clamped))/100"
-        case .fiveStar:
-            return "\(Int(clamped))/5"
-        case .tenPoint:
-            return "\(Int(clamped))/10"
         }
     }
 }

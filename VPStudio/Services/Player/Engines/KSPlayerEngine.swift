@@ -62,6 +62,7 @@ struct KSPlayerEngine: PlayerEngine {
         // Hard read-timeout: if FFmpeg can't get data within 30 s it raises an
         // error rather than hanging the readiness poll indefinitely.
         options.formatContextOptions["rw_timeout"] = 30_000_000 // 30 s in µs
+        Self.applyRequestHeaders(from: stream, to: options)
 
         return PreparedPlaybackSession(
             engineKind: kind,
@@ -86,6 +87,29 @@ struct KSPlayerEngine: PlayerEngine {
         let ext = stream.streamURL.pathExtension.lowercased()
         if ["mkv", "ts", "m2ts", "avi", "wmv", "flv", "webm"].contains(ext) { return 18 }
         return 12
+    }
+
+    static func ffmpegHeaderString(for headers: [String: String]) -> String? {
+        guard let normalized = StreamInfo.normalizedRequestHeaders(headers) else {
+            return nil
+        }
+
+        let lines = normalized
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { "\($0.key): \($0.value)" }
+        return lines.joined(separator: "\r\n") + "\r\n"
+    }
+
+    private static func applyRequestHeaders(from stream: StreamInfo, to options: KSOptions) {
+        guard let headers = StreamInfo.normalizedRequestHeaders(stream.requestHeaders),
+              let headerString = ffmpegHeaderString(for: headers) else {
+            return
+        }
+
+        options.formatContextOptions["headers"] = headerString
+        if let userAgent = headers.first(where: { $0.key.localizedCaseInsensitiveCompare("User-Agent") == .orderedSame })?.value {
+            options.formatContextOptions["user_agent"] = userAgent
+        }
     }
 
     // MARK: - Readiness Poll

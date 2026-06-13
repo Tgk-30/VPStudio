@@ -188,6 +188,29 @@ struct VPPlayerEngineSubtitleLoadingTests {
         #expect(engine.subtitleTracks[1].language == "es")
     }
 
+    @Test @MainActor func selectSubtitleTrackPendingSelectionIsAppliedWhenTracksAppear() throws {
+        let engine = VPPlayerEngine()
+        let first = try writeTempSRT(content: sampleSRT)
+        let second = try writeTempSRT(content: sampleSRT)
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+
+        let subtitles = [
+            Subtitle(id: "first", language: "en", fileName: "first.srt", url: first.absoluteString, format: .srt),
+            Subtitle(id: "second", language: "es", fileName: "second.srt", url: second.absoluteString, format: .srt),
+        ]
+
+        engine.selectSubtitleTrack(1)
+        engine.loadExternalSubtitles(subtitles)
+        engine.updateSubtitleText(at: 2.0)
+
+        #expect(engine.selectedSubtitleTrack == 1)
+        #expect(engine.subtitlesEnabled)
+        #expect(engine.currentSubtitleText == "Hello, world!")
+    }
+
     @Test @MainActor func loadExternalSubtitlesSkipsUnsupportedFormats() throws {
         let engine = VPPlayerEngine()
         let url = try writeTempSRT(content: sampleSRT)
@@ -235,6 +258,99 @@ struct VPPlayerEngineSubtitleLoadingTests {
         // so updateSubtitleText should produce nil text
         engine.updateSubtitleText(at: 0)
         #expect(engine.currentSubtitleText == nil, "Missing file should produce no subtitle cues")
+    }
+
+    @Test @MainActor func loadExternalSubtitlesKeepsSubtitlesOffAfterExplicitDisable() throws {
+        let engine = VPPlayerEngine()
+        let url = try writeTempSRT(content: sampleSRT)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        engine.subtitlesEnabled = true
+        engine.currentSubtitleText = "Old text"
+        engine.selectSubtitleTrack(-1)
+
+        let subtitle = Subtitle(
+            id: "explicit-off",
+            language: "en",
+            fileName: "movie.srt",
+            url: url.absoluteString,
+            format: .srt
+        )
+        engine.loadExternalSubtitles([subtitle])
+
+        #expect(engine.subtitleTracks.count == 1)
+        #expect(engine.selectedSubtitleTrack == -1)
+        #expect(engine.subtitlesEnabled == false)
+        #expect(engine.currentSubtitleText == nil)
+    }
+
+    @Test @MainActor func explicitSubtitleDisablePersistsThroughEmptyReload() throws {
+        let engine = VPPlayerEngine()
+        let url1 = try writeTempSRT(content: sampleSRT)
+        let url2 = try writeTempSRT(content: sampleSRT)
+        defer {
+            try? FileManager.default.removeItem(at: url1)
+            try? FileManager.default.removeItem(at: url2)
+        }
+
+        let first = Subtitle(
+            id: "first",
+            language: "en",
+            fileName: "first.srt",
+            url: url1.absoluteString,
+            format: .srt
+        )
+        let second = Subtitle(
+            id: "second",
+            language: "en",
+            fileName: "second.srt",
+            url: url2.absoluteString,
+            format: .srt
+        )
+
+        engine.loadExternalSubtitles([first])
+        engine.selectSubtitleTrack(-1)
+        engine.loadExternalSubtitles([])
+        engine.loadExternalSubtitles([second])
+
+        #expect(engine.subtitleTracks.count == 1)
+        #expect(engine.selectedSubtitleTrack == -1)
+        #expect(engine.subtitlesEnabled == false)
+    }
+
+    @Test @MainActor func clearSubtitleSelectionDoesNotPersistAsExplicitDisable() throws {
+        let engine = VPPlayerEngine()
+        let url1 = try writeTempSRT(content: sampleSRT)
+        let url2 = try writeTempSRT(content: sampleSRT)
+        defer {
+            try? FileManager.default.removeItem(at: url1)
+            try? FileManager.default.removeItem(at: url2)
+        }
+
+        let first = Subtitle(
+            id: "first",
+            language: "en",
+            fileName: "first.srt",
+            url: url1.absoluteString,
+            format: .srt
+        )
+        let second = Subtitle(
+            id: "second",
+            language: "en",
+            fileName: "second.srt",
+            url: url2.absoluteString,
+            format: .srt
+        )
+
+        engine.loadExternalSubtitles([first])
+        engine.currentTime = 2.0
+        engine.clearSubtitleSelection()
+        engine.loadExternalSubtitles([second])
+
+        #expect(engine.subtitleTracks.count == 1)
+        #expect(engine.selectedSubtitleTrack == 0)
+        #expect(engine.subtitlesEnabled == true)
+        #expect(engine.currentSubtitleText == "Hello, world!")
     }
 }
 

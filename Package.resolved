@@ -1,5 +1,5 @@
 {
-  "originHash" : "021fb727f6fd0b4372ba709be6a368169214fd61e3e9150d99d788b94b4616df",
+  "originHash" : "c995380962159b77184af29bebe84362ce7f21a47f0f7527620e697fc4c8744f",
   "pins" : [
     {
       "identity" : "ffmpegkit",
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-asn1.git",
       "state" : {
-        "revision" : "9f542610331815e29cc3821d3b6f488db8715517",
-        "version" : "1.6.0"
+        "revision" : "eb50cbd14606a9161cbc5d452f18797c90ef0bab",
+        "version" : "1.7.0"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
       "state" : {
-        "revision" : "bb4ba815dab96d4edc1e0b86d7b9acf9ff973a84",
-        "version" : "4.3.1"
+        "revision" : "1b6b2e274e85105bfa155183145a1dcfd63331f1",
+        "version" : "4.5.0"
       }
     },
     {
@@ -62,6 +62,24 @@
       "state" : {
         "revision" : "0aeefadec459ce8e11a333769950fb86183aca43",
         "version" : "2.3.5"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "state" : {
+        "revision" : "0687f71944021d616d34d922343dcef086855920",
+        "version" : "600.0.1"
+      }
+    },
+    {
+      "identity" : "swift-testing",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-testing",
+      "state" : {
+        "revision" : "399f76dcd91e4c688ca2301fa24a8cc6d9927211",
+        "version" : "0.99.0"
       }
     },
     {

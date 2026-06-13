@@ -101,6 +101,91 @@ struct TorrentRankingScoringTests {
         #expect(brScore > wdScore)
     }
 
+    @Test func hdrBonusesRankEveryExplicitFormat() {
+        let formats: [HDRFormat] = [.dolbyVision, .hdr10Plus, .hdr10, .hlg, .sdr]
+        let scores = formats.map { format in
+            TorrentRanking.score(
+                makeTorrent(hdr: format),
+                preferredQuality: .hd1080p,
+                preferCached: false,
+                preferAtmos: false,
+                hdrPreference: .auto
+            )
+        }
+
+        #expect(scores[0] > scores[1])
+        #expect(scores[1] > scores[2])
+        #expect(scores[2] > scores[3])
+        #expect(scores[3] > scores[4])
+    }
+
+    @Test func audioBonusesRankEveryExplicitFormat() {
+        let scoresByAudio = Dictionary(uniqueKeysWithValues: AudioFormat.allCases.map { audio in
+            (
+                audio,
+                TorrentRanking.score(
+                    makeTorrent(audio: audio),
+                    preferredQuality: .hd1080p,
+                    preferCached: false,
+                    preferAtmos: false,
+                    hdrPreference: .auto
+                )
+            )
+        })
+
+        #expect(scoresByAudio[.atmos]! > scoresByAudio[.trueHD]!)
+        #expect(scoresByAudio[.trueHD]! == scoresByAudio[.dtsHDMA]!)
+        #expect(scoresByAudio[.trueHD]! > scoresByAudio[.eac3]!)
+        #expect(scoresByAudio[.eac3]! > scoresByAudio[.dts]!)
+        #expect(scoresByAudio[.dts]! > scoresByAudio[.ac3]!)
+        #expect(scoresByAudio[.ac3]! > scoresByAudio[.flac]!)
+        #expect(scoresByAudio[.flac]! > scoresByAudio[.aac]!)
+        #expect(scoresByAudio[.aac]! > scoresByAudio[.unknown]!)
+    }
+
+    @Test func codecBonusesRankEveryExplicitCodec() {
+        let scoresByCodec = Dictionary(uniqueKeysWithValues: VideoCodec.allCases.map { codec in
+            (
+                codec,
+                TorrentRanking.score(
+                    makeTorrent(codec: codec),
+                    preferredQuality: .hd1080p,
+                    preferCached: false,
+                    preferAtmos: false,
+                    hdrPreference: .auto
+                )
+            )
+        })
+
+        #expect(scoresByCodec[.h265]! > scoresByCodec[.av1]!)
+        #expect(scoresByCodec[.av1]! > scoresByCodec[.h264]!)
+        #expect(scoresByCodec[.h264]! > scoresByCodec[.xvid]!)
+        #expect(scoresByCodec[.xvid]! > scoresByCodec[.unknown]!)
+    }
+
+    @Test func sourceBonusesRankEveryExplicitSource() {
+        let scoresBySource = Dictionary(uniqueKeysWithValues: SourceType.allCases.map { source in
+            (
+                source,
+                TorrentRanking.score(
+                    makeTorrent(source: source),
+                    preferredQuality: .hd1080p,
+                    preferCached: false,
+                    preferAtmos: false,
+                    hdrPreference: .auto
+                )
+            )
+        })
+
+        #expect(scoresBySource[.bluRay]! > scoresBySource[.webDL]!)
+        #expect(scoresBySource[.webDL]! > scoresBySource[.webRip]!)
+        #expect(scoresBySource[.webRip]! > scoresBySource[.hdRip]!)
+        #expect(scoresBySource[.hdRip]! > scoresBySource[.hdtv]!)
+        #expect(scoresBySource[.hdtv]! > scoresBySource[.dvdRip]!)
+        #expect(scoresBySource[.dvdRip]! > scoresBySource[.cam]!)
+        #expect(scoresBySource[.cam]! == scoresBySource[.unknown]!)
+    }
+
     // -- User preferences are bonuses, not overrides --
 
     @Test func cachedBoostsWithinSameTier() {
@@ -123,6 +208,47 @@ struct TorrentRankingScoringTests {
         #expect(uncachedScore > cachedScore, "Uncached 1080p must still beat cached 720p")
     }
 
+    @Test func cachedPreferenceUsesQualitySpecificBoostBands() {
+        let cases: [(VideoQuality, Int)] = [
+            (.uhd4k, 80),
+            (.hd1080p, 70),
+            (.hd720p, 60),
+            (.sd480p, 50),
+            (.sd, 50),
+            (.unknown, 50),
+        ]
+
+        for (quality, expectedBoost) in cases {
+            let cached = makeTorrent(quality: quality, isCached: true)
+            let uncached = makeTorrent(quality: quality, isCached: false)
+            let cachedScore = TorrentRanking.score(
+                cached,
+                preferredQuality: .hd1080p,
+                preferCached: true,
+                preferAtmos: false,
+                hdrPreference: .auto
+            )
+            let uncachedScore = TorrentRanking.score(
+                uncached,
+                preferredQuality: .hd1080p,
+                preferCached: true,
+                preferAtmos: false,
+                hdrPreference: .auto
+            )
+
+            #expect(cachedScore - uncachedScore == expectedBoost)
+        }
+    }
+
+    @Test func cachedResultsStillGetSmallBoostWhenCachePreferenceIsOff() {
+        let cached = makeTorrent(isCached: true)
+        let uncached = makeTorrent(isCached: false)
+        let cachedScore = TorrentRanking.score(cached, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+        let uncachedScore = TorrentRanking.score(uncached, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+
+        #expect(cachedScore - uncachedScore == 20)
+    }
+
     @Test func atmosPreferenceAddsExtraBoost() {
         let atmos = makeTorrent(audio: .atmos)
 
@@ -139,6 +265,49 @@ struct TorrentRankingScoringTests {
         let withAutoPref = TorrentRanking.score(dv, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
 
         #expect(withDVPref > withAutoPref)
+    }
+
+    @Test func hdr10PreferenceBoostsHdr10AndHdr10PlusOnly() {
+        let hdr10 = makeTorrent(hdr: .hdr10)
+        let hdr10Plus = makeTorrent(hdr: .hdr10Plus)
+        let dolbyVision = makeTorrent(hdr: .dolbyVision)
+
+        let hdr10Boost = TorrentRanking.score(hdr10, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .hdr10)
+            - TorrentRanking.score(hdr10, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+        let hdr10PlusBoost = TorrentRanking.score(hdr10Plus, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .hdr10)
+            - TorrentRanking.score(hdr10Plus, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+        let dolbyVisionBoost = TorrentRanking.score(dolbyVision, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .hdr10)
+            - TorrentRanking.score(dolbyVision, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+
+        #expect(hdr10Boost == 20)
+        #expect(hdr10PlusBoost == 20)
+        #expect(dolbyVisionBoost == 0)
+    }
+
+    @Test func dolbyVisionPreferenceDoesNotBoostNonDolbyFormats() {
+        let hdr10 = makeTorrent(hdr: .hdr10)
+        let sdr = makeTorrent(hdr: .sdr)
+
+        let hdr10Boost = TorrentRanking.score(hdr10, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .dolbyVision)
+            - TorrentRanking.score(hdr10, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+        let sdrBoost = TorrentRanking.score(sdr, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .dolbyVision)
+            - TorrentRanking.score(sdr, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+
+        #expect(hdr10Boost == 0)
+        #expect(sdrBoost == 0)
+    }
+
+    @Test func atmosPreferenceDoesNotBoostNonSpatialAudioFormats() {
+        let aac = makeTorrent(audio: .aac)
+        let ac3 = makeTorrent(audio: .ac3)
+
+        let aacBoost = TorrentRanking.score(aac, preferredQuality: .hd1080p, preferCached: false, preferAtmos: true, hdrPreference: .auto)
+            - TorrentRanking.score(aac, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+        let ac3Boost = TorrentRanking.score(ac3, preferredQuality: .hd1080p, preferCached: false, preferAtmos: true, hdrPreference: .auto)
+            - TorrentRanking.score(ac3, preferredQuality: .hd1080p, preferCached: false, preferAtmos: false, hdrPreference: .auto)
+
+        #expect(aacBoost == 0)
+        #expect(ac3Boost == 0)
     }
 
     // -- Seeders --
@@ -247,6 +416,29 @@ struct TorrentRankingSortTests {
         #expect(sorted[0].infoHash == "only")
     }
 
+    @Test func concurrentSortUsesSynchronousPathForSmallInputs() async {
+        let lowSeeder = TorrentResult(
+            infoHash: "low", title: "", sizeBytes: 0,
+            seeders: 10, leechers: 0, quality: .hd1080p, codec: .h264,
+            audio: .aac, source: .webDL, hdr: .sdr, indexerName: ""
+        )
+        let highSeeder = TorrentResult(
+            infoHash: "high", title: "", sizeBytes: 0,
+            seeders: 100, leechers: 0, quality: .hd1080p, codec: .h264,
+            audio: .aac, source: .webDL, hdr: .sdr, indexerName: ""
+        )
+
+        let sorted = await TorrentRanking.sortConcurrently(
+            [lowSeeder, highSeeder],
+            preferredQuality: .hd1080p,
+            preferCached: false,
+            preferAtmos: false,
+            hdrPreference: .auto
+        )
+
+        #expect(sorted.map(\.infoHash) == ["high", "low"])
+    }
+
     @Test func concurrentSortMatchesSynchronousSort() async {
         var torrents: [TorrentResult] = []
         for index in 0..<32 {
@@ -284,5 +476,33 @@ struct TorrentRankingSortTests {
         )
 
         #expect(sync.map(\.id) == concurrent.map(\.id))
+    }
+
+    @Test func concurrentSortPreservesInputOrderWhenScoresAndSeedersTie() async {
+        let torrents = (0..<12).map { index in
+            TorrentResult(
+                infoHash: "tie-\(index)",
+                title: "Tie.\(index).1080p",
+                sizeBytes: 1_000_000_000,
+                seeders: 42,
+                leechers: 0,
+                quality: .hd1080p,
+                codec: .h264,
+                audio: .aac,
+                source: .webDL,
+                hdr: .sdr,
+                indexerName: "test"
+            )
+        }
+
+        let sorted = await TorrentRanking.sortConcurrently(
+            torrents,
+            preferredQuality: .hd1080p,
+            preferCached: false,
+            preferAtmos: false,
+            hdrPreference: .auto
+        )
+
+        #expect(sorted.map(\.infoHash) == torrents.map(\.infoHash))
     }
 }

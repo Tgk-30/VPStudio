@@ -9,8 +9,7 @@ struct DetailLifecycleBehaviorTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("detail-lifecycle.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "detail-lifecycle-\(UUID().uuidString)")
         try await database.migrate()
         let secretStore = TestSecretStore()
         let settingsManager = SettingsManager(database: database, secretStore: secretStore)
@@ -250,8 +249,220 @@ struct DetailLifecycleBehaviorTests {
         _ = await viewModel.resolveStream(torrent: torrent)
 
         #expect(await debrid.lastResolvedHash == "young-pope-pack")
+        #expect(await debrid.lastResolvedMagnetURI == torrent.magnetURI)
         #expect(await debrid.lastResolvedSeasonNumber == 1)
         #expect(await debrid.lastResolvedEpisodeNumber == 5)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamUsesDirectStremioURLWithoutDebridRoundTrip() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttdirect", type: .movie, title: "Direct")
+
+        var torrent = Fixtures.torrent(
+            hash: "abcdef1234567890abcdef1234567890abcdef12",
+            title: "Direct.2026.1080p.WEB-DL.mkv",
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://cdn.example.com/direct/Direct.2026.1080p.WEB-DL.mkv?token=abc"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.debridService == "Stremio Torrentio")
+        #expect(stream?.recoveryContext?.infoHash == torrent.infoHash)
+        #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
+        #expect(await debrid.lastResolvedHash == nil)
+        #expect(viewModel.debridResolver.streams.first == stream)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamRefreshesStremioResolverURLThroughLocalDebridWithHash() async {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        await debrid.setResolvedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/generated/Regional.Release.mkv",
+                fileName: "Regional.Release.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttresolver", type: .movie, title: "Resolver")
+
+        var torrent = Fixtures.torrent(
+            hash: hash,
+            title: "Regional.Release.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://torrentio.strem.fun/resolve/rd/\(hash)/Regional.Release.mkv"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == "https://rd.example.com/generated/Regional.Release.mkv")
+        #expect(stream?.debridService == DebridServiceType.realDebrid.rawValue)
+        #expect(stream?.recoveryContext?.infoHash == hash)
+        #expect(await debrid.lastResolvedHash == hash)
+        #expect(await debrid.lastResolvedMagnetURI == torrent.magnetURI)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamUsesStremioRealDebridGeneratedURLDirectlyWithHash() async {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        await debrid.setResolvedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/generated/Regional.Release.mkv",
+                fileName: "Regional.Release.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttrdgenerated", type: .movie, title: "Resolver")
+
+        var torrent = Fixtures.torrent(
+            hash: hash,
+            title: "Regional.Release.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://sea1.download.real-debrid.com/d/abc/Regional.Release.mkv"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.debridService == "Stremio Torrentio")
+        #expect(stream?.recoveryContext?.infoHash == hash)
+        #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
+        #expect(await debrid.lastResolvedHash == nil)
+        #expect(await debrid.lastResolvedMagnetURI == nil)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamUsesStremioRealDebridGeneratedURLDirectlyWithoutHash() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        await debrid.setUnrestrictedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/refreshed/Regional.Release.mkv",
+                fileName: "Regional.Release.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttrdgenerated-direct", type: .movie, title: "Resolver")
+
+        var torrent = Fixtures.torrent(
+            hash: "direct-regional",
+            title: "Regional.Release.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://sea1.download.real-debrid.com/d/abc/Regional.Release.mkv"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.debridService == "Stremio Torrentio")
+        #expect(stream?.recoveryContext == nil)
+        #expect(await debrid.lastUnrestrictedLink == nil)
+        #expect(await debrid.lastUnrestrictedServiceType == nil)
+        #expect(await debrid.lastResolvedHash == nil)
+    }
+
+    @Test
+    @MainActor
+    func queueDownloadRefreshesStremioResolverURLThroughLocalDebridWithHash() async {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let downloads = StubDownloadManager()
+        await debrid.setResolvedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/generated/Regional.Download.mkv",
+                fileName: "Regional.Download.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: downloads
+        )
+        viewModel.mediaItem = MediaItem(id: "ttresolver-download", type: .movie, title: "Resolver Download")
+
+        var torrent = Fixtures.torrent(
+            hash: hash,
+            title: "Regional.Download.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://torrentio.strem.fun/resolve/realdebrid/\(hash)/Regional.Download.mkv"
+
+        await viewModel.queueDownload(torrent: torrent)
+
+        let tasks = (try? await downloads.listDownloads()) ?? []
+        #expect(await debrid.lastResolvedHash == hash)
+        #expect(await debrid.lastResolvedMagnetURI == torrent.magnetURI)
+        #expect(tasks.first?.streamURL == "https://rd.example.com/generated/Regional.Download.mkv")
+        #expect(viewModel.downloadState(for: torrent) == .downloading)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamDoesNotAttachRecoveryContextForSyntheticDirectOnlyResult() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttdirect", type: .movie, title: "Direct")
+
+        var torrent = Fixtures.torrent(
+            hash: "direct-abcdef1234567890abcdef1234567890abcdef12",
+            title: "Direct.2026.1080p.WEB-DL.mkv",
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://cdn.example.com/direct/Direct.2026.1080p.WEB-DL.mkv?token=abc"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.recoveryContext == nil)
+        #expect(await debrid.lastResolvedHash == nil)
     }
 
     @Test
@@ -286,6 +497,7 @@ struct DetailLifecycleBehaviorTests {
 
         #expect(stream?.recoveryContext?.infoHash == "young-pope-pack")
         #expect(stream?.recoveryContext?.preferredService == .allDebrid)
+        #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
         #expect(stream?.recoveryContext?.seasonNumber == 1)
         #expect(stream?.recoveryContext?.episodeNumber == 5)
         #expect(viewModel.debridResolver.streams.first?.recoveryContext == stream?.recoveryContext)
@@ -294,10 +506,7 @@ struct DetailLifecycleBehaviorTests {
     @Test
     @MainActor
     func loadDetailFallsBackToMostRecentEpisodeHistoryForSeries() async throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let db = try DatabaseManager(path: tempDir.appendingPathComponent("detail-history.sqlite").path)
+        let db = try DatabaseManager(inMemoryNamed: "detail-history-\(UUID().uuidString)")
         try await db.migrate()
 
         let history = WatchHistory(
@@ -610,7 +819,13 @@ private actor RetryableDetailDebridManager: DetailDebridManaging {
         [:]
     }
 
-    func resolveStream(hash: String, preferredService: DebridServiceType?, seasonNumber: Int?, episodeNumber: Int?) async throws -> StreamInfo {
+    func resolveStream(
+        hash: String,
+        preferredService: DebridServiceType?,
+        magnetURI: String?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) async throws -> StreamInfo {
         resolveCalls += 1
         if remainingResolveFailures > 0 {
             remainingResolveFailures -= 1

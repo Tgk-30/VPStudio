@@ -1,5 +1,15 @@
 import SwiftUI
 
+enum DiscoverInitialLoadPolicy {
+    static func shouldStart(hasPerformedInitialLoad: Bool) -> Bool {
+        !hasPerformedInitialLoad
+    }
+
+    static func shouldMarkCompleted(isCancelled: Bool) -> Bool {
+        !isCancelled
+    }
+}
+
 struct DiscoverMediaRowSpec: Identifiable, Equatable {
     let id: String
     let title: String
@@ -145,6 +155,45 @@ enum DiscoverLoadingPresentationPolicy {
             || aiRecommendationCount > 0
 
         return hasRenderableContent ? .refreshingRetainedContent : .blockingSkeleton
+    }
+}
+
+struct DiscoverErrorPresentation: Equatable {
+    let isSetupError: Bool
+    let artworkName: String
+    let tagText: String
+    let tagSymbol: String
+    let headline: String
+    let message: String
+    let retryTitle: String
+}
+
+enum DiscoverErrorPresentationPolicy {
+    static let setupInlineMessage = "Add your TMDB key in Settings, then come back here for live trending rows and hero art. Library and Downloads keep working in the meantime."
+
+    static func presentation(for error: AppError) -> DiscoverErrorPresentation {
+        let isSetupError = error.requiresTMDBSetupAction
+        return DiscoverErrorPresentation(
+            isSetupError: isSetupError,
+            artworkName: isSetupError ? "genre-art-new" : "genre-art-deep",
+            tagText: isSetupError ? "Setup needed" : "Discover needs attention",
+            tagSymbol: isSetupError ? "sparkles" : "arrow.clockwise",
+            headline: isSetupError ? "Finish setup to unlock Discover" : (error.errorDescription ?? "Discover hit a snag"),
+            message: inlineMessage(for: error, isSetupError: isSetupError),
+            retryTitle: isSetupError ? "Retry Later" : "Retry"
+        )
+    }
+
+    private static func inlineMessage(for error: AppError, isSetupError: Bool) -> String {
+        if isSetupError {
+            return setupInlineMessage
+        }
+
+        if let suggestion = error.recoverySuggestion, !suggestion.isEmpty {
+            return suggestion
+        }
+
+        return error.errorDescription ?? "Something went wrong."
     }
 }
 
@@ -303,9 +352,12 @@ struct DiscoverView: View {
             await viewModel.refresh()
         }
         .task {
-            guard !viewModel.hasPerformedInitialLoad else { return }
-            viewModel.hasPerformedInitialLoad = true
+            guard DiscoverInitialLoadPolicy.shouldStart(
+                hasPerformedInitialLoad: viewModel.hasPerformedInitialLoad
+            ) else { return }
             await reloadDiscoverForLatestTMDBKey()
+            guard DiscoverInitialLoadPolicy.shouldMarkCompleted(isCancelled: Task.isCancelled) else { return }
+            viewModel.hasPerformedInitialLoad = true
         }
         .task(id: accessibilityVoiceOverEnabled) {
             guard !accessibilityVoiceOverEnabled else { return }
@@ -376,18 +428,17 @@ struct DiscoverView: View {
 
     @ViewBuilder
     private func discoverStatePanel(error: AppError) -> some View {
-        let setupError = error.requiresTMDBSetupAction
-        let artworkName = setupError ? "genre-art-new" : "genre-art-deep"
-        let accent: Color = setupError ? .yellow : .orange
+        let presentation = DiscoverErrorPresentationPolicy.presentation(for: error)
+        let accent: Color = presentation.isSetupError ? .yellow : .orange
 
         CinematicStateCard(
             accent: accent,
-            artworkName: artworkName,
+            artworkName: presentation.artworkName,
             minHeight: 228
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: setupError ? "sparkles.rectangle.stack.fill" : "exclamationmark.triangle.fill")
+                    Image(systemName: presentation.isSetupError ? "sparkles.rectangle.stack.fill" : "exclamationmark.triangle.fill")
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(width: 50, height: 50)
@@ -399,13 +450,13 @@ struct DiscoverView: View {
 
                     VStack(alignment: .leading, spacing: 6) {
                         GlassTag(
-                            text: setupError ? "Setup needed" : "Discover needs attention",
+                            text: presentation.tagText,
                             tintColor: accent.opacity(0.22),
-                            symbol: setupError ? "sparkles" : "arrow.clockwise"
+                            symbol: presentation.tagSymbol
                         )
-                        Text(setupError ? "Finish setup to unlock Discover" : (error.errorDescription ?? "Discover hit a snag"))
+                        Text(presentation.headline)
                             .font(.title3.weight(.semibold))
-                        Text(discoverInlineMessage(for: error, setupError: setupError))
+                        Text(presentation.message)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -424,7 +475,7 @@ struct DiscoverView: View {
                 }
 
                 FlowLayout(spacing: 10) {
-                    if setupError {
+                    if presentation.isSetupError {
                         SpatialButton(title: "Open Settings", icon: "gearshape.fill", tint: .yellow) {
                             appState.selectedTab = .settings
                             viewModel.error = nil
@@ -435,7 +486,7 @@ struct DiscoverView: View {
                         Task { await viewModel.refresh() }
                         viewModel.error = nil
                     } label: {
-                        GlassTag(text: setupError ? "Retry Later" : "Retry", tintColor: .white.opacity(0.18), symbol: "arrow.clockwise")
+                        GlassTag(text: presentation.retryTitle, tintColor: .white.opacity(0.18), symbol: "arrow.clockwise")
                     }
                     .buttonStyle(.plain)
 
@@ -457,18 +508,6 @@ struct DiscoverView: View {
                 }
             }
         }
-    }
-
-    private func discoverInlineMessage(for error: AppError, setupError: Bool) -> String {
-        if setupError {
-            return "Add your TMDB key in Settings, then come back here for live trending rows and hero art. Library and Downloads keep working in the meantime."
-        }
-
-        if let suggestion = error.recoverySuggestion, !suggestion.isEmpty {
-            return suggestion
-        }
-
-        return error.errorDescription ?? "Something went wrong."
     }
 
     // MARK: - AI Curated Section

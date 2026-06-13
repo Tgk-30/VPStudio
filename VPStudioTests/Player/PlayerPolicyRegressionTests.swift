@@ -363,6 +363,51 @@ struct PlayerStreamModelRegressionTests {
         #expect(replacement.recoveryContext == context)
     }
 
+    @Test func streamRefreshPlanFallsBackToDebridServiceWhenContextHasNoPreferredService() throws {
+        let context = try #require(StreamRecoveryContext(
+            infoHash: "FallbackHash",
+            seasonNumber: 2,
+            episodeNumber: 5
+        ))
+        let stream = Fixtures.stream(
+            debridService: DebridServiceType.premiumize.rawValue,
+            recoveryContext: context
+        )
+
+        #expect(
+            PlayerStreamLinkRecovery.attemptTrackingKey(for: stream)
+            == "\(DebridServiceType.premiumize.rawValue)|fallbackhash|s2|e5"
+        )
+
+        guard case let .reResolve(recoveryContext)? = PlayerStreamLinkRecovery.refreshPlan(
+            for: stream,
+            priorAttempts: 0,
+            qaRefreshURL: nil
+        ) else {
+            Issue.record("Expected a re-resolve plan using the normalized context")
+            return
+        }
+
+        #expect(recoveryContext.infoHash == "fallbackhash")
+        #expect(recoveryContext.preferredService == .premiumize)
+        #expect(recoveryContext.seasonNumber == 2)
+        #expect(recoveryContext.episodeNumber == 5)
+    }
+
+    @Test func streamRefreshPlanUsesStableFallbacksForMissingContextAndPriorAttempts() throws {
+        let streamWithoutContext = Fixtures.stream(fileName: "no-context.mkv")
+        let context = try #require(StreamRecoveryContext(infoHash: "PriorAttemptHash", preferredService: .allDebrid))
+        let streamWithContext = Fixtures.stream(recoveryContext: context)
+
+        #expect(PlayerStreamLinkRecovery.attemptTrackingKey(for: streamWithoutContext) == streamWithoutContext.id)
+        #expect(PlayerStreamLinkRecovery.refreshPlan(for: streamWithoutContext, priorAttempts: 0, qaRefreshURL: nil) == nil)
+        #expect(PlayerStreamLinkRecovery.refreshPlan(for: streamWithContext, priorAttempts: 1, qaRefreshURL: nil) == nil)
+        #expect(
+            PlayerStreamLinkRecovery.attemptTrackingKey(for: streamWithContext)
+            == "\(DebridServiceType.allDebrid.rawValue)|priorattempthash|s-|e-"
+        )
+    }
+
     @Test func startupRefreshIsBlockedAfterPriorRefreshAttempt() throws {
         let context = try #require(StreamRecoveryContext(infoHash: "hash", preferredService: .realDebrid))
         let stream = Fixtures.stream(recoveryContext: context)

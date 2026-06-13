@@ -3,6 +3,7 @@
 
 # SwiftPM
 .build/
+.build-*/
 
 # Xcode
 DerivedData/
@@ -14,10 +15,16 @@ DerivedData/
 # Local env / secrets
 .env
 .env.*
+*.pem
+*.p12
+*.mobileprovision
 
 # Local smoke / markers
 .smoke-runs/
 .publishable_ready
+default.profraw
+.tmp-coverage.profdata
+test-results-swift-testing.xml
 
 # Build artifacts (SPM checkouts, derived data)
 Build/
@@ -27,3 +34,7 @@ qa-artifacts/
 
 # Codex cache
 .codex-home/
+.codex/
+.agents/
+CLAUDE.md
+AGENTS.md

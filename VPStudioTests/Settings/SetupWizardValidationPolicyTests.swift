@@ -46,6 +46,13 @@ struct SetupWizardValidationPolicyTests {
     }
 
     @Test
+    func subtitleLanguagePersistenceClearsWhenNoneSelected() {
+        #expect(SetupWizardValidationPolicy.storedSubtitleLanguageValue(.none) == nil)
+        #expect(SetupWizardValidationPolicy.storedSubtitleLanguageValue(.english) == "eng")
+        #expect(SetupWizardValidationPolicy.storedSubtitleLanguageValue(.japanese) == "jpn")
+    }
+
+    @Test
     func completionSummaryRowsReflectConfiguredOptionalSteps() {
         let rows = SetupWizardValidationPolicy.completionSummaryRows(
             selectedService: .realDebrid,

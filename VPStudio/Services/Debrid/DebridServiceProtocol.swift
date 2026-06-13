@@ -20,6 +20,7 @@ protocol DebridServiceProtocol: Sendable {
     func getAccountInfo() async throws -> DebridAccountInfo
     func checkCache(hashes: [String]) async throws -> [String: CacheStatus]
     func addMagnet(hash: String) async throws -> String
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String
     func selectFiles(torrentId: String, fileIds: [Int]) async throws
     func selectMatchingEpisodeFile(
         torrentId: String,
@@ -34,6 +35,10 @@ protocol DebridServiceProtocol: Sendable {
 }
 
 extension DebridServiceProtocol {
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        try await addMagnet(hash: hash)
+    }
+
     func selectMatchingEpisodeFile(
         torrentId: String,
         seasonNumber: Int,
@@ -51,6 +56,89 @@ extension DebridServiceProtocol {
 
     func cleanupRemoteTransfer(torrentId: String) async throws {
         let _ = torrentId
+    }
+}
+
+enum DebridStreamMetadata {
+    static func quality(from candidates: [String?]) -> VideoQuality {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: VideoQuality.parse(from:))
+    }
+
+    static func codec(from candidates: [String?]) -> VideoCodec {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: VideoCodec.parse(from:))
+    }
+
+    static func audio(from candidates: [String?]) -> AudioFormat {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: AudioFormat.parse(from:))
+    }
+
+    static func source(from candidates: [String?]) -> SourceType {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: SourceType.parse(from:))
+    }
+
+    static func hdr(from candidates: [String?]) -> HDRFormat {
+        firstNonDefault(in: candidates, defaultValue: .sdr, parse: HDRFormat.parse(from:))
+    }
+
+    private static func firstNonDefault<T: Equatable>(
+        in candidates: [String?],
+        defaultValue: T,
+        parse: (String) -> T
+    ) -> T {
+        for candidate in candidates {
+            guard let candidate = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !candidate.isEmpty else {
+                continue
+            }
+            let parsed = parse(candidate)
+            if parsed != defaultValue {
+                return parsed
+            }
+        }
+        return defaultValue
+    }
+}
+
+enum DebridMagnetInput {
+    static func preferredMagnetURI(hash: String, suppliedMagnetURI: String?) throws -> String {
+        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
+        guard let candidate = suppliedMagnetURI?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !candidate.isEmpty else {
+            return bareMagnetURI(for: normalizedHash)
+        }
+
+        if let components = URLComponents(string: candidate),
+           components.scheme?.lowercased() == "magnet" {
+            let xtItems = components.queryItems?.filter { $0.name.lowercased() == "xt" } ?? []
+            if !xtItems.isEmpty {
+                for item in xtItems {
+                    guard let value = item.value,
+                          value.lowercased().hasPrefix("urn:btih:") else {
+                        continue
+                    }
+
+                    let candidateHash = String(value.dropFirst("urn:btih:".count)).lowercased()
+                    if candidateHash == normalizedHash {
+                        return candidate
+                    }
+                }
+                return bareMagnetURI(for: normalizedHash)
+            }
+
+            return bareMagnetURI(for: normalizedHash)
+        }
+
+        guard let candidateHash = JSONValueParsing.extractInfoHash(from: candidate) else {
+            return candidate.localizedCaseInsensitiveContains(normalizedHash)
+                ? candidate
+                : bareMagnetURI(for: normalizedHash)
+        }
+
+        return candidateHash == normalizedHash ? candidate : bareMagnetURI(for: normalizedHash)
+    }
+
+    static func bareMagnetURI(for normalizedHash: String) -> String {
+        "magnet:?xt=urn:btih:\(normalizedHash)"
     }
 }
 
@@ -78,13 +166,14 @@ enum DebridHashValidator {
     }
 }
 
-enum DebridError: LocalizedError, Equatable {
+enum DebridError: LocalizedError, Equatable, Sendable {
     case unauthorized
     case notPremium
     case invalidHash(String)
     case torrentNotFound(String)
     case fileNotReady(String)
     case rateLimited
+    case unavailableForLegalReasons(String)
     case httpError(Int, String)
     case networkError(String)
     case timeout
@@ -97,6 +186,7 @@ enum DebridError: LocalizedError, Equatable {
         case .torrentNotFound(let id): return "Torrent not found: \(id)"
         case .fileNotReady(let msg): return "File not ready: \(msg)"
         case .rateLimited: return "Rate limited. Try again shortly."
+        case .unavailableForLegalReasons(let msg): return "Unavailable for legal or regional reasons: \(msg)"
         case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
         case .networkError(let msg): return "Network error: \(msg)"
         case .timeout: return "Request timed out"
@@ -135,7 +225,9 @@ enum DebridHTTPExecutor {
         let data: Data
         let response: URLResponse
         do {
+            try Task.checkCancellation()
             (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
         } catch is CancellationError {
             throw CancellationError()
         } catch let urlError as URLError where shouldRetry(urlError: urlError) {
@@ -148,6 +240,9 @@ enum DebridHTTPExecutor {
             )
             return try await dataWithRetry(for: request, session: session, attempt: attempt + 1)
         } catch let urlError as URLError {
+            if urlError.code == .cancelled {
+                throw CancellationError()
+            }
             throw mapTransportError(urlError)
         } catch {
             throw DebridError.networkError(error.localizedDescription)
@@ -212,6 +307,9 @@ enum DebridHTTPExecutor {
     private static func mapTransportError(_ error: URLError) -> DebridError {
         if error.code == .timedOut {
             return .timeout
+        }
+        if error.code == .networkConnectionLost {
+            return .networkError("network connection was lost")
         }
         return .networkError(error.localizedDescription)
     }

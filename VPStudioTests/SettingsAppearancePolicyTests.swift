@@ -1,7 +1,7 @@
 import Testing
 @testable import VPStudio
 
-struct SettingsAppearancePolicyTests {
+struct SettingsAppearancePolicyTestsSettingsappearancepolicytests {
     @Test
     func normalizedMenuBackgroundIntensityClampsLowValues() {
         #expect(SettingsAppearancePolicy.normalizedMenuBackgroundIntensity(-1.0) == 0.0)

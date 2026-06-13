@@ -33,7 +33,9 @@ final class TorrentSearchState {
         }
     }
 
-    var allHashes: [String] { allResults.map(\.infoHash) }
+    var allHashes: [String] {
+        allResults.compactMap { $0.requiresDebridResolution ? $0.infoHash : nil }
+    }
     var remainingResultCount: Int { max(allResults.count - visibleResults.count, 0) }
     var canLoadMoreResults: Bool { remainingResultCount > 0 }
 

@@ -53,6 +53,22 @@ struct SettingsHealthPolicyTests {
         #expect(progress == 0.0)
     }
 
+    @Test
+    func progressKeepsOutOfRangeInputsUnclampedWhenTotalIsPositive() {
+        #expect(SettingsHealthPolicy.configurationProgress(configured: -1, total: 4) == -0.25)
+        #expect(SettingsHealthPolicy.configurationProgress(configured: 6, total: 4) == 1.5)
+    }
+
+    @Test
+    func warningBadgeHiddenForNegativeCounts() {
+        #expect(SettingsHealthPolicy.shouldShowWarningBadge(warningCount: -1) == false)
+    }
+
+    @Test
+    func warningCountHandlesEmptyStatusList() {
+        #expect(SettingsHealthPolicy.warningCount(statuses: []) == 0)
+    }
+
     // MARK: - Essential Destinations
 
     @Test

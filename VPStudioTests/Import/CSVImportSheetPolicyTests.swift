@@ -229,6 +229,34 @@ struct IMDbCSVImportSheetPolicyTests {
         #expect(mappings["unknowncolumn"] == nil)
     }
 
+    @Test func normalizedAISuggestedMappingsTranslateAliasesToInternalFieldNames() {
+        let parsed: [String: String?] = [
+            "my rating": "yourrating",
+            "Date Added": "dateadded",
+            "IMDb link": "imdburl",
+            "Score": "userRating",
+        ]
+
+        let mappings = IMDbCSVImportPolicy.normalizedAISuggestedMappings(parsed)
+
+        #expect(mappings["my rating"] == "userRating")
+        #expect(mappings["Date Added"] == "date")
+        #expect(mappings["IMDb link"] == "url")
+        #expect(mappings["Score"] == "userRating")
+    }
+
+    @Test func normalizedAISuggestedMappingsDropNullAndUnknownFields() {
+        let parsed: [String: String?] = [
+            "Notes": nil,
+            "Custom": "not-a-vpstudio-field",
+            "Title": "title",
+        ]
+
+        let mappings = IMDbCSVImportPolicy.normalizedAISuggestedMappings(parsed)
+
+        #expect(mappings == ["Title": "title"])
+    }
+
     @Test func mappingChoiceCasesRemainStableForPreviewPicker() {
         #expect(CSVHeaderPreviewSheet.MappingChoice.allCases == [.detected, .ai, .ignore])
         #expect(CSVHeaderPreviewSheet.MappingChoice.detected.rawValue == "Auto")

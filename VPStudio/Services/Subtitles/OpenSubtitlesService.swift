@@ -1,5 +1,41 @@
 import Foundation
 
+protocol OpenSubtitlesServicing: Sendable {
+    func search(
+        imdbId: String?,
+        tmdbId: Int?,
+        query: String?,
+        season: Int?,
+        episode: Int?,
+        languages: [String]
+    ) async throws -> [Subtitle]
+
+    func downloadSubtitle(fileId: Int) async throws -> String
+
+    func downloadFirstMatch(
+        query: String,
+        languages: [String]
+    ) async throws -> Subtitle
+
+    func downloadFirstMatch(
+        query: String,
+        languages: [String],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle
+}
+
+extension OpenSubtitlesServicing {
+    func downloadFirstMatch(
+        query: String,
+        languages: [String],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle {
+        try await downloadFirstMatch(query: query, languages: languages)
+    }
+}
+
 /// OpenSubtitles.com REST API client
 actor OpenSubtitlesService {
     private static let defaultSession: URLSession = {
@@ -8,9 +44,10 @@ actor OpenSubtitlesService {
         configuration.timeoutIntervalForResource = 90
         return URLSession(configuration: configuration)
     }()
+    private static let defaultBaseURL = "https://api.opensubtitles.com/api/v1"
 
     private let apiKey: String
-    private let baseURL = "https://api.opensubtitles.com/api/v1"
+    private let baseURL: URL
     private let session: URLSession
     private var authToken: String?
     private var lastRequestDate: Date?
@@ -18,8 +55,16 @@ actor OpenSubtitlesService {
     private let minimumRequestInterval: TimeInterval = 0.15
 
     init(apiKey: String, session: URLSession? = nil) {
+        self.init(apiKey: apiKey, session: session, baseURL: Self.defaultBaseURL)
+    }
+
+    init(apiKey: String, session: URLSession? = nil, baseURL: String) {
         self.apiKey = apiKey
         self.session = session ?? Self.defaultSession
+        let sanitizedBaseURL = baseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        self.baseURL = URL(string: sanitizedBaseURL) ?? URL(string: Self.defaultBaseURL) ?? URL(fileURLWithPath: "/")
     }
 
     // MARK: - Authentication
@@ -62,7 +107,10 @@ actor OpenSubtitlesService {
     func getDownloadURL(fileId: Int) async throws -> URL {
         let body: [String: Any] = ["file_id": fileId]
         let response: DownloadResponse = try await post(path: "/download", body: body)
-        guard let url = URL(string: response.link) else {
+        guard let url = URL(string: response.link),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              url.host != nil else {
             throw SubtitleError.invalidDownloadURL
         }
         return url
@@ -82,7 +130,21 @@ actor OpenSubtitlesService {
         query: String,
         languages: [String] = ["en"]
     ) async throws -> Subtitle {
-        let candidates = try await search(query: query, languages: languages)
+        try await downloadFirstMatch(query: query, languages: languages, season: nil, episode: nil)
+    }
+
+    func downloadFirstMatch(
+        query: String,
+        languages: [String] = ["en"],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle {
+        let candidates = try await search(
+            query: query,
+            season: season,
+            episode: episode,
+            languages: languages
+        )
         guard let selected = candidates.first(where: { $0.fileId != nil && $0.isSupportedSubtitle }),
               let fileId = selected.fileId else {
             throw SubtitleError.noSubtitlesFound
@@ -102,15 +164,20 @@ actor OpenSubtitlesService {
 
     // MARK: - Networking
 
-    private func get<T: Decodable>(path: String, params: [String: String]) async throws -> T {
-        guard var components = URLComponents(string: baseURL + path) else {
-            throw SubtitleError.invalidURL
-        }
+    private func get<T: Decodable & Sendable>(path: String, params: [String: String]) async throws -> T {
+        var components = URLComponents()
+        components.scheme = baseURL.scheme
+        components.host = baseURL.host
+        components.port = baseURL.port
+        components.path = normalizedPath(for: path)
         components.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
 
-        guard let url = components.url else { throw SubtitleError.invalidURL }
+        guard let url = components.url else {
+            throw SubtitleError.invalidURL
+        }
         var request = URLRequest(url: url)
         request.setValue(apiKey, forHTTPHeaderField: "Api-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("VPStudio v1.0", forHTTPHeaderField: "User-Agent")
         if let token = authToken {
@@ -118,14 +185,21 @@ actor OpenSubtitlesService {
         }
 
         let (data, _) = try await sendRequest(request)
-        return try JSONDecoder().decode(T.self, from: data)
+        return try decodeResponse(data, as: T.self)
     }
 
-    private func post<T: Decodable>(path: String, body: Any) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SubtitleError.invalidURL }
+    private func post<T: Decodable & Sendable>(path: String, body: Any) async throws -> T {
+        var components = URLComponents()
+        components.scheme = baseURL.scheme
+        components.host = baseURL.host
+        components.port = baseURL.port
+        components.path = normalizedPath(for: path)
+
+        guard let url = components.url else { throw SubtitleError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "Api-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("VPStudio v1.0", forHTTPHeaderField: "User-Agent")
         if let token = authToken {
@@ -134,7 +208,7 @@ actor OpenSubtitlesService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await sendRequest(request)
-        return try JSONDecoder().decode(T.self, from: data)
+        return try decodeResponse(data, as: T.self)
     }
 
     private func sendRequest(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -143,7 +217,12 @@ actor OpenSubtitlesService {
             attempt += 1
             try await waitForRequestSlot()
 
-            let (data, response) = try await session.data(for: request)
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch is URLError {
+                throw SubtitleError.invalidURL
+            }
             guard let http = response as? HTTPURLResponse else {
                 throw SubtitleError.httpError(0)
             }
@@ -188,13 +267,42 @@ actor OpenSubtitlesService {
         return Double(value).map { max($0, 0) }
     }
 
+    private func normalizedPath(for endpoint: String) -> String {
+        let basePath = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let trimmedEndpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        switch (basePath.isEmpty, trimmedEndpoint.isEmpty) {
+        case (true, true):
+            return "/"
+        case (true, false):
+            return "/\(trimmedEndpoint)"
+        case (false, true):
+            return "/\(basePath)"
+        case (false, false):
+            return "/\(basePath)/\(trimmedEndpoint)"
+        }
+    }
+
+    private func decodeResponse<T: Decodable & Sendable>(_ data: Data, as type: T.Type) throws -> T {
+        let decoder = JSONDecoder()
+        if let decoded = try? decoder.decode(T.self, from: data) {
+            return decoded
+        }
+        if let wrapped = try? decoder.decode(EnvelopeResponse<T>.self, from: data) {
+            return wrapped.data
+        }
+        throw SubtitleError.decodingFailed
+    }
+
     private func usableSubtitle(from item: SubtitleItem) -> Subtitle? {
         let attr = item.attributes
         let supportedFile = attr.files.first(where: { SubtitleFormat.parse(from: $0.fileName).isSupportedSubtitle })
-        let file = supportedFile ?? attr.files.first
+        let hasFiles = !attr.files.isEmpty
+        let file = hasFiles ? (supportedFile ?? attr.files.first) : nil
         let fileName = file?.fileName ?? attr.release ?? "Unknown"
         let format = file.map { SubtitleFormat.parse(from: $0.fileName) } ?? SubtitleFormat.parse(from: fileName)
-        guard format.isSupportedSubtitle else { return nil }
+        if hasFiles, !format.isSupportedSubtitle {
+            return nil
+        }
 
         return Subtitle(
             id: String(item.id),
@@ -205,11 +313,12 @@ actor OpenSubtitlesService {
             fileId: file?.fileId,
             rating: attr.ratings,
             downloadCount: attr.downloadCount,
-            isHearingImpaired: attr.hearingImpaired
+            isHearingImpaired: attr.hearingImpaired,
+            source: "OpenSubtitles"
         )
     }
 
-    private func decodeSubtitleContent(from data: Data) -> String? {
+    func decodeSubtitleContent(from data: Data) -> String? {
         let encodings: [String.Encoding] = [.utf8, .utf16, .utf16LittleEndian, .utf16BigEndian, .isoLatin1]
         for encoding in encodings {
             if (encoding == .utf8 || encoding == .isoLatin1), !isLikelyTextSubtitleData(data) {
@@ -223,7 +332,7 @@ actor OpenSubtitlesService {
         return nil
     }
 
-    private func isLikelyTextSubtitleData(_ data: Data) -> Bool {
+    func isLikelyTextSubtitleData(_ data: Data) -> Bool {
         guard !data.isEmpty else { return true }
         var controlCount = 0
         for byte in data {
@@ -235,7 +344,7 @@ actor OpenSubtitlesService {
         return Double(controlCount) / Double(data.count) < 0.05
     }
 
-    private func isLikelySubtitleText(_ content: String) -> Bool {
+    func isLikelySubtitleText(_ content: String) -> Bool {
         guard !content.isEmpty else { return true }
         var controlCount = 0
         var totalCount = 0
@@ -251,7 +360,7 @@ actor OpenSubtitlesService {
         return totalCount == 0 || Double(controlCount) / Double(totalCount) < 0.05
     }
 
-    private func writeTemporarySubtitleFile(
+    func writeTemporarySubtitleFile(
         content: String,
         fileName: String,
         format: SubtitleFormat
@@ -267,12 +376,19 @@ actor OpenSubtitlesService {
     }
 }
 
+extension OpenSubtitlesService: OpenSubtitlesServicing {}
+
 // MARK: - Response Models
 
 private struct LoginResponse: Sendable {
     let token: String
 }
 extension LoginResponse: Decodable {}
+
+private struct EnvelopeResponse<T: Decodable & Sendable>: Sendable {
+    let data: T
+}
+extension EnvelopeResponse: Decodable {}
 
 private struct SubtitleSearchResponse: Sendable {
     let data: [SubtitleItem]
@@ -319,7 +435,7 @@ extension DownloadResponse: Decodable {}
 
 // MARK: - Errors
 
-enum SubtitleError: LocalizedError {
+enum SubtitleError: LocalizedError, Equatable {
     case invalidURL
     case httpError(Int)
     case unauthorized

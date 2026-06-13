@@ -10,6 +10,13 @@ enum ExplorePhase: Equatable {
     case error
 }
 
+protocol SearchSettingsStorage: Sendable {
+    func getString(key: String) async throws -> String?
+    func setString(key: String, value: String?) async throws
+}
+
+extension SettingsManager: SearchSettingsStorage {}
+
 /// Preset year-range filters for quick access in the inline filter bar.
 enum YearRangePreset: Hashable, Sendable, Identifiable, CaseIterable {
     case recent      // 2024-2026
@@ -44,9 +51,9 @@ enum YearRangePreset: Hashable, Sendable, Identifiable, CaseIterable {
     var filterYear: Int? {
         switch self {
         case .recent: return nil
-        case .twenties: return nil
-        case .tens: return nil
-        case .classic: return nil
+        case .twenties: return 2020
+        case .tens: return 2010
+        case .classic: return 1900
         }
     }
 
@@ -86,6 +93,7 @@ final class SearchViewModel {
     /// types, but it is only committed back into `query` when an actual search executes.
     var queryDraft = "" {
         didSet {
+            guard !isHandlingEmptyQueryDraft else { return }
             let trimmed = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             let nextHasQueryText = !trimmed.isEmpty
 
@@ -107,15 +115,37 @@ final class SearchViewModel {
             }
 
             if !nextHasQueryText {
+                let selectedGenreContext = selectedGenre
+                let specialMoodContext = activeMoodCard?.isSpecialCard == true ? activeMoodCard : nil
+
+                isHandlingEmptyQueryDraft = true
+                defer { isHandlingEmptyQueryDraft = false }
+
                 cancelInFlightWork()
-                replaceResults([])
                 error = nil
                 currentPage = 1
                 totalPages = 1
-                isSearching = false
                 isLoadingMore = false
                 lastPaginationTime = nil
 
+                if selectedGenreContext != nil {
+                    if !query.isEmpty {
+                        query = ""
+                    }
+                    browseGenre(selectedGenreContext!)
+                    return
+                }
+
+                if let specialMoodContext {
+                    if !query.isEmpty {
+                        query = ""
+                    }
+                    selectMoodCard(specialMoodContext)
+                    return
+                }
+
+                replaceResults([])
+                isSearching = false
                 if !query.isEmpty {
                     query = ""
                 }
@@ -144,6 +174,10 @@ final class SearchViewModel {
     var currentPage = 1
     var totalPages = 1
     var hasMore: Bool { currentPage < totalPages && currentPage < Self.maxPageLimit }
+    /// Tracks whether the current pagination path should favor text search.
+    /// This is used when a genre is selected but an explicit text search was
+    /// executed; while this flag is true, loadMore() should stay in search mode.
+    private var isSearchPaginationContext = false
 
     // MARK: - Genre Filtering
 
@@ -154,6 +188,7 @@ final class SearchViewModel {
     private var genreCacheByType: [MediaType: [Genre]] = [:]
     private var genreLoadTask: Task<Void, Never>?
     private var genreLoadTaskType: MediaType?
+    private var genreLoadGeneration = 0
 
     // MARK: - Sort & Filter
 
@@ -264,7 +299,7 @@ final class SearchViewModel {
     private var derivedExplorePhase: ExplorePhase {
         if isSearching { return .searching }
         if error != nil && results.isEmpty { return .error }
-        let hasSubmittedTextQuery = hasAttemptedTextSearch && !queryDraft.trimmingCharacters(in: .whitespaces).isEmpty
+        let hasSubmittedTextQuery = hasAttemptedTextSearch && !queryDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasResults = !results.isEmpty || !aiRecommendations.isEmpty
         if hasResults || isLoadingAI { return .results }
         if selectedGenre != nil || activeMoodCard != nil { return .empty }
@@ -274,7 +309,7 @@ final class SearchViewModel {
 
     /// True when the current results came from a genre-browse discover call
     /// rather than a text search.
-    var isGenreBrowsing: Bool { selectedGenre != nil && queryDraft.trimmingCharacters(in: .whitespaces).isEmpty }
+    var isGenreBrowsing: Bool { selectedGenre != nil && !isSearchPaginationContext }
 
     private var searchTask: Task<Void, Never>?
     private var loadMoreTask: Task<Void, Never>?
@@ -287,15 +322,30 @@ final class SearchViewModel {
     /// Monotonically-increasing counter used to discard stale search/loadMore results.
     private(set) var searchGeneration: Int = 0
 
+    /// Monotonically-increasing counter used to discard stale AI recommendation results.
+    private(set) var aiGeneration: Int = 0
+
+    /// Monotonically-increasing counter used to ensure only the latest debounced
+    /// request can execute after its delay window.
+    private var debouncedSearchGeneration: Int = 0
+
     /// True while a loadMore page request is in flight — prevents duplicate pagination requests.
     private(set) var isLoadingMore = false
 
+    /// Internal guard to prevent nested `queryDraft` updates when synchronizing
+    /// `query` from within empty-query handling.
+    private var isHandlingEmptyQueryDraft = false
+
     /// The debounce interval used by `debouncedSearch()`. Configurable for testing.
     let debounceInterval: Duration
+    private let debounceSleeper: @Sendable (Duration) async throws -> Void
 
     /// Minimum interval between successive `loadMore()` calls to prevent rapid-fire pagination
     /// when fast scrolling causes multiple `.onAppear` triggers in quick succession.
     let paginationCooldown: Duration
+
+    /// Maximum number of recent searches persisted and surfaced in the UI.
+    private static let maxRecentSearchCount = 20
 
     /// Hard cap on the maximum page number that can be requested. Prevents unbounded pagination
     /// from consuming excessive memory and network resources.
@@ -317,11 +367,13 @@ final class SearchViewModel {
         metadataService: (any MetadataProvider)? = nil,
         metadataServiceFactory: @escaping @Sendable (String) -> any MetadataProvider = { TMDBService(apiKey: $0) },
         debounceInterval: Duration = .milliseconds(300),
+        debounceSleeper: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         paginationCooldown: Duration = .milliseconds(500)
     ) {
         self.metadataService = metadataService
         self.metadataServiceFactory = metadataServiceFactory
         self.debounceInterval = debounceInterval
+        self.debounceSleeper = debounceSleeper
         self.paginationCooldown = paginationCooldown
         refreshExplorePhaseIfNeeded()
     }
@@ -363,9 +415,14 @@ final class SearchViewModel {
         debounceTask = nil
         aiTask?.cancel()
         aiTask = nil
+        isLoadingMore = false
+        isSearching = false
+        aiGeneration += 1
+        isLoadingAI = false
         genreLoadTask?.cancel()
         genreLoadTask = nil
         genreLoadTaskType = nil
+        genreLoadGeneration += 1
     }
 
     // Note: cancelInFlightWork() should be called from .onDisappear in the view.
@@ -380,6 +437,8 @@ final class SearchViewModel {
         if normalizedKey.isEmpty {
             guard configuredApiKey != nil else { return }
             cancelInFlightWork()
+            clearAIRecommendations()
+            searchGeneration += 1
             metadataService = nil
             configuredApiKey = nil
             genreCacheByType.removeAll()
@@ -400,6 +459,8 @@ final class SearchViewModel {
         if let configuredApiKey {
             guard configuredApiKey != normalizedKey else { return }
             cancelInFlightWork()
+            clearAIRecommendations()
+            searchGeneration += 1
             metadataService = metadataServiceFactory(normalizedKey)
             self.configuredApiKey = normalizedKey
             genreCacheByType.removeAll()
@@ -421,7 +482,10 @@ final class SearchViewModel {
 
         let rawQuery = queryText ?? queryDraft
         let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else {
+            debounceTask = nil
+            return
+        }
 
         guard metadataService != nil else {
             error = .tmdbSetupRequired(feature: "Search")
@@ -430,10 +494,25 @@ final class SearchViewModel {
         }
 
         let interval = debounceInterval
-        debounceTask = Task { [weak self] in
-            try? await Task.sleep(for: interval)
-            guard !Task.isCancelled, let self else { return }
-            self.search(queryText: rawQuery)
+        let sleeper = debounceSleeper
+        debouncedSearchGeneration += 1
+        let debouncedGeneration = debouncedSearchGeneration
+        let expectedQuery = trimmed
+
+        debounceTask = Task { @MainActor [weak self] in
+            do {
+                try await sleeper(interval)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            guard
+                let self,
+                self.debouncedSearchGeneration == debouncedGeneration
+            else { return }
+
+            self.search(queryText: expectedQuery)
         }
     }
 
@@ -447,16 +526,19 @@ final class SearchViewModel {
     func search(queryText: String? = nil) {
         debounceTask?.cancel()
         debounceTask = nil
+        debouncedSearchGeneration += 1
 
         let rawQuery = queryText ?? queryDraft
         let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        isSearchPaginationContext = true
+        clearAIRecommendations()
 
-        if queryDraft != rawQuery {
-            queryDraft = rawQuery
+        if queryDraft != trimmed {
+            queryDraft = trimmed
         }
-        if query != rawQuery {
-            query = rawQuery
+        if query != trimmed {
+            query = trimmed
         }
 
         submittedQuery = trimmed
@@ -483,19 +565,30 @@ final class SearchViewModel {
         searchGeneration += 1
         scrollToTopTrigger += 1
         let generation = searchGeneration
+        let expectedQuery = trimmed
         isSearching = true
         let selectedType = selectedType
         let year = yearFilter
         let language = primaryLanguage
-        searchTask = Task { [weak self] in
+        searchTask = Task { @MainActor [weak self] in
             do {
                 let result = try await service.search(query: trimmed, type: selectedType, page: 1, year: year, language: language)
-                guard !Task.isCancelled, let self, self.searchGeneration == generation else { return }
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.searchGeneration == generation,
+                    self.query.trimmingCharacters(in: .whitespacesAndNewlines) == expectedQuery
+                else { return }
                 self.replaceResults(self.locallyFilteredSearchItems(result.items, selectedType: selectedType, year: year))
                 self.totalPages = result.totalPages
                 self.isSearching = false
             } catch {
-                guard !Task.isCancelled, let self, self.searchGeneration == generation else { return }
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.searchGeneration == generation,
+                    self.query.trimmingCharacters(in: .whitespacesAndNewlines) == expectedQuery
+                else { return }
                 self.replaceResults([])
                 self.error = AppError(error, fallback: .network(.transport("Search failed.")))
                 self.isSearching = false
@@ -507,6 +600,17 @@ final class SearchViewModel {
         let service = metadataService
         guard hasMore, !isSearching, !isLoadingMore, service != nil else { return }
 
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDraft = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldLoadSpecialMood = {
+            guard let card = activeMoodCard else { return false }
+            return card.isSpecialCard && selectedGenre == nil && trimmedDraft.isEmpty
+        }()
+
+        if !shouldLoadSpecialMood && !isGenreBrowsing && (trimmedQuery.isEmpty || trimmedDraft.isEmpty || trimmedQuery != trimmedDraft) {
+            return
+        }
+
         // Enforce cooldown between pagination requests to prevent rapid-fire triggers
         // from fast scrolling through multiple `.onAppear` items.
         if let lastTime = lastPaginationTime {
@@ -516,7 +620,10 @@ final class SearchViewModel {
 
         lastPaginationTime = ContinuousClock.now
 
-        if let card = activeMoodCard, card.isSpecialCard, selectedGenre == nil {
+        if let card = activeMoodCard,
+           card.isSpecialCard,
+           selectedGenre == nil,
+           queryDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             loadMoreMoodCard(card)
         } else if isGenreBrowsing {
             loadMoreGenreBrowse()
@@ -534,6 +641,7 @@ final class SearchViewModel {
         let language = primaryLanguage
         let origLang = originalLanguageCode
         let generation = searchGeneration
+        let expectedCardID = card.id
 
         let dateGte: String?
         let dateLte: String?
@@ -560,12 +668,17 @@ final class SearchViewModel {
                 )
                 let result = try await service.discover(type: type, filters: filters)
                 guard !Task.isCancelled, let self, self.searchGeneration == generation else { return }
+                guard self.activeMoodCard?.id == expectedCardID else { return }
+                guard self.queryDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 self.error = nil
                 self.appendUniqueResults(result.items)
                 self.currentPage = nextPage
                 self.totalPages = result.totalPages
             } catch {
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
+                guard self.searchGeneration == generation else { return }
+                guard self.activeMoodCard?.id == expectedCardID else { return }
+                guard self.queryDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 self.publishPaginationFailure(error, generation: generation)
             }
         }
@@ -574,8 +687,9 @@ final class SearchViewModel {
     private func loadMoreSearch() {
         guard let service = metadataService else { return }
         let nextPage = currentPage + 1
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let expectedQuery = trimmed
+        guard !expectedQuery.isEmpty else { return }
         let selectedType = selectedType
         let year = yearFilter
         let language = primaryLanguage
@@ -588,14 +702,17 @@ final class SearchViewModel {
             do {
                 let result = try await service.search(query: expectedQuery, type: selectedType, page: nextPage, year: year, language: language)
                 guard !Task.isCancelled, let self, self.searchGeneration == generation else { return }
-                guard self.query.trimmingCharacters(in: .whitespaces) == expectedQuery else { return }
+                guard self.query.trimmingCharacters(in: .whitespacesAndNewlines) == expectedQuery else { return }
+                guard self.queryDraft.trimmingCharacters(in: .whitespacesAndNewlines) == expectedQuery else { return }
                 self.error = nil
                 self.appendUniqueResults(self.locallyFilteredSearchItems(result.items, selectedType: selectedType, year: year))
                 self.currentPage = nextPage
                 self.totalPages = result.totalPages
             } catch {
-                guard let self else { return }
-                guard self.query.trimmingCharacters(in: .whitespaces) == expectedQuery else { return }
+                guard !Task.isCancelled, let self else { return }
+                guard self.searchGeneration == generation else { return }
+                guard self.query.trimmingCharacters(in: .whitespacesAndNewlines) == expectedQuery else { return }
+                guard self.queryDraft.trimmingCharacters(in: .whitespacesAndNewlines) == expectedQuery else { return }
                 self.publishPaginationFailure(error, generation: generation)
             }
         }
@@ -610,6 +727,7 @@ final class SearchViewModel {
         let language = primaryLanguage
         let origLang = originalLanguageCode
         let generation = searchGeneration
+        let expectedGenreID = genre.id
 
         // Re-derive the same date constraints used by the initial browse or mood card
         let moodCard = activeMoodCard
@@ -638,14 +756,21 @@ final class SearchViewModel {
                 )
                 let result = try await service.discover(type: type, filters: filters)
                 guard !Task.isCancelled, let self, self.searchGeneration == generation else { return }
-                guard self.selectedGenre?.id == genre.id else { return }
+                guard self.selectedGenre?.id == expectedGenreID else { return }
+                let currentDraft = self.queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let committedQuery = self.query.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard currentDraft.isEmpty || currentDraft == committedQuery else { return }
                 self.error = nil
                 self.appendUniqueResults(result.items)
                 self.currentPage = nextPage
                 self.totalPages = result.totalPages
             } catch {
-                guard let self else { return }
-                guard self.selectedGenre?.id == genre.id else { return }
+                guard !Task.isCancelled, let self else { return }
+                guard self.searchGeneration == generation else { return }
+                guard self.selectedGenre?.id == expectedGenreID else { return }
+                let currentDraft = self.queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let committedQuery = self.query.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard currentDraft.isEmpty || currentDraft == committedQuery else { return }
                 self.publishPaginationFailure(error, generation: generation)
             }
         }
@@ -679,15 +804,25 @@ final class SearchViewModel {
 
     func clear() {
         cancelInFlightWork()
+        searchGeneration += 1
+        isSearchPaginationContext = false
+
+        // Reset the query pair without triggering empty-query browse/search side-effects.
+        isHandlingEmptyQueryDraft = true
         query = ""
+        queryDraft = ""
+        isHandlingEmptyQueryDraft = false
+
+        isSearching = false
+        hasQueryText = false
+        hasAttemptedTextSearch = false
         submittedQuery = ""
         replaceResults([])
         currentPage = 1
         totalPages = 1
         selectedGenre = nil
         activeMoodCard = nil
-        aiRecommendations = []
-        aiError = nil
+        clearAIRecommendations()
         error = nil
         yearFilter = nil
         yearRangePreset = nil
@@ -700,6 +835,11 @@ final class SearchViewModel {
 
     /// Resets all filters to their defaults without clearing the query or results.
     func clearAllFilters() {
+        cancelInFlightWork()
+        searchGeneration += 1
+        aiRecommendations = []
+        aiError = nil
+        isLoadingAI = false
         sortOption = .popularityDesc
         yearFilter = nil
         yearRangePreset = nil
@@ -731,11 +871,13 @@ final class SearchViewModel {
         }
 
         genreLoadTask?.cancel()
+        genreLoadGeneration += 1
+        let generation = genreLoadGeneration
         genreLoadTaskType = type
         genreLoadTask = Task { [weak self] in
             do {
                 let loadedGenres = try await service.getGenres(type: type)
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.genreLoadGeneration == generation else { return }
                 self.genreCacheByType[type] = loadedGenres
 
                 // Only publish into the currently displayed list when the loaded type is
@@ -744,43 +886,64 @@ final class SearchViewModel {
                     self.genres = loadedGenres
                 }
             } catch {
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.genreLoadGeneration == generation else { return }
                 if (self.selectedType ?? .movie) == type {
                     self.genres = []
                 }
                 Self.logger.error("Genre load failed for \(type.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
 
-            guard let self, self.genreLoadTaskType == type else { return }
+            guard let self, self.genreLoadTaskType == type, self.genreLoadGeneration == generation else { return }
             self.genreLoadTask = nil
             self.genreLoadTaskType = nil
         }
     }
 
-    func selectGenre(_ genre: Genre?) {
+    func selectGenre(_ genre: Genre?, preservingActiveMoodCard: Bool = false) {
+        let preservedMoodCard = preservingActiveMoodCard || activeMoodCard?.isSpecialCard == true ? activeMoodCard : nil
         selectedGenre = genre
+        if genre == nil {
+            activeMoodCard = preservedMoodCard
+            clearAIRecommendations()
+        }
         if let genre {
+            if !preservingActiveMoodCard {
+                activeMoodCard = nil
+            }
             browseGenre(genre)
         } else {
             // Clear genre selection — if there's a text query, re-search; otherwise clear results
-            let trimmed = queryDraft.trimmingCharacters(in: .whitespaces)
+            let trimmed = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 search()
+            } else if let preservedMoodCard {
+                selectMoodCard(preservedMoodCard)
             } else {
+                searchTask?.cancel()
+                loadMoreTask?.cancel()
+                isSearching = false
+                isLoadingMore = false
+                lastPaginationTime = nil
+                searchGeneration += 1
+                scrollToTopTrigger += 1
                 replaceResults([])
                 currentPage = 1
                 totalPages = 1
+                error = nil
+                refreshExplorePhaseIfNeeded()
             }
         }
     }
 
     func browseGenre(_ genre: Genre) {
+        clearAIRecommendations()
         debounceTask?.cancel()
         debounceTask = nil
         searchTask?.cancel()
         loadMoreTask?.cancel()
         isLoadingMore = false
         lastPaginationTime = nil
+        isSearchPaginationContext = false
         searchGeneration += 1
         scrollToTopTrigger += 1
         let generation = searchGeneration
@@ -852,7 +1015,7 @@ final class SearchViewModel {
             // Regular genre card — date-limited to today via browseGenre
             let genreId = type == .series ? card.tvGenreId : card.movieGenreId
             let genre = Genre(id: genreId, name: card.title)
-            selectGenre(genre)
+            selectGenre(genre, preservingActiveMoodCard: true)
         }
     }
 
@@ -864,6 +1027,7 @@ final class SearchViewModel {
         releaseDateLte: String?,
         errorMessage: String
     ) {
+        clearAIRecommendations()
         sortOption = sortBy
         selectedGenre = nil
 
@@ -914,10 +1078,60 @@ final class SearchViewModel {
     }
 
     func handleSelectedTypeChange() {
+        clearAIRecommendations()
         loadGenres()
 
         if let card = activeMoodCard {
-            // Re-select mood cards so genre IDs are derived for the current media type.
+            if card.isSpecialCard {
+                let trimmedQuery = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedQuery.isEmpty {
+                    search(queryText: trimmedQuery)
+                    return
+                }
+            }
+
+            let type = selectedType ?? .movie
+            if let cachedGenres = genreCacheByType[type], !card.isSpecialCard {
+                let nextGenreID = type == .series ? card.tvGenreId : card.movieGenreId
+                let nextGenreName = card.title
+
+                if let remappedGenre = cachedGenres.first(where: { $0.id == nextGenreID }) {
+                    selectGenre(remappedGenre, preservingActiveMoodCard: true)
+                    return
+                }
+
+                if let remappedByName = Self.remapGenre(
+                    Genre(id: nextGenreID, name: nextGenreName),
+                    in: cachedGenres
+                ) {
+                    selectGenre(remappedByName, preservingActiveMoodCard: true)
+                    return
+                }
+
+                activeMoodCard = nil
+                selectedGenre = nil
+                let trimmed = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    search(queryText: trimmed)
+                } else {
+                    searchTask?.cancel()
+                    loadMoreTask?.cancel()
+                    isSearching = false
+                    isLoadingMore = false
+                    lastPaginationTime = nil
+                    searchGeneration += 1
+                    scrollToTopTrigger += 1
+                    replaceResults([])
+                    currentPage = 1
+                    totalPages = 1
+                    error = nil
+                    refreshExplorePhaseIfNeeded()
+                }
+                return
+            }
+
+            // If we don't have genres cached yet for the new type, keep behavior
+            // consistent and re-run the selected mood card flow.
             selectMoodCard(card)
             return
         }
@@ -936,12 +1150,20 @@ final class SearchViewModel {
 
         // Fallback: clear stale genre context so we don't keep querying a genre lane
         // that doesn't exist for the newly selected type.
+        activeMoodCard = nil
         selectedGenre = nil
 
         let trimmed = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             search(queryText: trimmed)
         } else {
+            searchTask?.cancel()
+            loadMoreTask?.cancel()
+            isSearching = false
+            isLoadingMore = false
+            lastPaginationTime = nil
+            searchGeneration += 1
+            scrollToTopTrigger += 1
             replaceResults([])
             currentPage = 1
             totalPages = 1
@@ -982,8 +1204,7 @@ final class SearchViewModel {
                 yearFilter = nil
             } else {
                 yearRangePreset = preset
-                // Use the start of the range as the filter year
-                yearFilter = preset.yearRange.lowerBound
+                yearFilter = preset.filterYear
             }
         } else {
             yearRangePreset = nil
@@ -1048,12 +1269,24 @@ final class SearchViewModel {
 
     /// Re-executes the current query or genre browse with the updated filters.
     func requery() {
+        let trimmedQuery = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedQuery.isEmpty {
+            search(queryText: trimmedQuery)
+            return
+        }
+
         if let genre = selectedGenre {
             browseGenre(genre)
         } else if let card = activeMoodCard, card.isSpecialCard {
-            selectMoodCard(card)
+            let trimmedQuery = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedQuery.isEmpty {
+                selectMoodCard(card)
+                return
+            }
+
+            search()
         } else {
-            let trimmed = queryDraft.trimmingCharacters(in: .whitespaces)
+            let trimmed = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 search()
             }
@@ -1082,12 +1315,12 @@ final class SearchViewModel {
     // MARK: - Recent Searches
 
     func addRecentSearch(_ term: String) {
-        let trimmed = term.trimmingCharacters(in: .whitespaces)
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         recentSearches.removeAll { $0.lowercased() == trimmed.lowercased() }
         recentSearches.insert(trimmed, at: 0)
-        if recentSearches.count > 20 {
-            recentSearches = Array(recentSearches.prefix(20))
+        if recentSearches.count > Self.maxRecentSearchCount {
+            recentSearches = Array(recentSearches.prefix(Self.maxRecentSearchCount))
         }
     }
 
@@ -1099,24 +1332,48 @@ final class SearchViewModel {
         recentSearches = []
     }
 
-    func loadRecentSearches(from settingsManager: SettingsManager) {
+    func loadRecentSearches(from settingsManager: any SearchSettingsStorage) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                guard let json = try await settingsManager.getString(key: SettingsKeys.recentSearches),
-                      let data = json.data(using: .utf8) else {
-                    self.recentSearches = []
-                    return
-                }
-                self.recentSearches = try JSONDecoder().decode([String].self, from: data)
-            } catch {
-                self.recentSearches = []
-                Self.logger.error("Recent search load failed: \(error.localizedDescription, privacy: .public)")
-            }
+            await self?.loadRecentSearchesSync(from: settingsManager)
         }
     }
 
-    func saveRecentSearches(to settingsManager: SettingsManager) {
+    func loadRecentSearchesAndAwait(from settingsManager: any SearchSettingsStorage) async {
+        await loadRecentSearchesSync(from: settingsManager)
+    }
+
+    private func loadRecentSearchesSync(from settingsManager: any SearchSettingsStorage) async {
+        do {
+            guard let json = try await settingsManager.getString(key: SettingsKeys.recentSearches),
+                  let data = json.data(using: .utf8) else {
+                recentSearches = []
+                return
+            }
+            let loadedTerms = try JSONDecoder().decode([String].self, from: data)
+            var normalizedTerms: [String] = []
+            var seen: Set<String> = []
+            normalizedTerms.reserveCapacity(loadedTerms.count)
+
+            for rawTerm in loadedTerms {
+                let trimmedTerm = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmedTerm.isEmpty { continue }
+
+                let normalized = trimmedTerm.lowercased()
+                if seen.contains(normalized) { continue }
+
+                seen.insert(normalized)
+                normalizedTerms.append(trimmedTerm)
+                if normalizedTerms.count >= Self.maxRecentSearchCount { break }
+            }
+
+            recentSearches = normalizedTerms
+        } catch {
+            recentSearches = []
+            Self.logger.error("Recent search load failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func saveRecentSearches(to settingsManager: any SearchSettingsStorage) {
         let searches = recentSearches
         Task {
             do {
@@ -1151,27 +1408,43 @@ final class SearchViewModel {
     // MARK: - AI Recommendations
 
     func fetchAIRecommendations(aiManager: AIAssistantManager) {
-        let trimmed = queryDraft.trimmingCharacters(in: .whitespaces)
+        let trimmed = queryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
 
         aiTask?.cancel()
         isLoadingAI = true
         aiError = nil
+        aiGeneration += 1
+        let generation = aiGeneration
 
         let moodHint: String? = trimmed.isEmpty ? nil : trimmed
-        aiTask = Task { [weak self] in
+        aiTask = Task { @MainActor [weak self] in
             do {
                 var context = AssistantContext()
                 context.currentMood = moodHint
                 let recommendations = try await aiManager.getRecommendations(context: context)
-                guard !Task.isCancelled, let self else { return }
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
                 self.aiRecommendations = recommendations
                 self.isLoadingAI = false
             } catch AIError.noProviderConfigured {
-                guard !Task.isCancelled, let self else { return }
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = []
                 self.aiError = "No AI provider configured. Set one up in Settings \u{2192} AI Assistant."
                 self.isLoadingAI = false
             } catch {
-                guard !Task.isCancelled, let self else { return }
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = []
                 self.aiError = error.localizedDescription
                 self.isLoadingAI = false
             }
@@ -1181,6 +1454,7 @@ final class SearchViewModel {
     func clearAIRecommendations() {
         aiTask?.cancel()
         aiTask = nil
+        aiGeneration += 1
         aiRecommendations = []
         aiError = nil
         isLoadingAI = false

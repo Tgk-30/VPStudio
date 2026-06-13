@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Testing
 @testable import VPStudio
 
@@ -10,8 +11,7 @@ struct AssistantContextAssemblerTests {
     private func makeTemporaryDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }

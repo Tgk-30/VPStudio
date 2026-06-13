@@ -8,6 +8,18 @@ actor StubMetadataProvider: MetadataProvider, DetailMetadataProviding {
     var episodesResult: [Episode] = []
     var externalIdsResult = ExternalIds(imdbId: nil, tvdbId: nil)
 
+    func setDetailResult(_ result: MediaItem) {
+        detailResult = result
+    }
+
+    func setSeasonsResult(_ result: [Season]) {
+        seasonsResult = result
+    }
+
+    func setEpisodesResult(_ result: [Episode]) {
+        episodesResult = result
+    }
+
     func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult { searchResult }
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
     func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { searchResult }
@@ -25,6 +37,10 @@ actor StubIndexerManager: DetailIndexerManaging {
     var initializeError: Error?
     var searchError: Error?
     var searchByQueryError: Error?
+
+    func setSearchResults(_ results: [TorrentResult]) {
+        searchResults = results
+    }
 
     func initialize() async throws {
         if let initializeError { throw initializeError }
@@ -44,25 +60,52 @@ actor StubIndexerManager: DetailIndexerManaging {
 actor StubDebridManager: DetailDebridManaging {
     var cacheResults: [String: (CacheStatus, DebridServiceType)] = [:]
     var resolvedStream = Fixtures.stream()
+    var unrestrictedStream = Fixtures.stream(
+        url: "https://rd.example.com/refreshed/direct.mkv",
+        fileName: "direct.mkv",
+        debridService: DebridServiceType.realDebrid.rawValue
+    )
     var resolveError: Error?
+    var unrestrictError: Error?
     private(set) var lastResolvedHash: String?
+    private(set) var lastResolvedMagnetURI: String?
     private(set) var lastResolvedSeasonNumber: Int?
     private(set) var lastResolvedEpisodeNumber: Int?
+    private(set) var lastUnrestrictedLink: String?
+    private(set) var lastUnrestrictedServiceType: DebridServiceType?
 
     func setResolvedStream(_ stream: StreamInfo) {
         resolvedStream = stream
+    }
+
+    func setUnrestrictedStream(_ stream: StreamInfo) {
+        unrestrictedStream = stream
     }
 
     func checkCacheAcrossServices(hashes: [String]) async throws -> [String: (CacheStatus, DebridServiceType)] {
         cacheResults
     }
 
-    func resolveStream(hash: String, preferredService: DebridServiceType?, seasonNumber: Int?, episodeNumber: Int?) async throws -> StreamInfo {
+    func resolveStream(
+        hash: String,
+        preferredService: DebridServiceType?,
+        magnetURI: String?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) async throws -> StreamInfo {
         lastResolvedHash = hash
+        lastResolvedMagnetURI = magnetURI
         lastResolvedSeasonNumber = seasonNumber
         lastResolvedEpisodeNumber = episodeNumber
         if let resolveError { throw resolveError }
         return resolvedStream
+    }
+
+    func unrestrict(link: String, serviceType: DebridServiceType) async throws -> StreamInfo {
+        lastUnrestrictedLink = link
+        lastUnrestrictedServiceType = serviceType
+        if let unrestrictError { throw unrestrictError }
+        return unrestrictedStream
     }
 }
 

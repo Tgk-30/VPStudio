@@ -1,6 +1,164 @@
 #if os(visionOS)
 import SwiftUI
 
+enum PlayerEnvironmentMenuPolicy {
+    static func cinemaIconName(
+        activeEnvironment: EnvironmentType?,
+        isImmersiveSpaceOpen: Bool
+    ) -> String {
+        activeEnvironment == .cinemaEnvironment && isImmersiveSpaceOpen ? "checkmark" : "theatermasks"
+    }
+
+    static func menuAssetIconName(isActive: Bool, sourceType: EnvironmentAssetSourceType) -> String {
+        if isActive { return "checkmark" }
+        return sourceType == .bundled ? "circle.fill" : "pano"
+    }
+
+    static func compactAssetIconName(forAssetPath assetPath: String) -> String {
+        PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: assetPath)
+    }
+
+    static func triggerIconName(isImmersiveSpaceOpen: Bool) -> String {
+        isImmersiveSpaceOpen ? "mountain.2.fill" : "mountain.2"
+    }
+
+    static func showsExitEnvironment(isImmersiveSpaceOpen: Bool) -> Bool {
+        isImmersiveSpaceOpen
+    }
+
+    static func showsEmptyAssetMessage(assetCount: Int) -> Bool {
+        assetCount == 0
+    }
+}
+
+struct PlayerEnvironmentMenuLabelSpec: Equatable, Sendable {
+    let title: String
+    let leadingSystemImage: String
+    let trailingSystemImage: String?
+
+    static func cinema(
+        activeEnvironment: EnvironmentType?,
+        isImmersiveSpaceOpen: Bool
+    ) -> Self {
+        Self(
+            title: "Cinema Environment",
+            leadingSystemImage: PlayerEnvironmentMenuPolicy.cinemaIconName(
+                activeEnvironment: activeEnvironment,
+                isImmersiveSpaceOpen: isImmersiveSpaceOpen
+            ),
+            trailingSystemImage: nil
+        )
+    }
+
+    static func menuAsset(_ asset: EnvironmentAsset) -> Self {
+        Self(
+            title: asset.name,
+            leadingSystemImage: PlayerEnvironmentMenuPolicy.menuAssetIconName(
+                isActive: asset.isActive,
+                sourceType: asset.sourceType
+            ),
+            trailingSystemImage: nil
+        )
+    }
+
+    static func compactAsset(
+        _ asset: EnvironmentAsset,
+        selectedAssetID: String?,
+        isImmersiveSpaceOpen: Bool
+    ) -> Self {
+        Self(
+            title: asset.name,
+            leadingSystemImage: PlayerEnvironmentMenuPolicy.compactAssetIconName(
+                forAssetPath: asset.assetPath
+            ),
+            trailingSystemImage: selectedAssetID == asset.id && isImmersiveSpaceOpen ? "checkmark" : nil
+        )
+    }
+}
+
+struct PlayerEnvironmentMenuLabel: View {
+    let spec: PlayerEnvironmentMenuLabelSpec
+
+    var body: some View {
+        if let trailingSystemImage = spec.trailingSystemImage {
+            HStack {
+                Label(spec.title, systemImage: spec.leadingSystemImage)
+                Image(systemName: trailingSystemImage)
+            }
+        } else {
+            Label(spec.title, systemImage: spec.leadingSystemImage)
+        }
+    }
+}
+
+struct PlayerEnvironmentCinemaRow: View {
+    let spec: PlayerEnvironmentMenuLabelSpec
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: performAction) {
+            PlayerEnvironmentMenuLabel(spec: spec)
+        }
+    }
+
+    func performAction() {
+        action()
+    }
+}
+
+struct PlayerEnvironmentMenuAssetRow: View {
+    let asset: EnvironmentAsset
+    let action: (EnvironmentAsset) -> Void
+
+    var body: some View {
+        Button(action: performAction) {
+            PlayerEnvironmentMenuLabel(spec: .menuAsset(asset))
+        }
+    }
+
+    func performAction() {
+        action(asset)
+    }
+}
+
+struct PlayerEnvironmentCompactAssetRow: View {
+    let asset: EnvironmentAsset
+    let selectedAssetID: String?
+    let isImmersiveSpaceOpen: Bool
+    let action: (EnvironmentAsset) -> Void
+
+    var body: some View {
+        Button(action: performAction) {
+            PlayerEnvironmentMenuLabel(
+                spec: .compactAsset(
+                    asset,
+                    selectedAssetID: selectedAssetID,
+                    isImmersiveSpaceOpen: isImmersiveSpaceOpen
+                )
+            )
+        }
+    }
+
+    func performAction() {
+        action(asset)
+    }
+}
+
+struct PlayerEnvironmentExitRow: View {
+    let role: ButtonRole?
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: performAction) {
+            Label("Exit Environment", systemImage: "xmark.circle")
+        }
+    }
+
+    func performAction() {
+        action()
+    }
+}
+
 /// Isolated subview for the environment picker in the player transport controls.
 ///
 /// By separating this into its own View struct, SwiftUI gives it an independent
@@ -16,36 +174,23 @@ struct PlayerEnvironmentMenu: View {
 
     var body: some View {
         Menu {
-            Button {
-                onSelectCinema()
-            } label: {
-                if appState.activeEnvironment == .cinemaEnvironment,
-                   appState.isImmersiveSpaceOpen {
-                    Label("Cinema Environment", systemImage: "checkmark")
-                } else {
-                    Label("Cinema Environment", systemImage: "theatermasks")
-                }
-            }
+            PlayerEnvironmentCinemaRow(
+                spec: .cinema(
+                    activeEnvironment: appState.activeEnvironment,
+                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                ),
+                action: onSelectCinema
+            )
             Divider()
             ForEach(assets, id: \.id) { asset in
-                Button {
-                    onSelect(asset)
-                } label: {
-                    if asset.isActive {
-                        Label(asset.name, systemImage: "checkmark")
-                    } else {
-                        Label(asset.name, systemImage: asset.sourceType == .bundled ? "circle.fill" : "pano")
-                    }
-                }
+                PlayerEnvironmentMenuAssetRow(asset: asset, action: onSelect)
             }
-            if appState.isImmersiveSpaceOpen {
+            if PlayerEnvironmentMenuPolicy.showsExitEnvironment(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen) {
                 Divider()
-                Button("Exit Environment", systemImage: "xmark.circle") {
-                    onDismiss()
-                }
+                PlayerEnvironmentExitRow(role: nil, action: onDismiss)
             }
         } label: {
-            Image(systemName: appState.isImmersiveSpaceOpen ? "mountain.2.fill" : "mountain.2")
+            Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))
                 .font(.title3)
                 .foregroundStyle(appState.isImmersiveSpaceOpen ? .blue : .primary)
         }
@@ -67,44 +212,32 @@ struct PlayerEnvironmentButton: View {
 
     var body: some View {
         Menu {
-            Button {
-                onSelectCinema()
-            } label: {
-                if appState.activeEnvironment == .cinemaEnvironment,
-                   appState.isImmersiveSpaceOpen {
-                    Label("Cinema Environment", systemImage: "checkmark")
-                } else {
-                    Label("Cinema Environment", systemImage: "theatermasks")
-                }
-            }
+            PlayerEnvironmentCinemaRow(
+                spec: .cinema(
+                    activeEnvironment: appState.activeEnvironment,
+                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                ),
+                action: onSelectCinema
+            )
             Divider()
-            if assets.isEmpty {
+            if PlayerEnvironmentMenuPolicy.showsEmptyAssetMessage(assetCount: assets.count) {
                 Text("No environments available")
             } else {
                 ForEach(assets, id: \.id) { asset in
-                    Button {
-                        onSelect(asset)
-                    } label: {
-                        HStack {
-                            Label(asset.name, systemImage: assetIcon(asset))
-                            if asset.id == appState.selectedEnvironmentAsset?.id,
-                               appState.isImmersiveSpaceOpen {
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                    }
+                    PlayerEnvironmentCompactAssetRow(
+                        asset: asset,
+                        selectedAssetID: appState.selectedEnvironmentAsset?.id,
+                        isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen,
+                        action: onSelect
+                    )
                 }
             }
-            if appState.isImmersiveSpaceOpen {
+            if PlayerEnvironmentMenuPolicy.showsExitEnvironment(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen) {
                 Divider()
-                Button(role: .destructive) {
-                    onDismiss()
-                } label: {
-                    Label("Exit Environment", systemImage: "xmark.circle")
-                }
+                PlayerEnvironmentExitRow(role: .destructive, action: onDismiss)
             }
         } label: {
-            Image(systemName: appState.isImmersiveSpaceOpen ? "mountain.2.fill" : "mountain.2")
+            Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -130,10 +263,6 @@ struct PlayerEnvironmentButton: View {
         }
         .buttonStyle(.plain)
         .hoverEffect(.lift)
-    }
-
-    private func assetIcon(_ asset: EnvironmentAsset) -> String {
-        PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: asset.assetPath)
     }
 }
 #endif

@@ -1,6 +1,6 @@
 import Foundation
 import SwiftUI
-import AVKit
+@preconcurrency import AVKit
 import MediaAccessibility
 @preconcurrency import KSPlayer
 #if os(macOS)
@@ -36,6 +36,83 @@ enum PlayerLifecyclePolicy {
     }
 }
 
+enum PlayerImmersiveControlEvent: Equatable {
+    case toggleControls
+    case togglePlayPause
+    case seekBack
+    case seekForward
+    case seekToPercent(Double)
+    case previousChapter
+    case nextChapter
+    case cycleRate
+    case toggleSubtitles
+    case toggleAudio
+    case requestEnvironmentSwitch
+    case dismiss
+}
+
+struct PlayerAutoplayRuntimeSnapshot: Equatable {
+    var didRequestAutoplayNext: Bool
+    var didCancelAutoPlayNextPrompt: Bool
+    var isShowingAutoPlayNextPrompt: Bool
+    var isResolvingAutoPlayNextEpisode: Bool
+    var countdownRemaining: Int
+}
+
+enum PlayerAutoplayRuntimeEvent: Equatable {
+    case playNowRequested
+    case cancelRequested
+    case progressObserved(currentTime: TimeInterval, duration: TimeInterval)
+    case stateChanged(PlayerAutoplayRuntimeSnapshot)
+}
+
+enum PlayerAutoplayControlNotificationKey {
+    static let currentTime = "currentTime"
+    static let duration = "duration"
+}
+
+struct PlayerViewAVTimeObserverHooks {
+    let addPeriodicTimeObserver: @MainActor (
+        _ player: AVPlayer,
+        _ interval: CMTime,
+        _ callback: @escaping (CMTime) -> Void
+    ) -> Any
+    let removeTimeObserver: @MainActor (_ player: AVPlayer, _ token: Any) -> Void
+}
+
+struct PlayerSubtitleRuntimeSnapshot: Equatable {
+    var candidateCount: Int
+    var catalogMessage: String?
+    var isRefreshingSubtitleCatalog: Bool
+    var isDownloadingSubtitle: Bool
+    var selectedSubtitleTrack: Int
+    var subtitlesEnabled: Bool
+}
+
+enum PlayerSubtitleRuntimeEvent: Equatable {
+    case refreshRequested
+    case downloadRequested(fileID: Int?)
+    case stateChanged(PlayerSubtitleRuntimeSnapshot)
+}
+
+struct PlayerSubtitleRuntimeSettings {
+    let usesOpenSubtitlesAPIKeyOverride: Bool
+    let openSubtitlesAPIKey: String?
+    let subtitleLanguage: String?
+    let subtitleAutoSearch: Bool?
+
+    init(
+        openSubtitlesAPIKey: String?,
+        subtitleLanguage: String? = nil,
+        subtitleAutoSearch: Bool? = nil
+    ) {
+        self.usesOpenSubtitlesAPIKeyOverride = true
+        self.openSubtitlesAPIKey = openSubtitlesAPIKey
+        self.subtitleLanguage = subtitleLanguage
+        self.subtitleAutoSearch = subtitleAutoSearch
+    }
+}
+
 enum PlayerViewPolicy {
     static let avPlayerPeriodicObserverIntervalSeconds: TimeInterval = 0.25
 
@@ -65,12 +142,14 @@ enum PlayerViewPolicy {
     }
 
     static func clampedSeekTarget(percent: Double, duration: TimeInterval) -> TimeInterval {
+        guard percent.isFinite, duration.isFinite, duration >= 0 else { return 0 }
         let clamped = max(0, min(1, percent))
         return duration * clamped
     }
 
     static func clampedSeekTarget(time: TimeInterval, duration: TimeInterval) -> TimeInterval {
-        max(0, min(duration, time))
+        guard time.isFinite, duration.isFinite, duration >= 0 else { return 0 }
+        return max(0, min(duration, time))
     }
 
     static func scrubberAccessibilityValue(
@@ -80,8 +159,465 @@ enum PlayerViewPolicy {
         scrubTime: TimeInterval
     ) -> String {
         let current = isScrubbing ? scrubTime : currentTime
-        guard duration > 0 else { return current.formattedDuration }
-        return "\(current.formattedDuration) of \(duration.formattedDuration)"
+        let safeCurrent = current.isFinite ? current : (currentTime.isFinite ? currentTime : 0)
+        guard duration.isFinite, duration > 0 else { return safeCurrent.formattedDuration }
+        return "\(safeCurrent.formattedDuration) of \(duration.formattedDuration)"
+    }
+
+    static func scrobbleProgressPercent(currentTime: TimeInterval, duration: TimeInterval) -> Double {
+        guard currentTime.isFinite, duration.isFinite, duration > 0 else { return 0 }
+        let percent = (currentTime / duration) * 100
+        return max(0, min(100, percent))
+    }
+
+    static func subtitleTextRefreshShouldRun(
+        selectedSubtitleTrack: Int,
+        currentSubtitleText: String?
+    ) -> Bool {
+        selectedSubtitleTrack >= 0 || currentSubtitleText != nil
+    }
+
+    static func bufferedPercent(
+        loadedRangeStart: TimeInterval,
+        loadedRangeDuration: TimeInterval,
+        itemDuration: TimeInterval
+    ) -> Double? {
+        guard loadedRangeStart.isFinite,
+              loadedRangeDuration.isFinite,
+              itemDuration.isFinite,
+              itemDuration > 0 else {
+            return nil
+        }
+        let bufferedEnd = loadedRangeStart + loadedRangeDuration
+        guard bufferedEnd.isFinite else { return nil }
+        return max(0, min(1, bufferedEnd / itemDuration))
+    }
+
+    static func resolvedSubtitleFontSize(storedSize: Double?) -> Double {
+        guard let storedSize, storedSize.isFinite else { return 24 }
+        return max(16, min(48, storedSize))
+    }
+
+    static func progressBarDisplayTime(
+        currentTime: TimeInterval,
+        isScrubbing: Bool,
+        scrubTime: TimeInterval
+    ) -> TimeInterval {
+        isScrubbing ? scrubTime : currentTime
+    }
+
+    static func progressBarDisplayPercent(
+        displayTime: TimeInterval,
+        duration: TimeInterval
+    ) -> Double {
+        guard displayTime.isFinite, duration.isFinite else { return 0 }
+        guard duration > 0 else { return 1 }
+        return max(0, min(1, displayTime / duration))
+    }
+
+    static func progressBarBufferedPercent(_ bufferedPercent: Double) -> Double {
+        max(0, min(1, bufferedPercent))
+    }
+
+    static func progressBarHeight(isScrubbing: Bool) -> CGFloat {
+        isScrubbing
+            ? PlayerCinematicChromePolicy.progressBarScrubbingHeight
+            : PlayerCinematicChromePolicy.progressBarIdleHeight
+    }
+
+    static func scrubberDragPercent(locationX: CGFloat, barWidth: CGFloat) -> Double {
+        guard locationX.isFinite, barWidth.isFinite, barWidth > 0 else { return 0 }
+        return max(0, min(1, locationX / barWidth))
+    }
+
+    static func scrubPreviewLabelX(
+        progressX: CGFloat,
+        barWidth: CGFloat,
+        horizontalInset: CGFloat = 30
+    ) -> CGFloat {
+        guard progressX.isFinite, barWidth.isFinite else { return 0 }
+        guard barWidth > 0 else { return 0 }
+        let inset = max(0, min(horizontalInset, barWidth / 2))
+        return max(inset, min(barWidth - inset, progressX))
+    }
+
+    static func shouldShowChapterMarker(chapterStartTime: TimeInterval) -> Bool {
+        chapterStartTime > 0
+    }
+
+    static func shouldShowWarningsOverlay(
+        capabilityWarnings: [String],
+        playbackError: String?,
+        playbackState: PlayerPlaybackState
+    ) -> Bool {
+        !capabilityWarnings.isEmpty || warningOverlayPlaybackError(
+            playbackError: playbackError,
+            playbackState: playbackState
+        ) != nil
+    }
+
+    static func warningOverlayPlaybackError(
+        playbackError: String?,
+        playbackState: PlayerPlaybackState
+    ) -> String? {
+        guard playbackState == .failed else { return nil }
+        return playbackError
+    }
+
+    static func emptyAudioTracksMessage(activeEngine: PlayerEngineKind?) -> String {
+        activeEngine == .avPlayer
+            ? "No alternate in-stream audio tracks detected. The stream may have only one audio track."
+            : "No alternate audio tracks detected for this stream."
+    }
+
+    static func subtitleTrackLanguageLabel(_ language: String?) -> String? {
+        guard let language, !language.isEmpty else { return nil }
+        return language.uppercased()
+    }
+
+    static func isControlModalPresented(
+        isShowingSubtitlePicker: Bool,
+        isShowingAudioPicker: Bool,
+        isShowingEnvironmentPicker: Bool,
+        isShowingCinemaSettings: Bool
+    ) -> Bool {
+        isShowingSubtitlePicker ||
+        isShowingAudioPicker ||
+        isShowingEnvironmentPicker ||
+        isShowingCinemaSettings
+    }
+}
+
+enum PlayerTrackPresentationPolicy {
+    static func availableAudioTrackCount(avMediaOptionCount: Int, engineTrackCount: Int) -> Int {
+        max(avMediaOptionCount, engineTrackCount)
+    }
+
+    static func isSubtitlePresentationActive(subtitlesEnabled: Bool) -> Bool {
+        subtitlesEnabled
+    }
+
+    static func isSubtitleSelectionOff(subtitlesEnabled: Bool) -> Bool {
+        !subtitlesEnabled
+    }
+
+    static func canRefreshTrackList(hasAVPlayer: Bool, hasKSPlayerCoordinator: Bool) -> Bool {
+        hasAVPlayer || hasKSPlayerCoordinator
+    }
+
+    static func isDirectTrackSelected(selectedID: String?, trackID: String) -> Bool {
+        selectedID == trackID
+    }
+
+    static func isEngineTrackSelected(selectedTrackID: Int, trackID: Int) -> Bool {
+        selectedTrackID == trackID
+    }
+
+    static func isExternalSubtitleSelected(
+        selectedAVSubtitleID: String?,
+        selectedEngineSubtitleTrack: Int,
+        trackID: Int
+    ) -> Bool {
+        selectedAVSubtitleID == nil && selectedEngineSubtitleTrack == trackID
+    }
+}
+
+enum PlayerSubtitleSelectionPolicy {
+    static func resolvedKSSubtitleID(
+        selectedSubtitleInfoID: String?,
+        enabledTrackID: String?,
+        optionIDs: [String]
+    ) -> String? {
+        if let selectedSubtitleInfoID,
+           optionIDs.contains(selectedSubtitleInfoID) {
+            return selectedSubtitleInfoID
+        }
+
+        if let enabledTrackID,
+           optionIDs.contains(enabledTrackID) {
+            return enabledTrackID
+        }
+
+        return nil
+    }
+}
+
+enum PlayerSubtitleServicePolicy {
+    static let missingCatalogAPIKeyMessage = "Set an OpenSubtitles API key in Settings to browse subtitle options."
+    static let emptyCatalogQueryMessage = "Could not build subtitle query for this stream."
+    static let noCatalogMatchesMessage = "No subtitle matches found."
+    static let missingDownloadAPIKeyMessage = "OpenSubtitles API key is required."
+    static let unsupportedSubtitleMessage = "That subtitle format is not supported for rendering."
+
+    static func normalizedAPIKey(_ rawValue: String?) -> String? {
+        guard let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    static func imdbSearchID(from mediaID: String?) -> String? {
+        mediaID?.hasPrefix("tt") == true ? mediaID : nil
+    }
+
+    static func supportedCatalogCandidates(_ candidates: [Subtitle], limit: Int = 30) -> [Subtitle] {
+        Array(
+            candidates
+                .filter { $0.fileId != nil && $0.isSupportedSubtitle }
+                .prefix(limit)
+        )
+    }
+
+    static func catalogResultMessage(candidateCount: Int) -> String? {
+        candidateCount == 0 ? noCatalogMatchesMessage : nil
+    }
+
+    static func automaticDownloadFailureMessage(errorDescription: String) -> String {
+        "Automatic subtitle download failed. Open subtitles to retry. \(errorDescription)"
+    }
+}
+
+enum PlayerMediaOptionIDPolicy {
+    static func id(
+        localeIdentifier: String?,
+        extendedLanguageTag: String?,
+        displayName: String,
+        index: Int
+    ) -> String {
+        let language = localeIdentifier ?? extendedLanguageTag ?? "und"
+        return "\(language)-\(displayName)-\(index)"
+    }
+}
+
+enum PlayerAVMediaSelectionPolicy {
+    struct Candidate: Equatable {
+        let id: String
+        let localeIdentifier: String?
+        let extendedLanguageTag: String?
+    }
+
+    struct SelectionPlan: Equatable {
+        let selectedID: String?
+        let autoSelectIndex: Int?
+
+        static let none = SelectionPlan(selectedID: nil, autoSelectIndex: nil)
+    }
+
+    static func selectionPlan(
+        currentSelectedIndex: Int?,
+        candidates: [Candidate],
+        preferredLanguages: [String],
+        allowsPreferredAutoSelection: Bool
+    ) -> SelectionPlan {
+        if let currentSelectedIndex,
+           candidates.indices.contains(currentSelectedIndex) {
+            return SelectionPlan(
+                selectedID: candidates[currentSelectedIndex].id,
+                autoSelectIndex: nil
+            )
+        }
+
+        guard allowsPreferredAutoSelection,
+              let preferredIndex = candidates.firstIndex(where: {
+                  PlayerSubtitlePolicy.matchesPreferredLanguage(
+                      localeIdentifier: $0.localeIdentifier,
+                      extendedLanguageTag: $0.extendedLanguageTag,
+                      preferredLanguages: preferredLanguages
+                  )
+              }) else {
+            return .none
+        }
+
+        return SelectionPlan(
+            selectedID: candidates[preferredIndex].id,
+            autoSelectIndex: preferredIndex
+        )
+    }
+}
+
+enum PlayerAutoplayNextPolicy {
+    static let countdownDurationSeconds = 10
+
+    struct PromptState: Equatable {
+        var hasNextEpisode: Bool
+        var didRequestAutoplayNext: Bool
+        var didCancelAutoPlayNextPrompt: Bool
+        var isShowingAutoPlayNextPrompt: Bool
+        var isResolvingAutoPlayNextEpisode: Bool
+        var countdownRemaining: Int
+
+        static func idle(hasNextEpisode: Bool) -> PromptState {
+            PromptState(
+                hasNextEpisode: hasNextEpisode,
+                didRequestAutoplayNext: false,
+                didCancelAutoPlayNextPrompt: false,
+                isShowingAutoPlayNextPrompt: false,
+                isResolvingAutoPlayNextEpisode: false,
+                countdownRemaining: PlayerAutoplayNextPolicy.countdownDurationSeconds
+            )
+        }
+    }
+
+    enum ResolutionOutcome {
+        case succeeded
+        case unavailable
+        case failed
+    }
+
+    static var countdownTriggerRemainingTime: TimeInterval {
+        TimeInterval(countdownDurationSeconds)
+    }
+
+    static func shouldStartCountdown(
+        currentTime: TimeInterval,
+        duration: TimeInterval,
+        hasNextEpisode: Bool,
+        hasStartedCountdown: Bool,
+        wasCancelled: Bool,
+        isResolving: Bool
+    ) -> Bool {
+        guard hasNextEpisode, !hasStartedCountdown, !wasCancelled, !isResolving else { return false }
+        guard currentTime.isFinite, duration.isFinite, currentTime >= 0, duration > 0 else { return false }
+        return duration - currentTime <= countdownTriggerRemainingTime
+    }
+
+    static func countdownProgress(
+        remainingSeconds: Int,
+        durationSeconds: Int = countdownDurationSeconds
+    ) -> Double {
+        guard durationSeconds > 0 else { return 0 }
+        let clampedRemaining = max(0, min(durationSeconds, remainingSeconds))
+        return Double(clampedRemaining) / Double(durationSeconds)
+    }
+
+    static func shouldScheduleCountdown(state: PromptState) -> Bool {
+        state.hasNextEpisode &&
+        !state.didRequestAutoplayNext &&
+        !state.didCancelAutoPlayNextPrompt
+    }
+
+    static func stateAfterSchedulingCountdown(from state: PromptState) -> PromptState {
+        guard shouldScheduleCountdown(state: state) else { return state }
+        var next = state
+        next.didRequestAutoplayNext = true
+        return next
+    }
+
+    static func stateAfterPresentingCountdown(from state: PromptState) -> PromptState {
+        var next = state
+        next.isShowingAutoPlayNextPrompt = true
+        next.countdownRemaining = countdownDurationSeconds
+        return next
+    }
+
+    static func stateAfterCountdownUnavailable(from state: PromptState) -> PromptState {
+        var next = state
+        next.isShowingAutoPlayNextPrompt = false
+        next.isResolvingAutoPlayNextEpisode = false
+        next.countdownRemaining = countdownDurationSeconds
+        if !state.hasNextEpisode {
+            next.didRequestAutoplayNext = false
+            next.didCancelAutoPlayNextPrompt = false
+        }
+        return next
+    }
+
+    static func stateAfterPlayNow(from state: PromptState) -> PromptState {
+        guard state.hasNextEpisode, !state.isResolvingAutoPlayNextEpisode else { return state }
+        var next = state
+        next.didRequestAutoplayNext = true
+        next.countdownRemaining = 0
+        return next
+    }
+
+    static func stateAfterCancellingCountdown(from state: PromptState) -> PromptState {
+        var next = state
+        next.didCancelAutoPlayNextPrompt = true
+        next.didRequestAutoplayNext = true
+        next.isShowingAutoPlayNextPrompt = false
+        next.countdownRemaining = countdownDurationSeconds
+        return next
+    }
+
+    static func stateAfterStartingResolution(from state: PromptState) -> PromptState {
+        guard state.hasNextEpisode, !state.isResolvingAutoPlayNextEpisode else { return state }
+        var next = state
+        next.isResolvingAutoPlayNextEpisode = true
+        next.isShowingAutoPlayNextPrompt = true
+        return next
+    }
+
+    static func stateAfterFinishingResolution(from state: PromptState, outcome: ResolutionOutcome) -> PromptState {
+        var next = state
+        next.isResolvingAutoPlayNextEpisode = false
+        next.isShowingAutoPlayNextPrompt = false
+
+        switch outcome {
+        case .succeeded:
+            next.hasNextEpisode = false
+            next.didRequestAutoplayNext = false
+            next.didCancelAutoPlayNextPrompt = false
+            next.countdownRemaining = countdownDurationSeconds
+        case .unavailable, .failed:
+            break
+        }
+
+        return next
+    }
+
+    static func stateAfterStreamTransition(hasNextEpisode: Bool) -> PromptState {
+        .idle(hasNextEpisode: hasNextEpisode)
+    }
+}
+
+enum PlayerAutoplayNextResolutionPolicy {
+    enum ResolutionPlan: Equatable {
+        case disabled
+        case unavailable
+        case readyFromSeriesPage(message: String)
+        case resolve(StreamRecoveryContext)
+    }
+
+    static let readyFromSeriesPageMessage = "Next episode is ready from the series page."
+
+    static func resolutionPlan(
+        autoPlayNextEnabled: Bool,
+        nextEpisode: PlayerSessionRequest.NextEpisodeCandidate?,
+        currentRecoveryContext: StreamRecoveryContext?
+    ) -> ResolutionPlan {
+        guard autoPlayNextEnabled else { return .disabled }
+        guard let nextEpisode else { return .unavailable }
+        guard let currentRecoveryContext else {
+            return .readyFromSeriesPage(message: readyFromSeriesPageMessage)
+        }
+
+        guard let nextContext = StreamRecoveryContext(
+            infoHash: currentRecoveryContext.infoHash,
+            preferredService: currentRecoveryContext.preferredService,
+            magnetURI: currentRecoveryContext.magnetURI,
+            seasonNumber: nextEpisode.seasonNumber,
+            episodeNumber: nextEpisode.episodeNumber
+        ) else {
+            return .readyFromSeriesPage(message: readyFromSeriesPageMessage)
+        }
+
+        return .resolve(nextContext)
+    }
+}
+
+enum PlayerStreamRefreshPolicy {
+    static func queueWithRefreshedPrimary(
+        refreshedStream: StreamInfo,
+        staleStream: StreamInfo,
+        streamQueue: [StreamInfo]
+    ) -> [StreamInfo] {
+        let refreshedAvailable = streamQueue.map { queuedStream in
+            queuedStream.id == staleStream.id ? refreshedStream : queuedStream
+        }
+
+        return PlayerSessionRouting.sessionStreams(
+            primary: refreshedStream,
+            available: refreshedAvailable.filter { $0.id != refreshedStream.id }
+        )
     }
 }
 
@@ -90,8 +626,11 @@ struct PlayerView: View {
     let availableStreams: [StreamInfo]
     let mediaTitle: String?
     let mediaId: String?
+    let tmdbId: Int?
     let episodeId: String?
+    let nextEpisode: PlayerSessionRequest.NextEpisodeCandidate?
     let sessionID: UUID?
+    let sessionRequest: PlayerSessionRequest?
 
     @Environment(AppState.self) private var appState
     @Environment(\.openWindow) private var openWindow
@@ -108,6 +647,9 @@ struct PlayerView: View {
 
     @State private var currentStream: StreamInfo
     @State private var streamQueue: [StreamInfo]
+    @State private var activeMediaTitle: String?
+    @State private var activeEpisodeId: String?
+    @State private var queuedNextEpisode: PlayerSessionRequest.NextEpisodeCandidate?
 
     @State private var playbackState: PlayerPlaybackState = .preparing
     @State private var playbackMessage: String?
@@ -123,6 +665,7 @@ struct PlayerView: View {
     @Environment(CinemaSettings.self) private var cinemaSettings
     #endif
     @State private var isShowingControls = true
+    @State private var isControlsLocked = false
     @State private var controlsHideTask: Task<Void, Never>?
     @State private var initialPlayerStateTask: Task<Void, Never>?
     @State private var preparePlaybackTask: Task<Void, Never>?
@@ -132,7 +675,11 @@ struct PlayerView: View {
     @State private var environmentAssetsTask: Task<Void, Never>?
     @State private var scenePhaseTask: Task<Void, Never>?
     @State private var memoryPressureTask: Task<Void, Never>?
+    @State private var avMediaOptionRefreshTask: Task<Void, Never>?
     @State private var audioTrackRefreshTask: Task<Void, Never>?
+    @State private var subtitleTrackRefreshTask: Task<Void, Never>?
+    @State private var videoRatioDetectionTask: Task<Void, Never>?
+    @State private var hdrMetadataExtractionTask: Task<Void, Never>?
     @State private var isScrubbing = false
     @State private var scrubTime: TimeInterval = 0
     @State private var hasPlayedOnce = false
@@ -150,32 +697,47 @@ struct PlayerView: View {
     @State private var environmentAssets: [EnvironmentAsset] = []
     @State private var progressPersistTask: Task<Void, Never>?
     @State private var scrobbleTask: Task<Void, Never>?
-    @State private var subtitleService: OpenSubtitlesService?
+    @State private var subtitleService: (any OpenSubtitlesServicing)?
     @State private var subtitleServiceAPIKey: String?
     @State private var subtitleCandidates: [Subtitle] = []
     @State private var subtitleCatalogMessage: String?
     @State private var isRefreshingSubtitleCatalog = false
     @State private var isDownloadingSubtitle = false
+    @State private var subtitleCatalogMutationID: UUID?
+    @State private var subtitleDownloadMutationID: UUID?
     @State private var didInitiateClose = false
     @State private var avAudioOptions: [AVTrackOption] = []
     @State private var avSubtitleOptions: [AVTrackOption] = []
+    @State private var ksSubtitleOptions: [KSSubtitleOption] = []
     @State private var avAudioGroup: AVMediaSelectionGroup?
     @State private var avSubtitleGroup: AVMediaSelectionGroup?
     @State private var selectedAVAudioID: String?
     @State private var selectedAVSubtitleID: String?
+    @State private var selectedKSSubtitleID: String?
     @State private var subtitleSelectionMode: SubtitleSelectionMode = .automaticPreferred
     @State private var startupRefreshAttempts: [String: Int] = [:]
+    @State private var didRequestAutoplayNext = false
+    @State private var didCancelAutoPlayNextPrompt = false
+    @State private var isShowingAutoPlayNextPrompt = false
+    @State private var isResolvingAutoPlayNextEpisode = false
+    @State private var autoPlayNextCountdownRemaining = PlayerAutoplayNextPolicy.countdownDurationSeconds
+    @State private var autoPlayNextCountdownTask: Task<Void, Never>?
+    @State private var autoPlayNextResolveTask: Task<Void, Never>?
 
     #if os(visionOS)
     @State private var apmpInjector = APMPInjector()
     @State private var isAPMPActive = false
     @State private var playerWindowScene: UIWindowScene?
     @State private var visionGeometryTask: Task<Void, Never>?
+    @State private var environmentMenuActionTask: Task<Void, Never>?
+    @State private var immersiveDismissTask: Task<Void, Never>?
     #endif
 
     // MARK: - Aspect Ratio
     @State private var aspectRatioSelection: AspectRatioSelection = .auto
     @State private var detectedVideoRatio: CGFloat?
+    @State private var didAttemptVideoRatioDetection = false
+    @State private var didAttemptHDRMetadataExtraction = false
 
     #if os(macOS)
     @State private var playerWindow: NSWindow?
@@ -186,6 +748,18 @@ struct PlayerView: View {
     private let avPlayerEngine = AVPlayerEngine()
     private let ksPlayerEngine = KSPlayerEngine()
     private let playerEngineSelector = PlayerEngineSelector()
+    private let disablesAutomaticTasks: Bool
+    private let onImmersiveControlEvent: (@MainActor (PlayerImmersiveControlEvent) -> Void)?
+    private let onAutoplayRuntimeEvent: (@MainActor (PlayerAutoplayRuntimeEvent) -> Void)?
+    private let onSubtitleRuntimeEvent: (@MainActor (PlayerSubtitleRuntimeEvent) -> Void)?
+    private let subtitleRuntimeSettings: PlayerSubtitleRuntimeSettings?
+    private let subtitleServiceFactory: (String) -> any OpenSubtitlesServicing
+    private let prepareAVPlayerSessionOverride: (@MainActor (StreamInfo) async throws -> PreparedPlaybackSession)?
+    private let waitUntilAVPlayerReadyOverride: (@MainActor (
+        _ player: AVPlayer,
+        _ onState: @escaping (PlayerPlaybackState, String?) -> Void
+    ) async throws -> Void)?
+    private let avTimeObserverHooks: PlayerViewAVTimeObserverHooks?
 
     private struct AVTrackOption: Identifiable {
         let id: String
@@ -194,17 +768,28 @@ struct PlayerView: View {
         let option: AVMediaSelectionOption
     }
 
+    private struct KSSubtitleOption: Identifiable {
+        let id: String
+        let name: String
+        let language: String?
+    }
+
     private enum SubtitleSelectionMode: Equatable {
         case automaticPreferred
         case manual
     }
 
     private var availableAudioTrackCount: Int {
-        max(avAudioOptions.count, engine.audioTracks.count)
+        PlayerTrackPresentationPolicy.availableAudioTrackCount(
+            avMediaOptionCount: avAudioOptions.count,
+            engineTrackCount: engine.audioTracks.count
+        )
     }
 
     private var subtitlePresentationIsActive: Bool {
-        engine.subtitlesEnabled
+        PlayerTrackPresentationPolicy.isSubtitlePresentationActive(
+            subtitlesEnabled: engine.subtitlesEnabled
+        )
     }
 
     private var motionAnimationsEnabled: Bool {
@@ -216,39 +801,180 @@ struct PlayerView: View {
         availableStreams: [StreamInfo] = [],
         mediaTitle: String? = nil,
         mediaId: String? = nil,
+        tmdbId: Int? = nil,
         episodeId: String? = nil,
-        sessionID: UUID? = nil
+        nextEpisode: PlayerSessionRequest.NextEpisodeCandidate? = nil,
+        sessionID: UUID? = nil,
+        sessionRequest: PlayerSessionRequest? = nil,
+        initialPlaybackState: PlayerPlaybackState = .preparing,
+        initialPlaybackMessage: String? = nil,
+        initialPlaybackError: String? = nil,
+        initialActiveEngine: PlayerEngineKind? = nil,
+        initialIsShowingControls: Bool = true,
+        initialIsShowingSubtitlePicker: Bool = false,
+        initialIsShowingAudioPicker: Bool = false,
+        initialIsShowingEnvironmentPicker: Bool = false,
+        initialIsShowingCinemaSettings: Bool = false,
+        initialSubtitleFontSize: Double = 24,
+        initialCapabilityWarnings: [String] = [],
+        initialEnvironmentAssets: [EnvironmentAsset] = [],
+        initialSubtitleCandidates: [Subtitle] = [],
+        initialSubtitleCatalogMessage: String? = nil,
+        initialIsRefreshingSubtitleCatalog: Bool = false,
+        initialIsDownloadingSubtitle: Bool = false,
+        initialIsShowingAutoPlayNextPrompt: Bool = false,
+        initialIsResolvingAutoPlayNextEpisode: Bool = false,
+        initialAutoPlayNextCountdownRemaining: Int = PlayerAutoplayNextPolicy.countdownDurationSeconds,
+        initialAspectRatioSelection: AspectRatioSelection = .auto,
+        initialKSSubtitleOptions: [VPPlayerEngine.TrackInfo] = [],
+        initialSelectedKSSubtitleID: String? = nil,
+        disablesAutomaticTasks: Bool = false,
+        onImmersiveControlEvent: (@MainActor (PlayerImmersiveControlEvent) -> Void)? = nil,
+        onAutoplayRuntimeEvent: (@MainActor (PlayerAutoplayRuntimeEvent) -> Void)? = nil,
+        onSubtitleRuntimeEvent: (@MainActor (PlayerSubtitleRuntimeEvent) -> Void)? = nil,
+        subtitleRuntimeSettings: PlayerSubtitleRuntimeSettings? = nil,
+        prepareAVPlayerSessionOverride: (@MainActor (StreamInfo) async throws -> PreparedPlaybackSession)? = nil,
+        waitUntilAVPlayerReadyOverride: (@MainActor (
+            _ player: AVPlayer,
+            _ onState: @escaping (PlayerPlaybackState, String?) -> Void
+        ) async throws -> Void)? = nil,
+        avTimeObserverHooks: PlayerViewAVTimeObserverHooks? = nil,
+        subtitleServiceFactory: @escaping (String) -> any OpenSubtitlesServicing = { OpenSubtitlesService(apiKey: $0) }
     ) {
         self.stream = stream
         self.availableStreams = availableStreams
         self.mediaTitle = mediaTitle
         self.mediaId = mediaId
+        self.tmdbId = tmdbId
         self.episodeId = episodeId
+        self.nextEpisode = nextEpisode
         self.sessionID = sessionID
+        self.sessionRequest = sessionRequest
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+        self.onImmersiveControlEvent = onImmersiveControlEvent
+        self.onAutoplayRuntimeEvent = onAutoplayRuntimeEvent
+        self.onSubtitleRuntimeEvent = onSubtitleRuntimeEvent
+        self.subtitleRuntimeSettings = subtitleRuntimeSettings
+        self.subtitleServiceFactory = subtitleServiceFactory
+        self.prepareAVPlayerSessionOverride = prepareAVPlayerSessionOverride
+        self.waitUntilAVPlayerReadyOverride = waitUntilAVPlayerReadyOverride
+        self.avTimeObserverHooks = avTimeObserverHooks
 
         let queue = PlayerSessionRouting.sessionStreams(primary: stream, available: availableStreams)
         _currentStream = State(initialValue: stream)
         _streamQueue = State(initialValue: queue)
+        _activeMediaTitle = State(initialValue: mediaTitle)
+        _activeEpisodeId = State(initialValue: episodeId)
+        _queuedNextEpisode = State(initialValue: nextEpisode)
+        _playbackState = State(initialValue: initialPlaybackState)
+        _playbackMessage = State(initialValue: initialPlaybackMessage)
+        _playbackError = State(initialValue: initialPlaybackError)
+        _activeEngine = State(initialValue: initialActiveEngine)
+        _isShowingControls = State(initialValue: initialIsShowingControls)
+        _isShowingSubtitlePicker = State(initialValue: initialIsShowingSubtitlePicker)
+        _isShowingAudioPicker = State(initialValue: initialIsShowingAudioPicker)
+        #if os(visionOS)
+        _isShowingEnvironmentPicker = State(initialValue: initialIsShowingEnvironmentPicker)
+        _isShowingCinemaSettings = State(initialValue: initialIsShowingCinemaSettings)
+        #endif
+        _subtitleFontSize = State(initialValue: initialSubtitleFontSize)
+        _capabilityWarnings = State(initialValue: initialCapabilityWarnings)
+        _environmentAssets = State(initialValue: initialEnvironmentAssets)
+        _subtitleCandidates = State(initialValue: initialSubtitleCandidates)
+        _subtitleCatalogMessage = State(initialValue: initialSubtitleCatalogMessage)
+        _isRefreshingSubtitleCatalog = State(initialValue: initialIsRefreshingSubtitleCatalog)
+        _isDownloadingSubtitle = State(initialValue: initialIsDownloadingSubtitle)
+        _isShowingAutoPlayNextPrompt = State(initialValue: initialIsShowingAutoPlayNextPrompt)
+        _isResolvingAutoPlayNextEpisode = State(initialValue: initialIsResolvingAutoPlayNextEpisode)
+        _autoPlayNextCountdownRemaining = State(initialValue: initialAutoPlayNextCountdownRemaining)
+        _aspectRatioSelection = State(initialValue: initialAspectRatioSelection)
+        _ksSubtitleOptions = State(initialValue: initialKSSubtitleOptions.map {
+            KSSubtitleOption(id: String($0.id), name: $0.name, language: $0.language)
+        })
+        _selectedKSSubtitleID = State(initialValue: initialSelectedKSSubtitleID)
     }
 
     var body: some View {
         playerCore
         #if os(visionOS)
         .modifier(ImmersiveControlHandlers(
-            onToggleControls: { toggleControlsVisibility() },
-            onTogglePlayPause: { togglePlayPause() },
-            onSeekBack: { seekRelative(-10) },
-            onSeekForward: { seekRelative(30) },
-            onSeekToPercent: { seekTo(percent: $0) },
-            onPreviousChapter: { if let time = engine.previousChapterTime() { seek(to: time) } },
-            onNextChapter: { if let time = engine.nextChapterTime() { seek(to: time) } },
-            onCycleRate: { cyclePlaybackRate() },
-            onToggleSubtitles: { isShowingSubtitlePicker.toggle() },
-            onToggleAudio: { isShowingAudioPicker.toggle() },
-            onRequestEnvironmentSwitch: { requestEnvironmentPicker() },
-            onDismiss: { Task { await dismissImmersiveIfNeeded(reason: .userInitiated) } }
+            onToggleControls: {
+                recordImmersiveControlEvent(.toggleControls)
+                toggleControlsVisibility()
+            },
+            onTogglePlayPause: {
+                recordImmersiveControlEvent(.togglePlayPause)
+                togglePlayPause()
+            },
+            onSeekBack: {
+                recordImmersiveControlEvent(.seekBack)
+                seekRelative(-TimeInterval(PlayerCinematicChromePolicy.skipBackInterval))
+            },
+            onSeekForward: {
+                recordImmersiveControlEvent(.seekForward)
+                seekRelative(TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
+            },
+            onSeekToPercent: {
+                recordImmersiveControlEvent(.seekToPercent($0))
+                seekTo(percent: $0)
+            },
+            onPreviousChapter: {
+                recordImmersiveControlEvent(.previousChapter)
+                if let time = engine.previousChapterTime() { seek(to: time) }
+            },
+            onNextChapter: {
+                recordImmersiveControlEvent(.nextChapter)
+                if let time = engine.nextChapterTime() { seek(to: time) }
+            },
+            onCycleRate: {
+                recordImmersiveControlEvent(.cycleRate)
+                cyclePlaybackRate()
+            },
+            onToggleSubtitles: {
+                recordImmersiveControlEvent(.toggleSubtitles)
+                presentSubtitlePicker()
+            },
+            onToggleAudio: {
+                recordImmersiveControlEvent(.toggleAudio)
+                presentAudioPicker()
+            },
+            onRequestEnvironmentSwitch: {
+                recordImmersiveControlEvent(.requestEnvironmentSwitch)
+                requestEnvironmentPicker()
+            },
+            onDismiss: {
+                recordImmersiveControlEvent(.dismiss)
+                scheduleImmersiveDismiss(reason: .userInitiated)
+            }
         ))
         #endif
+        .modifier(AutoplayControlHandlers(
+            onPlayNow: {
+                recordAutoplayRuntimeEvent(.playNowRequested)
+                playNextEpisodeNow()
+            },
+            onCancel: {
+                recordAutoplayRuntimeEvent(.cancelRequested)
+                cancelAutoPlayNextCountdown()
+            },
+            onProgress: { currentTime, duration in
+                recordAutoplayRuntimeEvent(.progressObserved(currentTime: currentTime, duration: duration))
+                handlePlaybackProgressForAutoplay(currentTime: currentTime, duration: duration)
+            }
+        ))
+        .modifier(SubtitleControlHandlers(
+            onRefreshCatalog: {
+                recordSubtitleRuntimeEvent(.refreshRequested)
+                scheduleSubtitleCatalogRefresh(for: currentStream)
+            },
+            onDownload: { subtitle in
+                recordSubtitleRuntimeEvent(.downloadRequested(fileID: subtitle.fileId))
+                scheduleSubtitleDownload(subtitle, streamID: currentStream.id)
+            }
+        ))
+        .onChange(of: stream) { _, stream in
+            syncCurrentStreamIfNeeded(stream)
+        }
         #if os(macOS)
         .background(PlayerWindowAccessor(window: $playerWindow).frame(width: 0, height: 0))
         .onChange(of: playerWindow) { _, newWindow in
@@ -284,8 +1010,14 @@ struct PlayerView: View {
         .sheet(isPresented: $isShowingSubtitlePicker) {
             subtitlePickerSheet
         }
+        .onChange(of: isShowingSubtitlePicker) { _, isPresented in
+            handleControlModalVisibilityChange(isPresented: isPresented)
+        }
         .sheet(isPresented: $isShowingAudioPicker) {
             audioPickerSheet
+        }
+        .onChange(of: isShowingAudioPicker) { _, isPresented in
+            handleControlModalVisibilityChange(isPresented: isPresented)
         }
         #if os(visionOS)
         .sheet(isPresented: $isShowingEnvironmentPicker) {
@@ -302,10 +1034,75 @@ struct PlayerView: View {
             )
             .environment(appState)
         }
+        .onChange(of: isShowingEnvironmentPicker) { _, isPresented in
+            handleControlModalVisibilityChange(isPresented: isPresented)
+        }
         .sheet(isPresented: $isShowingCinemaSettings) {
             CinemaSettingsPanel(settings: cinemaSettings)
         }
+        .onChange(of: isShowingCinemaSettings) { _, isPresented in
+            handleControlModalVisibilityChange(isPresented: isPresented)
+        }
         #endif
+    }
+
+    private func recordImmersiveControlEvent(_ event: PlayerImmersiveControlEvent) {
+        onImmersiveControlEvent?(event)
+    }
+
+    private func recordAutoplayRuntimeEvent(_ event: PlayerAutoplayRuntimeEvent) {
+        onAutoplayRuntimeEvent?(event)
+    }
+
+    private func recordAutoplayPromptState() {
+        guard onAutoplayRuntimeEvent != nil else { return }
+        recordAutoplayRuntimeEvent(.stateChanged(PlayerAutoplayRuntimeSnapshot(
+            didRequestAutoplayNext: didRequestAutoplayNext,
+            didCancelAutoPlayNextPrompt: didCancelAutoPlayNextPrompt,
+            isShowingAutoPlayNextPrompt: isShowingAutoPlayNextPrompt,
+            isResolvingAutoPlayNextEpisode: isResolvingAutoPlayNextEpisode,
+            countdownRemaining: autoPlayNextCountdownRemaining
+        )))
+    }
+
+    private func recordSubtitleRuntimeEvent(_ event: PlayerSubtitleRuntimeEvent) {
+        onSubtitleRuntimeEvent?(event)
+    }
+
+    private func recordSubtitleRuntimeState() {
+        guard onSubtitleRuntimeEvent != nil else { return }
+        recordSubtitleRuntimeEvent(.stateChanged(PlayerSubtitleRuntimeSnapshot(
+            candidateCount: subtitleCandidates.count,
+            catalogMessage: subtitleCatalogMessage,
+            isRefreshingSubtitleCatalog: isRefreshingSubtitleCatalog,
+            isDownloadingSubtitle: isDownloadingSubtitle,
+            selectedSubtitleTrack: engine.selectedSubtitleTrack,
+            subtitlesEnabled: engine.subtitlesEnabled
+        )))
+    }
+
+    private func subtitleAutoSearchSetting(default defaultValue: Bool) async -> Bool {
+        if let override = subtitleRuntimeSettings?.subtitleAutoSearch {
+            return override
+        }
+        return (try? await appState.settingsManager.getBool(
+            key: SettingsKeys.subtitleAutoSearch,
+            default: defaultValue
+        )) ?? defaultValue
+    }
+
+    private func openSubtitlesAPIKeySetting() async -> String? {
+        if subtitleRuntimeSettings?.usesOpenSubtitlesAPIKeyOverride == true {
+            return subtitleRuntimeSettings?.openSubtitlesAPIKey
+        }
+        return try? await appState.settingsManager.getString(key: SettingsKeys.openSubtitlesApiKey)
+    }
+
+    private func subtitleLanguageSetting() async -> String? {
+        if let override = subtitleRuntimeSettings?.subtitleLanguage {
+            return override
+        }
+        return try? await appState.settingsManager.getString(key: SettingsKeys.subtitleLanguage)
     }
 
     /// Core player view with lifecycle modifiers that don't require platform-
@@ -319,6 +1116,7 @@ struct PlayerView: View {
             playerSurface
             subtitleOverlay
             controlsOverlay
+            autoPlayNextOverlay
             startupStateOverlay
         }
         #if os(visionOS)
@@ -327,17 +1125,20 @@ struct PlayerView: View {
         .animation(motionAnimationsEnabled ? .spring(response: 0.38, dampingFraction: 0.85) : nil, value: playbackState)
         .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.18) : nil, value: engine.currentSubtitleText != nil)
         .onChange(of: playbackState) { _, newState in
+            guard !disablesAutomaticTasks else { return }
             if newState == .playing, !hasPlayedOnce {
                 hasPlayedOnce = true
                 scrobbleStart()
             }
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             initialPlayerStateTask?.cancel()
             initialPlayerStateTask = Task { await loadInitialPlayerState() }
             await initialPlayerStateTask?.value
         }
         .task(id: currentStream.id) {
+            guard !disablesAutomaticTasks else { return }
             let preparationID = UUID()
             activePreparePlaybackID = preparationID
             preparePlaybackTask?.cancel()
@@ -345,11 +1146,13 @@ struct PlayerView: View {
             await preparePlaybackTask?.value
         }
         .onAppear {
+            guard !disablesAutomaticTasks else { return }
             #if os(macOS) || os(visionOS)
             scheduleMainWindowSuppressionIfNeeded()
             #endif
         }
         .onDisappear {
+            guard !disablesAutomaticTasks else { return }
             stopProgressPersistence()
             scrobbleStop()
             if !didInitiateClose {
@@ -363,13 +1166,21 @@ struct PlayerView: View {
             environmentAssetsTask?.cancel()
             scenePhaseTask?.cancel()
             memoryPressureTask?.cancel()
+            avMediaOptionRefreshTask?.cancel()
+            avMediaOptionRefreshTask = nil
+            audioTrackRefreshTask?.cancel()
+            audioTrackRefreshTask = nil
+            subtitleTrackRefreshTask?.cancel()
+            subtitleTrackRefreshTask = nil
+            autoPlayNextCountdownTask?.cancel()
+            autoPlayNextResolveTask?.cancel()
             cleanupPlayback()
             controlsHideTask?.cancel()
             controlsHideTask = nil
             RuntimeMemoryDiagnostics.capture(
                 event: .playerDidDisappear,
                 enabled: appState.runtimeDiagnosticsEnabled,
-                context: mediaTitle ?? currentStream.fileName
+                context: resolvedMediaTitle
             )
             if let subtitleFileURL = downloadedSubtitleFileURL {
                 try? FileManager.default.removeItem(at: subtitleFileURL)
@@ -378,18 +1189,24 @@ struct PlayerView: View {
             #if os(visionOS)
             visionGeometryTask?.cancel()
             visionGeometryTask = nil
-            Task {
-                await dismissImmersiveIfNeeded(reason: .playerClosed)
-                scheduleMainWindowRestoreIfNeeded()
-            }
+            environmentMenuActionTask?.cancel()
+            environmentMenuActionTask = nil
+            immersiveDismissTask?.cancel()
+            immersiveDismissTask = nil
+            scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)
             #elseif os(macOS)
             resetWindowAspectRatio()
             scheduleMainWindowRestoreIfNeeded()
             #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             environmentAssetsTask?.cancel()
             environmentAssetsTask = Task { await loadEnvironmentAssets() }
+        }
+        .onChange(of: appState.activePlayerSession?.id) { _, activeSessionID in
+            guard activeSessionID != sessionID else { return }
+            closePlayer()
         }
         #if os(visionOS)
         .onChange(of: scenePhase) { _, phase in
@@ -456,72 +1273,15 @@ struct PlayerView: View {
 
     @ViewBuilder
     private var startupStateOverlay: some View {
-        if playbackState == .failed {
-            // Failure overlay -- always full center
-            VStack(spacing: 14) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.largeTitle)
-                    .foregroundStyle(.orange)
-
-                Text(playbackStateTitle)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-
-                if let message = playbackMessage, !message.isEmpty {
-                    Text(message)
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white.opacity(0.85))
-                        .padding(.horizontal, 24)
-                }
-
-                HStack(spacing: 10) {
-                    Button("Retry") {
-                        retryPlayback()
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    if hasNextStream {
-                        Button("Try Next Stream") {
-                            tryNextStream()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-            }
-            .padding(.vertical, 20)
-            .padding(.horizontal, 28)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.24), .white.opacity(0.06)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-            }
-            .shadow(color: .black.opacity(0.07), radius: 24, y: 0)
-            .shadow(color: .black.opacity(0.13), radius: 8, y: 4)
-            .transition(.scale(0.92, anchor: .center).combined(with: .opacity))
-        } else if playbackState != .playing && !hasPlayedOnce {
-            // Initial preparation — centered LoadingOverlay
-            LoadingOverlay(
-                title: playbackStateTitle,
-                message: playbackMessage
-            )
-            .transition(.scale(0.92, anchor: .center).combined(with: .opacity))
-        } else if playbackState == .buffering && hasPlayedOnce {
-            // Mid-playback rebuffer — compact inline pill at top
-            VStack {
-                InlineLoadingStatusView(title: playbackMessage ?? "Rebuffering...")
-                    .padding(.top, 80)
-                Spacer()
-            }
-            .transition(.opacity)
-        }
+        PlayerStartupStateOverlayView(
+            playbackState: playbackState,
+            title: playbackStateTitle,
+            message: playbackMessage,
+            hasPlayedOnce: hasPlayedOnce,
+            hasNextStream: hasNextStream,
+            onRetry: { retryPlayback() },
+            onTryNextStream: { tryNextStream() }
+        )
     }
 
     @ViewBuilder
@@ -556,29 +1316,63 @@ struct PlayerView: View {
         }
     }
 
+    @ViewBuilder
+    private var autoPlayNextOverlay: some View {
+        if isShowingAutoPlayNextPrompt, let nextEpisode = queuedNextEpisode {
+            autoPlayNextPrompt(nextEpisode)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 150)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .animation(
+                    motionAnimationsEnabled ? .easeInOut(duration: 0.2) : nil,
+                    value: isShowingAutoPlayNextPrompt
+                )
+                .animation(
+                    motionAnimationsEnabled ? .linear(duration: 0.2) : nil,
+                    value: autoPlayNextCountdownRemaining
+                )
+        }
+    }
+
+    private func autoPlayNextPrompt(_ nextEpisode: PlayerSessionRequest.NextEpisodeCandidate) -> some View {
+        PlayerAutoPlayNextPromptView(
+            nextEpisode: nextEpisode,
+            remainingSeconds: autoPlayNextCountdownRemaining,
+            isResolving: isResolvingAutoPlayNextEpisode,
+            onPlayNow: { playNextEpisodeNow() },
+            onCancel: { cancelAutoPlayNextCountdown() }
+        )
+    }
+
     // MARK: - Controls Overlay (full-height, overlaying video)
 
     @ViewBuilder
     private var controlsOverlay: some View {
         if isShowingControls {
-            VStack(spacing: 0) {
-                // MARK: Title Bar -- top edge overlay
-                titleBar
-                    .compositingGroup()
+            ZStack(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    titleBar
+                        .compositingGroup()
 
-                warningsOverlay
-                    .padding(.top, 6)
-                    .compositingGroup()
+                    warningsOverlay
+                        .padding(.top, 6)
+                        .compositingGroup()
 
-                Spacer()
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                // MARK: Info Pills -- floating centered above transport
-                infoPillsRow
-                    .padding(.bottom, 12)
+                VStack(spacing: PlayerCinematicChromePolicy.controlsDockSpacing) {
+                    infoPillsRow
+                        .frame(maxWidth: PlayerCinematicChromePolicy.quickActionsMaxWidth)
 
-                // MARK: Transport Bar -- bottom edge overlay
-                transportBar
-                    .compositingGroup()
+                    transportBar
+                        .compositingGroup()
+                }
+                .padding(.horizontal, PlayerCinematicChromePolicy.controlsDockHorizontalPadding)
+                .padding(.bottom, PlayerCinematicChromePolicy.controlsDockBottomPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
             .transition(.opacity)
         }
@@ -587,23 +1381,14 @@ struct PlayerView: View {
     // MARK: - Title Bar (top edge, overlaying video)
 
     private var titleBar: some View {
-        // topBarIconSurface(symbolName: PlayerCinematicVisualPolicy.backSymbolName)
-        // topBarIconSurface(symbolName: PlayerCinematicVisualPolicy.menuSymbolName)
-
-        HStack {
-            // Left: back button
+        HStack(spacing: 12) {
             Button {
                 closePlayer()
             } label: {
-                Image(systemName: "chevron.backward")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(.regularMaterial, in: Circle())
-                    .overlay {
-                        Circle()
-                            .strokeBorder(.white.opacity(0.18), lineWidth: 0.8)
-                    }
+                topBarUtilityButton(
+                    systemName: PlayerCinematicVisualPolicy.backSymbolName,
+                    accessibilityLabel: "Close player"
+                )
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close player")
@@ -612,20 +1397,13 @@ struct PlayerView: View {
             .hoverEffect(.lift)
             #endif
 
-            Spacer()
+            titleMetadataBlock
 
-            // Center: media title
-            Text(mediaTitle ?? currentStream.fileName)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
+            Spacer(minLength: 12)
 
-            Spacer()
-
-            // Right: utility cluster + more options menu
             HStack(spacing: 8) {
                 Button {
-                    isShowingSubtitlePicker.toggle()
+                    presentSubtitlePicker()
                 } label: {
                     topBarUtilityButton(
                         systemName: subtitlePresentationIsActive ? "captions.bubble.fill" : "captions.bubble",
@@ -639,7 +1417,7 @@ struct PlayerView: View {
                 #endif
 
                 Button {
-                    isShowingAudioPicker.toggle()
+                    presentAudioPicker()
                 } label: {
                     topBarUtilityButton(
                         systemName: availableAudioTrackCount > 1 ? "speaker.wave.2.fill" : "speaker.wave.2",
@@ -652,11 +1430,26 @@ struct PlayerView: View {
                 .hoverEffect(.lift)
                 #endif
 
+                Button {
+                    toggleControlsLock()
+                } label: {
+                    topBarUtilityButton(
+                        systemName: isControlsLocked ? "lock.fill" : "lock.open",
+                        isActive: isControlsLocked,
+                        accessibilityLabel: isControlsLocked ? "Unlock controls" : "Lock controls"
+                    )
+                }
+                .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.lift)
+                #endif
+
                 Menu {
                     // Stream quality picker
                     Section("Stream") {
                         ForEach(streamQueue, id: \.id) { stream in
                             Button {
+                                keepControlsVisibleForMenuAction()
                                 switchToStream(stream)
                             } label: {
                                 HStack {
@@ -676,6 +1469,7 @@ struct PlayerView: View {
 
                     Section("Aspect Ratio") {
                         Button {
+                            keepControlsVisibleForMenuAction()
                             aspectRatioSelection = aspectRatioSelection == .freeform ? .auto : .freeform
                         } label: {
                             HStack {
@@ -688,6 +1482,7 @@ struct PlayerView: View {
 
                         ForEach(AspectRatioSelection.allCases.filter { $0 != .freeform }, id: \.id) { selection in
                             Button {
+                                keepControlsVisibleForMenuAction()
                                 aspectRatioSelection = selection
                             } label: {
                                 HStack {
@@ -703,6 +1498,7 @@ struct PlayerView: View {
                     #if os(macOS)
                     Section {
                         Button {
+                            keepControlsVisibleForMenuAction()
                             guard let playerWindow else { return }
                             playerWindow.toggleFullScreen(nil)
                             isFullscreen = playerWindow.styleMask.contains(.fullScreen)
@@ -721,6 +1517,7 @@ struct PlayerView: View {
                     #if os(visionOS)
                     Section("Environment") {
                         Button {
+                            keepControlsVisibleForMenuAction()
                             openCinemaEnvironmentAfterMenuDismissal()
                         } label: {
                             Label("Cinema Environment", systemImage: "theatermasks")
@@ -731,6 +1528,7 @@ struct PlayerView: View {
                         ))
 
                         Button {
+                            keepControlsVisibleForMenuAction()
                             showCinemaSettingsAfterMenuDismissal()
                         } label: {
                             Label("Cinema Settings", systemImage: "slider.horizontal.3")
@@ -738,6 +1536,7 @@ struct PlayerView: View {
 
                         if environmentAssets.isEmpty {
                             Button {
+                                keepControlsVisibleForMenuAction()
                                 showEnvironmentPickerAfterMenuDismissal()
                             } label: {
                                 Label("Browse Environments", systemImage: "mountain.2")
@@ -745,6 +1544,7 @@ struct PlayerView: View {
                         } else {
                             ForEach(environmentAssets, id: \.id) { asset in
                                 Button {
+                                    keepControlsVisibleForMenuAction()
                                     openEnvironmentAfterMenuDismissal(asset)
                                 } label: {
                                     HStack {
@@ -759,6 +1559,7 @@ struct PlayerView: View {
                         }
                         if appState.isImmersiveSpaceOpen {
                             Button(role: .destructive) {
+                                keepControlsVisibleForMenuAction()
                                 dismissEnvironmentAfterMenuDismissal()
                             } label: {
                                 Label("Exit Environment", systemImage: "xmark.circle")
@@ -775,15 +1576,48 @@ struct PlayerView: View {
                 #endif
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
         .background(
             LinearGradient(
-                colors: [.black.opacity(0.6), .clear],
+                colors: [
+                    .black.opacity(PlayerCinematicVisualPolicy.topScrimOpacity + 0.24),
+                    .black.opacity(0.18),
+                    .clear
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
+            .frame(height: PlayerCinematicChromePolicy.topScrimHeight),
+            alignment: .top
         )
+    }
+
+    private var titleMetadataBlock: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(resolvedMediaTitle)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+
+            HStack(spacing: 8) {
+                if let chapter = engine.currentChapter(at: engine.currentTime) {
+                    Text(chapter.title)
+                        .lineLimit(1)
+                } else {
+                    Text(currentStream.quality.rawValue)
+                    if let activeEngine {
+                        Text(activeEngine.displayName)
+                    }
+                }
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
+            .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private func topBarUtilityButton(
@@ -794,15 +1628,19 @@ struct PlayerView: View {
         Image(systemName: systemName)
             .font(.body.weight(.semibold))
             .foregroundStyle(.white)
-            .frame(width: 40, height: 40)
+            .frame(
+                width: PlayerCinematicChromePolicy.topBarButtonSize,
+                height: PlayerCinematicChromePolicy.topBarButtonSize
+            )
             .background(
-                isActive ? AnyShapeStyle(.tint.opacity(0.32)) : AnyShapeStyle(.regularMaterial),
+                isActive ? AnyShapeStyle(.tint.opacity(0.34)) : AnyShapeStyle(.ultraThinMaterial),
                 in: Circle()
             )
             .overlay {
                 Circle()
-                    .strokeBorder(.white.opacity(0.18), lineWidth: 0.8)
+                    .strokeBorder(.white.opacity(PlayerCinematicVisualPolicy.iconSurfaceBorderOpacity), lineWidth: 0.8)
             }
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
             .contentShape(Circle())
             .accessibilityLabel(accessibilityLabel)
     }
@@ -810,17 +1648,11 @@ struct PlayerView: View {
     // MARK: - Info Pills Row (floating above transport bar)
 
     private var infoPillsRow: some View {
-        // transportIconButton(systemName: PlayerCinematicVisualPolicy.subtitlesSymbolName)
-        // transportIconButton(systemName: PlayerCinematicVisualPolicy.audioSymbolName)
-        // systemImage: PlayerCinematicVisualPolicy.qualitySymbolName
-        // transportControls .padding(.horizontal, PlayerCinematicChromePolicy.transportCardHorizontalPadding) .padding(.vertical, PlayerCinematicChromePolicy.transportCardVerticalPadding) .frame(maxWidth: PlayerCinematicChromePolicy.transportCardMaxWidth) .background( chromeCardBackground, in: RoundedRectangle(
-        // .overlay(alignment: .bottom)
-        // controlsDock
-        // .background(chromeIconBackground, in: Circle())
-
         HStack(spacing: 8) {
-            // Playback rate pill
-            Button { cyclePlaybackRate() } label: {
+            Button {
+                keepControlsVisibleForMenuAction()
+                cyclePlaybackRate()
+            } label: {
                 Text("\(engine.playbackRate, specifier: "%.1f")x")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.white)
@@ -841,6 +1673,7 @@ struct PlayerView: View {
             // Environment toggle pill — always visible so users can open built-in cinema or imported environments.
             Menu {
                 Button {
+                    keepControlsVisibleForMenuAction()
                     openCinemaEnvironmentAfterMenuDismissal()
                 } label: {
                     if appState.activeEnvironment == .cinemaEnvironment,
@@ -856,6 +1689,7 @@ struct PlayerView: View {
                 ))
 
                 Button {
+                    keepControlsVisibleForMenuAction()
                     showCinemaSettingsAfterMenuDismissal()
                 } label: {
                     Label("Cinema Settings", systemImage: "slider.horizontal.3")
@@ -868,6 +1702,7 @@ struct PlayerView: View {
                 } else {
                     ForEach(environmentAssets, id: \.id) { asset in
                         Button {
+                            keepControlsVisibleForMenuAction()
                             openEnvironmentAfterMenuDismissal(asset)
                         } label: {
                             if asset.id == appState.selectedEnvironmentAsset?.id,
@@ -882,6 +1717,7 @@ struct PlayerView: View {
                 }
 
                 Button {
+                    keepControlsVisibleForMenuAction()
                     showEnvironmentPickerAfterMenuDismissal()
                 } label: {
                     Label("Browse Environments", systemImage: "mountain.2")
@@ -890,6 +1726,7 @@ struct PlayerView: View {
                 if appState.isImmersiveSpaceOpen {
                     Divider()
                     Button(role: .destructive) {
+                        keepControlsVisibleForMenuAction()
                         dismissEnvironmentAfterMenuDismissal()
                     } label: {
                         Label("Exit Environment", systemImage: "xmark.circle")
@@ -919,6 +1756,7 @@ struct PlayerView: View {
 
             // Dim passthrough toggle pill
             Button {
+                keepControlsVisibleForMenuAction()
                 engine.isDimEnabled.toggle()
                 Task {
                     try? await appState.settingsManager.setBool(
@@ -967,223 +1805,262 @@ struct PlayerView: View {
     // MARK: - Transport Bar (bottom edge, overlaying video)
 
     private var transportBar: some View {
-        VStack(spacing: 6) {
-            // Progress bar
-            GeometryReader { geo in
-                let barWidth = geo.size.width
-                let progressX = barWidth * engine.progressPercent
-                let bufferedX = barWidth * engine.bufferedPercent
-                let barHeight: CGFloat = isScrubbing ? 6 : 3
+        VStack(spacing: 10) {
+            playbackProgressBar
+            timeLabelsRow
+            transportControlsRow
 
-                ZStack(alignment: .leading) {
-                    // Track background
-                    Capsule()
-                        .fill(.white.opacity(0.2))
-                        .frame(height: barHeight)
-
-                    // Buffered range
-                    Capsule()
-                        .fill(.white.opacity(0.35))
-                        .frame(width: bufferedX, height: barHeight)
-
-                    // Played range
-                    Capsule()
-                        .fill(.white)
-                        .frame(width: isScrubbing ? barWidth * (scrubTime / max(engine.duration, 1)) : progressX, height: barHeight)
-
-                    // Chapter tick marks
-                    if !engine.chapters.isEmpty && engine.duration > 0 {
-                        ForEach(engine.chapters) { chapter in
-                            let tickX = barWidth * (chapter.startTime / engine.duration)
-                            if chapter.startTime > 0 {
-                                RoundedRectangle(cornerRadius: 0.5)
-                                    .fill(.white.opacity(0.6))
-                                    .frame(width: 2, height: barHeight + 4)
-                                    .position(x: tickX, y: geo.size.height / 2)
-                            }
-                        }
-                    }
-
-                    // Thumb knob
-                    Circle()
-                        .fill(.white)
-                        .frame(width: isScrubbing ? 14 : 8, height: isScrubbing ? 14 : 8)
-                        .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
-                        .position(
-                            x: isScrubbing ? barWidth * (scrubTime / max(engine.duration, 1)) : progressX,
-                            y: geo.size.height / 2
-                        )
-                }
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            let percent = max(0, min(1, value.location.x / max(barWidth, 1)))
-                            scrubTime = engine.duration * percent
-                            if !isScrubbing {
-                                isScrubbing = true
-                            }
-                        }
-                        .onEnded { value in
-                            let percent = max(0, min(1, value.location.x / max(barWidth, 1)))
-                            seekTo(percent: percent)
-                            isScrubbing = false
-                        }
-                )
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Playback position")
-                .accessibilityValue(scrubberAccessibilityValue)
-                .accessibilityHint("Adjust to seek through the current video.")
-                .accessibilityAdjustableAction { direction in
-                    adjustScrubberAccessibility(direction)
-                }
-                .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.15) : nil, value: isScrubbing)
-
-                // Scrub preview time label
-                if isScrubbing {
-                    let thumbX = barWidth * (scrubTime / max(engine.duration, 1))
-                    Text(scrubTime.formattedDuration)
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay {
-                            Capsule()
-                                .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                        }
-                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
-                        .position(x: max(30, min(barWidth - 30, thumbX)), y: -10)
-                }
-            }
-            .frame(height: 20)
-
-            // Time labels
-            HStack {
-                Text(isScrubbing ? scrubTime.formattedDuration : engine.currentTimeFormatted)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer()
-                Text("-\(engine.remainingFormatted)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-
-            // Transport buttons -- centered skip back, play/pause, skip forward
-            HStack(spacing: 28) {
-                Spacer()
-
-                // Chapter previous (compact)
-                if !engine.chapters.isEmpty {
-                    Button {
-                        if let time = engine.previousChapterTime() { seek(to: time) }
-                    } label: {
-                        Image(systemName: "backward.end.fill")
-                            .font(.body)
-                            .foregroundStyle(.white)
-                    }
-                    .accessibilityLabel("Previous chapter")
-                    .buttonStyle(.plain)
-                    #if os(visionOS)
-                    .hoverEffect(.highlight)
-                    #endif
-                }
-
-                Button {
-                    seekRelative(-10)
-                } label: {
-                    Image(systemName: "gobackward.10")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
-                .accessibilityLabel("Back 10 seconds")
-                .buttonStyle(.plain)
-                #if os(visionOS)
-                .hoverEffect(.highlight)
-                #endif
-
-                Button {
-                    togglePlayPause()
-                } label: {
-                    Image(systemName: playPausePresentation.symbolName)
-                        .font(.title)
-                        .foregroundStyle(.white)
-                        .frame(width: 48, height: 48)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay {
-                            Circle()
-                                .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                        }
-                }
-                 .accessibilityLabel(playPausePresentation.label)
-                .accessibilityValue(playPausePresentation.accessibilityValue)
-                .buttonStyle(.plain)
-                #if os(visionOS)
-                .hoverEffect(.lift)
-                #endif
-
-                Button {
-                    seekRelative(30)
-                } label: {
-                    Image(systemName: "goforward.30")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
-                .accessibilityLabel("Forward 30 seconds")
-                .buttonStyle(.plain)
-                #if os(visionOS)
-                .hoverEffect(.highlight)
-                #endif
-
-                // Chapter next (compact)
-                if !engine.chapters.isEmpty {
-                    Button {
-                        if let time = engine.nextChapterTime() { seek(to: time) }
-                    } label: {
-                        Image(systemName: "forward.end.fill")
-                            .font(.body)
-                            .foregroundStyle(.white)
-                    }
-                    .accessibilityLabel("Next chapter")
-                    .buttonStyle(.plain)
-                    #if os(visionOS)
-                    .hoverEffect(.highlight)
-                    #endif
-                }
-
-                Spacer()
-            }
-
-            // Bottom drag indicator
             Capsule()
-                .fill(.white.opacity(0.3))
-                .frame(width: 36, height: 4)
-                .padding(.top, 4)
+                .fill(.white.opacity(0.24))
+                .frame(width: 34, height: 3)
+                .padding(.top, 2)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, PlayerCinematicChromePolicy.transportCardHorizontalPadding)
+        .padding(.vertical, PlayerCinematicChromePolicy.transportCardVerticalPadding)
+        .frame(maxWidth: PlayerCinematicChromePolicy.transportCardMaxWidth)
         .background(
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.7)],
-                startPoint: .top,
-                endPoint: .bottom
+            .ultraThinMaterial,
+            in: RoundedRectangle(
+                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
+                style: .continuous
             )
         )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
+                style: .continuous
+            )
+            .strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(0.26), .white.opacity(0.08)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1
+            )
+        }
+        .shadow(color: .black.opacity(0.24), radius: 24, y: 10)
+    }
+
+    private var playbackProgressBar: some View {
+        GeometryReader { geo in
+            let barWidth = geo.size.width
+            let displayTime = PlayerViewPolicy.progressBarDisplayTime(
+                currentTime: engine.currentTime,
+                isScrubbing: isScrubbing,
+                scrubTime: scrubTime
+            )
+            let displayPercent = PlayerViewPolicy.progressBarDisplayPercent(
+                displayTime: displayTime,
+                duration: engine.duration
+            )
+            let progressX = barWidth * displayPercent
+            let bufferedX = barWidth * PlayerViewPolicy.progressBarBufferedPercent(engine.bufferedPercent)
+            let barHeight = PlayerViewPolicy.progressBarHeight(isScrubbing: isScrubbing)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(PlayerCinematicVisualPolicy.progressTrackOpacity))
+                    .frame(height: barHeight)
+
+                Capsule()
+                    .fill(.white.opacity(PlayerCinematicVisualPolicy.progressBufferedOpacity))
+                    .frame(width: bufferedX, height: barHeight)
+
+                Capsule()
+                    .fill(.white)
+                    .frame(width: progressX, height: barHeight)
+
+                if !engine.chapters.isEmpty && engine.duration > 0 {
+                    ForEach(engine.chapters) { chapter in
+                        let tickX = barWidth * (chapter.startTime / engine.duration)
+                        if PlayerViewPolicy.shouldShowChapterMarker(chapterStartTime: chapter.startTime) {
+                            RoundedRectangle(cornerRadius: 0.75)
+                                .fill(.white.opacity(0.58))
+                                .frame(width: 2, height: barHeight + 5)
+                                .position(x: tickX, y: geo.size.height / 2)
+                        }
+                    }
+                }
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: isScrubbing ? 16 : 10, height: isScrubbing ? 16 : 10)
+                    .shadow(color: .black.opacity(0.34), radius: 4, y: 2)
+                    .position(x: progressX, y: geo.size.height / 2)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let percent = PlayerViewPolicy.scrubberDragPercent(
+                            locationX: value.location.x,
+                            barWidth: barWidth
+                        )
+                        scrubTime = engine.duration * percent
+                        if !isScrubbing {
+                            controlsHideTask?.cancel()
+                            isScrubbing = true
+                        }
+                    }
+                    .onEnded { value in
+                        let percent = PlayerViewPolicy.scrubberDragPercent(
+                            locationX: value.location.x,
+                            barWidth: barWidth
+                        )
+                        seekTo(percent: percent)
+                        isScrubbing = false
+                        scheduleControlsHide()
+                    }
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(scrubberAccessibilityValue)
+            .accessibilityHint("Adjust to seek through the current video.")
+            .accessibilityAdjustableAction { direction in
+                adjustScrubberAccessibility(direction)
+            }
+            .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.15) : nil, value: isScrubbing)
+
+            if isScrubbing {
+                Text(scrubTime.formattedDuration)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.24), radius: 5, y: 2)
+                    .position(
+                        x: PlayerViewPolicy.scrubPreviewLabelX(progressX: progressX, barWidth: barWidth),
+                        y: -10
+                    )
+            }
+        }
+        .frame(height: 22)
+    }
+
+    private var timeLabelsRow: some View {
+        HStack {
+            Text(isScrubbing ? scrubTime.formattedDuration : engine.currentTimeFormatted)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
+
+            Spacer()
+
+            Text("-\(engine.remainingFormatted)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
+        }
+    }
+
+    private var transportControlsRow: some View {
+        HStack(spacing: 24) {
+            if !engine.chapters.isEmpty {
+                transportIconButton(
+                    systemName: PlayerCinematicVisualPolicy.previousChapterSymbolName,
+                    accessibilityLabel: "Previous chapter"
+                ) {
+                    if let time = engine.previousChapterTime() { seek(to: time) }
+                }
+            }
+
+            transportIconButton(
+                systemName: PlayerCinematicVisualPolicy.skipBackSymbolName,
+                accessibilityLabel: "Back \(PlayerCinematicChromePolicy.skipBackInterval) seconds"
+            ) {
+                seekRelative(-TimeInterval(PlayerCinematicChromePolicy.skipBackInterval))
+            }
+
+            Button {
+                togglePlayPause()
+            } label: {
+                Image(systemName: playPausePresentation.symbolName)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(
+                        width: PlayerCinematicChromePolicy.primaryTransportButtonSize,
+                        height: PlayerCinematicChromePolicy.primaryTransportButtonSize
+                    )
+                    .background(.white, in: Circle())
+                    .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
+            }
+            .accessibilityLabel(playPausePresentation.label)
+            .accessibilityValue(playPausePresentation.accessibilityValue)
+            .buttonStyle(.plain)
+            #if os(visionOS)
+            .hoverEffect(.lift)
+            #endif
+
+            transportIconButton(
+                systemName: PlayerCinematicVisualPolicy.skipForwardSymbolName,
+                accessibilityLabel: "Forward \(PlayerCinematicChromePolicy.skipForwardInterval) seconds"
+            ) {
+                seekRelative(TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
+            }
+
+            if !engine.chapters.isEmpty {
+                transportIconButton(
+                    systemName: PlayerCinematicVisualPolicy.nextChapterSymbolName,
+                    accessibilityLabel: "Next chapter"
+                ) {
+                    if let time = engine.nextChapterTime() { seek(to: time) }
+                }
+            }
+        }
+        .frame(minHeight: PlayerCinematicChromePolicy.primaryTransportButtonSize)
+    }
+
+    private func transportIconButton(
+        systemName: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(
+                    width: PlayerCinematicChromePolicy.secondaryTransportButtonSize,
+                    height: PlayerCinematicChromePolicy.secondaryTransportButtonSize
+                )
+                .background(.white.opacity(0.10), in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(.white.opacity(0.16), lineWidth: 0.8)
+                }
+        }
+        .accessibilityLabel(accessibilityLabel)
+        .buttonStyle(.plain)
+        #if os(visionOS)
+        .hoverEffect(.highlight)
+        #endif
     }
 
     // MARK: - Capability Warnings & Errors (shown in title bar area when present)
 
     @ViewBuilder
     private var warningsOverlay: some View {
-        if !capabilityWarnings.isEmpty || (playbackError != nil && playbackState == .failed) {
+        let warningError = PlayerViewPolicy.warningOverlayPlaybackError(
+            playbackError: playbackError,
+            playbackState: playbackState
+        )
+        if PlayerViewPolicy.shouldShowWarningsOverlay(
+            capabilityWarnings: capabilityWarnings,
+            playbackError: playbackError,
+            playbackState: playbackState
+        ) {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(capabilityWarnings, id: \.self) { warning in
                     Text(warning)
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                if let playbackError, playbackState == .failed {
-                    Text(playbackError)
+                if let warningError {
+                    Text(warningError)
                         .font(.caption2)
                         .foregroundStyle(.red)
                 }
@@ -1203,8 +2080,8 @@ struct PlayerView: View {
                     .foregroundStyle(currentSubtitleSelectionIsOff ? .blue : .primary)
                 }
 
-                if !avSubtitleOptions.isEmpty {
-                    Section("In-Stream Subtitles") {
+                if !avSubtitleOptions.isEmpty || !ksSubtitleOptions.isEmpty {
+                    Section("Direct Link Subtitles") {
                         ForEach(avSubtitleOptions) { track in
                             Button {
                                 selectAVSubtitle(track)
@@ -1212,12 +2089,32 @@ struct PlayerView: View {
                             } label: {
                                 subtitleTrackRow(name: track.name, language: track.language)
                             }
-                            .foregroundStyle(selectedAVSubtitleID == track.id ? .blue : .primary)
+                            .foregroundStyle(
+                                PlayerTrackPresentationPolicy.isDirectTrackSelected(
+                                    selectedID: selectedAVSubtitleID,
+                                    trackID: track.id
+                                ) ? .blue : .primary
+                            )
+                        }
+
+                        ForEach(ksSubtitleOptions) { track in
+                            Button {
+                                selectKSSubtitle(track)
+                                isShowingSubtitlePicker = false
+                            } label: {
+                                subtitleTrackRow(name: track.name, language: track.language)
+                            }
+                            .foregroundStyle(
+                                PlayerTrackPresentationPolicy.isDirectTrackSelected(
+                                    selectedID: selectedKSSubtitleID,
+                                    trackID: track.id
+                                ) ? .blue : .primary
+                            )
                         }
                     }
                 }
 
-                Section("External (OpenSubtitles)") {
+                Section("OpenSubtitles") {
                     if isDownloadingSubtitle {
                         HStack {
                             ProgressView()
@@ -1234,7 +2131,13 @@ struct PlayerView: View {
                             } label: {
                                 subtitleTrackRow(name: track.name, language: track.language)
                             }
-                            .foregroundStyle(selectedAVSubtitleID == nil && engine.selectedSubtitleTrack == track.id ? .blue : .primary)
+                            .foregroundStyle(
+                                PlayerTrackPresentationPolicy.isExternalSubtitleSelected(
+                                    selectedAVSubtitleID: selectedAVSubtitleID,
+                                    selectedEngineSubtitleTrack: engine.selectedSubtitleTrack,
+                                    trackID: track.id
+                                ) ? .blue : .primary
+                            )
                         }
                     }
 
@@ -1264,8 +2167,8 @@ struct PlayerView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        Task { await refreshSubtitleCatalog(for: currentStream) }
-                        // scheduleSubtitleCatalogRefresh(for: currentStream)
+                        refreshCurrentMediaTrackOptions()
+                        scheduleSubtitleCatalogRefresh(for: currentStream)
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -1280,8 +2183,8 @@ struct PlayerView: View {
     private var audioPickerSheet: some View {
         NavigationStack {
             List {
-                if !avAudioOptions.isEmpty {
-                    Section("In-Stream Audio") {
+                if !avAudioOptions.isEmpty || !engine.audioTracks.isEmpty {
+                    Section("Direct Link Audio") {
                         ForEach(avAudioOptions) { track in
                             Button {
                                 selectAVAudio(track)
@@ -1289,13 +2192,14 @@ struct PlayerView: View {
                             } label: {
                                 subtitleTrackRow(name: track.name, language: track.language)
                             }
-                            .foregroundStyle(selectedAVAudioID == track.id ? .blue : .primary)
+                            .foregroundStyle(
+                                PlayerTrackPresentationPolicy.isDirectTrackSelected(
+                                    selectedID: selectedAVAudioID,
+                                    trackID: track.id
+                                ) ? .blue : .primary
+                            )
                         }
-                    }
-                }
 
-                if activeEngine == .ksPlayer || (!engine.audioTracks.isEmpty && avAudioOptions.isEmpty) {
-                    Section("Engine Audio") {
                         ForEach(engine.audioTracks) { track in
                             Button {
                                 selectEngineAudio(track)
@@ -1303,31 +2207,28 @@ struct PlayerView: View {
                             } label: {
                                 subtitleTrackRow(name: track.name, language: track.language)
                             }
-                            .foregroundStyle(engine.selectedAudioTrack == track.id ? .blue : .primary)
-                        }
-
-                        if engine.audioTracks.isEmpty && avAudioOptions.isEmpty {
-                            Text("No alternate audio tracks detected for this stream.")
-                                .foregroundStyle(.secondary)
+                            .foregroundStyle(
+                                PlayerTrackPresentationPolicy.isEngineTrackSelected(
+                                    selectedTrackID: engine.selectedAudioTrack,
+                                    trackID: track.id
+                                ) ? .blue : .primary
+                            )
                         }
                     }
-                } else if avAudioOptions.isEmpty {
+                } else {
                     Section("Audio") {
-                        Text(activeEngine == .avPlayer
-                             ? "No alternate in-stream audio tracks detected. The stream may have only one audio track."
-                             : "No alternate audio tracks detected for this stream.")
+                        Text(PlayerViewPolicy.emptyAudioTracksMessage(activeEngine: activeEngine))
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Section {
                     Button {
-                        guard let avPlayer else { return }
-                        Task { await refreshAVMediaOptions(for: avPlayer) }
+                        refreshCurrentMediaTrackOptions()
                     } label: {
                         Label("Refresh Track List", systemImage: "arrow.clockwise")
                     }
-                    .disabled(avPlayer == nil)
+                    .disabled(!canRefreshTrackList)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -1337,24 +2238,22 @@ struct PlayerView: View {
                 #if os(macOS)
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        guard let avPlayer else { return }
-                        Task { await refreshAVMediaOptions(for: avPlayer) }
+                        refreshCurrentMediaTrackOptions()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                     .accessibilityLabel("Refresh audio tracks")
-                    .disabled(avPlayer == nil)
+                    .disabled(!canRefreshTrackList)
                 }
                 #else
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        guard let avPlayer else { return }
-                        Task { await refreshAVMediaOptions(for: avPlayer) }
+                        refreshCurrentMediaTrackOptions()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                     .accessibilityLabel("Refresh audio tracks")
-                    .disabled(avPlayer == nil)
+                    .disabled(!canRefreshTrackList)
                 }
                 #endif
             }
@@ -1382,7 +2281,37 @@ struct PlayerView: View {
     }
 
     private var currentSubtitleSelectionIsOff: Bool {
-        !engine.subtitlesEnabled
+        PlayerTrackPresentationPolicy.isSubtitleSelectionOff(
+            subtitlesEnabled: engine.subtitlesEnabled
+        )
+    }
+
+    private var canRefreshTrackList: Bool {
+        PlayerTrackPresentationPolicy.canRefreshTrackList(
+            hasAVPlayer: avPlayer != nil,
+            hasKSPlayerCoordinator: ksPlayerCoordinator != nil
+        )
+    }
+
+    private var autoPlayNextPromptState: PlayerAutoplayNextPolicy.PromptState {
+        PlayerViewStatePolicy.autoplayPromptState(
+            hasNextEpisode: queuedNextEpisode != nil,
+            didRequestAutoplayNext: didRequestAutoplayNext,
+            didCancelAutoPlayNextPrompt: didCancelAutoPlayNextPrompt,
+            isShowingAutoPlayNextPrompt: isShowingAutoPlayNextPrompt,
+            isResolvingAutoPlayNextEpisode: isResolvingAutoPlayNextEpisode,
+            countdownRemaining: autoPlayNextCountdownRemaining
+        )
+    }
+
+    private func applyAutoPlayNextPromptState(_ state: PlayerAutoplayNextPolicy.PromptState) {
+        let fields = PlayerViewStatePolicy.autoplayPromptFields(from: state)
+        didRequestAutoplayNext = fields.didRequestAutoplayNext
+        didCancelAutoPlayNextPrompt = fields.didCancelAutoPlayNextPrompt
+        isShowingAutoPlayNextPrompt = fields.isShowingAutoPlayNextPrompt
+        isResolvingAutoPlayNextEpisode = fields.isResolvingAutoPlayNextEpisode
+        autoPlayNextCountdownRemaining = fields.countdownRemaining
+        recordAutoplayPromptState()
     }
 
     private var playbackStateTitle: String {
@@ -1390,29 +2319,223 @@ struct PlayerView: View {
     }
 
     private var hasNextStream: Bool {
-        PlayerStreamFailoverPlanner.nextStream(after: currentStream, in: streamQueue) != nil
+        PlayerViewStatePolicy.nextStream(after: currentStream, in: streamQueue) != nil
     }
 
     private func tryNextStream() {
-        guard let next = PlayerStreamFailoverPlanner.nextStream(after: currentStream, in: streamQueue) else { return }
+        guard let next = PlayerViewStatePolicy.nextStream(after: currentStream, in: streamQueue) else { return }
         switchToStream(next)
     }
 
     private func switchToStream(_ stream: StreamInfo) {
-        guard stream.id != currentStream.id else { return }
+        guard let plan = PlayerViewStatePolicy.streamTransitionPlan(from: currentStream, to: stream) else { return }
         persistCurrentWatchProgress()
         resetSubtitleStateForStreamTransition()
-        currentStream = stream
-        playbackMessage = "Switching stream to \(stream.quality.rawValue)..."
-        scheduleSubtitleCatalogRefresh(for: stream)
+        resetAutoPlayNextStateForStreamTransition()
+        currentStream = plan.stream
+        playbackMessage = plan.message
+        scheduleSubtitleCatalogRefresh(for: plan.stream)
+    }
+
+    private func handlePlaybackProgressForAutoplay(currentTime: TimeInterval, duration: TimeInterval) {
+        guard PlayerAutoplayNextPolicy.shouldStartCountdown(
+            currentTime: currentTime,
+            duration: duration,
+            hasNextEpisode: queuedNextEpisode != nil,
+            hasStartedCountdown: didRequestAutoplayNext,
+            wasCancelled: didCancelAutoPlayNextPrompt,
+            isResolving: isResolvingAutoPlayNextEpisode
+        ) else {
+            return
+        }
+
+        scheduleAutoPlayNextCountdownIfNeeded()
+    }
+
+    private func scheduleAutoPlayNextCountdownIfNeeded() {
+        let state = autoPlayNextPromptState
+        guard PlayerAutoplayNextPolicy.shouldScheduleCountdown(state: state) else { return }
+
+        applyAutoPlayNextPromptState(PlayerAutoplayNextPolicy.stateAfterSchedulingCountdown(from: state))
+        autoPlayNextCountdownTask?.cancel()
+        autoPlayNextCountdownTask = Task { @MainActor in
+            let autoPlayNext = (try? await appState.settingsManager.getBool(
+                key: SettingsKeys.autoPlayNext,
+                default: true
+            )) ?? true
+
+            guard !Task.isCancelled else { return }
+            guard autoPlayNext, queuedNextEpisode != nil else {
+                applyAutoPlayNextPromptState(
+                    PlayerAutoplayNextPolicy.stateAfterCountdownUnavailable(from: autoPlayNextPromptState)
+                )
+                autoPlayNextCountdownTask = nil
+                return
+            }
+
+            applyAutoPlayNextPromptState(
+                PlayerAutoplayNextPolicy.stateAfterPresentingCountdown(from: autoPlayNextPromptState)
+            )
+
+            for seconds in stride(
+                from: PlayerAutoplayNextPolicy.countdownDurationSeconds,
+                through: 1,
+                by: -1
+            ) {
+                autoPlayNextCountdownRemaining = seconds
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+            }
+
+            autoPlayNextCountdownRemaining = 0
+            autoPlayNextCountdownTask = nil
+            startAutoPlayNextResolution()
+        }
+    }
+
+    private func playNextEpisodeNow() {
+        let state = autoPlayNextPromptState
+        let nextState = PlayerAutoplayNextPolicy.stateAfterPlayNow(from: state)
+        guard nextState != state else { return }
+        applyAutoPlayNextPromptState(nextState)
+        autoPlayNextCountdownTask?.cancel()
+        autoPlayNextCountdownTask = nil
+        startAutoPlayNextResolution()
+    }
+
+    private func cancelAutoPlayNextCountdown() {
+        applyAutoPlayNextPromptState(
+            PlayerAutoplayNextPolicy.stateAfterCancellingCountdown(from: autoPlayNextPromptState)
+        )
+        autoPlayNextCountdownTask?.cancel()
+        autoPlayNextCountdownTask = nil
+    }
+
+    private func startAutoPlayNextResolution() {
+        let state = autoPlayNextPromptState
+        let nextState = PlayerAutoplayNextPolicy.stateAfterStartingResolution(from: state)
+        guard nextState != state else { return }
+        applyAutoPlayNextPromptState(nextState)
+        autoPlayNextResolveTask?.cancel()
+        autoPlayNextResolveTask = Task { @MainActor in
+            await autoPlayNextEpisodeIfPossible()
+        }
+    }
+
+    private func resetAutoPlayNextStateForStreamTransition() {
+        autoPlayNextCountdownTask?.cancel()
+        autoPlayNextCountdownTask = nil
+        autoPlayNextResolveTask?.cancel()
+        autoPlayNextResolveTask = nil
+        applyAutoPlayNextPromptState(
+            PlayerAutoplayNextPolicy.stateAfterStreamTransition(hasNextEpisode: queuedNextEpisode != nil)
+        )
+    }
+
+    @MainActor
+    private func autoPlayNextEpisodeIfPossible() async {
+        let nextEpisode: PlayerSessionRequest.NextEpisodeCandidate
+        switch PlayerViewStatePolicy.autoplayNextPreflight(
+            isCancelled: Task.isCancelled,
+            nextEpisode: queuedNextEpisode
+        ) {
+        case .finishUnavailable:
+            applyAutoPlayNextPromptState(
+                PlayerAutoplayNextPolicy.stateAfterFinishingResolution(
+                    from: autoPlayNextPromptState,
+                    outcome: .unavailable
+                )
+            )
+            autoPlayNextResolveTask = nil
+            return
+        case .proceed(let queuedEpisode):
+            nextEpisode = queuedEpisode
+            isShowingAutoPlayNextPrompt = true
+            playbackMessage = PlayerViewStatePolicy.autoplayNextLoadingMessage(for: nextEpisode)
+        }
+
+        defer {
+            applyAutoPlayNextPromptState(
+                PlayerAutoplayNextPolicy.stateAfterFinishingResolution(
+                    from: autoPlayNextPromptState,
+                    outcome: PlayerViewStatePolicy.autoplayResolutionFinishOutcome(
+                        hasQueuedNextEpisode: queuedNextEpisode != nil
+                    )
+                )
+            )
+            autoPlayNextResolveTask = nil
+        }
+
+        let autoPlayNext = (try? await appState.settingsManager.getBool(
+            key: SettingsKeys.autoPlayNext,
+            default: true
+        )) ?? true
+        guard !Task.isCancelled else { return }
+
+        let resolutionPlan = PlayerAutoplayNextResolutionPolicy.resolutionPlan(
+            autoPlayNextEnabled: autoPlayNext,
+            nextEpisode: nextEpisode,
+            currentRecoveryContext: currentStream.recoveryContext
+        )
+
+        switch resolutionPlan {
+        case .disabled, .unavailable:
+            return
+        case .readyFromSeriesPage(let message):
+            playbackMessage = message
+            return
+        case .resolve(let nextContext):
+            do {
+                let nextStream = try await appState.debridManager.resolveStream(from: nextContext)
+                try Task.checkCancellation()
+                persistCurrentWatchProgress()
+                resetSubtitleStateForStreamTransition()
+                activeEpisodeId = nextEpisode.episodeId
+                activeMediaTitle = nextEpisode.title
+                queuedNextEpisode = nil
+                streamQueue = [nextStream]
+                currentStream = nextStream
+            } catch is CancellationError {
+                applyAutoPlayNextPromptState(
+                    PlayerAutoplayNextPolicy.stateAfterFinishingResolution(
+                        from: autoPlayNextPromptState,
+                        outcome: .unavailable
+                    )
+                )
+            } catch {
+                playbackMessage = PlayerViewStatePolicy.autoplayNextFailureMessage(
+                    for: nextEpisode,
+                    errorDescription: error.localizedDescription
+                )
+                applyAutoPlayNextPromptState(
+                    PlayerAutoplayNextPolicy.stateAfterFinishingResolution(
+                        from: autoPlayNextPromptState,
+                        outcome: .failed
+                    )
+                )
+            }
+        }
     }
 
     private func closePlayer() {
+        guard !didInitiateClose else {
+            #if os(macOS) || os(visionOS)
+            if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
+                dismissDedicatedPlayerWindow()
+            } else {
+                dismiss()
+            }
+            #else
+            dismiss()
+            #endif
+            return
+        }
+
         didInitiateClose = true
         RuntimeMemoryDiagnostics.capture(
             event: .playerCloseRequested,
             enabled: appState.runtimeDiagnosticsEnabled,
-            context: mediaTitle ?? currentStream.fileName
+            context: resolvedMediaTitle
         )
 
         stopProgressPersistence()
@@ -1431,26 +2554,28 @@ struct PlayerView: View {
         environmentAssetsTask = nil
         audioTrackRefreshTask?.cancel()
         audioTrackRefreshTask = nil
+        subtitleTrackRefreshTask?.cancel()
+        subtitleTrackRefreshTask = nil
+        autoPlayNextCountdownTask?.cancel()
+        autoPlayNextCountdownTask = nil
+        autoPlayNextResolveTask?.cancel()
+        autoPlayNextResolveTask = nil
         cancelVisionLifecycleTasksOnClose()
         cleanupPlayback(clearSession: true)
         controlsHideTask?.cancel()
         controlsHideTask = nil
 
         #if os(visionOS)
-        scheduleMainWindowRestoreIfNeeded()
         if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
-            dismissWindow(id: "player")
+            dismissDedicatedPlayerWindow()
         }
         if PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack {
             dismiss()
         }
-        Task {
-            await dismissImmersiveIfNeeded(reason: .playerClosed)
-        }
+        scheduleImmersiveDismiss(reason: .playerClosed)
         #elseif os(macOS)
-        scheduleMainWindowRestoreIfNeeded()
         if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
-            dismissWindow(id: "player")
+            dismissDedicatedPlayerWindow()
         } else {
             dismiss()
         }
@@ -1459,16 +2584,139 @@ struct PlayerView: View {
         #endif
     }
 
+    #if os(macOS) || os(visionOS)
+    private func dismissDedicatedPlayerWindow() {
+        if let sessionRequest {
+            dismissWindow(id: "player", value: sessionRequest)
+        }
+        dismissWindow(id: "player")
+    }
+    #endif
+
     @MainActor
     private func retryPlayback() {
         startPlaybackPreparation(for: currentStream)
     }
 
     private func toggleControlsVisibility() {
-        performOptionalAnimation(.easeInOut(duration: 0.22)) {
-            isShowingControls.toggle()
+        switch PlayerViewStatePolicy.controlsToggleAction(
+            isControlModalPresented: isControlModalPresented,
+            isShowingControls: isShowingControls
+        ) {
+        case .keepVisibleForPresentedModal:
+            keepControlsVisibleForMenuAction()
+            return
+        case .showAndScheduleHide:
+            performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeInDuration)) {
+                isShowingControls = true
+            }
+            scheduleControlsHide()
+        case .hideAndCancelScheduledHide:
+            performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeOutDuration)) {
+                isShowingControls = false
+            }
+            controlsHideTask?.cancel()
+            controlsHideTask = nil
         }
+    }
+
+    private func toggleControlsLock() {
+        isControlsLocked.toggle()
+        if isControlsLocked {
+            controlsHideTask?.cancel()
+            controlsHideTask = nil
+            if !isShowingControls {
+                isShowingControls = true
+            }
+        } else if isShowingControls, isControlModalPresented == false {
+            scheduleControlsHide()
+        }
+    }
+
+    private func presentSubtitlePicker() {
+        prepareForControlModalPresentation()
+        isShowingSubtitlePicker = true
+    }
+
+    private func presentAudioPicker() {
+        prepareForControlModalPresentation()
+        isShowingAudioPicker = true
+    }
+
+    private func refreshCurrentMediaTrackOptions() {
+        switch PlayerViewStatePolicy.trackRefreshRoute(
+            activeEngine: activeEngine,
+            hasAVPlayer: avPlayer != nil,
+            hasKSPlayerCoordinator: ksPlayerCoordinator != nil
+        ) {
+        case .avPlayer:
+            guard let avPlayer else { return }
+            let streamID = currentStream.id
+            avMediaOptionRefreshTask?.cancel()
+            avMediaOptionRefreshTask = Task { @MainActor in
+                guard !Task.isCancelled,
+                      Self.audioTrackRefreshShouldRun(
+                          requestedStreamID: streamID,
+                          currentStreamID: currentStream.id
+                      ) else {
+                    return
+                }
+                await refreshAVMediaOptions(for: avPlayer)
+            }
+        case .ksPlayer:
+            guard let coordinator = ksPlayerCoordinator else { return }
+            refreshKSAudioTracks(from: coordinator)
+            refreshKSSubtitleTracks(from: coordinator)
+        case .none:
+            break
+        }
+    }
+
+    private func prepareForControlModalPresentation() {
+        controlsHideTask?.cancel()
+        controlsHideTask = nil
+        guard PlayerViewStatePolicy.shouldShowControlsForModalPresentation(
+            isShowingControls: isShowingControls
+        ) else { return }
+        performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeInDuration)) {
+            isShowingControls = true
+        }
+    }
+
+    private func handleControlModalVisibilityChange(isPresented: Bool) {
+        switch PlayerViewStatePolicy.controlModalVisibilityAction(isPresented: isPresented) {
+        case .prepareForPresentation:
+            prepareForControlModalPresentation()
+        case .scheduleHide:
+            scheduleControlsHide()
+        }
+    }
+
+    private func keepControlsVisibleForMenuAction() {
+        prepareForControlModalPresentation()
         scheduleControlsHide()
+    }
+
+    private var isControlModalPresented: Bool {
+        #if os(visionOS)
+        let immersiveFlags = PlayerViewStatePolicy.immersiveControlModalFlags(
+            includesImmersiveControls: true,
+            isShowingEnvironmentPicker: isShowingEnvironmentPicker,
+            isShowingCinemaSettings: isShowingCinemaSettings
+        )
+        #else
+        let immersiveFlags = PlayerViewStatePolicy.immersiveControlModalFlags(
+            includesImmersiveControls: false,
+            isShowingEnvironmentPicker: false,
+            isShowingCinemaSettings: false
+        )
+        #endif
+        return PlayerViewPolicy.isControlModalPresented(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: immersiveFlags.isShowingEnvironmentPicker,
+            isShowingCinemaSettings: immersiveFlags.isShowingCinemaSettings
+        )
     }
 
     private func loadInitialPlayerState() async {
@@ -1477,13 +2725,19 @@ struct PlayerView: View {
             primary: currentStream,
             available: availableStreams
         )
-        engine.currentTitle = mediaTitle ?? currentStream.fileName
+        engine.currentTitle = resolvedMediaTitle
         evaluateCapabilities(for: currentStream)
         await loadEnvironmentAssets()
         guard !Task.isCancelled else { return }
         startProgressPersistence()
         await loadSubtitleAppearance()
-        await refreshSubtitleCatalog(for: currentStream)
+        let catalogMutationID = UUID()
+        subtitleCatalogMutationID = catalogMutationID
+        await refreshSubtitleCatalog(
+            for: currentStream,
+            requestedStreamID: currentStream.id,
+            mutationID: catalogMutationID
+        )
         guard !Task.isCancelled else { return }
         await autoLoadSubtitlesIfEnabled(for: currentStream)
         guard !Task.isCancelled else { return }
@@ -1541,12 +2795,10 @@ struct PlayerView: View {
 
     @MainActor
     private func queueWithRefreshedPrimary(_ refreshedStream: StreamInfo, replacing staleStream: StreamInfo) -> [StreamInfo] {
-        let refreshedAvailable = streamQueue.map { queuedStream in
-            queuedStream.id == staleStream.id ? refreshedStream : queuedStream
-        }
-        return PlayerSessionRouting.sessionStreams(
-            primary: refreshedStream,
-            available: refreshedAvailable.filter { $0.id != refreshedStream.id }
+        PlayerStreamRefreshPolicy.queueWithRefreshedPrimary(
+            refreshedStream: refreshedStream,
+            staleStream: staleStream,
+            streamQueue: streamQueue
         )
     }
 
@@ -1598,7 +2850,7 @@ struct PlayerView: View {
 
         playbackState = .preparing
         playbackError = nil
-        playbackMessage = "Starting stream..."
+        playbackMessage = PlayerViewStatePolicy.preparationStartMessage()
         isShowingControls = true
         hasPlayedOnce = false
         guard Self.preparePlaybackShouldRun(
@@ -1607,14 +2859,19 @@ struct PlayerView: View {
         ), !Task.isCancelled else {
             return
         }
-        cleanupPlayback(clearSession: true)
-        engine.currentTitle = mediaTitle ?? stream.fileName
+        cleanupPlayback(clearSession: false)
+        engine.currentTitle = PlayerViewStatePolicy.currentTitle(
+            mediaTitle: activeMediaTitle,
+            streamFileName: stream.fileName
+        )
         engine.currentTime = 0
         engine.duration = 0
         engine.bufferedPercent = 0
         detectedVideoRatio = nil
+        didAttemptVideoRatioDetection = false
+        didAttemptHDRMetadataExtraction = false
         engine.updateStereoMode(
-            from: mediaTitle ?? stream.fileName,
+            from: resolvedMediaTitleFrom(activeMediaTitle: activeMediaTitle, streamFileName: stream.fileName),
             codecHint: stream.codec.rawValue
         )
         evaluateCapabilities(for: stream)
@@ -1687,9 +2944,11 @@ struct PlayerView: View {
                     avSubtitleGroup = nil
                     selectedAVAudioID = nil
                     selectedAVSubtitleID = nil
+                    ksSubtitleOptions = []
+                    selectedKSSubtitleID = nil
                     hydrateFallbackAudioTrack(for: stream)
                     playbackState = .preparing
-                    playbackMessage = "Trying KSPlayer..."
+                    playbackMessage = PlayerViewStatePolicy.preparationAttemptMessage(for: .ksPlayer)
 
                     try await Task.sleep(for: .milliseconds(140))
                     try Task.checkCancellation()
@@ -1716,18 +2975,24 @@ struct PlayerView: View {
                         return
                     }
                     refreshKSAudioTracks(for: stream)
+                    refreshKSSubtitleTracks(for: stream)
 
                     if let resumeTarget {
                         coordinator.seek(time: resumeTarget)
                         engine.currentTime = resumeTarget
-                        playbackMessage = "Resuming from \(resumeTarget.formattedDuration)..."
+                        playbackMessage = PlayerViewStatePolicy.preparationResumeMessage(for: resumeTarget)
                     }
 
                     coordinator.playerLayer?.player.playbackRate = engine.playbackRate
                     coordinator.playerLayer?.play()
                     playbackState = .playing
-                    playbackMessage = resumeTarget == nil ? "Playing with KSPlayer." : "Resumed with KSPlayer."
+                    playbackMessage = PlayerViewStatePolicy.preparationSuccessMessage(
+                        for: .ksPlayer,
+                        didResume: resumeTarget != nil
+                    )
                     refreshKSAudioTracks(from: coordinator)
+                    refreshKSSubtitleTracks(from: coordinator)
+                    scheduleKSTrackRefresh(for: stream)
                     await autoLoadSubtitlesIfEnabled(for: stream)
                     try Task.checkCancellation()
                     scheduleControlsHide()
@@ -1739,7 +3004,12 @@ struct PlayerView: View {
                     return
 
                 case .avPlayer:
-                    let prepared = try await avPlayerEngine.prepare(stream: stream)
+                    let prepared: PreparedPlaybackSession
+                    if let prepareAVPlayerSessionOverride {
+                        prepared = try await prepareAVPlayerSessionOverride(stream)
+                    } else {
+                        prepared = try await avPlayerEngine.prepare(stream: stream)
+                    }
                     try Task.checkCancellation()
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
@@ -1754,30 +3024,37 @@ struct PlayerView: View {
                     activeEngine = .avPlayer
                     ksPlayerCoordinator = nil
                     ksOptions = nil
+                    ksSubtitleOptions = []
+                    selectedKSSubtitleID = nil
                     avPlayer = player
                     appState.activeAVPlayer = player
                     playbackState = .preparing
-                    playbackMessage = "Trying AVPlayer..."
+                    playbackMessage = PlayerViewStatePolicy.preparationAttemptMessage(for: .avPlayer)
 
                     startObservingAVPlayer(player)
                     #if os(visionOS)
                     updateAPMPInjector()
                     #endif
-                    player.playImmediately(atRate: max(0.1, engine.playbackRate))
+                    player.playImmediately(atRate: PlayerViewStatePolicy.playbackStartRate(engine.playbackRate))
 
-                    try await AVPlayerEngine.waitUntilReady(
-                        player: player,
-                        onState: { state, diagnostics in
-                            guard Self.preparePlaybackShouldRun(
-                                requestedPreparationID: preparationID,
-                                activePreparationID: activePreparePlaybackID
-                            ) else {
-                                return
-                            }
-                            playbackState = state
-                            playbackMessage = diagnostics
+                    let onState: (PlayerPlaybackState, String?) -> Void = { state, diagnostics in
+                        guard Self.preparePlaybackShouldRun(
+                            requestedPreparationID: preparationID,
+                            activePreparationID: activePreparePlaybackID
+                        ) else {
+                            return
                         }
-                    )
+                        playbackState = state
+                        playbackMessage = diagnostics
+                    }
+                    if let waitUntilAVPlayerReadyOverride {
+                        try await waitUntilAVPlayerReadyOverride(player, onState)
+                    } else {
+                        try await AVPlayerEngine.waitUntilReady(
+                            player: player,
+                            onState: onState
+                        )
+                    }
                     try Task.checkCancellation()
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
@@ -1810,12 +3087,15 @@ struct PlayerView: View {
                         await seekAVPlayer(player, to: resumeTarget)
                         try Task.checkCancellation()
                         engine.currentTime = resumeTarget
-                        playbackMessage = "Resuming from \(resumeTarget.formattedDuration)..."
+                        playbackMessage = PlayerViewStatePolicy.preparationResumeMessage(for: resumeTarget)
                     }
-                    player.playImmediately(atRate: max(0.1, engine.playbackRate))
+                    player.playImmediately(atRate: PlayerViewStatePolicy.playbackStartRate(engine.playbackRate))
 
                     playbackState = .playing
-                    playbackMessage = resumeTarget == nil ? "Playing with AVPlayer." : "Resumed with AVPlayer."
+                    playbackMessage = PlayerViewStatePolicy.preparationSuccessMessage(
+                        for: .avPlayer,
+                        didResume: resumeTarget != nil
+                    )
                     await autoLoadSubtitlesIfEnabled(for: stream)
                     try Task.checkCancellation()
                     scheduleControlsHide()
@@ -1855,7 +3135,12 @@ struct PlayerView: View {
                     startPlaybackPreparation(for: refreshedStream)
                     return
                 }
-                failures.append("\(kind.displayName): \(error.localizedDescription)")
+                failures.append(
+                    PlayerViewStatePolicy.preparationFailureLine(
+                        kind: kind,
+                        errorDescription: error.localizedDescription
+                    )
+                )
                 cleanupPlayback(clearSession: false)
             }
         }
@@ -1868,7 +3153,7 @@ struct PlayerView: View {
         }
         playbackState = .failed
         activeEngine = nil
-        let reason = failures.isEmpty ? "No compatible player engine was available." : failures.joined(separator: "\n")
+        let reason = PlayerViewStatePolicy.preparationFailureReason(failures: failures)
         playbackError = reason
         playbackMessage = "Use retry or try the next stream."
         RuntimeMemoryDiagnostics.capture(
@@ -1900,6 +3185,19 @@ struct PlayerView: View {
         activeEngine == .ksPlayer && ksPlayerCoordinator === coordinator
     }
 
+    private func removeAVTimeObserverIfNeeded() {
+        guard let token = timeObserverToken else { return }
+        if let player = timeObserverPlayer {
+            if let avTimeObserverHooks {
+                avTimeObserverHooks.removeTimeObserver(player, token)
+            } else {
+                player.removeTimeObserver(token)
+            }
+        }
+        timeObserverToken = nil
+        timeObserverPlayer = nil
+    }
+
     private func configureKSCallbacks(_ coordinator: KSVideoPlayer.Coordinator) {
         coordinator.onStateChanged = { playerLayer, state in
             Task { @MainActor in
@@ -1913,6 +3211,8 @@ struct PlayerView: View {
                     playbackState = .buffering
                     engine.isBuffering = true
                     engine.isPlaying = false
+                    refreshKSAudioTracks(from: coordinator)
+                    refreshKSSubtitleTracks(from: coordinator)
                     // Detect video ratio from KSPlayer once ready
                     if detectedVideoRatio == nil {
                         let size = playerLayer.player.naturalSize
@@ -1925,6 +3225,8 @@ struct PlayerView: View {
                     playbackState = .playing
                     engine.isBuffering = false
                     engine.isPlaying = true
+                    refreshKSAudioTracks(from: coordinator)
+                    refreshKSSubtitleTracks(from: coordinator)
                     // Fallback: detect if not yet captured at readyToPlay
                     if detectedVideoRatio == nil {
                         let size = playerLayer.player.naturalSize
@@ -1965,6 +3267,7 @@ struct PlayerView: View {
                 if abs(engine.duration - newDuration) > 1.0 {
                     engine.duration = newDuration
                 }
+                handlePlaybackProgressForAutoplay(currentTime: newTime, duration: newDuration)
             }
         }
 
@@ -1981,17 +3284,17 @@ struct PlayerView: View {
     }
 
     private func startObservingAVPlayer(_ player: AVPlayer) {
-        if let token = timeObserverToken {
-            timeObserverPlayer?.removeTimeObserver(token)
-            timeObserverToken = nil
-            timeObserverPlayer = nil
-        }
+        removeAVTimeObserverIfNeeded()
+        videoRatioDetectionTask?.cancel()
+        videoRatioDetectionTask = nil
+        hdrMetadataExtractionTask?.cancel()
+        hdrMetadataExtractionTask = nil
 
         let interval = CMTime(
             seconds: Self.avPlayerPeriodicObserverIntervalSeconds,
             preferredTimescale: 600
         )
-        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+        let observer: @Sendable (CMTime) -> Void = { time in
             Task { @MainActor in
                 guard self.isCurrentAVPlayer(player) else { return }
                 let seconds = time.seconds
@@ -1999,7 +3302,10 @@ struct PlayerView: View {
                 if abs(engine.currentTime - newTime) >= Self.avPlayerPeriodicObserverIntervalSeconds {
                     engine.currentTime = newTime
                 }
-                if engine.selectedSubtitleTrack >= 0 || engine.currentSubtitleText != nil {
+                if PlayerViewPolicy.subtitleTextRefreshShouldRun(
+                    selectedSubtitleTrack: engine.selectedSubtitleTrack,
+                    currentSubtitleText: engine.currentSubtitleText
+                ) {
                     engine.updateSubtitleText(at: newTime)
                 }
 
@@ -2007,29 +3313,26 @@ struct PlayerView: View {
                    engine.duration != duration {
                     engine.duration = duration
                 }
+                handlePlaybackProgressForAutoplay(currentTime: newTime, duration: engine.duration)
 
                 // Trigger async video size detection once
                 if detectedVideoRatio == nil, let asset = player.currentItem?.asset {
-                    Task { await detectVideoRatio(from: asset, player: player) }
+                    scheduleAVVideoRatioDetection(from: asset, player: player)
                 }
 
                 // Extract HDR mastering-display metadata once
                 if engine.hdrMetadata == nil, let asset = player.currentItem?.asset {
-                    Task { @MainActor in
-                        guard self.isCurrentAVPlayer(player) else { return }
-                        guard engine.hdrMetadata == nil else { return }
-                        let metadata = await HDRMetadataExtractor.extract(from: asset)
-                        guard self.isCurrentAVPlayer(player) else { return }
-                        engine.hdrMetadata = metadata
-                    }
+                    scheduleAVHDRMetadataExtraction(from: asset, player: player)
                 }
 
                 // Buffered range
                 if let loadedRange = player.currentItem?.loadedTimeRanges.first?.timeRangeValue,
                    let itemDuration = player.currentItem?.duration.seconds,
-                   itemDuration.isFinite, itemDuration > 0 {
-                    let bufferedEnd = (loadedRange.start + loadedRange.duration).seconds
-                    let newBuffered = min(1.0, bufferedEnd / itemDuration)
+                   let newBuffered = PlayerViewPolicy.bufferedPercent(
+                    loadedRangeStart: loadedRange.start.seconds,
+                    loadedRangeDuration: loadedRange.duration.seconds,
+                    itemDuration: itemDuration
+                   ) {
                     if abs(engine.bufferedPercent - newBuffered) > 0.01 {
                         engine.bufferedPercent = newBuffered
                     }
@@ -2046,6 +3349,11 @@ struct PlayerView: View {
                 }
             }
         }
+        if let avTimeObserverHooks {
+            timeObserverToken = avTimeObserverHooks.addPeriodicTimeObserver(player, interval, observer)
+        } else {
+            timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main, using: observer)
+        }
         timeObserverPlayer = player
     }
 
@@ -2053,21 +3361,71 @@ struct PlayerView: View {
 
     @MainActor
     private func detectVideoRatio(from asset: AVAsset, player: AVPlayer) async {
-        guard isCurrentAVPlayer(player), detectedVideoRatio == nil else { return }
+        guard !Task.isCancelled, isCurrentAVPlayer(player), detectedVideoRatio == nil else { return }
         do {
             let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard !Task.isCancelled else { return }
             guard let videoTrack = tracks.first else { return }
             let naturalSize = try await videoTrack.load(.naturalSize)
+            guard !Task.isCancelled else { return }
             let transform = try await videoTrack.load(.preferredTransform)
             let size = naturalSize.applying(transform)
             let absSize = CGSize(width: abs(size.width), height: abs(size.height))
-            guard isCurrentAVPlayer(player), detectedVideoRatio == nil else { return }
+            guard !Task.isCancelled, isCurrentAVPlayer(player), detectedVideoRatio == nil else { return }
             if let ratio = PlayerAspectRatioPolicy.ratio(from: absSize) {
                 detectedVideoRatio = ratio
                 engine.videoSize = absSize
             }
         } catch {
             // Video track unavailable; ratio stays nil and 16:9 fallback is used
+        }
+    }
+
+    @MainActor
+    private func scheduleAVVideoRatioDetection(from asset: AVAsset, player: AVPlayer) {
+        guard detectedVideoRatio == nil,
+              !didAttemptVideoRatioDetection,
+              videoRatioDetectionTask == nil else {
+            return
+        }
+        didAttemptVideoRatioDetection = true
+        videoRatioDetectionTask = Task { @MainActor in
+            defer {
+                if self.isCurrentAVPlayer(player) {
+                    videoRatioDetectionTask = nil
+                }
+            }
+            guard !Task.isCancelled, self.isCurrentAVPlayer(player) else { return }
+            await detectVideoRatio(from: asset, player: player)
+        }
+    }
+
+    @MainActor
+    private func scheduleAVHDRMetadataExtraction(from asset: AVAsset, player: AVPlayer) {
+        guard engine.hdrMetadata == nil,
+              !didAttemptHDRMetadataExtraction,
+              hdrMetadataExtractionTask == nil else {
+            return
+        }
+        didAttemptHDRMetadataExtraction = true
+        hdrMetadataExtractionTask = Task { @MainActor in
+            defer {
+                if self.isCurrentAVPlayer(player) {
+                    hdrMetadataExtractionTask = nil
+                }
+            }
+            guard !Task.isCancelled,
+                  self.isCurrentAVPlayer(player),
+                  engine.hdrMetadata == nil else {
+                return
+            }
+            let metadata = await HDRMetadataExtractor.extract(from: asset)
+            guard !Task.isCancelled,
+                  self.isCurrentAVPlayer(player),
+                  engine.hdrMetadata == nil else {
+                return
+            }
+            engine.hdrMetadata = metadata
         }
     }
 
@@ -2097,9 +3455,9 @@ struct PlayerView: View {
     private func adjustScrubberAccessibility(_ direction: AccessibilityAdjustmentDirection) {
         switch direction {
         case .increment:
-            seekRelative(10)
+            seekRelative(TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
         case .decrement:
-            seekRelative(-10)
+            seekRelative(-TimeInterval(PlayerCinematicChromePolicy.skipBackInterval))
         default:
             break
         }
@@ -2170,11 +3528,9 @@ struct PlayerView: View {
     }
 
     private func cleanupPlayback(clearSession: Bool = true) {
-        if let token = timeObserverToken {
-            timeObserverPlayer?.removeTimeObserver(token)
-            timeObserverToken = nil
-            timeObserverPlayer = nil
-        }
+        resetAutoPlayNextStateForStreamTransition()
+
+        removeAVTimeObserverIfNeeded()
 
         #if os(visionOS)
         apmpInjector.stop()
@@ -2188,18 +3544,31 @@ struct PlayerView: View {
         ksPlayerCoordinator?.onStateChanged = nil
         ksPlayerCoordinator?.onPlay = nil
         ksPlayerCoordinator?.onFinish = nil
+        avMediaOptionRefreshTask?.cancel()
+        avMediaOptionRefreshTask = nil
         audioTrackRefreshTask?.cancel()
         audioTrackRefreshTask = nil
+        subtitleTrackRefreshTask?.cancel()
+        subtitleTrackRefreshTask = nil
+        videoRatioDetectionTask?.cancel()
+        videoRatioDetectionTask = nil
+        hdrMetadataExtractionTask?.cancel()
+        hdrMetadataExtractionTask = nil
+        didAttemptVideoRatioDetection = false
+        didAttemptHDRMetadataExtraction = false
 
+        clearKSSubtitleSelection()
         ksPlayerCoordinator?.resetPlayer()
         ksPlayerCoordinator = nil
         ksOptions = nil
         avAudioOptions = []
         avSubtitleOptions = []
+        ksSubtitleOptions = []
         avAudioGroup = nil
         avSubtitleGroup = nil
         selectedAVAudioID = nil
         selectedAVSubtitleID = nil
+        selectedKSSubtitleID = nil
         subtitleCatalogTask?.cancel()
         subtitleCatalogTask = nil
         subtitleDownloadTask?.cancel()
@@ -2220,16 +3589,18 @@ struct PlayerView: View {
     // MARK: - Scrobbling
 
     private var scrobbleProgress: Double {
-        guard engine.duration > 0 else { return 0 }
-        return (engine.currentTime / engine.duration) * 100
+        PlayerViewPolicy.scrobbleProgressPercent(
+            currentTime: engine.currentTime,
+            duration: engine.duration
+        )
     }
 
     private func scrobbleStart() {
         guard let mediaId, mediaId.hasPrefix("tt") else { return }
         let progress = scrobbleProgress
-        let type: MediaType = episodeId != nil ? .series : .movie
+        let type: MediaType = activeEpisodeId != nil ? .series : .movie
         scrobbleTask?.cancel()
-        let currentEpisodeID = episodeId
+        let currentEpisodeID = activeEpisodeId
         scrobbleTask = Task {
             await appState.scrobbleCoordinator.startPlayback(
                 mediaId: mediaId,
@@ -2379,13 +3750,21 @@ struct PlayerView: View {
 
     #if os(macOS) || os(visionOS)
     private func scheduleMainWindowSuppressionIfNeeded() {
-        guard !appState.isMainWindowSuppressedForPlayer else { return }
+        guard PlayerViewStatePolicy.mainWindowSuppressionAction(
+            isSuppressed: appState.isMainWindowSuppressedForPlayer
+        ) == .dismissMainAndMarkSuppressed else {
+            return
+        }
         appState.isMainWindowSuppressedForPlayer = true
         dismissWindow(id: "main")
     }
 
     private func scheduleMainWindowRestoreIfNeeded() {
-        guard appState.isMainWindowSuppressedForPlayer else { return }
+        guard PlayerViewStatePolicy.mainWindowRestoreAction(
+            isSuppressed: appState.isMainWindowSuppressedForPlayer
+        ) == .openMainAndMarkRestored else {
+            return
+        }
         openWindow(id: "main")
         appState.isMainWindowSuppressedForPlayer = false
     }
@@ -2398,8 +3777,12 @@ struct PlayerView: View {
     }
 
     private func openEnvironment(_ asset: EnvironmentAsset) async {
-        // Skip if this asset is already active and the space is open
-        if asset.id == appState.selectedEnvironmentAsset?.id && appState.isImmersiveSpaceOpen {
+        let plan = PlayerImmersiveTransitionPolicy.environmentOpenPlan(
+            requestedAssetID: asset.id,
+            selectedAssetID: appState.selectedEnvironmentAsset?.id,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        )
+        if plan == .alreadyOpen {
             return
         }
         await dismissImmersiveIfNeeded(reason: .switchingEnvironment)
@@ -2412,39 +3795,63 @@ struct PlayerView: View {
     }
 
     private func openCinemaEnvironmentAfterMenuDismissal() {
-        Task { @MainActor in
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
+            guard !Task.isCancelled else { return }
             await openCinemaEnvironment()
+            guard !Task.isCancelled else { return }
+            environmentMenuActionTask = nil
         }
     }
 
     private func openEnvironmentAfterMenuDismissal(_ asset: EnvironmentAsset) {
-        Task { @MainActor in
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
+            guard !Task.isCancelled else { return }
             await openEnvironment(asset)
+            guard !Task.isCancelled else { return }
+            environmentMenuActionTask = nil
         }
     }
 
     private func showEnvironmentPickerAfterMenuDismissal() {
-        Task { @MainActor in
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !isShowingEnvironmentPicker else { return }
+            guard !Task.isCancelled else { return }
+            guard !isShowingEnvironmentPicker else {
+                environmentMenuActionTask = nil
+                return
+            }
             isShowingEnvironmentPicker = true
+            environmentMenuActionTask = nil
         }
     }
 
     private func showCinemaSettingsAfterMenuDismissal() {
-        Task { @MainActor in
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !isShowingCinemaSettings else { return }
+            guard !Task.isCancelled else { return }
+            guard !isShowingCinemaSettings else {
+                environmentMenuActionTask = nil
+                return
+            }
             isShowingCinemaSettings = true
+            environmentMenuActionTask = nil
         }
     }
 
     private func dismissEnvironmentAfterMenuDismissal() {
-        Task { @MainActor in
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
+            guard !Task.isCancelled else { return }
             await dismissImmersiveIfNeeded(reason: .userInitiated)
+            guard !Task.isCancelled else { return }
+            environmentMenuActionTask = nil
         }
     }
 
@@ -2454,50 +3861,88 @@ struct PlayerView: View {
     }
 
     private func openCinemaEnvironment() async {
-        guard PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil),
-              let player = avPlayer else {
-            playbackMessage = PlayerCinemaEnvironmentPolicy.unavailableMessage
+        let canOpen = PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil)
+        switch PlayerImmersiveTransitionPolicy.cinemaOpenPlan(
+            canOpen: canOpen,
+            hasAVPlayer: avPlayer != nil,
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        ) {
+        case .unavailable(let message):
+            playbackMessage = message
             return
-        }
-        if appState.activeEnvironment == .cinemaEnvironment && appState.isImmersiveSpaceOpen {
+        case .alreadyOpen:
             return
+        case .open:
+            break
         }
+        guard let player = avPlayer else { return }
         appState.activeAVPlayer = player
         await dismissImmersiveIfNeeded(reason: .switchingEnvironment)
         appState.activeAVPlayer = player
-        guard appState.beginImmersiveTransition() else { return }
+        guard PlayerImmersiveTransitionPolicy.openReadiness(isTransitionInFlight: appState.isImmersiveTransitionInFlight) == .begin,
+              appState.beginImmersiveTransition() else { return }
         let result = await openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)
+        let didOpen: Bool
         switch result {
         case .opened:
-            appState.spatialAudioManager.enterImmersiveMode()
+            didOpen = true
         case .error, .userCancelled:
-            appState.cancelImmersiveTransition()
+            didOpen = false
         @unknown default:
+            didOpen = false
+        }
+        if PlayerImmersiveTransitionPolicy.completionAction(didOpen: didOpen) == .enterImmersiveMode {
+            appState.spatialAudioManager.enterImmersiveMode()
+        } else {
             appState.cancelImmersiveTransition()
         }
     }
 
     private func openImmersiveSpaceIfPossible(for asset: EnvironmentAsset) async {
-        guard appState.beginImmersiveTransition() else { return }
+        guard PlayerImmersiveTransitionPolicy.openReadiness(isTransitionInFlight: appState.isImmersiveTransitionInFlight) == .begin,
+              appState.beginImmersiveTransition() else { return }
         let immersiveSpaceID = await appState.environmentCatalogManager.immersiveSpaceID(for: asset)
         let result = await openImmersiveSpace(id: immersiveSpaceID)
+        let didOpen: Bool
         switch result {
         case .opened:
-            appState.spatialAudioManager.enterImmersiveMode()
+            didOpen = true
         case .error, .userCancelled:
-            appState.cancelImmersiveTransition()
+            didOpen = false
         @unknown default:
+            didOpen = false
+        }
+        if PlayerImmersiveTransitionPolicy.completionAction(didOpen: didOpen) == .enterImmersiveMode {
+            appState.spatialAudioManager.enterImmersiveMode()
+        } else {
             appState.cancelImmersiveTransition()
         }
     }
 
     private func dismissImmersiveIfNeeded(reason: ImmersiveDismissReason) async {
-        guard appState.isImmersiveSpaceOpen else { return }
-        guard appState.beginImmersiveTransition() else { return }
+        guard !Task.isCancelled,
+              PlayerImmersiveTransitionPolicy.dismissReadiness(
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen,
+            isTransitionInFlight: appState.isImmersiveTransitionInFlight
+        ) == .begin,
+              appState.beginImmersiveTransition() else { return }
         appState.stageImmersiveDismiss(reason: reason)
         appState.spatialAudioManager.exitImmersiveMode()
         await dismissImmersiveSpace()
         appState.completeImmersiveDismissIfStillPending()
+    }
+
+    private func scheduleImmersiveDismiss(reason: ImmersiveDismissReason, restoresMainWindow: Bool = false) {
+        immersiveDismissTask?.cancel()
+        immersiveDismissTask = Task { @MainActor in
+            guard !Task.isCancelled else { return }
+            await dismissImmersiveIfNeeded(reason: reason)
+            guard !Task.isCancelled else { return }
+            if restoresMainWindow {
+                scheduleMainWindowRestoreIfNeeded()
+            }
+        }
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) async {
@@ -2505,8 +3950,12 @@ struct PlayerView: View {
         case .background:
             await dismissImmersiveIfNeeded(reason: .suspension)
         case .active:
-            guard appState.consumeSuspendedImmersiveRestoreRequest() else { return }
-            guard let selectedAsset = appState.selectedEnvironmentAsset else { return }
+            let selectedAsset = appState.selectedEnvironmentAsset
+            let plan = PlayerImmersiveTransitionPolicy.activeRestorePlan(
+                hasRestoreRequest: appState.consumeSuspendedImmersiveRestoreRequest(),
+                hasSelectedAsset: selectedAsset != nil
+            )
+            guard plan == .openSelectedAsset, let selectedAsset else { return }
             await openImmersiveSpaceIfPossible(for: selectedAsset)
         case .inactive:
             break
@@ -2516,9 +3965,13 @@ struct PlayerView: View {
     }
 
     private func handleMemoryPressureWarning() async {
-        guard appState.isImmersiveSpaceOpen else { return }
-        playbackMessage = "Memory pressure detected. Closed immersive space to stabilize playback."
-        await dismissImmersiveIfNeeded(reason: .memoryPressure)
+        switch PlayerImmersiveTransitionPolicy.memoryPressurePlan(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen) {
+        case .ignore:
+            return
+        case .dismiss(let message, let reason):
+            playbackMessage = message
+            await dismissImmersiveIfNeeded(reason: reason)
+        }
     }
 
     private func updateAPMPInjector() {
@@ -2601,21 +4054,13 @@ struct PlayerView: View {
 
     @MainActor
     private func makeWatchProgressSnapshot() -> WatchHistory? {
-        guard let mediaId else { return nil }
-        guard engine.duration > 0 else { return nil }
-
-        return WatchHistory(
-            id: episodeId.map { "\(mediaId)-\($0)-progress" } ?? "\(mediaId)-progress",
+        PlayerWatchProgressPolicy.makeSnapshot(
             mediaId: mediaId,
-            episodeId: episodeId,
-            title: mediaTitle ?? currentStream.fileName,
-            progress: engine.currentTime,
-            duration: engine.duration,
-            quality: currentStream.quality.rawValue,
-            debridService: currentStream.debridService,
-            streamURL: currentStream.streamURL.absoluteString,
-            watchedAt: Date(),
-            isCompleted: engine.currentTime / max(engine.duration, 1) > 0.9
+            episodeId: activeEpisodeId,
+            mediaTitle: activeMediaTitle,
+            stream: currentStream,
+            currentTime: engine.currentTime,
+            duration: engine.duration
         )
     }
 
@@ -2632,13 +4077,13 @@ struct PlayerView: View {
 
     private func loadResumeTarget() async -> TimeInterval? {
         guard let mediaId else { return nil }
-        let history = try? await appState.database.fetchWatchHistory(mediaId: mediaId, episodeId: episodeId)
+        let history = try? await appState.database.fetchWatchHistory(mediaId: mediaId, episodeId: activeEpisodeId)
         return WatchProgressResumePolicy.resumeTime(for: history)
     }
 
     private func loadPlayerEngineStrategy() async -> PlayerEngineStrategy {
         let raw = (try? await appState.settingsManager.getString(key: SettingsKeys.playerEngineStrategy)) ?? ""
-        return PlayerEngineStrategy(rawValue: raw) ?? .compatibility
+        return PlayerViewStatePolicy.resolvedEngineStrategy(from: raw)
     }
 
     @MainActor
@@ -2653,22 +4098,57 @@ struct PlayerView: View {
 
     private func scheduleControlsHide() {
         controlsHideTask?.cancel()
-        controlsHideTask = Task {
-            try? await Task.sleep(for: .seconds(10))
+        controlsHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: PlayerViewStatePolicy.autoHideDelayNanoseconds())
             guard !Task.isCancelled else { return }
-            guard playbackState == .playing else { return }
-            guard !isScrubbing else { return }
-            guard !isShowingSubtitlePicker && !isShowingAudioPicker else { return }
-            performOptionalAnimation(.easeInOut(duration: 0.25)) {
+            guard PlayerViewStatePolicy.shouldAutoHideControls(
+                playbackState: playbackState,
+                isPlaying: isCurrentlyPlaying,
+                isScrubbing: isScrubbing,
+                isShowingSubtitlePicker: isShowingSubtitlePicker,
+                isShowingAudioPicker: isShowingAudioPicker,
+                isControlsLocked: isControlsLocked,
+                isShowingEnvironmentPicker: isShowingEnvironmentPickerForAutoHide,
+                isShowingCinemaSettings: isShowingCinemaSettingsForAutoHide
+            ) else { return }
+            performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeOutDuration)) {
                 isShowingControls = false
             }
+            controlsHideTask = nil
         }
+    }
+
+    private var isShowingEnvironmentPickerForAutoHide: Bool {
+        #if os(visionOS)
+        return isShowingEnvironmentPicker
+        #else
+        return false
+        #endif
+    }
+
+    private var isShowingCinemaSettingsForAutoHide: Bool {
+        #if os(visionOS)
+        return isShowingCinemaSettings
+        #else
+        return false
+        #endif
+    }
+
+    private var resolvedMediaTitle: String {
+        resolvedMediaTitleFrom(activeMediaTitle: activeMediaTitle, streamFileName: currentStream.fileName)
+    }
+
+    private func resolvedMediaTitleFrom(activeMediaTitle: String?, streamFileName: String) -> String {
+        PlayerViewStatePolicy.currentTitle(
+            mediaTitle: activeMediaTitle,
+            streamFileName: streamFileName
+        )
     }
 
     private func loadSubtitleAppearance() async {
         let storedSize = (try? await appState.settingsManager.getString(key: SettingsKeys.subtitleFontSize))
             .flatMap(Double.init)
-        subtitleFontSize = storedSize.map { max(16, min(48, $0)) } ?? 24
+        subtitleFontSize = PlayerViewPolicy.resolvedSubtitleFontSize(storedSize: storedSize)
     }
 
     private func performOptionalAnimation(_ animation: Animation, updates: () -> Void) {
@@ -2701,6 +4181,15 @@ struct PlayerView: View {
         currentStreamID == requestedStreamID
     }
 
+    nonisolated static func subtitleMutationShouldRun(
+        requestedStreamID: String,
+        currentStreamID: String?,
+        requestedMutationID: UUID?,
+        activeMutationID: UUID?
+    ) -> Bool {
+        requestedMutationID != nil && currentStreamID == requestedStreamID && requestedMutationID == activeMutationID
+    }
+
     nonisolated static func shouldAnimateForAccessibility(reduceMotion: Bool) -> Bool {
         !reduceMotion
     }
@@ -2710,36 +4199,11 @@ struct PlayerView: View {
         systemPreferredLanguages: [String],
         closedCaptioningEnabled: Bool
     ) -> [String] {
-        let configuredCodes = configuredLanguageSetting?
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty } ?? []
-        let systemCodes = systemPreferredLanguages.reduce(into: [String]()) { result, language in
-            let normalized = language
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !normalized.isEmpty else { return }
-            let baseCode = normalized
-                .split(whereSeparator: { $0 == "-" || $0 == "_" })
-                .first
-                .map(String.init) ?? normalized
-            guard !baseCode.isEmpty, !result.contains(baseCode) else { return }
-            result.append(baseCode)
-        }
-
-        if closedCaptioningEnabled, !systemCodes.isEmpty {
-            return systemCodes + configuredCodes.filter { !systemCodes.contains($0) }
-        }
-
-        if !configuredCodes.isEmpty {
-            return configuredCodes
-        }
-
-        if !systemCodes.isEmpty {
-            return systemCodes
-        }
-
-        return ["en"]
+        PlayerSubtitlePolicy.automaticSubtitleLanguageCodes(
+            configuredLanguageSetting: configuredLanguageSetting,
+            systemPreferredLanguages: systemPreferredLanguages,
+            closedCaptioningEnabled: closedCaptioningEnabled
+        )
     }
 
     private func resetSubtitleStateForStreamTransition() {
@@ -2747,27 +4211,28 @@ struct PlayerView: View {
         subtitleCatalogTask = nil
         subtitleDownloadTask?.cancel()
         subtitleDownloadTask = nil
+        subtitleTrackRefreshTask?.cancel()
+        subtitleTrackRefreshTask = nil
         subtitleSelectionMode = .automaticPreferred
         clearTransientSubtitleState(removeDownloadedFile: true, clearCurrentItemSelection: true)
     }
 
-    private func preferredLanguageCodes(from rawValue: String) -> [String] {
-        rawValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty }
-    }
-
-    private func matchesPreferredLanguage(
-        _ option: AVMediaSelectionOption,
-        preferredLanguages: [String]
-    ) -> Bool {
-        let localeIdentifier = option.locale?.identifier.lowercased() ?? ""
-        let extendedTag = option.extendedLanguageTag?.lowercased() ?? ""
-
-        return preferredLanguages.contains { preferred in
-            localeIdentifier.hasPrefix(preferred) || extendedTag.hasPrefix(preferred)
+    private func syncCurrentStreamIfNeeded(_ stream: StreamInfo) {
+        guard stream != currentStream else { return }
+        if stream.id != currentStream.id {
+            persistCurrentWatchProgress()
+            resetSubtitleStateForStreamTransition()
+            resetAutoPlayNextStateForStreamTransition()
         }
+
+        activeMediaTitle = mediaTitle
+        activeEpisodeId = episodeId
+        queuedNextEpisode = nextEpisode
+        currentStream = stream
+        streamQueue = PlayerSessionRouting.sessionStreams(primary: stream, available: availableStreams)
+        playbackMessage = nil
+        guard !disablesAutomaticTasks else { return }
+        startPlaybackPreparation(for: stream)
     }
 
     private func clearTransientSubtitleState(
@@ -2782,9 +4247,12 @@ struct PlayerView: View {
         subtitleCatalogMessage = nil
         isRefreshingSubtitleCatalog = false
         isDownloadingSubtitle = false
+        subtitleCatalogMutationID = nil
+        subtitleDownloadMutationID = nil
         selectedAVSubtitleID = nil
+        clearKSSubtitleSelection()
         engine.loadExternalSubtitles([])
-        engine.selectSubtitleTrack(-1)
+        engine.clearSubtitleSelection()
 
         guard removeDownloadedFile, let subtitleFileURL = downloadedSubtitleFileURL else { return }
         try? FileManager.default.removeItem(at: subtitleFileURL)
@@ -2792,34 +4260,29 @@ struct PlayerView: View {
     }
 
     private func autoLoadSubtitlesIfEnabled(for stream: StreamInfo) async {
-        guard stream.id == currentStream.id else { return }
-        let autoSearch = (try? await appState.settingsManager.getBool(
-            key: SettingsKeys.subtitleAutoSearch,
-            default: true
-        )) ?? true
-        guard autoSearch else { return }
-
-        guard let apiKey = (try? await appState.settingsManager.getString(key: SettingsKeys.openSubtitlesApiKey))?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !apiKey.isEmpty else {
-            return
-        }
-
-        let languageSetting = try? await appState.settingsManager.getString(key: SettingsKeys.subtitleLanguage)
-        let languages = Self.automaticSubtitleLanguageCodes(
+        let autoSearch = await subtitleAutoSearchSetting(default: true)
+        let rawAPIKey = await openSubtitlesAPIKeySetting()
+        let languageSetting = await subtitleLanguageSetting()
+        let preflight = PlayerViewStatePolicy.autoSubtitlePreflight(
+            requestedStreamID: stream.id,
+            currentStreamID: currentStream.id,
+            autoSearchEnabled: autoSearch,
+            rawAPIKey: rawAPIKey,
             configuredLanguageSetting: languageSetting,
             systemPreferredLanguages: systemPreferredCaptionLanguages,
-            closedCaptioningEnabled: systemClosedCaptioningEnabled
+            closedCaptioningEnabled: systemClosedCaptioningEnabled,
+            streamFileName: stream.fileName
         )
-        let query = subtitleSearchQuery(from: stream.fileName)
-        guard !query.isEmpty else { return }
+        guard case .download(let request) = preflight else { return }
 
-        let service = resolvedSubtitleService(apiKey: apiKey)
+        let service = resolvedSubtitleService(apiKey: request.apiKey)
 
         do {
             let subtitle = try await service.downloadFirstMatch(
-                query: query,
-                languages: languages
+                query: request.query,
+                languages: request.languages,
+                season: stream.recoveryContext?.seasonNumber,
+                episode: stream.recoveryContext?.episodeNumber
             )
             guard !Task.isCancelled,
                   Self.subtitleMutationShouldRun(
@@ -2839,8 +4302,10 @@ struct PlayerView: View {
                 avPlayer?.currentItem?.select(nil, in: avSubtitleGroup)
             }
             selectedAVSubtitleID = nil
+            clearKSSubtitleSelection()
             engine.loadExternalSubtitles([subtitle])
             engine.selectSubtitleTrack(0)
+            recordSubtitleRuntimeState()
         } catch {
             guard !Task.isCancelled,
                   Self.subtitleMutationShouldRun(
@@ -2849,28 +4314,21 @@ struct PlayerView: View {
                   ) else {
                 return
             }
-            subtitleCatalogMessage = "Automatic subtitle download failed. Open subtitles to retry. \(error.localizedDescription)"
+            subtitleCatalogMessage = PlayerSubtitleServicePolicy.automaticDownloadFailureMessage(
+                errorDescription: error.localizedDescription
+            )
+            recordSubtitleRuntimeState()
         }
     }
 
-    private func resolvedSubtitleService(apiKey: String) -> OpenSubtitlesService {
+    private func resolvedSubtitleService(apiKey: String) -> any OpenSubtitlesServicing {
         if let existing = subtitleService, subtitleServiceAPIKey == apiKey {
             return existing
         }
-        let service = OpenSubtitlesService(apiKey: apiKey)
+        let service = subtitleServiceFactory(apiKey)
         subtitleService = service
         subtitleServiceAPIKey = apiKey
         return service
-    }
-
-    private func subtitleSearchQuery(from fileName: String) -> String {
-        let withoutExtension = (fileName as NSString).deletingPathExtension
-        let cleaned = withoutExtension.replacingOccurrences(
-            of: "[._]+",
-            with: " ",
-            options: .regularExpression
-        )
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @ViewBuilder
@@ -2898,8 +4356,8 @@ struct PlayerView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
                     .lineLimit(1)
-                if let language, !language.isEmpty {
-                    Text(language.uppercased())
+                if let languageLabel = PlayerViewPolicy.subtitleTrackLanguageLabel(language) {
+                    Text(languageLabel)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -2934,16 +4392,11 @@ struct PlayerView: View {
     }
 
     private func hydrateFallbackAudioTrack(for stream: StreamInfo) {
-        if engine.audioTracks.isEmpty {
-            engine.loadAudioTracks([
-                .init(
-                    id: 0,
-                    name: "Auto (\(stream.audio.rawValue.uppercased()))",
-                    language: nil,
-                    codec: stream.codec.rawValue
-                ),
-            ], selectedTrackID: 0)
-        }
+        guard PlayerViewStatePolicy.shouldHydrateFallbackAudioTrack(
+            existingAudioTrackCount: engine.audioTracks.count
+        ) else { return }
+        let fallback = PlayerViewStatePolicy.fallbackKSAudioTrackInfo(for: stream)
+        engine.loadAudioTracks([fallback], selectedTrackID: fallback.id)
     }
 
     @MainActor
@@ -2960,15 +4413,9 @@ struct PlayerView: View {
             return
         }
 
-        let trackInfos = audioTracks.map { track in
-            VPPlayerEngine.TrackInfo(
-                id: Int(track.trackID),
-                name: track.name.isEmpty ? track.description : track.name,
-                language: track.languageCode,
-                codec: nil
-            )
-        }
-        let selectedTrackID = audioTracks.first(where: { $0.isEnabled }).map { Int($0.trackID) }
+        let snapshots = audioTracks.map { PlayerViewStatePolicy.mediaTrackSnapshot(from: $0) }
+        let trackInfos = PlayerViewStatePolicy.ksAudioTrackInfos(from: snapshots)
+        let selectedTrackID = PlayerViewStatePolicy.selectedKSTrackID(from: snapshots)
         engine.loadAudioTracks(trackInfos, selectedTrackID: selectedTrackID)
     }
 
@@ -2977,21 +4424,97 @@ struct PlayerView: View {
         let tracks = coordinator.playerLayer?.player.tracks(mediaType: .audio) ?? []
         guard !tracks.isEmpty else { return }
 
-        let trackInfos = tracks.map { track in
-            VPPlayerEngine.TrackInfo(
-                id: Int(track.trackID),
-                name: track.name.isEmpty ? track.description : track.name,
-                language: track.languageCode,
-                codec: nil
-            )
-        }
-        let selectedTrackID = tracks.first(where: { $0.isEnabled }).map { Int($0.trackID) }
+        let snapshots = tracks.map { PlayerViewStatePolicy.mediaTrackSnapshot(from: $0) }
+        let trackInfos = PlayerViewStatePolicy.ksAudioTrackInfos(from: snapshots)
+        let selectedTrackID = PlayerViewStatePolicy.selectedKSTrackID(from: snapshots)
         engine.loadAudioTracks(trackInfos, selectedTrackID: selectedTrackID)
     }
 
     @MainActor
+    private func scheduleKSTrackRefresh(for stream: StreamInfo) {
+        subtitleTrackRefreshTask?.cancel()
+        subtitleTrackRefreshTask = Task { @MainActor in
+            for delay in PlayerViewStatePolicy.scheduledKSTrackRefreshDelaysMilliseconds() {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled,
+                      PlayerViewStatePolicy.shouldRunScheduledKSTrackRefresh(
+                          requestedStreamID: stream.id,
+                          currentStreamID: currentStream.id,
+                          hasCurrentCoordinator: ksPlayerCoordinator.map(isCurrentKSPlayerCoordinator) ?? false
+                      ),
+                      let coordinator = ksPlayerCoordinator else {
+                    return
+                }
+                refreshKSAudioTracks(from: coordinator)
+                refreshKSSubtitleTracks(from: coordinator)
+            }
+            subtitleTrackRefreshTask = nil
+        }
+    }
+
+    @MainActor
+    private func refreshKSSubtitleTracks(for stream: StreamInfo) {
+        guard let coordinator = ksPlayerCoordinator,
+              isCurrentKSPlayerCoordinator(coordinator) else {
+            return
+        }
+
+        refreshKSSubtitleTracks(from: coordinator)
+        if ksSubtitleOptions.isEmpty {
+            subtitleTrackRefreshTask?.cancel()
+            scheduleKSTrackRefresh(for: stream)
+        }
+    }
+
+    private func refreshKSSubtitleTracks(from coordinator: KSVideoPlayer.Coordinator) {
+        guard isCurrentKSPlayerCoordinator(coordinator) else { return }
+        let tracks = coordinator.playerLayer?.player.tracks(mediaType: .subtitle) ?? []
+        guard !tracks.isEmpty else {
+            ksSubtitleOptions = []
+            selectedKSSubtitleID = nil
+            return
+        }
+
+        let subtitleInfos = coordinator.subtitleModel.subtitleInfos
+        let options = tracks.enumerated().map { index, track in
+            let snapshot = PlayerViewStatePolicy.mediaTrackSnapshot(from: track)
+            let id = String(snapshot.trackID)
+            let modelName = subtitleInfos.first { $0.subtitleID == id }?.name
+            let fields = PlayerViewStatePolicy.ksSubtitleOptionFields(
+                from: snapshot,
+                modelName: modelName,
+                index: index
+            )
+            return KSSubtitleOption(
+                id: fields.id,
+                name: fields.name,
+                language: fields.language
+            )
+        }
+
+        let selectedID = resolvedSelectedKSSubtitleID(from: coordinator, tracks: tracks, options: options)
+        ksSubtitleOptions = options
+        selectedKSSubtitleID = selectedID
+        if PlayerViewStatePolicy.shouldMarkSubtitlesEnabled(selectedKSSubtitleID: selectedID) {
+            engine.subtitlesEnabled = true
+        }
+    }
+
+    private func resolvedSelectedKSSubtitleID(
+        from coordinator: KSVideoPlayer.Coordinator,
+        tracks: [any MediaPlayerTrack],
+        options: [KSSubtitleOption]
+    ) -> String? {
+        PlayerSubtitleSelectionPolicy.resolvedKSSubtitleID(
+            selectedSubtitleInfoID: coordinator.subtitleModel.selectedSubtitleInfo?.subtitleID,
+            enabledTrackID: tracks.first(where: { $0.isEnabled }).map { String($0.trackID) },
+            optionIDs: options.map(\.id)
+        )
+    }
+
+    @MainActor
     private func refreshAVMediaOptions(for player: AVPlayer) async {
-        guard isCurrentAVPlayer(player) else { return }
+        guard !Task.isCancelled, isCurrentAVPlayer(player) else { return }
         guard let item = player.currentItem else {
             avAudioOptions = []
             avSubtitleOptions = []
@@ -3004,21 +4527,22 @@ struct PlayerView: View {
 
         // Audio defaults stay app-driven; subtitle defaults can honor the
         // system closed-caption preference when the user has not set one.
-        let preferredAudioLanguages = preferredLanguageCodes(
+        let preferredAudioLanguages = PlayerSubtitlePolicy.preferredLanguageCodes(
             from: (try? await appState.settingsManager.getString(key: SettingsKeys.audioLanguage)) ?? "en"
         )
         let preferredSubtitleLanguages = Self.automaticSubtitleLanguageCodes(
-            configuredLanguageSetting: try? await appState.settingsManager.getString(key: SettingsKeys.subtitleLanguage),
+            configuredLanguageSetting: await subtitleLanguageSetting(),
             systemPreferredLanguages: systemPreferredCaptionLanguages,
             closedCaptioningEnabled: systemClosedCaptioningEnabled
         )
+        guard !Task.isCancelled, isCurrentAVPlayer(player) else { return }
 
         var newAudioGroup: AVMediaSelectionGroup?
         var newAudioOptions: [AVTrackOption] = []
         var newSelectedAVAudioID: String?
 
         if let audioGroup = try? await item.asset.loadMediaSelectionGroup(for: .audible) {
-            guard isCurrentAVPlayer(player) else { return }
+            guard !Task.isCancelled, isCurrentAVPlayer(player) else { return }
             newAudioGroup = audioGroup
             newAudioOptions = audioGroup.options.enumerated().map { index, option in
                 AVTrackOption(
@@ -3028,24 +4552,28 @@ struct PlayerView: View {
                     option: option
                 )
             }
-            if let selected = item.currentMediaSelection.selectedMediaOption(in: audioGroup),
-               let selectedIndex = audioGroup.options.firstIndex(of: selected) {
-                newSelectedAVAudioID = avOptionID(selected, index: selectedIndex)
-            } else {
-                // No explicit audio selection yet — auto-select preferred language if available
-                newSelectedAVAudioID = nil
-                if let preferredOption = audioGroup.options.first(where: {
-                    matchesPreferredLanguage($0, preferredLanguages: preferredAudioLanguages)
-                }) {
-                    item.select(preferredOption, in: audioGroup)
-                    if let idx = audioGroup.options.firstIndex(of: preferredOption) {
-                        newSelectedAVAudioID = avOptionID(preferredOption, index: idx)
-                    }
-                }
+            let candidates = newAudioOptions.map { option in
+                PlayerAVMediaSelectionPolicy.Candidate(
+                    id: option.id,
+                    localeIdentifier: option.option.locale?.identifier,
+                    extendedLanguageTag: option.option.extendedLanguageTag
+                )
+            }
+            let selectedIndex = item.currentMediaSelection.selectedMediaOption(in: audioGroup)
+                .flatMap { audioGroup.options.firstIndex(of: $0) }
+            let selectionPlan = PlayerAVMediaSelectionPolicy.selectionPlan(
+                currentSelectedIndex: selectedIndex,
+                candidates: candidates,
+                preferredLanguages: preferredAudioLanguages,
+                allowsPreferredAutoSelection: true
+            )
+            newSelectedAVAudioID = selectionPlan.selectedID
+            if let autoSelectIndex = selectionPlan.autoSelectIndex {
+                item.select(audioGroup.options[autoSelectIndex], in: audioGroup)
             }
         }
 
-        guard isCurrentAVPlayer(player) else { return }
+        guard !Task.isCancelled, isCurrentAVPlayer(player) else { return }
         avAudioGroup = newAudioGroup
         avAudioOptions = newAudioOptions
         selectedAVAudioID = newSelectedAVAudioID
@@ -3056,7 +4584,7 @@ struct PlayerView: View {
         var newSubtitlesEnabled = engine.subtitlesEnabled
 
         if let subtitleGroup = try? await item.asset.loadMediaSelectionGroup(for: .legible) {
-            guard isCurrentAVPlayer(player) else { return }
+            guard !Task.isCancelled, isCurrentAVPlayer(player) else { return }
             newSubtitleGroup = subtitleGroup
             newSubtitleOptions = subtitleGroup.options.enumerated().map { index, option in
                 AVTrackOption(
@@ -3066,28 +4594,31 @@ struct PlayerView: View {
                     option: option
                 )
             }
-            if let selected = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup),
-               let selectedIndex = subtitleGroup.options.firstIndex(of: selected) {
-                newSelectedAVSubtitleID = avOptionID(selected, index: selectedIndex)
+            let candidates = newSubtitleOptions.map { option in
+                PlayerAVMediaSelectionPolicy.Candidate(
+                    id: option.id,
+                    localeIdentifier: option.option.locale?.identifier,
+                    extendedLanguageTag: option.option.extendedLanguageTag
+                )
+            }
+            let selectedIndex = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup)
+                .flatMap { subtitleGroup.options.firstIndex(of: $0) }
+            let selectionPlan = PlayerAVMediaSelectionPolicy.selectionPlan(
+                currentSelectedIndex: selectedIndex,
+                candidates: candidates,
+                preferredLanguages: preferredSubtitleLanguages,
+                allowsPreferredAutoSelection: subtitleSelectionMode == .automaticPreferred
+            )
+            newSelectedAVSubtitleID = selectionPlan.selectedID
+            if let autoSelectIndex = selectionPlan.autoSelectIndex {
+                item.select(subtitleGroup.options[autoSelectIndex], in: subtitleGroup)
+            }
+            if selectionPlan.selectedID != nil {
                 newSubtitlesEnabled = true
-            } else {
-                newSelectedAVSubtitleID = nil
-                if subtitleSelectionMode == .automaticPreferred {
-                    // No explicit subtitle selection yet — auto-select preferred language if available
-                    if let preferredOption = subtitleGroup.options.first(where: {
-                        matchesPreferredLanguage($0, preferredLanguages: preferredSubtitleLanguages)
-                    }) {
-                        item.select(preferredOption, in: subtitleGroup)
-                        if let idx = subtitleGroup.options.firstIndex(of: preferredOption) {
-                            newSelectedAVSubtitleID = avOptionID(preferredOption, index: idx)
-                            newSubtitlesEnabled = true
-                        }
-                    }
-                }
             }
         }
 
-        guard isCurrentAVPlayer(player) else { return }
+        guard !Task.isCancelled, isCurrentAVPlayer(player) else { return }
         avSubtitleGroup = newSubtitleGroup
         avSubtitleOptions = newSubtitleOptions
         selectedAVSubtitleID = newSelectedAVSubtitleID
@@ -3138,8 +4669,12 @@ struct PlayerView: View {
     }
 
     private func avOptionID(_ option: AVMediaSelectionOption, index: Int) -> String {
-        let language = option.locale?.identifier ?? option.extendedLanguageTag ?? "und"
-        return "\(language)-\(option.displayName)-\(index)"
+        PlayerMediaOptionIDPolicy.id(
+            localeIdentifier: option.locale?.identifier,
+            extendedLanguageTag: option.extendedLanguageTag,
+            displayName: option.displayName,
+            index: index
+        )
     }
 
     private func selectAVSubtitle(_ track: AVTrackOption) {
@@ -3149,8 +4684,44 @@ struct PlayerView: View {
         clearTransientSubtitleState(removeDownloadedFile: true)
         avPlayer?.currentItem?.select(track.option, in: avSubtitleGroup)
         selectedAVSubtitleID = track.id
-        engine.selectSubtitleTrack(-1)
+        engine.clearSubtitleSelection()
         engine.subtitlesEnabled = true
+    }
+
+    private func selectKSSubtitle(_ track: KSSubtitleOption) {
+        cancelSubtitleDownloadTask()
+        subtitleSelectionMode = .manual
+        if let avSubtitleGroup {
+            avPlayer?.currentItem?.select(nil, in: avSubtitleGroup)
+        }
+        selectedAVSubtitleID = nil
+        engine.loadExternalSubtitles([])
+        engine.clearSubtitleSelection()
+
+        guard let coordinator = ksPlayerCoordinator,
+              isCurrentKSPlayerCoordinator(coordinator),
+              let player = coordinator.playerLayer?.player,
+              let mediaTrack = player.tracks(mediaType: .subtitle).first(where: {
+                  String($0.trackID) == track.id
+              }) else {
+            return
+        }
+
+        if coordinator.subtitleModel.selectedSubtitleInfo?.subtitleID != track.id {
+            coordinator.subtitleModel.selectedSubtitleInfo = nil
+        }
+        if let subtitleInfo = coordinator.subtitleModel.subtitleInfos.first(where: {
+            $0.subtitleID == track.id
+        }) {
+            coordinator.subtitleModel.selectedSubtitleInfo = subtitleInfo
+        } else {
+            mediaTrack.isEnabled = true
+        }
+
+        player.select(track: mediaTrack)
+        selectedKSSubtitleID = track.id
+        engine.subtitlesEnabled = true
+        refreshKSSubtitleTracks(from: coordinator)
     }
 
     private func selectExternalSubtitle(index: Int) {
@@ -3160,6 +4731,7 @@ struct PlayerView: View {
             avPlayer?.currentItem?.select(nil, in: avSubtitleGroup)
         }
         selectedAVSubtitleID = nil
+        clearKSSubtitleSelection()
         engine.selectSubtitleTrack(index)
     }
 
@@ -3173,6 +4745,19 @@ struct PlayerView: View {
         selectedAVSubtitleID = nil
         engine.selectSubtitleTrack(-1)
         isShowingSubtitlePicker = false
+    }
+
+    private func clearKSSubtitleSelection() {
+        selectedKSSubtitleID = nil
+        guard let coordinator = ksPlayerCoordinator,
+              isCurrentKSPlayerCoordinator(coordinator) else {
+            return
+        }
+
+        coordinator.subtitleModel.selectedSubtitleInfo = nil
+        for track in coordinator.playerLayer?.player.tracks(mediaType: .subtitle) ?? [] where track.isEnabled {
+            track.isEnabled = false
+        }
     }
 
     private func selectAVAudio(_ track: AVTrackOption) {
@@ -3195,10 +4780,18 @@ struct PlayerView: View {
         refreshKSAudioTracks(from: coordinator)
     }
 
-
     private func scheduleSubtitleCatalogRefresh(for stream: StreamInfo) {
+        let mutationID = UUID()
+        subtitleCatalogMutationID = mutationID
         subtitleCatalogTask?.cancel()
-        subtitleCatalogTask = Task { await refreshSubtitleCatalog(for: stream) }
+        subtitleCatalogTask = nil
+        subtitleCatalogTask = Task {
+            await refreshSubtitleCatalog(
+                for: stream,
+                requestedStreamID: stream.id,
+                mutationID: mutationID
+            )
+        }
     }
 
     private func cancelSubtitleDownloadTask() {
@@ -3211,90 +4804,210 @@ struct PlayerView: View {
         scenePhaseTask = nil
         memoryPressureTask?.cancel()
         memoryPressureTask = nil
+        #if os(visionOS)
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = nil
+        immersiveDismissTask?.cancel()
+        immersiveDismissTask = nil
+        #endif
     }
 
-    private func refreshSubtitleCatalog(for stream: StreamInfo) async {
-        isRefreshingSubtitleCatalog = true
-        defer { isRefreshingSubtitleCatalog = false }
-
-        guard let apiKey = (try? await appState.settingsManager.getString(key: SettingsKeys.openSubtitlesApiKey))?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !apiKey.isEmpty else {
-            subtitleCandidates = []
-            subtitleCatalogMessage = "Set an OpenSubtitles API key in Settings to browse subtitle options."
+    private func refreshSubtitleCatalog(
+        for stream: StreamInfo,
+        requestedStreamID: String,
+        mutationID: UUID
+    ) async {
+        guard !Task.isCancelled,
+              Self.subtitleMutationShouldRun(
+                  requestedStreamID: requestedStreamID,
+                  currentStreamID: currentStream.id,
+                  requestedMutationID: mutationID,
+                  activeMutationID: subtitleCatalogMutationID
+              ) else {
             return
         }
 
-        let languageSetting = try? await appState.settingsManager.getString(key: SettingsKeys.subtitleLanguage)
-        let languages = Self.automaticSubtitleLanguageCodes(
+        isRefreshingSubtitleCatalog = true
+        recordSubtitleRuntimeState()
+        defer {
+            if Self.subtitleMutationShouldRun(
+                requestedStreamID: requestedStreamID,
+                currentStreamID: currentStream.id,
+                requestedMutationID: mutationID,
+                activeMutationID: subtitleCatalogMutationID
+            ) {
+                isRefreshingSubtitleCatalog = false
+                recordSubtitleRuntimeState()
+            }
+        }
+
+        let rawAPIKey = await openSubtitlesAPIKeySetting()
+        let languageSetting = await subtitleLanguageSetting()
+        guard !Task.isCancelled,
+              Self.subtitleMutationShouldRun(
+                  requestedStreamID: requestedStreamID,
+                  currentStreamID: currentStream.id,
+                  requestedMutationID: mutationID,
+                  activeMutationID: subtitleCatalogMutationID
+              ) else {
+            return
+        }
+
+        let preflight = PlayerViewStatePolicy.subtitleCatalogPreflight(
+            rawAPIKey: rawAPIKey,
             configuredLanguageSetting: languageSetting,
             systemPreferredLanguages: systemPreferredCaptionLanguages,
-            closedCaptioningEnabled: systemClosedCaptioningEnabled
+            closedCaptioningEnabled: systemClosedCaptioningEnabled,
+            streamFileName: stream.fileName
         )
-        let query = subtitleSearchQuery(from: stream.fileName)
-        guard !query.isEmpty else {
-            subtitleCandidates = []
-            subtitleCatalogMessage = "Could not build subtitle query for this stream."
+
+        let request: PlayerViewStatePolicy.SubtitleLookupRequest
+        guard !Task.isCancelled,
+              Self.subtitleMutationShouldRun(
+                  requestedStreamID: requestedStreamID,
+                  currentStreamID: currentStream.id,
+                  requestedMutationID: mutationID,
+                  activeMutationID: subtitleCatalogMutationID
+              ) else {
             return
         }
 
-        let service = resolvedSubtitleService(apiKey: apiKey)
+        switch preflight {
+        case .missingAPIKey(let message):
+            subtitleCandidates = []
+            subtitleCatalogMessage = message
+            recordSubtitleRuntimeState()
+            return
+        case .emptyQuery(let message):
+            subtitleCandidates = []
+            subtitleCatalogMessage = message
+            recordSubtitleRuntimeState()
+            return
+        case .search(let lookupRequest):
+            request = lookupRequest
+        }
+
+        let service = resolvedSubtitleService(apiKey: request.apiKey)
 
         do {
             var candidates = try await service.search(
-                imdbId: mediaId?.hasPrefix("tt") == true ? mediaId : nil,
-                query: query,
-                languages: languages
+                imdbId: PlayerSubtitleServicePolicy.imdbSearchID(from: mediaId),
+                tmdbId: tmdbId,
+                query: request.query,
+                season: stream.recoveryContext?.seasonNumber,
+                episode: stream.recoveryContext?.episodeNumber,
+                languages: request.languages
             )
-            candidates = candidates.filter { $0.fileId != nil && $0.isSupportedSubtitle }
-            if stream.id != currentStream.id {
+            candidates = PlayerSubtitleServicePolicy.supportedCatalogCandidates(candidates)
+            guard !Task.isCancelled,
+                  Self.subtitleMutationShouldRun(
+                      requestedStreamID: requestedStreamID,
+                      currentStreamID: currentStream.id,
+                      requestedMutationID: mutationID,
+                      activeMutationID: subtitleCatalogMutationID
+                  ) else {
                 return
             }
-            subtitleCandidates = Array(candidates.prefix(30))
-            subtitleCatalogMessage = subtitleCandidates.isEmpty ? "No subtitle matches found." : nil
+            subtitleCandidates = candidates
+            subtitleCatalogMessage = PlayerSubtitleServicePolicy.catalogResultMessage(
+                candidateCount: subtitleCandidates.count
+            )
+            recordSubtitleRuntimeState()
         } catch {
-            if stream.id != currentStream.id {
+            guard !Task.isCancelled,
+                  Self.subtitleMutationShouldRun(
+                  requestedStreamID: requestedStreamID,
+                  currentStreamID: currentStream.id,
+                  requestedMutationID: mutationID,
+                  activeMutationID: subtitleCatalogMutationID
+              ) else {
                 return
             }
             subtitleCandidates = []
             subtitleCatalogMessage = error.localizedDescription
+            recordSubtitleRuntimeState()
         }
     }
 
 
     private func scheduleSubtitleDownload(_ subtitle: Subtitle, streamID: String) {
+        let mutationID = UUID()
+        subtitleDownloadMutationID = mutationID
         subtitleDownloadTask?.cancel()
         subtitleDownloadTask = nil
-        subtitleDownloadTask = Task { await downloadAndSelectSubtitle(subtitle, streamID: streamID) }
-        // subtitleDownloadTask = Task { await downloadAndSelectSubtitle(subtitle, streamID: currentStream.id) }
+        subtitleDownloadTask = Task {
+            await downloadAndSelectSubtitle(
+                subtitle,
+                streamID: streamID,
+                mutationID: mutationID
+            )
+        }
     }
 
-    private func downloadAndSelectSubtitle(_ subtitle: Subtitle, streamID: String) async {
-        guard streamID == currentStream.id else { return }
-        guard let fileId = subtitle.fileId else { return }
-        guard subtitle.isSupportedSubtitle else {
-            subtitleCatalogMessage = "That subtitle format is not supported for rendering."
+    private func downloadAndSelectSubtitle(
+        _ subtitle: Subtitle,
+        streamID: String,
+        mutationID: UUID
+    ) async {
+        let rawAPIKey = await openSubtitlesAPIKeySetting()
+        let preflight = PlayerViewStatePolicy.subtitleDownloadPreflight(
+            requestedStreamID: streamID,
+            currentStreamID: currentStream.id,
+            subtitle: subtitle,
+            rawAPIKey: rawAPIKey
+        )
+        guard Self.subtitleMutationShouldRun(
+            requestedStreamID: streamID,
+            currentStreamID: currentStream.id,
+            requestedMutationID: mutationID,
+            activeMutationID: subtitleDownloadMutationID
+        ) else {
             return
         }
-        isDownloadingSubtitle = true
-        defer { isDownloadingSubtitle = false }
 
-        guard let apiKey = (try? await appState.settingsManager.getString(key: SettingsKeys.openSubtitlesApiKey))?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !apiKey.isEmpty else {
-            subtitleCatalogMessage = "OpenSubtitles API key is required."
+        let apiKey: String
+        let fileID: Int
+        switch preflight {
+        case .skip:
             return
+        case .unsupported(let message):
+            subtitleCatalogMessage = message
+            recordSubtitleRuntimeState()
+            return
+        case .missingAPIKey(let message):
+            subtitleCatalogMessage = message
+            recordSubtitleRuntimeState()
+            return
+        case .download(let resolvedAPIKey, let resolvedFileID):
+            apiKey = resolvedAPIKey
+            fileID = resolvedFileID
+        }
+
+        isDownloadingSubtitle = true
+        recordSubtitleRuntimeState()
+        defer {
+            if Self.subtitleMutationShouldRun(
+                requestedStreamID: streamID,
+                currentStreamID: currentStream.id,
+                requestedMutationID: mutationID,
+                activeMutationID: subtitleDownloadMutationID
+            ) {
+                isDownloadingSubtitle = false
+                recordSubtitleRuntimeState()
+            }
         }
 
         let service = resolvedSubtitleService(apiKey: apiKey)
 
         do {
-            let content = try await service.downloadSubtitle(fileId: fileId)
+            let content = try await service.downloadSubtitle(fileId: fileID)
             let localURL = try writeExternalSubtitle(content: content, source: subtitle)
             guard !Task.isCancelled,
                   Self.subtitleMutationShouldRun(
                       requestedStreamID: streamID,
-                      currentStreamID: currentStream.id
+                      currentStreamID: currentStream.id,
+                      requestedMutationID: mutationID,
+                      activeMutationID: subtitleDownloadMutationID
                   ) else {
                 try? FileManager.default.removeItem(at: localURL)
                 return
@@ -3313,29 +5026,72 @@ struct PlayerView: View {
                 avPlayer?.currentItem?.select(nil, in: avSubtitleGroup)
             }
             selectedAVSubtitleID = nil
+            clearKSSubtitleSelection()
             engine.loadExternalSubtitles([hydrated])
             engine.selectSubtitleTrack(0)
             isShowingSubtitlePicker = false
             subtitleCatalogMessage = nil
+            recordSubtitleRuntimeState()
         } catch {
+            guard Self.subtitleMutationShouldRun(
+                requestedStreamID: streamID,
+                currentStreamID: currentStream.id,
+                requestedMutationID: mutationID,
+                activeMutationID: subtitleDownloadMutationID
+            ) else {
+                return
+            }
             subtitleCatalogMessage = error.localizedDescription
+            recordSubtitleRuntimeState()
         }
     }
 
     private func writeExternalSubtitle(content: String, source: Subtitle) throws -> URL {
-        let format = source.format.isSupportedSubtitle
-            ? source.format
-            : SubtitleFormat.parse(from: source.fileName)
-        guard format.isSupportedSubtitle else {
-            throw CocoaError(.fileWriteUnsupportedScheme)
-        }
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension(format.fileExtension)
-        try content.write(to: fileURL, atomically: true, encoding: .utf8)
-        return fileURL
+        try PlayerExternalSubtitleWriter.write(content: content, source: source)
     }
 
+}
+
+// MARK: - Autoplay Control Notification Handlers
+
+private struct AutoplayControlHandlers: ViewModifier {
+    let onPlayNow: () -> Void
+    let onCancel: () -> Void
+    let onProgress: (TimeInterval, TimeInterval) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .playerAutoplayControlPlayNow)) { _ in
+                onPlayNow()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .playerAutoplayControlCancel)) { _ in
+                onCancel()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .playerAutoplayControlProgress)) { notification in
+                guard let userInfo = notification.userInfo,
+                      let currentTime = userInfo[PlayerAutoplayControlNotificationKey.currentTime] as? TimeInterval,
+                      let duration = userInfo[PlayerAutoplayControlNotificationKey.duration] as? TimeInterval else {
+                    return
+                }
+                onProgress(currentTime, duration)
+            }
+    }
+}
+
+private struct SubtitleControlHandlers: ViewModifier {
+    let onRefreshCatalog: () -> Void
+    let onDownload: (Subtitle) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .playerSubtitleControlRefreshCatalog)) { _ in
+                onRefreshCatalog()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .playerSubtitleControlDownload)) { notification in
+                guard let subtitle = notification.object as? Subtitle else { return }
+                onDownload(subtitle)
+            }
+    }
 }
 
 // MARK: - Immersive Control Notification Handlers (visionOS)

@@ -90,11 +90,7 @@ private func makeStubSession(
 }
 
 private func makeTempDatabase() async throws -> DatabaseManager {
-    let tempDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbPath = tempDir.appendingPathComponent("folder-sync-test.sqlite").path
-    let database = try DatabaseManager(path: dbPath)
+    let database = try DatabaseManager(inMemoryNamed: "folder-sync-test-\(UUID().uuidString)")
     try await database.migrate()
     return database
 }

@@ -38,6 +38,21 @@ struct DownloadsView: View {
     @State private var confirmDeleteTaskID: String?
     @State private var playbackValidationMessage: String?
     @State private var didPerformQADownloadAction = false
+    private let disablesAutomaticTasks: Bool
+
+    init(
+        viewModel: DownloadsViewModel? = nil,
+        initialConfirmDeleteMediaId: String? = nil,
+        initialConfirmDeleteTaskID: String? = nil,
+        initialPlaybackValidationMessage: String? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _viewModel = State(initialValue: viewModel)
+        _confirmDeleteMediaId = State(initialValue: initialConfirmDeleteMediaId)
+        _confirmDeleteTaskID = State(initialValue: initialConfirmDeleteTaskID)
+        _playbackValidationMessage = State(initialValue: initialPlaybackValidationMessage)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     private var shouldShowRootLoadingSurface: Bool {
         DownloadsLoadingSurfacePolicy.shouldShowRootLoading(
@@ -88,6 +103,7 @@ struct DownloadsView: View {
             Text(playbackValidationMessage ?? "The downloaded file is no longer available.")
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             if viewModel == nil {
                 let vm = DownloadsViewModel(appState: appState)
                 viewModel = vm
@@ -100,6 +116,7 @@ struct DownloadsView: View {
             reloadTask = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .downloadsDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             guard let vm = viewModel else { return }
             reloadTask?.cancel()
             reloadTask = Task {

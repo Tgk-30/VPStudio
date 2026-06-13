@@ -35,6 +35,32 @@ enum LibraryFolderSelectionPolicy {
         guard let selectedFolderID else { return nil }
         return folders.first(where: { $0.id == selectedFolderID && $0.isSystem == false })
     }
+
+    static func selectedFolderIDAfterReload(
+        loadedFolders: [LibraryFolder],
+        currentSelection: String?
+    ) -> String? {
+        guard let currentSelection else { return nil }
+        return loadedFolders.contains(where: { $0.id == currentSelection }) ? currentSelection : nil
+    }
+
+    static func manualFolderOrderIDs(afterReloading loadedFolders: [LibraryFolder]) -> [String] {
+        loadedFolders.filter { !$0.isSystem }.map(\.id)
+    }
+
+    static func orderedUserFolders(
+        _ userFolders: [LibraryFolder],
+        manualFolderOrderIDs: [String]
+    ) -> [LibraryFolder] {
+        guard !manualFolderOrderIDs.isEmpty else { return userFolders }
+        let byID = Dictionary(uniqueKeysWithValues: userFolders.map { ($0.id, $0) })
+        var ordered = manualFolderOrderIDs.compactMap { byID[$0] }
+        if ordered.count < userFolders.count {
+            let included = Set(ordered.map(\.id))
+            ordered.append(contentsOf: userFolders.filter { !included.contains($0.id) })
+        }
+        return ordered
+    }
 }
 
 enum LibrarySelectionTransitionPolicy {
@@ -109,6 +135,24 @@ enum LibraryTitleRefreshPolicy {
         isRefreshing: Bool
     ) -> Bool {
         selectedList != .history && !isRefreshing
+    }
+
+    static func refreshingMessage(for listType: UserLibraryEntry.ListType) -> String {
+        "Refreshing title matches in \(listType.displayName)..."
+    }
+
+    static func completionMessage(
+        for listType: UserLibraryEntry.ListType,
+        removedCount: Int
+    ) -> String {
+        switch removedCount {
+        case 0:
+            return "Refresh complete: no duplicate titles found in \(listType.displayName)."
+        case 1:
+            return "Refresh complete: merged 1 duplicate title in \(listType.displayName)."
+        default:
+            return "Refresh complete: merged \(removedCount) duplicate titles in \(listType.displayName)."
+        }
     }
 }
 
@@ -212,6 +256,110 @@ enum LibraryFolderLabelPolicy {
     }
 }
 
+enum LibraryFolderReorderPolicy {
+    static func reorderedIDs(
+        orderedFolderIDs: [String],
+        draggedFolderID: String?,
+        destinationFolderID: String
+    ) -> [String]? {
+        guard let draggedFolderID,
+              draggedFolderID != destinationFolderID,
+              let fromIndex = orderedFolderIDs.firstIndex(of: draggedFolderID),
+              let toIndex = orderedFolderIDs.firstIndex(of: destinationFolderID),
+              fromIndex != toIndex else {
+            return nil
+        }
+
+        var reorderedIDs = orderedFolderIDs
+        reorderedIDs.move(
+            fromOffsets: IndexSet(integer: fromIndex),
+            toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+        )
+        return reorderedIDs
+    }
+
+    static func shouldPersist(reorderedIDs: [String], currentIDs: [String]) -> Bool {
+        reorderedIDs != currentIDs
+    }
+}
+
+enum LibraryImportOutcomePolicy {
+    static func displayedHistoryMediaIDs(from historyEntries: [WatchHistory]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for entry in historyEntries {
+            if seen.insert(entry.mediaId).inserted {
+                ordered.append(entry.mediaId)
+            }
+        }
+        return ordered
+    }
+
+    static func preferredListType(after summary: LibraryCSVImportSummary) -> UserLibraryEntry.ListType? {
+        if summary.watchlistImported > 0 { return .watchlist }
+        if summary.favoritesImported > 0 { return .favorites }
+        if summary.historyImported > 0 { return .history }
+        return nil
+    }
+
+    static func importStatusMessage(from summary: LibraryCSVImportSummary) -> String {
+        if summary.watchlistImported == 0, summary.favoritesImported == 0, summary.historyImported == 0 {
+            if summary.ratingsImported > 0 {
+                return "Import finished: no new library items, but \(summary.ratingsImported) ratings were imported."
+            }
+            return "Import finished: no new library items were added."
+        }
+        return "Import added W:\(summary.watchlistImported) F:\(summary.favoritesImported) H:\(summary.historyImported) from \(summary.rowsImported) rows. Repeated IMDb IDs across files were merged."
+    }
+}
+
+enum LibraryMetadataHydrationPolicy {
+    struct Candidate: Sendable, Hashable, Equatable {
+        let requestedID: String
+        let detailID: String
+        let type: MediaType
+    }
+
+    static func candidates(
+        for ids: [String],
+        mediaItems: [String: MediaItem]
+    ) -> [Candidate] {
+        var seen = Set<String>()
+
+        return ids.compactMap { requestedID in
+            guard seen.insert(requestedID).inserted else { return nil }
+            guard let item = mediaItems[requestedID] else { return nil }
+            guard !item.hasArtwork else { return nil }
+
+            if let tmdbID = item.tmdbId {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: String(tmdbID),
+                    type: item.type
+                )
+            }
+
+            if item.id.hasPrefix("tt") {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: item.id,
+                    type: item.type
+                )
+            }
+
+            if requestedID.hasPrefix("tt") {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: requestedID,
+                    type: item.type
+                )
+            }
+
+            return nil
+        }
+    }
+}
+
 struct LibraryView: View {
     @Environment(AppState.self) private var appState
 
@@ -226,6 +374,7 @@ struct LibraryView: View {
     @State private var selectedItem: MediaPreview?
     @State private var loadTask: Task<Void, Never>?
     @State private var metadataHydrationTask: Task<Void, Never>?
+    @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var didApplyQALibrarySelection = false
 
     @State private var sortOption: LibrarySortOption = .dateAddedDesc
@@ -244,15 +393,64 @@ struct LibraryView: View {
     @State private var isLoadingSelection = true
     @State private var selectionLoadToken = 0
 
+    private let disablesAutomaticTasks: Bool
+    private let initialCreateFolderName: String
+    private let initialCreateFolderErrorMessage: String?
+    private let initialCreateFolderIsSubmitting: Bool
+    private let autoFocusesCreateFolderNameField: Bool
+
+    init(
+        initialSelectedList: UserLibraryEntry.ListType = .watchlist,
+        initialSelectedFolderID: String? = nil,
+        initialEntries: [UserLibraryEntry] = [],
+        initialHistoryEntries: [WatchHistory] = [],
+        initialFolders: [LibraryFolder] = [],
+        initialMediaItems: [String: MediaItem] = [:],
+        initialSortOption: LibrarySortOption = .dateAddedDesc,
+        initialUserRatings: [String: TasteEvent] = [:],
+        initialIsShowingCreateFolderSheet: Bool = false,
+        initialIsShowingCSVImportSheet: Bool = false,
+        initialIsShowingCSVExportSheet: Bool = false,
+        initialCreateFolderListType: UserLibraryEntry.ListType = .watchlist,
+        initialFolderPendingDeletion: LibraryFolder? = nil,
+        initialStatusMessage: String? = nil,
+        initialActionError: AppError? = nil,
+        initialIsRefreshingTitleDuplicates: Bool = false,
+        initialManualFolderOrderIDs: [String] = [],
+        initialIsLoadingSelection: Bool = true,
+        initialCreateFolderName: String = "",
+        initialCreateFolderErrorMessage: String? = nil,
+        initialCreateFolderIsSubmitting: Bool = false,
+        autoFocusesCreateFolderNameField: Bool = true,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _selectedList = State(initialValue: initialSelectedList)
+        _selectedFolderID = State(initialValue: initialSelectedFolderID)
+        _entries = State(initialValue: initialEntries)
+        _historyEntries = State(initialValue: initialHistoryEntries)
+        _folders = State(initialValue: initialFolders)
+        _mediaItems = State(initialValue: initialMediaItems)
+        _sortOption = State(initialValue: initialSortOption)
+        _userRatings = State(initialValue: initialUserRatings)
+        _isShowingCreateFolderSheet = State(initialValue: initialIsShowingCreateFolderSheet)
+        _isShowingCSVImportSheet = State(initialValue: initialIsShowingCSVImportSheet)
+        _isShowingCSVExportSheet = State(initialValue: initialIsShowingCSVExportSheet)
+        _createFolderListType = State(initialValue: initialCreateFolderListType)
+        _folderPendingDeletion = State(initialValue: initialFolderPendingDeletion)
+        _statusMessage = State(initialValue: initialStatusMessage)
+        _actionError = State(initialValue: initialActionError)
+        _isRefreshingTitleDuplicates = State(initialValue: initialIsRefreshingTitleDuplicates)
+        _manualFolderOrderIDs = State(initialValue: initialManualFolderOrderIDs)
+        _isLoadingSelection = State(initialValue: initialIsLoadingSelection)
+        self.initialCreateFolderName = initialCreateFolderName
+        self.initialCreateFolderErrorMessage = initialCreateFolderErrorMessage
+        self.initialCreateFolderIsSubmitting = initialCreateFolderIsSubmitting
+        self.autoFocusesCreateFolderNameField = autoFocusesCreateFolderNameField
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
+
     private var displayedHistoryMediaIDs: [String] {
-        var seen = Set<String>()
-        var ordered: [String] = []
-        for entry in historyEntries {
-            if seen.insert(entry.mediaId).inserted {
-                ordered.append(entry.mediaId)
-            }
-        }
-        return ordered
+        LibraryImportOutcomePolicy.displayedHistoryMediaIDs(from: historyEntries)
     }
 
     private var isEmptyStateVisible: Bool {
@@ -276,25 +474,17 @@ struct LibraryView: View {
     }
 
     private var orderedUserFolders: [LibraryFolder] {
-        guard !manualFolderOrderIDs.isEmpty else { return userFolders }
-        let byID = Dictionary(uniqueKeysWithValues: userFolders.map { ($0.id, $0) })
-        var ordered = manualFolderOrderIDs.compactMap { byID[$0] }
-        if ordered.count < userFolders.count {
-            let included = Set(ordered.map(\.id))
-            ordered.append(contentsOf: userFolders.filter { !included.contains($0.id) })
-        }
-        return ordered
+        LibraryFolderSelectionPolicy.orderedUserFolders(
+            userFolders,
+            manualFolderOrderIDs: manualFolderOrderIDs
+        )
     }
 
     private var rootFolder: LibraryFolder? {
         allFolderOptions.first { $0.isSystem && $0.folderKind == .systemRoot }
     }
 
-    private struct MetadataHydrationCandidate: Sendable, Hashable {
-        let requestedID: String
-        let detailID: String
-        let type: MediaType
-    }
+    private typealias MetadataHydrationCandidate = LibraryMetadataHydrationPolicy.Candidate
 
     private var selectedManualFolder: LibraryFolder? {
         LibraryFolderSelectionPolicy.selectedManualFolder(
@@ -413,7 +603,13 @@ struct LibraryView: View {
             DetailView(preview: item)
         }
         .sheet(isPresented: $isShowingCreateFolderSheet) {
-            CreateLibraryFolderSheet(listType: createFolderListType) { name, listType in
+            CreateLibraryFolderSheet(
+                listType: createFolderListType,
+                initialFolderName: initialCreateFolderName,
+                initialErrorMessage: initialCreateFolderErrorMessage,
+                initialIsSubmitting: initialCreateFolderIsSubmitting,
+                autoFocusesNameField: autoFocusesCreateFolderNameField
+            ) { name, listType in
                 await createFolder(named: name, in: listType)
             }
         }
@@ -463,6 +659,7 @@ struct LibraryView: View {
             }
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             if let qaList = QARuntimeOptions.libraryList, !didApplyQALibrarySelection {
                 didApplyQALibrarySelection = true
                 selectedList = qaList
@@ -474,6 +671,8 @@ struct LibraryView: View {
             loadTask = nil
             metadataHydrationTask?.cancel()
             metadataHydrationTask = nil
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = nil
         }
         .onChange(of: selectedList) { previous, next in
             selectedFolderID = nil
@@ -484,26 +683,34 @@ struct LibraryView: View {
                 mediaItems = [:]
             }
 
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .onChange(of: selectedFolderID) { _, _ in
+            guard !disablesAutomaticTasks else { return }
             guard selectedList.supportsFolders else { return }
             scheduleReload()
         }
         .onChange(of: sortOption) { _, _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .watchHistoryDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             await loadUserRatings()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tasteProfileDidChange)) { _ in
-            Task { await loadUserRatings() }
+            guard !disablesAutomaticTasks else { return }
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = Task { await loadUserRatings() }
         }
     }
 
@@ -752,20 +959,11 @@ struct LibraryView: View {
     }
 
     private func preferredListType(after summary: LibraryCSVImportSummary) -> UserLibraryEntry.ListType? {
-        if summary.watchlistImported > 0 { return .watchlist }
-        if summary.favoritesImported > 0 { return .favorites }
-        if summary.historyImported > 0 { return .history }
-        return nil
+        LibraryImportOutcomePolicy.preferredListType(after: summary)
     }
 
     private func importStatusMessage(from summary: LibraryCSVImportSummary) -> String {
-        if summary.watchlistImported == 0, summary.favoritesImported == 0, summary.historyImported == 0 {
-            if summary.ratingsImported > 0 {
-                return "Import finished: no new library items, but \(summary.ratingsImported) ratings were imported."
-            }
-            return "Import finished: no new library items were added."
-        }
-        return "Import added W:\(summary.watchlistImported) F:\(summary.favoritesImported) H:\(summary.historyImported) from \(summary.rowsImported) rows. Repeated IMDb IDs across files were merged."
+        LibraryImportOutcomePolicy.importStatusMessage(from: summary)
     }
 
     private func scheduleReload() {
@@ -825,12 +1023,11 @@ struct LibraryView: View {
         guard selectionLoadToken == loadToken else { return }
         folders = loadedFolders
         draggedFolderID = nil
-        manualFolderOrderIDs = loadedFolders.filter { !$0.isSystem }.map(\.id)
-
-        if let selectedFolderID,
-           !loadedFolders.contains(where: { $0.id == selectedFolderID }) {
-            self.selectedFolderID = nil
-        }
+        manualFolderOrderIDs = LibraryFolderSelectionPolicy.manualFolderOrderIDs(afterReloading: loadedFolders)
+        selectedFolderID = LibraryFolderSelectionPolicy.selectedFolderIDAfterReload(
+            loadedFolders: loadedFolders,
+            currentSelection: selectedFolderID
+        )
     }
 
     private func loadLibraryEntries(loadToken: Int) async {
@@ -882,6 +1079,7 @@ struct LibraryView: View {
                 dict[mediaId] = event
             }
         }
+        guard !Task.isCancelled else { return }
         userRatings = dict
     }
 
@@ -964,39 +1162,7 @@ struct LibraryView: View {
     }
 
     private func metadataHydrationCandidates(for ids: [String]) -> [MetadataHydrationCandidate] {
-        var seen = Set<String>()
-
-        return ids.compactMap { requestedID in
-            guard seen.insert(requestedID).inserted else { return nil }
-            guard let item = mediaItems[requestedID] else { return nil }
-            guard !item.hasArtwork else { return nil }
-
-            if let tmdbID = item.tmdbId {
-                return MetadataHydrationCandidate(
-                    requestedID: requestedID,
-                    detailID: String(tmdbID),
-                    type: item.type
-                )
-            }
-
-            if item.id.hasPrefix("tt") {
-                return MetadataHydrationCandidate(
-                    requestedID: requestedID,
-                    detailID: item.id,
-                    type: item.type
-                )
-            }
-
-            if requestedID.hasPrefix("tt") {
-                return MetadataHydrationCandidate(
-                    requestedID: requestedID,
-                    detailID: requestedID,
-                    type: item.type
-                )
-            }
-
-            return nil
-        }
+        LibraryMetadataHydrationPolicy.candidates(for: ids, mediaItems: mediaItems)
     }
 
     private func createFolder(named name: String, in targetList: UserLibraryEntry.ListType) async -> String? {
@@ -1085,7 +1251,7 @@ struct LibraryView: View {
         loadTask?.cancel()
         isRefreshingTitleDuplicates = true
         actionError = nil
-        statusMessage = "Refreshing title matches in \(listType.displayName)..."
+        statusMessage = LibraryTitleRefreshPolicy.refreshingMessage(for: listType)
 
         loadTask = Task {
             defer { isRefreshingTitleDuplicates = false }
@@ -1096,13 +1262,10 @@ struct LibraryView: View {
                 _ = try await appState.database.pruneEmptyManualFolders()
 
                 actionError = nil
-                if removedCount == 0 {
-                    statusMessage = "Refresh complete: no duplicate titles found in \(listType.displayName)."
-                } else if removedCount == 1 {
-                    statusMessage = "Refresh complete: merged 1 duplicate title in \(listType.displayName)."
-                } else {
-                    statusMessage = "Refresh complete: merged \(removedCount) duplicate titles in \(listType.displayName)."
-                }
+                statusMessage = LibraryTitleRefreshPolicy.completionMessage(
+                    for: listType,
+                    removedCount: removedCount
+                )
                 NotificationCenter.default.post(name: .libraryDidChange, object: nil)
                 await loadSelection()
             } catch {
@@ -1117,11 +1280,15 @@ struct LibraryView: View {
 
     private func commitFolderReorder(_ reorderedIDs: [String]) {
         let currentIDs = userFolders.map(\.id)
-        guard reorderedIDs != currentIDs else { return }
+        guard LibraryFolderReorderPolicy.shouldPersist(reorderedIDs: reorderedIDs, currentIDs: currentIDs) else {
+            return
+        }
         persistFolderOrder(reorderedIDs)
     }
 
     private func persistFolderOrder(_ reorderedIDs: [String]) {
+        let listType = selectedList
+        let loadToken = selectionLoadToken
         loadTask?.cancel()
         statusMessage = nil
         actionError = nil
@@ -1129,11 +1296,13 @@ struct LibraryView: View {
             do {
                 try await appState.database.reorderLibraryFolders(
                     ids: reorderedIDs,
-                    listType: selectedList
+                    listType: listType
                 )
                 actionError = nil
                 statusMessage = "Folder order updated."
-                await loadFolders(loadToken: selectionLoadToken)
+                if selectedList == listType {
+                    await loadFolders(loadToken: loadToken)
+                }
             } catch {
                 statusMessage = nil
                 actionError = LibraryActionFailurePolicy.appError(for: error, action: .reorderFolders)
@@ -1173,19 +1342,16 @@ private struct FolderChipDropDelegate: DropDelegate {
     let onCommit: ([String]) -> Void
 
     func dropEntered(info: DropInfo) {
-        guard let draggedFolderID,
-              draggedFolderID != destinationFolderID,
-              let fromIndex = orderedFolderIDs.firstIndex(of: draggedFolderID),
-              let toIndex = orderedFolderIDs.firstIndex(of: destinationFolderID),
-              fromIndex != toIndex else {
+        guard let reorderedIDs = LibraryFolderReorderPolicy.reorderedIDs(
+            orderedFolderIDs: orderedFolderIDs,
+            draggedFolderID: draggedFolderID,
+            destinationFolderID: destinationFolderID
+        ) else {
             return
         }
 
         withAnimation(.easeInOut(duration: 0.14)) {
-            orderedFolderIDs.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
-            )
+            orderedFolderIDs = reorderedIDs
         }
     }
 
@@ -1209,6 +1375,23 @@ private struct CreateLibraryFolderSheet: View {
     @State private var errorMessage: String?
     @State private var isSubmitting = false
     @FocusState private var isNameFieldFocused: Bool
+    private let autoFocusesNameField: Bool
+
+    init(
+        listType: UserLibraryEntry.ListType,
+        initialFolderName: String = "",
+        initialErrorMessage: String? = nil,
+        initialIsSubmitting: Bool = false,
+        autoFocusesNameField: Bool = true,
+        onCreate: @escaping (String, UserLibraryEntry.ListType) async -> String?
+    ) {
+        self.listType = listType
+        self.onCreate = onCreate
+        _folderName = State(initialValue: initialFolderName)
+        _errorMessage = State(initialValue: initialErrorMessage)
+        _isSubmitting = State(initialValue: initialIsSubmitting)
+        self.autoFocusesNameField = autoFocusesNameField
+    }
 
     private var canSubmit: Bool {
         LibraryFolderCreationPolicy.normalizedName(folderName) != nil && !isSubmitting
@@ -1254,6 +1437,7 @@ private struct CreateLibraryFolderSheet: View {
                 }
             }
             .onAppear {
+                guard autoFocusesNameField else { return }
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(120))
                     isNameFieldFocused = true

@@ -93,6 +93,31 @@ struct AppStatePlayerSessionStateTests {
     }
 
     @Test @MainActor
+    func terminateActivePlayerSessionClearsMainWindowSuppression() {
+        let appState = AppState()
+        appState.isMainWindowSuppressedForPlayer = true
+
+        appState.terminateActivePlayerSession()
+
+        #expect(appState.isMainWindowSuppressedForPlayer == false)
+    }
+
+    @Test @MainActor
+    func releasePlayerResourcesClearsSuppressedStateWhenActiveSessionAlreadyNil() {
+        let appState = AppState()
+        appState.isMainWindowSuppressedForPlayer = true
+        appState.isImmersiveTransitionInFlight = true
+        appState.shouldRestoreImmersiveAfterSuspension = true
+
+        appState.releasePlayerResources(clearSession: true)
+
+        #expect(appState.activePlayerSession == nil)
+        #expect(appState.isMainWindowSuppressedForPlayer == false)
+        #expect(!appState.isImmersiveTransitionInFlight)
+        #expect(!appState.shouldRestoreImmersiveAfterSuspension)
+    }
+
+    @Test @MainActor
     func releasePlayerResourcesClearsPlaybackBridgeOnlyWhenRequested() {
         let appState = AppState()
         let stream = Fixtures.stream(fileName: "movie.mkv")
@@ -134,6 +159,45 @@ struct AppStatePlayerSessionStateTests {
         #expect(appState.activeVideoRenderer == nil)
         #expect(appState.activePlayerSession == nil)
         #expect(appState.fullscreenBySessionID[request.id] == nil)
+    }
+
+    @Test @MainActor
+    func releasePlayerResourcesForActivePlayerSessionPreservesSuppressionUntilWindowDisappears() {
+        let appState = AppState()
+        let stream = Fixtures.stream(fileName: "movie.mkv")
+        let preview = Fixtures.mediaPreview()
+        let viewModel = DetailViewModel(appState: appState)
+        let request = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
+
+        appState.activePlayerSession = request
+        appState.isMainWindowSuppressedForPlayer = true
+
+        appState.releasePlayerResources(clearSession: true, sessionID: request.id)
+
+        #expect(appState.activePlayerSession == nil)
+        #expect(appState.isMainWindowSuppressedForPlayer)
+    }
+
+    @Test @MainActor
+    func releasePlayerResourcesPreservesActiveSessionWhenSessionIDMismatches() {
+        let appState = AppState()
+        let stream = Fixtures.stream(fileName: "movie.mkv")
+        let preview = Fixtures.mediaPreview()
+        let viewModel = DetailViewModel(appState: appState)
+        let activeSession = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
+        let staleSessionID = UUID()
+
+        appState.activePlayerSession = activeSession
+        appState.fullscreenBySessionID[activeSession.id] = true
+        appState.fullscreenBySessionID[staleSessionID] = true
+        appState.isMainWindowSuppressedForPlayer = true
+
+        appState.releasePlayerResources(clearSession: true, sessionID: staleSessionID)
+
+        #expect(appState.activePlayerSession?.id == activeSession.id)
+        #expect(appState.fullscreenBySessionID[activeSession.id] == true)
+        #expect(appState.fullscreenBySessionID[staleSessionID] == nil)
+        #expect(appState.isMainWindowSuppressedForPlayer)
     }
 }
 

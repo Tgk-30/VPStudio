@@ -60,12 +60,14 @@ enum IndexerConnectivityTester {
             ])
 
         case .yts:
-            url = try buildURL(baseURL: "https://yts.torrentbay.st", path: "/api/v2/list_movies.json", queryItems: [
+            let baseURL = config.baseURL ?? "https://yts.torrentbay.st"
+            url = try buildURL(baseURL: baseURL, path: "/api/v2/list_movies.json", queryItems: [
                 URLQueryItem(name: "limit", value: "1"),
             ])
 
         case .eztv:
-            url = try buildURL(baseURL: "https://eztvx.to", path: "/api/get-torrents", queryItems: [
+            let baseURL = config.baseURL ?? "https://eztvx.to"
+            url = try buildURL(baseURL: baseURL, path: "/api/get-torrents", queryItems: [
                 URLQueryItem(name: "limit", value: "1"),
             ])
 
@@ -95,9 +97,13 @@ enum IndexerConnectivityTester {
             guard !apiKey.isEmpty else {
                 throw IndexerConnectivityError.missingAPIKey
             }
-            url = try buildURL(baseURL: baseURL, path: endpointPath, queryItems: [
+            var queryItems = [
                 URLQueryItem(name: "query", value: "test"),
-            ])
+            ]
+            if config.apiKeyTransport == .query {
+                queryItems.append(URLQueryItem(name: "apikey", value: apiKey))
+            }
+            url = try buildURL(baseURL: baseURL, path: endpointPath, queryItems: queryItems)
 
         case .zilean:
             guard let baseURL = config.baseURL else {
@@ -120,14 +126,21 @@ enum IndexerConnectivityTester {
                 throw IndexerConnectivityError.invalidBaseURL
             }
             let manifestPath = config.endpointPath.isEmpty ? "/manifest.json" : config.endpointPath
-            url = try buildURL(baseURL: baseURL, path: manifestPath, queryItems: [])
+            do {
+                url = try StremioAddonURLBuilder.manifestURL(baseURL: baseURL, endpointPath: manifestPath)
+            } catch {
+                throw IndexerConnectivityError.invalidBaseURL
+            }
+            guard IndexerURLSecurityPolicy.permits(url: url) else {
+                throw IndexerConnectivityError.invalidBaseURL
+            }
         }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
         request.httpMethod = "GET"
 
-        if (config.indexerType == .prowlarr || config.apiKeyTransport == .header),
+        if config.apiKeyTransport == .header,
            let key = config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
            !key.isEmpty {
             request.setValue(key, forHTTPHeaderField: "X-Api-Key")
@@ -157,8 +170,7 @@ enum IndexerConnectivityTester {
         components.queryItems = queryItems.isEmpty ? nil : queryItems
 
         guard let url = components.url,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" else {
+              IndexerURLSecurityPolicy.permits(url: url) else {
             throw IndexerConnectivityError.invalidBaseURL
         }
         return url

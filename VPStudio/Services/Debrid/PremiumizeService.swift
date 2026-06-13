@@ -46,8 +46,15 @@ actor PremiumizeService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
         let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: normalizedHash,
+            suppliedMagnetURI: magnetURI
+        )
         let body = "src=\(magnet.addingPercentEncoding(withAllowedCharacters: Self.formEncodingAllowed) ?? magnet)"
         let response: PMTransferResponse = try await request(path: "/transfer/create", method: "POST", body: body)
         return response.id ?? normalizedHash

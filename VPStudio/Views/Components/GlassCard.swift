@@ -285,7 +285,8 @@ enum ArtworkFallbackStyle {
         }
 
         let letters = trimmed.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        return String(String.UnicodeScalarView(letters).prefix(2)).uppercased()
+        let fallback = String(String.UnicodeScalarView(letters).prefix(2)).uppercased()
+        return fallback.isEmpty ? "VP" : fallback
     }
 
     static func palette(for title: String, type: MediaType?) -> [Color] {
@@ -332,11 +333,11 @@ struct ArtworkFallbackPosterView: View {
     var backdropURL: URL? = nil
     var compact: Bool = false
 
-    private var palette: [Color] {
+    var palette: [Color] {
         ArtworkFallbackStyle.palette(for: title, type: type)
     }
 
-    private var initials: String {
+    var initials: String {
         ArtworkFallbackStyle.initials(for: title)
     }
 

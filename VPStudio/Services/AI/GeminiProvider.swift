@@ -73,7 +73,7 @@ struct GeminiProvider: AIProvider, Sendable {
         return AIProviderResponse(
             provider: .gemini,
             content: content,
-            model: model,
+            model: trimmedModel,
             inputTokens: inputTokens,
             outputTokens: outputTokens
         )

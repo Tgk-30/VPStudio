@@ -31,7 +31,7 @@ enum PlayerGesturePolicy {
         tapX: Double,
         surfaceWidth: Double
     ) -> TimeInterval? {
-        guard surfaceWidth > 0 else { return nil }
+        guard surfaceWidth > 0, tapX >= 0, tapX <= surfaceWidth else { return nil }
         let fraction = tapX / surfaceWidth
         if fraction <= doubleTapZoneFraction {
             return doubleTapSeekBackSeconds

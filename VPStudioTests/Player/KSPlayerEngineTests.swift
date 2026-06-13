@@ -1,4 +1,5 @@
 import Foundation
+import KSPlayer
 import Testing
 @testable import VPStudio
 
@@ -291,5 +292,44 @@ struct KSPlayerEnginePrepareTests {
         #expect(prepared.ksOptions?.probesize == expected.probesize)
         #expect(prepared.ksOptions?.maxAnalyzeDuration == expected.maxAnalyzeDuration)
         #expect(prepared.ksOptions?.autoSelectEmbedSubtitle == expected.autoSelectEmbedSubtitle)
+    }
+
+    @Test func prepareAppliesDirectStreamRequestHeadersToFFmpeg() async throws {
+        let engine = KSPlayerEngine()
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mkv",
+            fileName: "Movie.1080p.WEBDL.mkv"
+        ).withRequestHeaders([
+            "User-Agent": "Stremio",
+            "Referer": "https://app.strem.io/",
+            "Bad\nHeader": "ignored"
+        ])
+
+        let prepared = try await engine.prepare(stream: stream)
+        let headers = prepared.ksOptions?.formatContextOptions["headers"] as? String
+
+        #expect(headers?.contains("User-Agent: Stremio\r\n") == true)
+        #expect(headers?.contains("Referer: https://app.strem.io/\r\n") == true)
+        #expect(headers?.contains("Bad\nHeader") == false)
+        #expect(prepared.ksOptions?.formatContextOptions["user_agent"] as? String == "Stremio")
+    }
+
+    @Test func ffmpegHeaderStringSortsHeadersAndTerminatesEachLine() {
+        let headerString = KSPlayerEngine.ffmpegHeaderString(for: [
+            "z-header": "last",
+            "A-Header": "first",
+            "User-Agent": "Stremio",
+        ])
+
+        #expect(headerString == "A-Header: first\r\nUser-Agent: Stremio\r\nz-header: last\r\n")
+    }
+
+    @Test func ffmpegHeaderStringReturnsNilWhenNoValidHeadersRemain() {
+        #expect(KSPlayerEngine.ffmpegHeaderString(for: [:]) == nil)
+        #expect(KSPlayerEngine.ffmpegHeaderString(for: [
+            "Bad\nHeader": "ignored",
+            "Also-Bad": "line\rbreak",
+            "Blank": "   ",
+        ]) == nil)
     }
 }

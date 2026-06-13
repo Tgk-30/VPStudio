@@ -1,6 +1,7 @@
 // swift-tools-version: 6.0
 
 import PackageDescription
+import Foundation
 
 let package = Package(
     name: "VPStudio",
@@ -15,6 +16,7 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
         .package(url: "https://github.com/kingslay/KSPlayer", from: "2.2.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", .upToNextMinor(from: "1.1.0")),
+        .package(url: "https://github.com/apple/swift-testing", from: "0.12.0"),
     ],
     targets: [
         .target(
@@ -45,8 +47,11 @@ let package = Package(
         ),
         .testTarget(
             name: "VPStudioTests",
-            dependencies: ["VPStudio"],
-            path: "VPStudioTests"
+            dependencies: [
+                "VPStudio",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            path: "VPStudioTests",
         ),
     ]
 )

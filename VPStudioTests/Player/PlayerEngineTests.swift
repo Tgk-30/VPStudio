@@ -318,12 +318,20 @@ struct VPPlayerEngineTrackSelectionTests {
         #expect(engine.selectedAudioTrack == 0)
     }
 
-    @Test @MainActor func selectSubtitleTrackRejectsInvalidIndex() {
+    @Test @MainActor func selectSubtitleTrackCanBeDeferredWhenNoTracksLoaded() {
         let engine = VPPlayerEngine()
-        // No subtitle tracks loaded, so index 5 is out of bounds
+        // With no subtitle tracks loaded, selection is stored for later application.
         engine.selectSubtitleTrack(5)
-        // Should remain unchanged from default (not crash)
-        #expect(engine.selectedSubtitleTrack == -1)
+        #expect(engine.selectedSubtitleTrack == 5)
+        #expect(engine.subtitlesEnabled == false)
+        #expect(engine.currentSubtitleText == nil)
+    }
+
+    @Test @MainActor func selectAudioTrackCanBeDeferredWhenNoTracksLoaded() {
+        let engine = VPPlayerEngine()
+        // With no audio tracks loaded, selection is stored for later application.
+        engine.selectAudioTrack(42)
+        #expect(engine.selectedAudioTrack == 42)
     }
 }
 

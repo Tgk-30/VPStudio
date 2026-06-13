@@ -331,6 +331,74 @@ extension IndexerConfig {
     }
 }
 
+enum IndexerURLSecurityPolicy {
+    static let validationMessage = "Enter a valid HTTPS base URL, or HTTP localhost/LAN URL."
+
+    static func permits(url: URL) -> Bool {
+        permits(scheme: url.scheme, host: url.host)
+    }
+
+    static func permitsBaseURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme,
+              let host = components.host,
+              !host.isEmpty else {
+            return false
+        }
+        return permits(scheme: scheme, host: host)
+    }
+
+    static func permits(scheme: String?, host: String?) -> Bool {
+        guard let scheme = scheme?.lowercased(),
+              let host,
+              !host.isEmpty else {
+            return false
+        }
+
+        if scheme == "https" {
+            return true
+        }
+
+        return scheme == "http" && isLocalOrPrivateHost(host)
+    }
+
+    static func isLocalOrPrivateHost(_ host: String) -> Bool {
+        let normalized = host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+
+        if normalized == "localhost" || normalized.hasSuffix(".localhost") {
+            return true
+        }
+
+        if normalized == "::1"
+            || normalized.hasPrefix("fe80:")
+            || normalized.hasPrefix("fc")
+            || normalized.hasPrefix("fd") {
+            return true
+        }
+
+        if normalized.contains(":") {
+            return false
+        }
+
+        if normalized.hasSuffix(".local") || !normalized.contains(".") {
+            return true
+        }
+
+        let octets = normalized.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else {
+            return false
+        }
+
+        return octets[0] == 10
+            || octets[0] == 127
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+            || (octets[0] == 169 && octets[1] == 254)
+    }
+}
+
 extension IndexerConfig.IndexerType {
     var displayName: String {
         switch self {
@@ -362,7 +430,7 @@ extension IndexerConfig.IndexerType {
         }
     }
 
-    fileprivate var defaultProviderSubtype: IndexerConfig.ProviderSubtype {
+    var defaultProviderSubtype: IndexerConfig.ProviderSubtype {
         switch self {
         case .apiBay, .yts, .eztv:
             return .builtIn
@@ -377,7 +445,7 @@ extension IndexerConfig.IndexerType {
         }
     }
 
-    fileprivate var defaultEndpointPath: String {
+    var defaultEndpointPath: String {
         switch self {
         case .apiBay, .yts, .eztv:
             return ""
@@ -392,7 +460,7 @@ extension IndexerConfig.IndexerType {
         }
     }
 
-    fileprivate var defaultAPIKeyTransport: IndexerConfig.APIKeyTransport {
+    var defaultAPIKeyTransport: IndexerConfig.APIKeyTransport {
         switch self {
         case .jackett, .prowlarr, .torznab:
             return .header

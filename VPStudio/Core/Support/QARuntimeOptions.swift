@@ -33,7 +33,11 @@ enum QARuntimeOptions {
         }
 
         func bool(_ key: String) -> Bool {
-            guard let value = value(key)?.lowercased() else { return false }
+            guard let value = value(key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() else {
+                return false
+            }
             return ["1", "true", "yes", "on"].contains(value)
         }
 
@@ -45,7 +49,10 @@ enum QARuntimeOptions {
         }
 
         func double(_ key: String) -> Double? {
-            guard let value = value(key) else { return nil }
+            guard let value = value(key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return nil
+            }
             return Double(value)
         }
 
@@ -140,6 +147,16 @@ enum QARuntimeOptions {
         return torrent
     }
 
+    static func testScreenRawValue(from snapshot: EnvironmentSnapshot) -> String? {
+        snapshot.string("VPSTUDIO_QA_TEST_SCREEN")
+    }
+
+    static func suppressQuickStartPrompt(from snapshot: EnvironmentSnapshot) -> Bool {
+        snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START")
+            || snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START_PROMPT")
+            || testScreenRawValue(from: snapshot) != nil
+    }
+
     static let searchQuery = env("VPSTUDIO_QA_SEARCH_QUERY")
     static let autoSubmitSearchQuery = bool("VPSTUDIO_QA_AUTO_SUBMIT_SEARCH")
     static let postSubmitDraftQuery = env("VPSTUDIO_QA_POST_SUBMIT_DRAFT_QUERY")
@@ -185,6 +202,8 @@ enum QARuntimeOptions {
 
     // QA-only visual/debug helpers for deterministic screenshot capture.
     static let forceCompactNavScale = bool("VPSTUDIO_QA_FORCE_COMPACT_NAV_SCALE")
+    static let testScreenRawValue = testScreenRawValue(from: environment)
+    static let suppressQuickStartPrompt = suppressQuickStartPrompt(from: environment)
 
     static let setupAutoAdvance = bool("VPSTUDIO_QA_SETUP_AUTO_ADVANCE")
     static let setupTMDBApiKey = env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")

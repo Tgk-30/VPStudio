@@ -68,6 +68,18 @@ struct IMDbImportSettingsView: View {
 }
 
 enum IMDbCSVImportPolicy {
+    static let knownFieldAliases: [Set<String>: String] = [
+        ["title", "name", "primarytitle", "originaltitle", "movie", "show"]: "title",
+        ["year", "releaseyear", "startyear"]: "year",
+        ["type", "titletype", "mediatype", "kind"]: "mediaType",
+        ["const", "tconst", "imdbid", "imdbconst", "titleconst", "id"]: "imdbID",
+        ["yourrating", "userrating", "rating", "myscore", "myrating", "score", "yourscore", "yourated"]: "userRating",
+        ["imdbrating", "imdbscore"]: "imdbRating",
+        ["liked", "favorite", "favourite", "isliked"]: "liked",
+        ["created", "daterated", "dateadded", "watcheddate", "watchedat", "added", "date"]: "date",
+        ["url", "imdburl", "link"]: "url",
+    ]
+
     static func importButtonTitle(hasSelectedFile: Bool, previewDetected: Bool, importInFlight: Bool) -> String {
         guard hasSelectedFile else {
             return previewDetected ? "Change CSV File" : "Preview CSV Before Importing"
@@ -85,6 +97,24 @@ enum IMDbCSVImportPolicy {
         headers.map { header in
             header.lowercased().filter { $0.isLetter || $0.isNumber }
         }
+    }
+
+    static func normalizedFieldName(_ field: String) -> String? {
+        let normalizedField = normalizedHeaders(from: [field]).first ?? ""
+        for (aliases, canonicalField) in knownFieldAliases where aliases.contains(normalizedField) {
+            return canonicalField
+        }
+        return nil
+    }
+
+    static func normalizedAISuggestedMappings(_ parsed: [String: String?]) -> [String: String] {
+        var suggestions: [String: String] = [:]
+        for (header, field) in parsed {
+            guard let field,
+                  let normalizedField = normalizedFieldName(field) else { continue }
+            suggestions[header] = normalizedField
+        }
+        return suggestions
     }
 
     static func previewRows(from lines: ArraySlice<String>, limit: Int = 3) -> [[String]] {
@@ -288,9 +318,9 @@ struct IMDbCSVImportSheet: View {
             // Get first 3 data rows
             previewFirstRows = IMDbCSVImportPolicy.previewRows(from: lines.dropFirst())
 
-            // Auto-detect format and column mappings
-            let normalizedHeaders = IMDbCSVImportPolicy.normalizedHeaders(from: headers)
-            detectedMappings = Self.detectColumnMappings(from: normalizedHeaders)
+            // Auto-detect format and column mappings. Keep keys as the raw
+            // display headers so the preview rows can look them up directly.
+            detectedMappings = Self.detectColumnMappings(from: headers)
         } catch {
             csvImportError = "Could not read CSV: \(error.localizedDescription)"
         }
@@ -325,22 +355,9 @@ struct IMDbCSVImportSheet: View {
 
     nonisolated static func detectColumnMappings(from headers: [String]) -> [String: String] {
         var mappings: [String: String] = [:]
-        let knownMappings: [Set<String>: String] = [
-            ["title", "name", "primarytitle", "originaltitle", "movie", "show"]: "title",
-            ["year", "releaseyear", "startyear"]: "year",
-            ["type", "titletype", "mediatype", "kind"]: "mediaType",
-            ["const", "tconst", "imdbid", "imdbconst", "titleconst", "id"]: "imdbID",
-            ["yourrating", "userrating", "rating", "myscore", "myrating", "score", "yourscore", "yourated"]: "userRating",
-            ["imdbrating", "imdbscore"]: "imdbRating",
-            ["liked", "favorite", "favourite", "isliked"]: "liked",
-            ["created", "daterated", "dateadded", "watcheddate", "watchedat", "added", "date"]: "date",
-        ]
         for header in headers {
-            for (keys, field) in knownMappings {
-                if keys.contains(header) {
-                    mappings[header] = field
-                    break
-                }
+            if let field = IMDbCSVImportPolicy.normalizedFieldName(header) {
+                mappings[header] = field
             }
         }
         return mappings
@@ -516,13 +533,7 @@ struct CSVHeaderPreviewSheet: View {
 
             if let data = cleaned.data(using: .utf8),
                let parsed = try? JSONDecoder().decode([String: String?].self, from: data) {
-                var suggestions: [String: String] = [:]
-                for (header, field) in parsed {
-                    if let field {
-                        suggestions[header] = field
-                    }
-                }
-                aiSuggestedMappings = suggestions
+                aiSuggestedMappings = IMDbCSVImportPolicy.normalizedAISuggestedMappings(parsed)
             } else {
                 aiAnalysisError = "AI response was not valid JSON. Try again."
             }

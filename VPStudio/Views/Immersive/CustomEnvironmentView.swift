@@ -6,6 +6,23 @@ import RealityKit
 
 private let logger = Logger(subsystem: "com.vpstudio.app", category: "CustomEnvironment")
 
+private final class CustomEnvironmentRenderState {
+    var cinemaScreen: ModelEntity?
+    var controlsAnchor: Entity?
+    var lastMaterialSourceID: ObjectIdentifier?
+    var subtitleEntity: Entity?
+    var autoDismissTask: Task<Void, Never>?
+
+    func reset() {
+        autoDismissTask?.cancel()
+        autoDismissTask = nil
+        cinemaScreen = nil
+        controlsAnchor = nil
+        subtitleEntity = nil
+        lastMaterialSourceID = nil
+    }
+}
+
 struct CustomEnvironmentView: View {
     @Environment(AppState.self) private var appState
     @Environment(VPPlayerEngine.self) private var engine
@@ -13,15 +30,11 @@ struct CustomEnvironmentView: View {
 
     @State private var headTracker = HeadTracker()
     @State private var isShowingImmersiveControls = false
-    @State private var cinemaScreen: ModelEntity?
-    @State private var controlsAnchor: Entity?
-    @State private var lastMaterialSourceID: ObjectIdentifier?
-    @State private var subtitleEntity: Entity?
-    @State private var autoDismissTask: Task<Void, Never>?
+    @State private var renderState = CustomEnvironmentRenderState()
     @State private var loadingState: LoadingState = .loading
     @State private var subtitleFontSize: Double = 24
 
-    private enum LoadingState: Equatable {
+    enum LoadingState: Equatable {
         case loading
         case loaded
         case failed(String)
@@ -29,7 +42,7 @@ struct CustomEnvironmentView: View {
 
     var body: some View {
         RealityView { content, attachments in
-            loadingState = .loading
+            setLoadingState(.loading)
 
             // MARK: TapCatcher
             let tapShape = ShapeResource.generateBox(size: [200, 200, 0.5])
@@ -44,7 +57,7 @@ struct CustomEnvironmentView: View {
             let anchor = Entity()
             anchor.name = "controls-anchor"
             content.add(anchor)
-            controlsAnchor = anchor
+            renderState.controlsAnchor = anchor
 
             if let controlsPanel = attachments.entity(for: "playerControls") {
                 controlsPanel.position = SIMD3<Float>(0, -0.15, -1.5)
@@ -63,8 +76,8 @@ struct CustomEnvironmentView: View {
                 logger.warning("No selectedEnvironmentAsset — space opened prematurely?")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
-                cinemaScreen = fallbackScreen
-                loadingState = .failed("No environment selected. Showing a fallback screen.")
+                renderState.cinemaScreen = fallbackScreen
+                setLoadingState(.failed("No environment selected. Showing a fallback screen."))
                 return
             }
 
@@ -72,8 +85,8 @@ struct CustomEnvironmentView: View {
                 logger.warning("resolvedAssetURL returned nil for asset — file missing?")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
-                cinemaScreen = fallbackScreen
-                loadingState = .failed("The selected environment file is missing. Showing a fallback screen.")
+                renderState.cinemaScreen = fallbackScreen
+                setLoadingState(.failed("The selected environment file is missing. Showing a fallback screen."))
                 return
             }
 
@@ -81,27 +94,27 @@ struct CustomEnvironmentView: View {
                 let entity = try await Entity(contentsOf: url)
                 content.add(entity)
                 if let screen = findScreenEntity(in: entity) {
-                    cinemaScreen = screen
-                    loadingState = .loaded
+                    renderState.cinemaScreen = screen
+                    setLoadingState(.loaded)
                 } else {
                     let fallbackScreen = makeFallbackScreen()
                     content.add(fallbackScreen)
-                    cinemaScreen = fallbackScreen
+                    renderState.cinemaScreen = fallbackScreen
                     logger.warning("No screen mesh found in custom environment '\(selected.name, privacy: .public)'")
-                    loadingState = .failed("No screen surface was found in this environment. Showing a fallback screen.")
+                    setLoadingState(.failed("No screen surface was found in this environment. Showing a fallback screen."))
                 }
             } catch {
                 logger.error("Entity(contentsOf:) failed — \(error.localizedDescription, privacy: .public)")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
-                cinemaScreen = fallbackScreen
-                loadingState = .failed("The environment failed to load. Showing a fallback screen.")
+                renderState.cinemaScreen = fallbackScreen
+                setLoadingState(.failed("The environment failed to load. Showing a fallback screen."))
             }
 
             // MARK: Subtitle attachment
             if let subtitlePanel = attachments.entity(for: "immersiveSubtitle") {
                 // Position below the screen if found, otherwise a sensible default.
-                if let screen = cinemaScreen {
+                if let screen = renderState.cinemaScreen {
                     let bounds = screen.visualBounds(relativeTo: nil)
                     subtitlePanel.position = SIMD3<Float>(
                         screen.position.x,
@@ -113,19 +126,19 @@ struct CustomEnvironmentView: View {
                     subtitlePanel.position = SIMD3<Float>(0, 0.6, -4)
                 }
                 content.add(subtitlePanel)
-                subtitleEntity = subtitlePanel
+                renderState.subtitleEntity = subtitlePanel
             }
 
         } update: { content, attachments in
             // MARK: Cinema screen material (cached)
-            if let screen = cinemaScreen {
+            if let screen = renderState.cinemaScreen {
                 let currentSourceID: ObjectIdentifier? = {
                     if let r = appState.activeVideoRenderer { return ObjectIdentifier(r) }
                     if let p = appState.activeAVPlayer { return ObjectIdentifier(p) }
                     return nil
                 }()
 
-                if currentSourceID != lastMaterialSourceID {
+                if currentSourceID != renderState.lastMaterialSourceID {
                     if let renderer = appState.activeVideoRenderer {
                         screen.model?.materials = [VideoMaterial(videoRenderer: renderer)]
                     } else if let player = appState.activeAVPlayer {
@@ -133,13 +146,13 @@ struct CustomEnvironmentView: View {
                     } else {
                         screen.model?.materials = [SimpleMaterial(color: .black, isMetallic: false)]
                     }
-                    lastMaterialSourceID = currentSourceID
+                    renderState.lastMaterialSourceID = currentSourceID
                 }
             }
 
             // MARK: Subtitle position tracking
             if let subEnt = attachments.entity(for: "immersiveSubtitle"),
-               let screen = cinemaScreen {
+               let screen = renderState.cinemaScreen {
                 let bounds = screen.visualBounds(relativeTo: nil)
                 subEnt.position = SIMD3<Float>(
                     screen.position.x,
@@ -147,11 +160,11 @@ struct CustomEnvironmentView: View {
                     screen.position.z
                 )
                 subEnt.orientation = screen.orientation
-                subtitleEntity = subEnt
+                renderState.subtitleEntity = subEnt
             }
 
             // MARK: Controls anchor tracking
-            if let anchor = controlsAnchor {
+            if let anchor = renderState.controlsAnchor {
                 if headTracker.isTracking {
                     let m = headTracker.headTransform
                     let col3 = m.columns.3
@@ -161,7 +174,7 @@ struct CustomEnvironmentView: View {
                         col3.z
                     )
                     let col2 = m.columns.2
-                    let forward = safeHorizontalForward(from: col2)
+                    let forward = ImmersiveControlsPolicy.safeHorizontalForward(from: col2)
                     let target = headPos + forward * ImmersiveControlsPolicy.controlsForwardOffset
                     anchor.position = ImmersiveControlsPolicy.smoothedPosition(
                         current: anchor.position,
@@ -242,30 +255,30 @@ struct CustomEnvironmentView: View {
             Task { await loadSubtitleAppearance() }
         }
         .onDisappear {
-            autoDismissTask?.cancel()
-            autoDismissTask = nil
             appState.immersiveSpaceDidDisappear()
             headTracker.stop()
-
-            // Break lingering RealityKit references.
-            cinemaScreen = nil
-            controlsAnchor = nil
-            subtitleEntity = nil
-            lastMaterialSourceID = nil
+            renderState.reset()
         }
     }
 
     /// Schedules auto-hide of controls after 10 seconds (OpenImmersive pattern).
     private func scheduleAutoDismiss() {
-        autoDismissTask?.cancel()
+        renderState.autoDismissTask?.cancel()
         guard isShowingImmersiveControls else { return }
-        autoDismissTask = Task {
+        renderState.autoDismissTask = Task {
             try? await Task.sleep(for: ImmersiveControlsPolicy.autoDismissInterval)
             guard !Task.isCancelled else { return }
             performOptionalAnimation(.easeInOut(duration: 0.25)) {
                 isShowingImmersiveControls = false
             }
             headTracker.isIdle = true
+        }
+    }
+
+    private func setLoadingState(_ state: LoadingState) {
+        guard loadingState != state else { return }
+        Task { @MainActor in
+            loadingState = state
         }
     }
 
@@ -301,15 +314,6 @@ struct CustomEnvironmentView: View {
             }
         }
         return nil
-    }
-
-    private func safeHorizontalForward(from column: SIMD4<Float>) -> SIMD3<Float> {
-        let candidate = SIMD3<Float>(-column.x, 0, -column.z)
-        let lengthSquared = candidate.x * candidate.x + candidate.y * candidate.y + candidate.z * candidate.z
-        guard lengthSquared > .leastNonzeroMagnitude else {
-            return SIMD3<Float>(0, 0, -1)
-        }
-        return candidate / sqrt(lengthSquared)
     }
 
     private func makeFallbackScreen() -> ModelEntity {

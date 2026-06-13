@@ -13,6 +13,26 @@ struct SettingsStatusFormatterTests {
     }
 
     @Test
+    func statusSummariesUseSingularLabelsForSingleConfiguredItem() {
+        var snapshot = SettingsStatusSnapshot()
+
+        snapshot.activeDebridCount = 1
+        let debridStatus = SettingsStatusFormatter.status(for: .debrid, snapshot: snapshot)
+        #expect(debridStatus.kind == .positive)
+        #expect(debridStatus.message == "1 active service")
+
+        snapshot.activeIndexerCount = 1
+        let indexerStatus = SettingsStatusFormatter.status(for: .indexers, snapshot: snapshot)
+        #expect(indexerStatus.kind == .positive)
+        #expect(indexerStatus.message == "1 active indexer")
+
+        snapshot.environmentAssetCount = 1
+        let environmentStatus = SettingsStatusFormatter.status(for: .environments, snapshot: snapshot)
+        #expect(environmentStatus.kind == .positive)
+        #expect(environmentStatus.message == "1 asset")
+    }
+
+    @Test
     func debridStatusWarnsWhenNoServicesAreActive() {
         var snapshot = SettingsStatusSnapshot()
         snapshot.activeDebridCount = 0
@@ -32,6 +52,17 @@ struct SettingsStatusFormatterTests {
 
         #expect(status.kind == .warning)
         #expect(status.message == "No active indexers")
+    }
+
+    @Test
+    func indexerStatusUsesPluralLabelForMultipleActiveIndexers() {
+        var snapshot = SettingsStatusSnapshot()
+        snapshot.activeIndexerCount = 3
+
+        let status = SettingsStatusFormatter.status(for: .indexers, snapshot: snapshot)
+
+        #expect(status.kind == .positive)
+        #expect(status.message == "3 active indexers")
     }
 
     @Test
@@ -124,6 +155,22 @@ struct SettingsStatusFormatterTests {
     }
 
     @Test
+    func aiStatusAppliesCloudProviderCapBeforeResolvingStoredProvider() {
+        var snapshot = SettingsStatusSnapshot()
+        snapshot.aiProvider = .minimax
+        snapshot.hasOllamaEndpoint = false
+        snapshot.hasAnthropicKey = true
+        snapshot.hasOpenAIKey = true
+        snapshot.hasGeminiKey = true
+        snapshot.hasMiniMaxKey = true
+
+        let status = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
+
+        #expect(status.kind == .warning)
+        #expect(status.message == "Using Anthropic")
+    }
+
+    @Test
     func environmentsStatusWarnsWhenNoneImported() {
         var snapshot = SettingsStatusSnapshot()
         snapshot.environmentAssetCount = 0
@@ -153,6 +200,37 @@ struct SettingsStatusFormatterTests {
 
         #expect(status.kind == .neutral)
         #expect(status.message == "Local subtitles only")
+    }
+
+    @Test
+    func subtitlesStatusIsPositiveWhenOpenSubtitlesIsConfigured() {
+        var snapshot = SettingsStatusSnapshot()
+        snapshot.hasOpenSubtitlesKey = true
+
+        let status = SettingsStatusFormatter.status(for: .subtitles, snapshot: snapshot)
+
+        #expect(status.kind == .positive)
+        #expect(status.message == "OpenSubtitles enabled")
+    }
+
+    @Test
+    func fixedNeutralDestinationStatusesRemainStable() {
+        let snapshot = SettingsStatusSnapshot()
+        let cases: [(SettingsDestination, String)] = [
+            (.imdbImport, "CSV import via IMDb exports"),
+            (.player, "Playback preferences"),
+            (.library, "Browse your library"),
+            (.downloads, "Manage downloads"),
+            (.resetData, "Erase all app data"),
+            (.testMode, "9 screens to preview")
+        ]
+
+        for (destination, expectedMessage) in cases {
+            let status = SettingsStatusFormatter.status(for: destination, snapshot: snapshot)
+
+            #expect(status.kind == .neutral)
+            #expect(status.message == expectedMessage)
+        }
     }
 
     @Test

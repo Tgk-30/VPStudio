@@ -170,6 +170,26 @@ struct ViewModelTaskLifecycleTests {
     }
 
     @Test
+    func searchViewCoalescesTasteProfileRatingReloadsAndCancelsOnDisappear() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Search/SearchView.swift")
+        #expect(source.contains("@State private var userRatingsReloadTask: Task<Void, Never>?"))
+        #expect(source.contains("userRatingsReloadTask?.cancel()"))
+        #expect(source.contains("userRatingsReloadTask = Task { await loadUserRatings(force: true) }"))
+        #expect(source.contains("userRatingsReloadTask = nil"))
+        #expect(source.contains("guard !Task.isCancelled else { return }"))
+    }
+
+    @Test
+    func libraryViewCoalescesTasteProfileRatingReloadsAndCancelsOnDisappear() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Library/LibraryView.swift")
+        #expect(source.contains("@State private var userRatingsReloadTask: Task<Void, Never>?"))
+        #expect(source.contains("userRatingsReloadTask?.cancel()"))
+        #expect(source.contains("userRatingsReloadTask = Task { await loadUserRatings() }"))
+        #expect(source.contains("userRatingsReloadTask = nil"))
+        #expect(source.contains("guard !Task.isCancelled else { return }"))
+    }
+
+    @Test
     func searchViewUsesBrowseAwareEmptyStateCopy() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Search/SearchView.swift")
         #expect(source.contains("ExploreEmptyView(query: emptyStateQuery)"))
@@ -177,11 +197,25 @@ struct ViewModelTaskLifecycleTests {
     }
 
     @Test
-    func contentViewDoesNotPostMainWindowPlayerDismissalNotification() throws {
+    func contentViewTerminatesDedicatedPlayerWhenMainWindowAppears() throws {
         let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
         #expect(!source.contains("NotificationCenter.default.post(name: .mainWindowDidActivate, object: nil)"))
-        #expect(!source.contains("dismissWindow(id: \"player\")"))
-        #expect(!source.contains("terminateActivePlayerSession()"))
+        #expect(source.contains("terminatePlayerIfMainWindowOpened()"))
+        #expect(source.contains(".onChange(of: scenePhase)"))
+        #expect(source.contains("guard phase == .active else { return }"))
+
+        let body = try functionBody(containing: "private func terminatePlayerIfMainWindowOpened()", in: source)
+        #expect(body.contains("guard appState.activePlayerSession != nil || appState.isMainWindowSuppressedForPlayer else { return }"))
+
+        #expect(body.contains("if let activeSession = appState.activePlayerSession"))
+        #expect(body.contains("dismissWindow(id: \"player\", value: activeSession)"))
+        #expect(body.contains("dismissWindow(id: \"player\")"))
+
+        let valueDismissRange = try requiredRange(of: "dismissWindow(id: \"player\", value: activeSession)", in: body)
+        let fallbackDismissRange = try requiredRange(of: "dismissWindow(id: \"player\")", in: body)
+        let terminateRange = try requiredRange(of: "appState.terminateActivePlayerSession()", in: body)
+        #expect(valueDismissRange.lowerBound < fallbackDismissRange.lowerBound)
+        #expect(fallbackDismissRange.lowerBound < terminateRange.lowerBound)
     }
 
     @Test
@@ -189,9 +223,36 @@ struct ViewModelTaskLifecycleTests {
         let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
         #expect(source.contains("Label(QuickStartPromptPolicy.skipSetupTitle, systemImage: \"books.vertical.fill\")"))
         #expect(source.contains("QuickStartPromptPolicy.skipSetupDestination"))
-        #expect(source.contains("appState.selectedTab = QuickStartPromptPolicy.skipSetupDestination"))
+        #expect(source.contains("selectRootTab(QuickStartPromptPolicy.skipSetupDestination, state: state)"))
         #expect(source.contains("appState.isShowingSetup = true"))
         #expect(source.contains("if isShowingQuickStartPrompt, state.selectedTab == .discover"))
+    }
+
+    @Test
+    func contentViewClearsRootNavigationPathForDirectTabMutations() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        #expect(source.contains("@State private var rootNavigationPath = NavigationPath()"))
+        #expect(source.contains("NavigationStack(path: $rootNavigationPath)"))
+        #expect(source.contains(".onChange(of: state.selectedTab) { previous, next in"))
+        #expect(source.contains("RootTabSelectionPolicy.shouldClearNavigationPath(currentTab: previous, selectedTab: next)"))
+        #expect(source.contains("rootNavigationPath = NavigationPath()"))
+    }
+
+    @Test
+    func contentViewCoalescesNotificationDrivenBadgeRefreshTasks() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        #expect(source.contains("@State private var downloadBadgeRefreshTask: Task<Void, Never>?"))
+        #expect(source.contains("@State private var settingsBadgeRefreshTask: Task<Void, Never>?"))
+        #expect(source.contains("@State private var rootBadgeRefreshTask: Task<Void, Never>?"))
+        #expect(source.contains("guard !disablesAutomaticTasks else { return }"))
+        #expect(source.contains("scheduleDownloadBadgeRefresh()"))
+        #expect(source.contains("scheduleSettingsBadgeRefresh()"))
+        #expect(source.contains("scheduleRootBadgeRefresh()"))
+        #expect(source.contains("cancelBadgeRefreshTasks()"))
+        #expect(source.contains("downloadBadgeRefreshTask?.cancel()"))
+        #expect(source.contains("settingsBadgeRefreshTask?.cancel()"))
+        #expect(source.contains("rootBadgeRefreshTask?.cancel()"))
+        #expect(source.contains("guard !Task.isCancelled else { return }"))
     }
 
     @Test
@@ -200,7 +261,10 @@ struct ViewModelTaskLifecycleTests {
         #expect(source.contains("enum DetailInitialAction"))
         #expect(source.contains("let initialAction: DetailInitialAction"))
         #expect(source.contains("func runInitialActionIfNeeded(_ vm: DetailViewModel) async"))
-        #expect(source.contains("guard initialAction == .resumePlayback else { return }"))
+        #expect(source.contains("enum ResumePlaybackOutcome"))
+        #expect(source.contains("case deferUntilMediaLoads"))
+        #expect(source.contains("DetailInitialActionPolicy.resumePlaybackOutcome"))
+        #expect(source.contains("case .searchAndPlay"))
         #expect(source.contains("await vm.searchTorrents()"))
         #expect(source.contains("await openPlayer(for: stream, vm: vm)"))
     }

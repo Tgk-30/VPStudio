@@ -14,9 +14,9 @@ enum EpisodeTokenMatcher {
         }
     }
 
-    private static let seasonEpisodePattern = Pattern(#"s\s*(\d{1,2})\s*e\s*(\d{1,3})"#)
+    private static let seasonEpisodePattern = Pattern(#"s\s*(\d{1,2})\s*e\s*(\d{1,3})(?!\d)"#)
     private static let seasonByEpisodePattern = Pattern(#"(?<!\d)(\d{1,2})\s*x\s*(\d{1,3})(?!\d)"#)
-    private static let seasonEpisodeWordsPattern = Pattern(#"season\D*(\d{1,2}).{0,20}episode\D*(\d{1,3})"#)
+    private static let seasonEpisodeWordsPattern = Pattern(#"season\D*(\d{1,2})(?!\d).{0,20}episode\D*(\d{1,3})(?!\d)"#)
     private static let allPatterns = [
         seasonEpisodePattern,
         seasonByEpisodePattern,

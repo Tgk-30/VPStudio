@@ -46,6 +46,17 @@ struct CSVExportEscapeTests {
         #expect(LibraryCSVExportService.escapeCSV("\tcmd") == "'\tcmd")
         #expect(LibraryCSVExportService.escapeCSV("'=SUM(A1:A2)") == "'=SUM(A1:A2)")
     }
+
+    @Test func formulaNeutralizationStillQuotesWhenSanitizedValueContainsCSVMetacharacters() {
+        #expect(LibraryCSVExportService.escapeCSV("'=SUM(A1,A2)") == "\"'=SUM(A1,A2)\"")
+        #expect(LibraryCSVExportService.escapeCSV("=\"a,b\"") == "\"'=\"\"a,b\"\"\"")
+    }
+
+    @Test func neutralizeSpreadsheetFormulaCanBeUsedDirectly() {
+        #expect(LibraryCSVExportService.neutralizeSpreadsheetFormula(in: "-cmd") == "'-cmd")
+        #expect(LibraryCSVExportService.neutralizeSpreadsheetFormula(in: "safe text") == "safe text")
+        #expect(LibraryCSVExportService.neutralizeSpreadsheetFormula(in: "'+cmd") == "'+cmd")
+    }
 }
 
 // MARK: - Export Summary Tests
@@ -88,8 +99,7 @@ private func makeTempDatabase() async throws -> DatabaseManager {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbPath = tempDir.appendingPathComponent("export-test.sqlite").path
-    let database = try DatabaseManager(path: dbPath)
+    let database = try DatabaseManager(inMemoryNamed: "export-test-\(UUID().uuidString)")
     try await database.migrate()
     return database
 }

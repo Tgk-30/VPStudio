@@ -122,7 +122,7 @@ struct AIAssistantManagerCompareProvidersTests {
     private func makeManager() async throws -> (instance: AIAssistantManager, database: DatabaseManager, tempDir: URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let db = try DatabaseManager(path: tempDir.appendingPathComponent("ai-compare.sqlite").path)
+        let db = try DatabaseManager(inMemoryNamed: "ai-compare-\(UUID().uuidString)")
         try await db.migrate()
         return (AIAssistantManager(database: db), db, tempDir)
     }

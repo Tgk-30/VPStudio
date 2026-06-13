@@ -8,26 +8,49 @@ actor LocalDownloadService {
         _ repo: String,
         _ progressHandler: @escaping @Sendable (Progress) -> Void
     ) async throws -> URL
+    typealias DiskSpaceProvider = @Sendable (URL) -> Int64?
 
     private let catalogStore: LocalModelCatalogStore
     private let snapshotDownloader: SnapshotDownloader
+    private let diskSpaceProvider: DiskSpaceProvider?
+    private let fileManager: FileManager
+    private let appSupportDirectory: URL?
+    private let cachesDirectory: URL?
     private let logger = Logger(subsystem: "com.vpstudio", category: "local-download")
 
     private var activeTask: Task<Void, Never>?
     private var activeModelID: String?
     private var activeTaskToken: UUID?
 
-    init(catalogStore: LocalModelCatalogStore) {
+    init(
+        catalogStore: LocalModelCatalogStore,
+        fileManager: FileManager = .default,
+        appSupportDirectory: URL? = nil,
+        cachesDirectory: URL? = nil,
+        diskSpaceProvider: DiskSpaceProvider? = nil
+    ) {
         self.catalogStore = catalogStore
         self.snapshotDownloader = Self.defaultSnapshotDownloader
+        self.diskSpaceProvider = diskSpaceProvider
+        self.fileManager = fileManager
+        self.appSupportDirectory = appSupportDirectory
+        self.cachesDirectory = cachesDirectory
     }
 
     init(
         catalogStore: LocalModelCatalogStore,
-        snapshotDownloader: @escaping SnapshotDownloader
+        snapshotDownloader: @escaping SnapshotDownloader,
+        fileManager: FileManager = .default,
+        appSupportDirectory: URL? = nil,
+        cachesDirectory: URL? = nil,
+        diskSpaceProvider: DiskSpaceProvider? = nil
     ) {
         self.catalogStore = catalogStore
         self.snapshotDownloader = snapshotDownloader
+        self.diskSpaceProvider = diskSpaceProvider
+        self.fileManager = fileManager
+        self.appSupportDirectory = appSupportDirectory
+        self.cachesDirectory = cachesDirectory
     }
 
     // MARK: - Models Directory
@@ -119,27 +142,19 @@ actor LocalDownloadService {
                 )
 
                 try? await catalogStore.updateStatus(id: id, to: .downloaded, localPath: localDir.path)
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .localModelsDidChange, object: nil)
-                }
+                self.clearActiveTaskIfCurrent(token: taskToken, modelID: id)
+                await self.postDidChange()
             } catch is CancellationError {
                 try? await catalogStore.resetToAvailable(id: id)
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .localModelsDidChange, object: nil)
-                }
+                self.clearActiveTaskIfCurrent(token: taskToken, modelID: id)
+                await self.postDidChange()
             } catch {
                 try? await catalogStore.updateStatus(id: id, to: .failed)
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .localModelsDidChange, object: nil)
-                }
+                self.clearActiveTaskIfCurrent(token: taskToken, modelID: id)
+                await self.postDidChange()
             }
         }
         activeTask = task
-        // Capture completion to clean up actor state
-        Task {
-            _ = await task.value
-            clearActiveTaskIfCurrent(token: taskToken, modelID: id)
-        }
     }
 
     // MARK: - Cancel
@@ -165,16 +180,23 @@ actor LocalDownloadService {
         let model = try? await catalogStore.model(id: id)
 
         // Remove files
-        let modelDir = Self.modelsDirectory.appendingPathComponent(
+        let modelDir = Self.modelsDirectoryURL(
+            fileManager: fileManager,
+            appSupportDirectory: appSupportDirectory
+        ).appendingPathComponent(
             id.replacingOccurrences(of: "/", with: "_"),
             isDirectory: true
         )
-        try? FileManager.default.removeItem(at: modelDir)
+        try? fileManager.removeItem(at: modelDir)
 
         // Also clean up MLXLLM's default cache location
         let repo = model?.huggingFaceRepo ?? id
-        if let repoDir = Self.hubCacheDirectoryURL(for: repo) {
-            try? FileManager.default.removeItem(at: repoDir)
+        if let repoDir = Self.hubCacheDirectoryURL(
+            for: repo,
+            fileManager: fileManager,
+            cachesDirectory: cachesDirectory
+        ) {
+            try? fileManager.removeItem(at: repoDir)
         }
 
         try? await catalogStore.resetToAvailable(id: id)
@@ -184,10 +206,24 @@ actor LocalDownloadService {
     // MARK: - Helpers
 
     private func diskSpaceAvailable() -> Int64? {
-        let url = Self.modelsDirectory
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage
+        let url = Self.modelsDirectoryURL(
+            fileManager: fileManager,
+            appSupportDirectory: appSupportDirectory
+        )
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        if let diskSpaceProvider {
+            return diskSpaceProvider(url)
+        }
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let capacity = values.volumeAvailableCapacityForImportantUsage,
+           capacity > 0 {
+            return capacity
+        }
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+           let capacity = values.volumeAvailableCapacity {
+            return Int64(capacity)
+        }
+        return nil
     }
 
     private static func hubCacheDirectory(for repo: String) -> URL? {

@@ -71,6 +71,60 @@ struct SearchViewModelPerformanceTests {
         func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { ExternalIds(imdbId: nil, tvdbId: nil) }
     }
 
+    private actor ControlledDebounceSleeper {
+        private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+        private var requestedIntervals: [Duration] = []
+
+        func sleep(for interval: Duration) async throws {
+            let id = UUID()
+            requestedIntervals.append(interval)
+
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    waiters[id] = continuation
+                }
+            } onCancel: {
+                Task { await self.cancel(id) }
+            }
+        }
+
+        func waitForPendingSleeps(_ expectedCount: Int = 1, timeout: Duration = .seconds(2)) async throws {
+            let deadline = ContinuousClock.now + timeout
+            while waiters.count < expectedCount {
+                guard ContinuousClock.now < deadline else {
+                    Issue.record("Timed out waiting for \(expectedCount) pending debounce sleeps")
+                    return
+                }
+                await Task.yield()
+            }
+        }
+
+        func waitForRequestedSleeps(_ expectedCount: Int, timeout: Duration = .seconds(2)) async throws {
+            let deadline = ContinuousClock.now + timeout
+            while requestedIntervals.count < expectedCount {
+                guard ContinuousClock.now < deadline else {
+                    Issue.record("Timed out waiting for \(expectedCount) requested debounce sleeps")
+                    return
+                }
+                await Task.yield()
+            }
+        }
+
+        func advance() {
+            let continuations = Array(waiters.values)
+            waiters.removeAll()
+            continuations.forEach { $0.resume() }
+        }
+
+        func getRequestedIntervals() -> [Duration] {
+            requestedIntervals
+        }
+
+        private func cancel(_ id: UUID) {
+            waiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+        }
+    }
+
     /// Polls until `condition` returns true, yielding between checks. Fails after `timeout`.
     @MainActor
     private static func waitUntil(
@@ -133,17 +187,22 @@ struct SearchViewModelPerformanceTests {
             1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "debounce-1")], page: 1, totalPages: 1, totalResults: 1)
         ])
 
-        // Use a 100ms debounce for faster testing
-        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(100))
+        let sleeper = ControlledDebounceSleeper()
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(100),
+            debounceSleeper: { try await sleeper.sleep(for: $0) }
+        )
         viewModel.query = "test"
 
         viewModel.debouncedSearch()
+        try await sleeper.waitForPendingSleeps()
 
-        // Immediately after calling debouncedSearch, no search should have been made yet
+        // Before the debounce sleeper is released, no search should have been made yet.
         let immediateCount = await stub.getSearchCallCount()
         #expect(immediateCount == 0)
 
-        // Wait for the debounce interval to expire
+        await sleeper.advance()
         try await Self.waitUntil { !viewModel.results.isEmpty }
 
         let afterDebounceCount = await stub.getSearchCallCount()
@@ -159,25 +218,31 @@ struct SearchViewModelPerformanceTests {
             1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "final-result")], page: 1, totalPages: 1, totalResults: 1)
         ])
 
-        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(80))
+        let sleeper = ControlledDebounceSleeper()
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(80),
+            debounceSleeper: { try await sleeper.sleep(for: $0) }
+        )
 
         // Simulate rapid typing: each keystroke triggers debouncedSearch
         viewModel.query = "t"
         viewModel.debouncedSearch()
-        try await Task.sleep(for: .milliseconds(20))
+        try await sleeper.waitForRequestedSleeps(1)
 
         viewModel.query = "te"
         viewModel.debouncedSearch()
-        try await Task.sleep(for: .milliseconds(20))
+        try await sleeper.waitForRequestedSleeps(2)
 
         viewModel.query = "tes"
         viewModel.debouncedSearch()
-        try await Task.sleep(for: .milliseconds(20))
+        try await sleeper.waitForRequestedSleeps(3)
 
         viewModel.query = "test"
         viewModel.debouncedSearch()
+        try await sleeper.waitForRequestedSleeps(4)
 
-        // Wait long enough for the final debounce to fire
+        await sleeper.advance()
         try await Self.waitUntil(timeout: .milliseconds(3000)) { !viewModel.results.isEmpty }
 
         // Only the final search should have been executed
@@ -209,6 +274,41 @@ struct SearchViewModelPerformanceTests {
         let callCount = await stub.getSearchCallCount()
         #expect(callCount == 1)
         #expect(viewModel.results.first?.id == "explicit-result")
+    }
+
+    @Test
+    @MainActor
+    func explicitSearchCancelsPendingDebouncedQueryExecution() async throws {
+        let stub = CountingMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "explicit-result")], page: 1, totalPages: 1, totalResults: 1)
+        ])
+
+        let sleeper = ControlledDebounceSleeper()
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(200),
+            debounceSleeper: { try await sleeper.sleep(for: $0) }
+        )
+
+        viewModel.debouncedSearch(queryText: "stale")
+        try await sleeper.waitForPendingSleeps()
+
+        viewModel.search(queryText: "fresh")
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        let immediateQuery = await stub.getLastSearchQuery()
+
+        #expect(viewModel.query == "fresh")
+        #expect(viewModel.queryDraft == "fresh")
+        #expect(immediateQuery == "fresh")
+        #expect(await stub.getSearchCallCount() == 1)
+
+        await sleeper.advance()
+
+        // If the stale debounced request wasn't neutralized, we'd expect a second
+        // search call after advancing the sleeper. It should remain unchanged.
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await stub.getSearchCallCount() == 1)
     }
 
     @Test
@@ -265,13 +365,21 @@ struct SearchViewModelPerformanceTests {
             1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "custom-interval")], page: 1, totalPages: 1, totalResults: 1)
         ])
 
-        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(50))
+        let sleeper = ControlledDebounceSleeper()
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(50),
+            debounceSleeper: { try await sleeper.sleep(for: $0) }
+        )
         #expect(viewModel.debounceInterval == .milliseconds(50))
 
         viewModel.query = "test"
         viewModel.debouncedSearch()
+        try await sleeper.waitForPendingSleeps()
+        let requestedIntervals = await sleeper.getRequestedIntervals()
+        #expect(requestedIntervals == [.milliseconds(50)])
 
-        // Should fire quickly with 50ms debounce
+        await sleeper.advance()
         try await Self.waitUntil(timeout: .milliseconds(500)) { !viewModel.results.isEmpty }
         let callCount = await stub.getSearchCallCount()
         #expect(callCount == 1)
@@ -416,17 +524,54 @@ struct SearchViewModelPerformanceTests {
             1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "draft-query-result")], page: 1, totalPages: 1, totalResults: 1)
         ])
 
-        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(80))
+        let sleeper = ControlledDebounceSleeper()
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(80),
+            debounceSleeper: { try await sleeper.sleep(for: $0) }
+        )
         viewModel.queryDraft = "inception"
 
         #expect(viewModel.query.isEmpty)
 
         viewModel.debouncedSearch()
+        try await sleeper.waitForPendingSleeps()
         #expect(viewModel.query.isEmpty)
 
+        await sleeper.advance()
         try await Self.waitUntil(timeout: .milliseconds(500)) { !viewModel.results.isEmpty }
 
         #expect(viewModel.query == "inception")
+        let lastQuery = await stub.getLastSearchQuery()
+        #expect(lastQuery == "inception")
+    }
+
+    @Test
+    @MainActor
+    func debouncedSearchCommitsTrimmedQueryTextWhenSearchExecutes() async throws {
+        let stub = CountingMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "trimmed-result")], page: 1, totalPages: 1, totalResults: 1)
+        ])
+
+        let sleeper = ControlledDebounceSleeper()
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(80),
+            debounceSleeper: { try await sleeper.sleep(for: $0) }
+        )
+
+        viewModel.debouncedSearch(queryText: "  inception  ")
+        try await sleeper.waitForPendingSleeps()
+        #expect(viewModel.query.isEmpty)
+
+        await sleeper.advance()
+        try await Self.waitUntil(timeout: .milliseconds(500)) { !viewModel.results.isEmpty }
+
+        #expect(viewModel.query == "inception")
+        #expect(viewModel.queryDraft == "inception")
+        #expect(viewModel.submittedQuery == "inception")
+
         let lastQuery = await stub.getLastSearchQuery()
         #expect(lastQuery == "inception")
     }
@@ -727,6 +872,89 @@ struct SearchViewModelPerformanceTests {
         // Only 1 discover for initial browse + 1 for the first loadMore = 2 total
         let discoverCount = await stub.getDiscoverCallCount()
         #expect(discoverCount == 2)
+    }
+
+    @Test
+    @MainActor
+    func loadMoreRespectsPaginationCooldownBetweenSearchPages() async throws {
+        let stub = CountingMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "page-1")],
+                page: 1,
+                totalPages: 3,
+                totalResults: 3
+            ),
+            2: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "page-2")],
+                page: 2,
+                totalPages: 3,
+                totalResults: 3
+            ),
+            3: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "page-3")],
+                page: 3,
+                totalPages: 3,
+                totalResults: 3
+            ),
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(300))
+        viewModel.query = "cooldown query"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        viewModel.loadMore()
+        try await Self.waitUntil { viewModel.currentPage == 2 }
+        #expect(await stub.getSearchCallCount() == 2)
+
+        // Immediate second call should be blocked by cooldown.
+        viewModel.loadMore()
+        #expect(await stub.getSearchCallCount() == 2)
+        #expect(viewModel.currentPage == 2)
+
+        // Once cooldown passes, another request should be allowed.
+        try await Task.sleep(for: .milliseconds(350))
+        viewModel.loadMore()
+        try await Self.waitUntil { viewModel.currentPage == 3 }
+        #expect(await stub.getSearchCallCount() == 3)
+    }
+
+    @Test
+    @MainActor
+    func loadMoreTaskForStaleQueryDoesNotMutateCurrentResults() async throws {
+        let stub = CountingMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "first-page")], page: 1, totalPages: 2, totalResults: 2),
+            2: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "stale-page-2")], page: 2, totalPages: 2, totalResults: 2),
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(200))
+        viewModel.query = "first query"
+        viewModel.search()
+        try await Self.waitUntil { viewModel.results.map(\.id) == ["first-page"] }
+
+        // Make page-2 loading slow so it can become stale once a new query starts.
+        await stub.setSearchDelay(.milliseconds(300))
+        viewModel.loadMore()
+        #expect(viewModel.isLoadingMore == true)
+
+        await stub.setSearchDelay(nil)
+        await stub.setSearchResults([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "fresh-page")], page: 1, totalPages: 2, totalResults: 2),
+            2: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "fresh-page-2")], page: 2, totalPages: 2, totalResults: 2),
+        ])
+
+        viewModel.query = "fresh query"
+        viewModel.search()
+        try await Self.waitUntil { viewModel.results.map(\.id) == ["fresh-page"] }
+
+        // Allow stale page-2 request time to complete
+        try await Task.sleep(for: .milliseconds(400))
+
+        #expect(viewModel.results.map(\.id) == ["fresh-page"])
+        #expect(viewModel.currentPage == 1)
+        #expect(await stub.getSearchCallCount() == 3)
     }
 
     // MARK: - Lazy Genre Loading Tests

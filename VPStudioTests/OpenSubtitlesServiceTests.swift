@@ -66,6 +66,7 @@ struct OpenSubtitlesSearchTests {
         #expect(results[0].rating == 8.5)
         #expect(results[0].downloadCount == 1500)
         #expect(results[0].isHearingImpaired == false)
+        #expect(results[0].source == "OpenSubtitles")
     }
 
     @Test func searchWithIMDBIdIncludesParam() async throws {
@@ -126,6 +127,46 @@ struct OpenSubtitlesSearchTests {
         #expect(urlString.contains("query=Oppenheimer"))
     }
 
+    @Test func searchUsesOpenSubtitlesAPIV1BasePath() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedURL: URL?
+        }
+        let state = CapturedState()
+
+        let session = makeSubtitleStubSession { request in
+            state.capturedURL = request.url
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"data":[]}"#.utf8))
+        }
+
+        let service = OpenSubtitlesService(apiKey: "test-key", session: session)
+        _ = try await service.search(query: "Oppenheimer")
+
+        #expect(state.capturedURL?.path == "/api/v1/subtitles")
+    }
+
+    @Test func customBaseURLPreservesPathPrefix() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedURL: URL?
+        }
+        let state = CapturedState()
+
+        let session = makeSubtitleStubSession { request in
+            state.capturedURL = request.url
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"data":[]}"#.utf8))
+        }
+
+        let service = OpenSubtitlesService(
+            apiKey: "test-key",
+            session: session,
+            baseURL: "https://subtitle-proxy.example/custom/api/v1/"
+        )
+        _ = try await service.search(query: "Oppenheimer")
+
+        #expect(state.capturedURL?.path == "/custom/api/v1/subtitles")
+    }
+
     @Test func searchIncludesLanguageParam() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedURL: URL?
@@ -181,6 +222,7 @@ struct OpenSubtitlesSearchTests {
         let _ = try await service.search(query: "Test")
 
         #expect(state.headers["Api-Key"] == "my-api-key")
+        #expect(state.headers["Accept"] == "application/json")
         #expect(state.headers["Content-Type"] == "application/json")
         #expect(state.headers["User-Agent"] == "VPStudio v1.0")
     }
@@ -462,18 +504,28 @@ struct OpenSubtitlesDownloadTests {
         final class CapturedState: @unchecked Sendable {
             private let lock = NSLock()
             private var _capturedBody: [String: Any]?
+            private var _capturedPath: String?
             func set(_ body: [String: Any]?) {
                 lock.lock(); defer { lock.unlock() }
                 _capturedBody = body
+            }
+            func setPath(_ path: String?) {
+                lock.lock(); defer { lock.unlock() }
+                _capturedPath = path
             }
             var capturedBody: [String: Any]? {
                 lock.lock(); defer { lock.unlock() }
                 return _capturedBody
             }
+            var capturedPath: String? {
+                lock.lock(); defer { lock.unlock() }
+                return _capturedPath
+            }
         }
         let state = CapturedState()
 
         let session = makeSubtitleStubSession { request in
+            state.setPath(request.url?.path)
             // Capture either httpBody or streamed body from httpBodyStream
             if let body = request.httpBody {
                 let parsed = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
@@ -505,6 +557,7 @@ struct OpenSubtitlesDownloadTests {
         }
 
         #expect(state.capturedBody?["file_id"] as? Int == 42)
+        #expect(state.capturedPath == "/api/v1/download")
     }
 
     @Test func downloadSubtitleFallsBackToUtf16WhenUtf8Fails() async throws {

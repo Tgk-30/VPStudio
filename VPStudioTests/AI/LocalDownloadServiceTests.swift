@@ -98,8 +98,7 @@ struct LocalDownloadServiceTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }
@@ -183,7 +182,11 @@ struct LocalDownloadServiceTests {
 
         let store = LocalModelCatalogStore(database: database)
         let downloader = ControlledSnapshotDownloader()
-        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            diskSpaceProvider: { _ in 1 }
+        )
 
         await service.downloadModel(id: first.id)
         await downloader.waitUntilStarted(repo: first.huggingFaceRepo)
@@ -398,5 +401,231 @@ struct LocalDownloadServiceTests {
         #expect(await throttle.shouldNotify(interval: 60))
         #expect(await throttle.shouldNotify(interval: 60) == false)
         #expect(await throttle.shouldNotify(interval: 0))
+    }
+
+    @Test
+    func downloadFailsWhenDiskSpaceInsufficient() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-disk-space.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var model = makeLocalModel(id: "apple/large-model", displayName: "Large")
+        model.diskSizeMB = 1_000_000
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+
+        await service.downloadModel(id: model.id)
+
+        let failed = try await waitForStatus(store: store, id: model.id, status: .failed)
+        #expect(failed.status == .failed)
+        #expect((await service.activeDownloadStateForTesting()).modelID == nil)
+        #expect(downloader.startCount() == 0)
+    }
+
+    @Test
+    func secondDownloadWhileFirstInProgressIsNoOp() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-duplicate.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let first = makeLocalModel(id: "apple/first", displayName: "First")
+        let second = makeLocalModel(id: "apple/second", displayName: "Second")
+        try await database.saveLocalModel(first)
+        try await database.saveLocalModel(second)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+
+        await service.downloadModel(id: first.id)
+        await downloader.waitUntilStarted(repo: first.huggingFaceRepo)
+
+        await service.downloadModel(id: second.id)
+
+        #expect(downloader.startCount() == 1)
+
+        downloader.fail(repo: first.huggingFaceRepo, error: CancellationError())
+    }
+
+    @Test
+    func cancelActiveDownloadResetsStatusToAvailable() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-cancel-active.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(id: "apple/cancel-test", displayName: "CancelTest")
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+
+        await service.downloadModel(id: model.id)
+        await downloader.waitUntilStarted(repo: model.huggingFaceRepo)
+
+        let downloading = try #require(try await store.model(id: model.id))
+        #expect(downloading.status == .downloading)
+
+        await service.cancelDownload(id: model.id)
+
+        let afterCancel = try #require(try await store.model(id: model.id))
+        #expect(afterCancel.status == .available)
+        #expect((await service.activeDownloadStateForTesting()).modelID == nil)
+    }
+
+    @Test
+    func deleteModelCleansUpHubCacheDirectory() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-delete-hubcache.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(id: "apple/hubcache-test", displayName: "HubCacheTest")
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let cachesDir = tempDir.appendingPathComponent("Caches", isDirectory: true)
+        try FileManager.default.createDirectory(at: cachesDir, withIntermediateDirectories: true)
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            cachesDirectory: cachesDir
+        )
+
+        let hubRoot = LocalDownloadService.hubCacheRootDirectoryURL(cachesDirectory: cachesDir)
+        let hubRootPath = try #require(hubRoot)
+        try FileManager.default.createDirectory(at: hubRootPath, withIntermediateDirectories: true)
+
+        let modelCachePath = LocalDownloadService.hubCacheDirectoryURL(for: model.huggingFaceRepo, cachesDirectory: cachesDir)
+        let modelCache = try #require(modelCachePath)
+        let modelCacheDir = modelCache
+        try FileManager.default.createDirectory(at: modelCacheDir, withIntermediateDirectories: true)
+        try "fake-model-data".write(to: modelCacheDir.appendingPathComponent("model.bin"), atomically: true, encoding: .utf8)
+
+        await service.deleteModel(id: model.id)
+
+        #expect(FileManager.default.fileExists(atPath: modelCacheDir.path) == false)
+    }
+
+    @Test
+    func deleteModelCleansUpSanitizedAppSupportModelDirectory() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-delete-appsupport.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(id: "apple/delete-target", displayName: "DeleteTarget")
+        try await database.saveLocalModel(model)
+
+        let appSupport = tempDir.appendingPathComponent("ApplicationSupport", isDirectory: true)
+        let modelDir = LocalDownloadService.modelsDirectoryURL(appSupportDirectory: appSupport)
+            .appendingPathComponent("apple_delete-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try "fake-model-data".write(to: modelDir.appendingPathComponent("model.bin"), atomically: true, encoding: .utf8)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            appSupportDirectory: appSupport
+        )
+
+        await service.deleteModel(id: model.id)
+
+        let reset = try #require(try await store.model(id: model.id))
+        #expect(reset.status == .available)
+        #expect(FileManager.default.fileExists(atPath: modelDir.path) == false)
+    }
+
+    @Test
+    func downloadCancellationErrorResetsStatusToAvailable() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-cancellation.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(id: "apple/cancellation-test", displayName: "CancellationTest")
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+
+        await service.downloadModel(id: model.id)
+        await downloader.waitUntilStarted(repo: model.huggingFaceRepo)
+
+        downloader.fail(repo: model.huggingFaceRepo, error: CancellationError())
+
+        let reset = try await waitForStatus(store: store, id: model.id, status: .available)
+        #expect(reset.status == .available)
+    }
+
+    @Test
+    func deleteNonExistentModelIsNoOp() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-delete-nonexistent.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+
+        await service.deleteModel(id: "nonexistent/model")
+
+        let state = await service.activeDownloadStateForTesting()
+        #expect(state.modelID == nil)
+        #expect(state.token == nil)
+    }
+
+    @Test
+    func deleteMissingModelCleansHubCacheUsingRequestedID() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-delete-missing-cache.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let cachesDir = tempDir.appendingPathComponent("Caches", isDirectory: true)
+        let missingID = "missing/model"
+        let cacheDirectory = try #require(
+            LocalDownloadService.hubCacheDirectoryURL(for: missingID, cachesDirectory: cachesDir)
+        )
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try "orphan-cache".write(
+            to: cacheDirectory.appendingPathComponent("snapshot.bin"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            cachesDirectory: cachesDir
+        )
+
+        await service.deleteModel(id: missingID)
+
+        #expect(FileManager.default.fileExists(atPath: cacheDirectory.path) == false)
+        let state = await service.activeDownloadStateForTesting()
+        #expect(state.modelID == nil)
+        #expect(state.token == nil)
+    }
+
+    @Test
+    func downloadWithZeroDiskSizeSucceeds() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-zero-size.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var model = makeLocalModel(id: "apple/zero-size", displayName: "ZeroSize")
+        model.diskSizeMB = 0
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+        let downloadURL = tempDir.appendingPathComponent("downloaded", isDirectory: true)
+        try FileManager.default.createDirectory(at: downloadURL, withIntermediateDirectories: true)
+
+        await service.downloadModel(id: model.id)
+        await downloader.waitUntilStarted(repo: model.huggingFaceRepo)
+        downloader.complete(repo: model.huggingFaceRepo, url: downloadURL)
+
+        let downloaded = try await waitForStatus(store: store, id: model.id, status: .downloaded)
+        #expect(downloaded.localPath == downloadURL.path)
     }
 }

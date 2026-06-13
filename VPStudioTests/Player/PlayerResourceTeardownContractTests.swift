@@ -40,7 +40,11 @@ struct PlayerResourceTeardownContractTests {
     func playerViewChecksCancellationDuringAsyncEnginePreparation() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
         #expect(source.contains("let prepared = try await ksPlayerEngine.prepare(stream: stream)\n                    try Task.checkCancellation()"))
-        #expect(source.contains("let prepared = try await avPlayerEngine.prepare(stream: stream)\n                    try Task.checkCancellation()"))
+        #expect(source.contains("let prepared: PreparedPlaybackSession"))
+        #expect(source.contains("if let prepareAVPlayerSessionOverride {"))
+        #expect(source.contains("prepared = try await prepareAVPlayerSessionOverride(stream)"))
+        #expect(source.contains("prepared = try await avPlayerEngine.prepare(stream: stream)"))
+        #expect(source.contains("}\n                    try Task.checkCancellation()"))
         #expect(source.contains("catch is CancellationError"))
         #expect(source.contains("guard Self.preparePlaybackShouldRun("))
         #expect(source.contains("cleanupPlayback(clearSession: false)"))
@@ -82,7 +86,25 @@ struct PlayerResourceTeardownContractTests {
         #expect(hasSubtitleRefresh)
         #expect(source.contains("subtitleDownloadTask?.cancel()"))
         #expect(source.contains("subtitleDownloadTask = nil"))
-        #expect(source.contains("guard stream.id == currentStream.id else { return }"))
+        #expect(source.contains("nonisolated static func subtitleMutationShouldRun(requestedStreamID: String, currentStreamID: String?) -> Bool"))
+        #expect(source.contains("currentStreamID == requestedStreamID"))
+        #expect(source.contains("Self.subtitleMutationShouldRun("))
+        #expect(source.contains("requestedStreamID: stream.id"))
+        #expect(source.contains("requestedStreamID: streamID"))
+    }
+
+    @Test
+    func playerViewEnvironmentReloadNotificationRespectsDisabledAutomaticTasks() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let notificationBody = try section(
+            from: ".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))",
+            to: ".onChange(of: appState.activePlayerSession?.id)",
+            in: source
+        )
+
+        #expect(notificationBody.contains("guard !disablesAutomaticTasks else { return }"))
+        #expect(notificationBody.contains("environmentAssetsTask?.cancel()"))
+        #expect(notificationBody.contains("environmentAssetsTask = Task { await loadEnvironmentAssets() }"))
     }
 
     @Test
@@ -114,7 +136,9 @@ struct PlayerResourceTeardownContractTests {
             "initialPlayerStateTask",
             "preparePlaybackTask",
             "subtitleCatalogTask",
-            "subtitleDownloadTask"
+            "subtitleDownloadTask",
+            "autoPlayNextCountdownTask",
+            "autoPlayNextResolveTask"
         ] {
             let cancelRange = try requiredRange(of: "\(taskName)?.cancel()", in: closePlayerBody)
             let clearRange = try requiredRange(of: "\(taskName) = nil", in: closePlayerBody)
@@ -132,7 +156,7 @@ struct PlayerResourceTeardownContractTests {
 
         #expect(containsIgnoringWhitespace(
             visionOSBranch,
-            "if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack { dismissWindow(id: \"player\") } if PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack { dismiss() }"
+            "if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack { dismissDedicatedPlayerWindow() } if PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack { dismiss() }"
         ))
 
         let dismissWindowRange = try requiredRange(
@@ -143,15 +167,26 @@ struct PlayerResourceTeardownContractTests {
             of: "if PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack",
             in: visionOSBranch
         )
-        let immersiveTaskRange = try requiredRange(of: "Task {", in: visionOSBranch)
-        let immersiveDismissRange = try requiredRange(
-            of: "await dismissImmersiveIfNeeded(reason: .playerClosed)",
+        let immersiveDismissScheduleRange = try requiredRange(
+            of: "scheduleImmersiveDismiss(reason: .playerClosed)",
             in: visionOSBranch
         )
 
         #expect(dismissWindowRange.lowerBound < dismissPresentationRange.lowerBound)
-        #expect(dismissPresentationRange.lowerBound < immersiveTaskRange.lowerBound)
-        #expect(immersiveTaskRange.lowerBound < immersiveDismissRange.lowerBound)
+        #expect(dismissPresentationRange.lowerBound < immersiveDismissScheduleRange.lowerBound)
+    }
+
+    @Test
+    func playerViewClosesWhenActiveSessionIsClearedExternally() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let observerSection = try section(
+            from: ".onChange(of: appState.activePlayerSession?.id)",
+            to: "#if os(visionOS)",
+            in: source
+        )
+
+        #expect(observerSection.contains("guard activeSessionID != sessionID else { return }"))
+        #expect(observerSection.contains("closePlayer()"))
     }
 
     @Test
@@ -168,11 +203,32 @@ struct PlayerResourceTeardownContractTests {
             "initialPlayerStateTask",
             "preparePlaybackTask",
             "subtitleCatalogTask",
-            "subtitleDownloadTask"
+            "subtitleDownloadTask",
+            "autoPlayNextCountdownTask",
+            "autoPlayNextResolveTask"
         ] {
             let cancelRange = try requiredRange(of: "\(taskName)?.cancel()", in: onDisappearSection)
             #expect(cancelRange.lowerBound < cleanupRange.lowerBound)
         }
+    }
+
+    @Test
+    func playerViewShowsCancellableCircularCountdownBeforeAutoPlayingNextEpisode() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let promptSource = try contents(of: "VPStudio/Views/Windows/Player/PlayerAutoPlayNextPromptView.swift")
+        #expect(source.contains("enum PlayerAutoplayNextPolicy"))
+        #expect(source.contains("private var autoPlayNextOverlay"))
+        #expect(source.contains("PlayerAutoPlayNextPromptView("))
+        #expect(promptSource.contains("struct PlayerAutoPlayCountdownRing"))
+        #expect(promptSource.contains("Circle()\n                .trim(from: 0, to: CGFloat(progress))"))
+        #expect(promptSource.contains("Button(action: onPlayNow)"))
+        #expect(promptSource.contains("Button(action: onCancel)"))
+        #expect(source.contains("@State private var autoPlayNextCountdownTask: Task<Void, Never>?"))
+        #expect(source.contains("@State private var autoPlayNextResolveTask: Task<Void, Never>?"))
+        #expect(source.contains("private func cancelAutoPlayNextCountdown()"))
+        #expect(source.contains("private func playNextEpisodeNow()"))
+        #expect(source.contains("scheduleAutoPlayNextCountdownIfNeeded()"))
+        #expect(source.contains("resetAutoPlayNextStateForStreamTransition()"))
     }
 
     @Test
@@ -190,7 +246,7 @@ struct PlayerResourceTeardownContractTests {
         ))
         #expect(containsIgnoringWhitespace(
             loadInitialBody,
-            "await refreshSubtitleCatalog(for: currentStream) guard !Task.isCancelled else { return } await autoLoadSubtitlesIfEnabled(for: currentStream)"
+            "let catalogMutationID = UUID() subtitleCatalogMutationID = catalogMutationID await refreshSubtitleCatalog( for: currentStream, requestedStreamID: currentStream.id, mutationID: catalogMutationID ) guard !Task.isCancelled else { return } await autoLoadSubtitlesIfEnabled(for: currentStream)"
         ))
         #expect(containsIgnoringWhitespace(
             loadInitialBody,
@@ -213,15 +269,47 @@ struct PlayerResourceTeardownContractTests {
     @Test
     func playerViewSeedsAndResetsSessionTitleState() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
-        #expect(source.contains("engine.currentTitle = mediaTitle ?? currentStream.fileName"))
-        #expect(source.contains("engine.currentTitle = mediaTitle ?? stream.fileName"))
+        let policySource = try contents(of: "VPStudio/Views/Windows/Player/PlayerViewStatePolicy.swift")
+        #expect(source.contains("engine.currentTitle = resolvedMediaTitle"))
+        #expect(source.contains("engine.currentTitle = PlayerViewStatePolicy.currentTitle("))
+        #expect(source.contains("mediaTitle: activeMediaTitle"))
+        #expect(source.contains("streamFileName: stream.fileName"))
+        #expect(source.contains("private var resolvedMediaTitle: String"))
+        #expect(source.contains("private func resolvedMediaTitleFrom(activeMediaTitle: String?, streamFileName: String) -> String"))
+        #expect(!source.contains("activeMediaTitle ?? currentStream.fileName"))
+        #expect(policySource.contains("static func currentTitle(mediaTitle: String?, streamFileName: String) -> String"))
         #expect(source.contains("engine.resetSessionState()"))
+        #expect(source.contains("Text(resolvedMediaTitle)"))
+        #expect(containsIgnoringWhitespace(
+            source,
+            "engine.updateStereoMode( from: resolvedMediaTitleFrom(activeMediaTitle: activeMediaTitle, streamFileName: stream.fileName), codecHint: stream.codec.rawValue )"
+        ))
+    }
+
+    @Test
+    func playerViewBindsAutoHidePolicyToDynamicControlLockState() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let scheduleBody = try functionBody(named: "scheduleControlsHide", in: source)
+
+        #expect(source.contains("@State private var isControlsLocked = false"))
+        #expect(scheduleBody.contains("isControlsLocked: isControlsLocked"))
+        #expect(!scheduleBody.contains("isControlsLocked: false"))
     }
 
     @Test
     func playerViewEnvironmentSwitchOpensThePicker() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
-        #expect(source.contains("onRequestEnvironmentSwitch: { requestEnvironmentPicker() }"))
+        let switchHandler = try section(
+            from: "onRequestEnvironmentSwitch: {",
+            to: "onDismiss:",
+            in: source
+        )
+
+        #expect(switchHandler.contains("recordImmersiveControlEvent(.requestEnvironmentSwitch)"))
+        #expect(switchHandler.contains("requestEnvironmentPicker()"))
+        let recordRange = try requiredRange(of: "recordImmersiveControlEvent(.requestEnvironmentSwitch)", in: switchHandler)
+        let requestRange = try requiredRange(of: "requestEnvironmentPicker()", in: switchHandler)
+        #expect(recordRange.lowerBound < requestRange.lowerBound)
         #expect(source.contains("private func requestEnvironmentPicker()"))
         #expect(source.contains("isShowingEnvironmentPicker = true"))
     }
@@ -299,8 +387,10 @@ struct PlayerResourceTeardownContractTests {
         let settingsBody = try functionBody(named: "showCinemaSettingsAfterMenuDismissal", in: source)
         let requestBody = try functionBody(named: "requestEnvironmentPicker", in: source)
 
-        #expect(pickerBody.contains("guard !isShowingEnvironmentPicker else { return }"))
-        #expect(settingsBody.contains("guard !isShowingCinemaSettings else { return }"))
+        #expect(pickerBody.contains("guard !isShowingEnvironmentPicker else {"))
+        #expect(settingsBody.contains("guard !isShowingCinemaSettings else {"))
+        #expect(pickerBody.contains("environmentMenuActionTask = nil"))
+        #expect(settingsBody.contains("environmentMenuActionTask = nil"))
         #expect(requestBody.contains("guard !isShowingEnvironmentPicker else {"))
         #expect(requestBody.contains("environmentAssetsTask = Task { await loadEnvironmentAssets() }"))
     }
@@ -325,12 +415,16 @@ struct PlayerResourceTeardownContractTests {
         let body = try functionBody(named: "openCinemaEnvironment", in: source)
 
         #expect(body.contains("PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil)"))
+        #expect(body.contains("PlayerImmersiveTransitionPolicy.cinemaOpenPlan("))
         #expect(body.contains("let player = avPlayer"))
-        #expect(body.contains("playbackMessage = PlayerCinemaEnvironmentPolicy.unavailableMessage"))
+        #expect(body.contains("case .unavailable(let message):"))
+        #expect(body.contains("playbackMessage = message"))
         #expect(body.contains("appState.activeAVPlayer = player"))
         #expect(body.contains("await dismissImmersiveIfNeeded(reason: .switchingEnvironment)"))
+        #expect(body.contains("PlayerImmersiveTransitionPolicy.openReadiness(isTransitionInFlight: appState.isImmersiveTransitionInFlight)"))
         #expect(body.contains("appState.beginImmersiveTransition()"))
         #expect(body.contains("openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)"))
+        #expect(body.contains("PlayerImmersiveTransitionPolicy.completionAction(didOpen: didOpen)"))
         #expect(body.contains("appState.spatialAudioManager.enterImmersiveMode()"))
         #expect(body.contains("appState.cancelImmersiveTransition()"))
 
@@ -355,10 +449,12 @@ struct PlayerResourceTeardownContractTests {
 
         for section in [menuSection, buttonSection] {
             #expect(section.contains("let onSelectCinema: () -> Void"))
-            #expect(section.contains("onSelectCinema()"))
-            #expect(section.contains("Label(\"Cinema Environment\", systemImage: \"checkmark\")"))
-            #expect(section.contains("Label(\"Cinema Environment\", systemImage: \"theatermasks\")"))
+            #expect(section.contains("PlayerEnvironmentCinemaRow("))
+            #expect(section.contains("spec: .cinema("))
+            #expect(section.contains("action: onSelectCinema"))
         }
+        #expect(source.contains(#"title: "Cinema Environment""#))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.cinemaIconName("))
 
         #expect(menuSection.contains("ForEach(assets, id: \\.id)"))
         #expect(buttonSection.contains("Text(\"No environments available\")"))
@@ -370,10 +466,10 @@ struct PlayerResourceTeardownContractTests {
         let menuSource = try contents(of: "VPStudio/Views/Windows/Player/PlayerEnvironmentMenu.swift")
 
         let playerHelper = try functionBody(named: "environmentAssetIcon", in: playerSource)
-        let menuHelper = try functionBody(named: "assetIcon", in: menuSource)
+        let menuHelper = try functionBody(named: "compactAssetIconName", in: menuSource)
 
         #expect(playerHelper.contains("PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: asset.assetPath)"))
-        #expect(menuHelper.contains("PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: asset.assetPath)"))
+        #expect(menuHelper.contains("PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: assetPath)"))
         #expect(!playerHelper.contains("pathExtension.lowercased()"))
         #expect(!menuHelper.contains("pathExtension.lowercased()"))
     }
@@ -410,7 +506,7 @@ struct PlayerResourceTeardownContractTests {
 
         let onDisappearSection = try section(
             from: ".onDisappear {",
-            to: "RuntimeMemoryDiagnostics.capture(",
+            to: ".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))",
             in: source
         )
         let onDisappearCleanupRange = try requiredRange(of: "cleanupPlayback()", in: onDisappearSection)
@@ -424,8 +520,12 @@ struct PlayerResourceTeardownContractTests {
             #expect(cancelRange.lowerBound < onDisappearCleanupRange.lowerBound)
         }
 
+        let restoreRange = try requiredRange(of: "scheduleMainWindowRestoreIfNeeded()", in: onDisappearSection)
+        #expect(onDisappearCleanupRange.lowerBound < restoreRange.lowerBound)
+
         let closePlayerBody = try functionBody(named: "closePlayer", in: source)
         let closePlayerCleanupRange = try requiredRange(of: "cleanupPlayback(clearSession: true)", in: closePlayerBody)
+        #expect(!closePlayerBody.contains("scheduleMainWindowRestoreIfNeeded()"))
 
         for taskName in [
             "environmentAssetsTask",
@@ -445,11 +545,79 @@ struct PlayerResourceTeardownContractTests {
         for taskName in [
             "scenePhaseTask",
             "memoryPressureTask",
+            "immersiveDismissTask",
         ] {
             let cancelRange = try requiredRange(of: "\(taskName)?.cancel()", in: visionTaskCancelBody)
             let clearRange = try requiredRange(of: "\(taskName) = nil", in: visionTaskCancelBody)
             #expect(cancelRange.lowerBound < clearRange.lowerBound)
         }
+    }
+
+    @Test
+    func playerViewOnDisappearRestoresMainWindowOnlyAfterImmersiveDismissOnVisionOS() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let onDisappearSection = try section(
+            from: ".onDisappear {",
+            to: ".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))",
+            in: source
+        )
+        let visionOSSection = try section(
+            from: "#if os(visionOS)",
+            to: "#elseif os(macOS)",
+            in: onDisappearSection
+        )
+
+        let scheduleRange = try requiredRange(
+            of: "scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)",
+            in: visionOSSection
+        )
+
+        let scheduleBody = try functionBody(named: "scheduleImmersiveDismiss", in: source)
+        let dismissRange = try requiredRange(
+            of: "await dismissImmersiveIfNeeded(reason: reason)",
+            in: scheduleBody
+        )
+        let restoreRange = try requiredRange(
+            of: "scheduleMainWindowRestoreIfNeeded()",
+            in: scheduleBody
+        )
+
+        #expect(scheduleRange.lowerBound < visionOSSection.endIndex)
+        #expect(dismissRange.lowerBound < restoreRange.lowerBound)
+    }
+
+    @Test
+    func playerViewOnDisappearResetsWindowAspectBeforeRestoringMainWindowOnMacOS() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let onDisappearSection = try section(
+            from: ".onDisappear {",
+            to: ".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))",
+            in: source
+        )
+        let macOSSection = try section(
+            from: "#elseif os(macOS)",
+            to: "#endif",
+            in: onDisappearSection
+        )
+
+        let resetRange = try requiredRange(of: "resetWindowAspectRatio()", in: macOSSection)
+        let restoreRange = try requiredRange(of: "scheduleMainWindowRestoreIfNeeded()", in: macOSSection)
+        #expect(resetRange.lowerBound < restoreRange.lowerBound)
+    }
+
+    @Test
+    func playerWindowLayoutContractsApplyMinimumSizeAndFreeformAspectUnlocking() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let configureBody = try functionBody(named: "configurePlayerWindow", in: source)
+        let aspectBody = try functionBody(named: "applyWindowAspectRatio", in: source)
+
+        #expect(configureBody.contains("window.minSize = NSSize(width: 960, height: 540)"))
+        #expect(configureBody.contains("applyWindowAspectRatio(to: window)"))
+
+        #expect(aspectBody.contains("PlayerAspectRatioPolicy.resolvedRatio("))
+        #expect(aspectBody.contains("PlayerAspectRatioPolicy.windowAspectSize(for: ratio)"))
+        #expect(aspectBody.contains("window.contentAspectRatio = NSSize(width: size.width, height: size.height)"))
+        #expect(aspectBody.contains("window.contentAspectRatio = NSSize.zero"))
     }
 
     @Test
@@ -460,7 +628,29 @@ struct PlayerResourceTeardownContractTests {
     }
 
     @Test
-    func playerViewChecksPreparationCancellationBeforeTearingDownCurrentSession() throws {
+    func playerTrackPickerLabelsEmbeddedTracksAsDirectLinkTracks() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        #expect(source.contains("Section(\"Direct Link Subtitles\")"))
+        #expect(source.contains("Section(\"Direct Link Audio\")"))
+    }
+
+    @Test
+    func playerViewSurfacesKSPlayerEmbeddedSubtitlesFromDirectStreams() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        #expect(source.contains("@State private var ksSubtitleOptions: [KSSubtitleOption] = []"))
+        #expect(source.contains("@State private var selectedKSSubtitleID: String?"))
+        #expect(source.contains("@State private var subtitleTrackRefreshTask: Task<Void, Never>?"))
+        #expect(source.contains("refreshKSSubtitleTracks(from: coordinator)"))
+        #expect(source.contains("coordinator.subtitleModel.subtitleInfos"))
+        #expect(source.contains("player.tracks(mediaType: .subtitle)"))
+        #expect(source.contains("private func selectKSSubtitle(_ track: KSSubtitleOption)"))
+        #expect(source.contains("coordinator.subtitleModel.selectedSubtitleInfo = subtitleInfo"))
+        #expect(source.contains("player.select(track: mediaTrack)"))
+        #expect(source.contains("clearKSSubtitleSelection()"))
+    }
+
+    @Test
+    func playerViewChecksPreparationCancellationBeforeTearingDownPlaybackWithoutClearingActiveSession() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
         let prepareBody = try section(
             from: "private func preparePlayback(for stream: StreamInfo, preparationID: UUID) async {",
@@ -478,7 +668,7 @@ struct PlayerResourceTeardownContractTests {
             ), !Task.isCancelled else {
                 return
             }
-            cleanupPlayback(clearSession: true)
+            cleanupPlayback(clearSession: false)
             """
         ))
     }
@@ -490,7 +680,8 @@ struct PlayerResourceTeardownContractTests {
         #expect(source.contains("private func isCurrentKSPlayerCoordinator(_ coordinator: KSVideoPlayer.Coordinator) -> Bool"))
         #expect(source.contains("guard self.isCurrentKSPlayerCoordinator(coordinator) else { return }"))
         #expect(source.contains("guard self.isCurrentAVPlayer(player) else { return }"))
-        #expect(source.contains("Task { await detectVideoRatio(from: asset, player: player) }"))
+        #expect(source.contains("scheduleAVVideoRatioDetection(from: asset, player: player)"))
+        #expect(source.contains("scheduleAVHDRMetadataExtraction(from: asset, player: player)"))
         #expect(source.contains("guard isCurrentAVPlayer(player) else { return }"))
         #expect(source.contains("guard isCurrentKSPlayerCoordinator(coordinator) else { return }"))
     }
@@ -509,7 +700,7 @@ struct PlayerResourceTeardownContractTests {
     func playerViewManualSubtitleDownloadDoesNotRequireAutomaticSelectionMode() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
         let downloadBody = try section(
-            from: "private func downloadAndSelectSubtitle(_ subtitle: Subtitle, streamID: String) async {",
+            from: "private func downloadAndSelectSubtitle(",
             to: "private func writeExternalSubtitle(content: String, source: Subtitle) throws -> URL {",
             in: source
         )
@@ -542,7 +733,9 @@ struct PlayerResourceTeardownContractTests {
         #expect(source.contains("ImmersiveControlsPolicy.fallbackControlsPosition"))
         #expect(source.contains("Attachment(id: \"loadingIndicator\")"))
         #expect(source.contains("makeFallbackScreen()"))
-        #expect(source.contains("loadingState = .failed"))
+        #expect(source.contains("setLoadingState(.failed"))
+        #expect(source.contains("private func setLoadingState(_ state: LoadingState)"))
+        #expect(!source.contains("loadingState = .failed"))
     }
 
     @Test
@@ -584,8 +777,8 @@ struct PlayerResourceTeardownContractTests {
 
         #expect(playerSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(playerSource.contains("motionAnimationsEnabled"))
-        #expect(playerSource.contains("performOptionalAnimation(.easeInOut(duration: 0.22))"))
-        #expect(playerSource.contains("performOptionalAnimation(.easeInOut(duration: 0.25))"))
+        #expect(playerSource.contains("performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeInDuration))"))
+        #expect(playerSource.contains("performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeOutDuration))"))
         #expect(playerSource.contains("UIAccessibility.isClosedCaptioningEnabled"))
 
         #expect(immersiveControlsSource.contains("@Environment(\\.accessibilityReduceMotion)"))
@@ -603,16 +796,63 @@ struct PlayerResourceTeardownContractTests {
     @Test
     func playerSubtitleCatalogAndWarningsStayAccessibilityAligned() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let policySource = try contents(of: "VPStudio/Views/Windows/Player/PlayerViewStatePolicy.swift")
 
-        #expect(source.contains("let languages = Self.automaticSubtitleLanguageCodes("))
+        #expect(source.contains("let preferredSubtitleLanguages = Self.automaticSubtitleLanguageCodes("))
+        #expect(policySource.contains("let languages = PlayerSubtitlePolicy.automaticSubtitleLanguageCodes("))
         #expect(!source.contains("MACaptionAppearanceAddSelectedLanguage"))
-        #expect(source.contains(
+        #expect(containsIgnoringWhitespace(
+            source,
             """
             warningsOverlay
                                 .padding(.top, 6)
                                 .compositingGroup()
             """
         ))
+    }
+
+    @Test
+    func playerWarningsOverlayComposesPurePolicyStateAndOnlyShowsFailureTextWhenAvailable() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let warningsBody = try section(
+            from: "private var warningsOverlay: some View {",
+            to: "private var subtitlePickerSheet: some View {",
+            in: source
+        )
+
+        #expect(warningsBody.contains("let warningError = PlayerViewPolicy.warningOverlayPlaybackError("))
+        #expect(warningsBody.contains("if PlayerViewPolicy.shouldShowWarningsOverlay("))
+        #expect(warningsBody.contains("ForEach(capabilityWarnings, id: \\.self)"))
+        #expect(warningsBody.contains("if let warningError"))
+        #expect(warningsBody.contains("Text(warningError)"))
+        #expect(!warningsBody.contains("playbackState == .failed"))
+    }
+
+    @Test
+    func subtitleAndAudioPickersKeepSelectionHandlersAndDismissalPaths() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let subtitlePickerBody = try section(
+            from: "private var subtitlePickerSheet: some View {",
+            to: "private var audioPickerSheet: some View {",
+            in: source
+        )
+        let audioPickerBody = try section(
+            from: "private var audioPickerSheet: some View {",
+            to: "private var playPausePresentation: PlayerControlPresentation {",
+            in: source
+        )
+
+        #expect(subtitlePickerBody.contains("selectSubtitlesOff()"))
+        #expect(subtitlePickerBody.contains("selectAVSubtitle(track)"))
+        #expect(subtitlePickerBody.contains("selectKSSubtitle(track)"))
+        #expect(subtitlePickerBody.contains("selectExternalSubtitle(index: track.id)"))
+        #expect(subtitlePickerBody.contains("scheduleSubtitleDownload(subtitle, streamID: currentStream.id)"))
+        #expect(subtitlePickerBody.contains("isShowingSubtitlePicker = false"))
+
+        #expect(audioPickerBody.contains("selectAVAudio(track)"))
+        #expect(audioPickerBody.contains("selectEngineAudio(track)"))
+        #expect(audioPickerBody.contains("isShowingAudioPicker = false"))
+        #expect(audioPickerBody.contains("Text(PlayerViewPolicy.emptyAudioTracksMessage(activeEngine: activeEngine))"))
     }
 
     private func functionBody(named functionName: String, in source: String) throws -> String {

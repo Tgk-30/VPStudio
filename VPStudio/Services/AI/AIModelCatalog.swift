@@ -256,6 +256,110 @@ enum AIModelCatalog {
         isDefault: false
     )
 
+    // MARK: Mistral Models
+
+    static let mistralSmallLatest = AIModelDefinition(
+        id: "mistral-small-latest",
+        displayName: "Mistral Small",
+        provider: .mistral,
+        inputCostPer1MTokens: 0.20,
+        outputCostPer1MTokens: 0.60,
+        maxContextTokens: 128_000,
+        isDefault: true
+    )
+
+    static let mistralMediumLatest = AIModelDefinition(
+        id: "mistral-medium-latest",
+        displayName: "Mistral Medium",
+        provider: .mistral,
+        inputCostPer1MTokens: 0.40,
+        outputCostPer1MTokens: 2.00,
+        maxContextTokens: 128_000,
+        isDefault: false
+    )
+
+    static let codestralLatest = AIModelDefinition(
+        id: "codestral-latest",
+        displayName: "Codestral",
+        provider: .mistral,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 0.90,
+        maxContextTokens: 256_000,
+        isDefault: false
+    )
+
+    // MARK: MiniMax Models
+
+    static let minimaxM27 = AIModelDefinition(
+        id: "MiniMax-M2.7",
+        displayName: "MiniMax M2.7",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: true
+    )
+
+    static let minimaxM27Highspeed = AIModelDefinition(
+        id: "MiniMax-M2.7-highspeed",
+        displayName: "MiniMax M2.7 Highspeed",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: false
+    )
+
+    static let minimaxM25 = AIModelDefinition(
+        id: "MiniMax-M2.5",
+        displayName: "MiniMax M2.5",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: false
+    )
+
+    static let minimaxM25Highspeed = AIModelDefinition(
+        id: "MiniMax-M2.5-highspeed",
+        displayName: "MiniMax M2.5 Highspeed",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: false
+    )
+
+    static let minimaxM21 = AIModelDefinition(
+        id: "MiniMax-M2.1",
+        displayName: "MiniMax M2.1",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: false
+    )
+
+    static let minimaxM21Highspeed = AIModelDefinition(
+        id: "MiniMax-M2.1-highspeed",
+        displayName: "MiniMax M2.1 Highspeed",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: false
+    )
+
+    static let minimaxM2 = AIModelDefinition(
+        id: "MiniMax-M2",
+        displayName: "MiniMax M2",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 204_800,
+        isDefault: false
+    )
+
     // MARK: Local (On-Device CoreML) Models
 
     static let localSmolLM2 = AIModelDefinition(
@@ -297,6 +401,9 @@ enum AIModelCatalog {
         gemini25Flash, gemini25Pro,
         openRouterGeminiFlashLite, openRouterClaudeHaiku, openRouterGPT4oMini,
         openRouterLlama3, openRouterMistralNemo, openRouterQwen,
+        mistralSmallLatest, mistralMediumLatest, codestralLatest,
+        minimaxM27, minimaxM27Highspeed, minimaxM25, minimaxM25Highspeed,
+        minimaxM21, minimaxM21Highspeed, minimaxM2,
         localSmolLM2, localPhi3Mini, localOpenELM3B,
     ]
 
@@ -361,9 +468,10 @@ enum AIModelFetcher {
         apiKey: String,
         session: URLSession = .shared
     ) async -> [AIModelDefinition] {
-        guard !apiKey.isEmpty else { return [] }
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAPIKey.isEmpty else { return [] }
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
         guard let (data, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
@@ -396,9 +504,10 @@ enum AIModelFetcher {
         apiKey: String,
         session: URLSession = .shared
     ) async -> [AIModelDefinition] {
-        guard !apiKey.isEmpty else { return [] }
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAPIKey.isEmpty else { return [] }
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/models?limit=50")!)
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue(trimmedAPIKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.timeoutInterval = 15
         guard let (data, response) = try? await session.data(for: request),
@@ -428,9 +537,9 @@ enum AIModelFetcher {
         baseURL: String,
         session: URLSession = .shared
     ) async -> [AIModelDefinition] {
-        let endpoint = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard AIOllamaEndpointPolicy.isAllowedBaseURL(endpoint) else { return [] }
-        guard let url = URL(string: "\(endpoint)/api/tags") else { return [] }
+        guard let url = AIOllamaEndpointPolicy.appendingPath(to: endpoint, path: "api/tags") else { return [] }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         guard let (data, response) = try? await session.data(for: request),
@@ -540,6 +649,75 @@ enum AIModelFetcher {
                 inputCostPer1MTokens: catalogMatch?.inputCostPer1MTokens ?? 0,
                 outputCostPer1MTokens: catalogMatch?.outputCostPer1MTokens ?? 0,
                 maxContextTokens: catalogMatch?.maxContextTokens ?? 1_000_000,
+                isDefault: catalogMatch?.isDefault ?? false
+            )
+        }
+        .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    static func fetchMistralModels(
+        apiKey: String,
+        session: URLSession = .shared
+    ) async -> [AIModelDefinition] {
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAPIKey.isEmpty else { return [] }
+        var request = URLRequest(url: URL(string: "https://api.mistral.ai/v1/models")!)
+        request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["data"] as? [[String: Any]] else { return [] }
+
+        return items.compactMap { item -> AIModelDefinition? in
+            guard let id = item["id"] as? String, !id.isEmpty else { return nil }
+            let lower = id.lowercased()
+            guard !lower.contains("embed") else { return nil }
+            guard lower.contains("mistral") || lower.contains("codestral") || lower.contains("ministral") else {
+                return nil
+            }
+            let catalogMatch = AIModelCatalog.model(byID: id)
+            return AIModelDefinition(
+                id: id,
+                displayName: catalogMatch?.displayName ?? formatModelID(id),
+                provider: .mistral,
+                inputCostPer1MTokens: catalogMatch?.inputCostPer1MTokens ?? 0,
+                outputCostPer1MTokens: catalogMatch?.outputCostPer1MTokens ?? 0,
+                maxContextTokens: catalogMatch?.maxContextTokens ?? 128_000,
+                isDefault: catalogMatch?.isDefault ?? false
+            )
+        }
+        .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    static func fetchMiniMaxModels(
+        apiKey: String,
+        session: URLSession = .shared
+    ) async -> [AIModelDefinition] {
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAPIKey.isEmpty else { return [] }
+        var request = URLRequest(url: URL(string: "https://api.minimax.io/v1/models")!)
+        request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["data"] as? [[String: Any]] else { return [] }
+
+        return items.compactMap { item -> AIModelDefinition? in
+            guard let id = item["id"] as? String, !id.isEmpty else { return nil }
+            let catalogMatch = AIModelCatalog.model(byID: id)
+            return AIModelDefinition(
+                id: id,
+                displayName: catalogMatch?.displayName ?? formatModelID(id),
+                provider: .minimax,
+                inputCostPer1MTokens: catalogMatch?.inputCostPer1MTokens ?? 0,
+                outputCostPer1MTokens: catalogMatch?.outputCostPer1MTokens ?? 0,
+                maxContextTokens: catalogMatch?.maxContextTokens ?? 204_800,
                 isDefault: catalogMatch?.isDefault ?? false
             )
         }

@@ -43,6 +43,13 @@ struct RuntimeMemoryDiagnosticsTests {
     }
 
     @Test
+    func normalizedContextKeepsMaxLengthValuesUnchanged() {
+        let exact = String(repeating: "a", count: RuntimeDiagnosticsPolicy.maxContextLength)
+
+        #expect(RuntimeDiagnosticsPolicy.normalizedContext(exact) == exact)
+    }
+
+    @Test
     func formattedMessageIncludesEventMemoryAndContext() {
         let snapshot = RuntimeMemorySnapshot(residentBytes: 52 * 1_048_576)
         let message = RuntimeMemoryDiagnostics.formattedMessage(

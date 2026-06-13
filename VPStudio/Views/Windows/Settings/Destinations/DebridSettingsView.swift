@@ -48,6 +48,25 @@ enum DebridSettingsPolicy {
                 return copy
             }
     }
+
+    static func makeDebridService(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
+        switch type {
+        case .realDebrid:
+            return RealDebridService(apiToken: token)
+        case .allDebrid:
+            return AllDebridService(apiToken: token)
+        case .premiumize:
+            return PremiumizeService(apiToken: token)
+        case .torBox:
+            return TorBoxService(apiToken: token)
+        case .debridLink:
+            return DebridLinkService(apiToken: token)
+        case .offcloud:
+            return OffcloudService(apiToken: token)
+        case .easyNews:
+            return EasyNewsService(apiToken: token)
+        }
+    }
 }
 
 struct DebridSettingsView: View {
@@ -63,6 +82,7 @@ struct DebridSettingsView: View {
     @State private var updatingConfigID: String?
     @State private var connectivityStatusByConfigID: [String: ConnectivityStatus] = [:]
     @State private var pendingDeletion: PendingDeletion?
+    private let disablesAutomaticTasks: Bool
 
     private enum ConnectivityStatus {
         case success(String)
@@ -88,6 +108,35 @@ struct DebridSettingsView: View {
 
     private var unsupportedConfigs: [DebridConfig] {
         DebridSettingsPolicy.unsupportedConfigs(from: configs)
+    }
+
+    init(
+        initialConfigs: [DebridConfig] = [],
+        initialShowingAddSheet: Bool = false,
+        initialNewServiceType: DebridServiceType = .realDebrid,
+        initialNewApiKey: String = "",
+        initialSurfaceError: AppError? = nil,
+        initialTestingConfigID: String? = nil,
+        initialUpdatingConfigID: String? = nil,
+        initialValidationSuccessMessagesByConfigID: [String: String] = [:],
+        initialValidationErrorMessagesByConfigID: [String: String] = [:],
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _configs = State(initialValue: initialConfigs)
+        _showingAddSheet = State(initialValue: initialShowingAddSheet)
+        _newServiceType = State(initialValue: initialNewServiceType)
+        _newApiKey = State(initialValue: initialNewApiKey)
+        _surfaceError = State(initialValue: initialSurfaceError)
+        _testingConfigID = State(initialValue: initialTestingConfigID)
+        _updatingConfigID = State(initialValue: initialUpdatingConfigID)
+        let validationStatuses = initialValidationSuccessMessagesByConfigID
+            .mapValues { ConnectivityStatus.success($0) }
+            .merging(
+                initialValidationErrorMessagesByConfigID.mapValues { ConnectivityStatus.failure(.unknown($0)) },
+                uniquingKeysWith: { _, failure in failure }
+            )
+        _connectivityStatusByConfigID = State(initialValue: validationStatuses)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
     }
 
     var body: some View {
@@ -140,6 +189,7 @@ struct DebridSettingsView: View {
         }
         .navigationTitle("Streaming Providers")
         .task {
+            guard !disablesAutomaticTasks else { return }
             await loadConfigs()
         }
         .refreshable {
@@ -428,21 +478,6 @@ struct DebridSettingsView: View {
     }
 
     private func makeDebridService(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
-        switch type {
-        case .realDebrid:
-            return RealDebridService(apiToken: token)
-        case .allDebrid:
-            return AllDebridService(apiToken: token)
-        case .premiumize:
-            return PremiumizeService(apiToken: token)
-        case .torBox:
-            return TorBoxService(apiToken: token)
-        case .debridLink:
-            return DebridLinkService(apiToken: token)
-        case .offcloud:
-            return OffcloudService(apiToken: token)
-        case .easyNews:
-            return EasyNewsService(apiToken: token)
-        }
+        DebridSettingsPolicy.makeDebridService(type: type, token: token)
     }
 }

@@ -5,9 +5,10 @@ import RealityKit
 #if os(macOS)
 import AppKit
 #endif
-import os
-
+#if !os(macOS)
 import AVFoundation
+#endif
+import os
 
 // MARK: - macOS App Delegate
 
@@ -73,8 +74,11 @@ struct VPStudioApp: App {
                     availableStreams: request.availableStreams,
                     mediaTitle: request.mediaTitle,
                     mediaId: request.mediaId,
+                    tmdbId: request.tmdbId,
                     episodeId: request.episodeId,
-                    sessionID: request.id
+                    nextEpisode: request.nextEpisode,
+                    sessionID: request.id,
+                    sessionRequest: request
                 )
                     .environment(appState)
                     .environment(sharedEngine)

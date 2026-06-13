@@ -167,8 +167,7 @@ struct EnvironmentCatalogCuratedDefaultsTests {
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }
@@ -236,8 +235,7 @@ struct EnvironmentImmersiveSpaceRoutingTests {
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }

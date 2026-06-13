@@ -3,7 +3,7 @@ import Testing
 @testable import VPStudio
 
 @Suite("QA Runtime Options")
-struct QARuntimeOptionsTests {
+struct QARuntimeOptionsTestsSupportSupportqaruntimeoptionstests {
     @Test
     func sleepNanosecondsClampsNegativeSecondsToZero() {
         #expect(QARuntimeOptions.sleepNanoseconds(for: -5) == 0)
@@ -64,7 +64,7 @@ struct QARuntimeOptionsTests {
         #expect(snapshot.bool("VPSTUDIO_QA_ON"))
         #expect(!snapshot.bool("VPSTUDIO_QA_ZERO"))
         #expect(!snapshot.bool("VPSTUDIO_QA_FALSE"))
-        #expect(!snapshot.bool("VPSTUDIO_QA_SPACED"))
+        #expect(snapshot.bool("VPSTUDIO_QA_SPACED"))
         #expect(!snapshot.bool("VPSTUDIO_QA_MISSING"))
     }
 
@@ -74,12 +74,14 @@ struct QARuntimeOptionsTests {
             "VPSTUDIO_QA_STRING": "  value  ",
             "VPSTUDIO_QA_BLANK": "   ",
             "VPSTUDIO_QA_DOUBLE": "1.25",
+            "VPSTUDIO_QA_SPACED_DOUBLE": " 1.25 ",
             "VPSTUDIO_QA_INVALID_DOUBLE": "nope"
         ])
 
         #expect(snapshot.string("VPSTUDIO_QA_STRING") == "value")
         #expect(snapshot.string("VPSTUDIO_QA_BLANK") == nil)
         #expect(snapshot.double("VPSTUDIO_QA_DOUBLE") == 1.25)
+        #expect(snapshot.double("VPSTUDIO_QA_SPACED_DOUBLE") == 1.25)
         #expect(snapshot.double("VPSTUDIO_QA_INVALID_DOUBLE") == nil)
     }
 
@@ -230,6 +232,39 @@ struct QARuntimeOptionsTests {
     }
 
     @Test
+    func testScreenRawValueReadsTrimmedDirectAndSimctlInputs() {
+        #expect(QARuntimeOptions.testScreenRawValue(from: .init([
+            "VPSTUDIO_QA_TEST_SCREEN": "  player  "
+        ])) == "player")
+        #expect(QARuntimeOptions.testScreenRawValue(from: .init([
+            "SIMCTL_CHILD_VPSTUDIO_QA_TEST_SCREEN": "search-results"
+        ])) == "search-results")
+        #expect(QARuntimeOptions.testScreenRawValue(from: .init([
+            "VPSTUDIO_QA_TEST_SCREEN": "   "
+        ])) == nil)
+    }
+
+    @Test
+    func suppressQuickStartPromptReadsFlagAndTestScreenInputs() {
+        #expect(QARuntimeOptions.suppressQuickStartPrompt(from: .init([
+            "VPSTUDIO_QA_SUPPRESS_QUICK_START": "true"
+        ])))
+        #expect(QARuntimeOptions.suppressQuickStartPrompt(from: .init([
+            "SIMCTL_CHILD_VPSTUDIO_QA_SUPPRESS_QUICK_START": "1"
+        ])))
+        #expect(QARuntimeOptions.suppressQuickStartPrompt(from: .init([
+            "VPSTUDIO_QA_SUPPRESS_QUICK_START_PROMPT": "yes"
+        ])))
+        #expect(QARuntimeOptions.suppressQuickStartPrompt(from: .init([
+            "SIMCTL_CHILD_VPSTUDIO_QA_SUPPRESS_QUICK_START_PROMPT": "true"
+        ])))
+        #expect(QARuntimeOptions.suppressQuickStartPrompt(from: .init([
+            "VPSTUDIO_QA_TEST_SCREEN": "player"
+        ])))
+        #expect(QARuntimeOptions.suppressQuickStartPrompt(from: .init([:])) == false)
+    }
+
+    @Test
     func staticOptionsAreSafeToReadWhenEnvironmentIsAbsent() {
         _ = QARuntimeOptions.isEnabled
         _ = QARuntimeOptions.searchQuery
@@ -268,6 +303,8 @@ struct QARuntimeOptionsTests {
         _ = QARuntimeOptions.traktRefreshFixturePath
         _ = QARuntimeOptions.traktRefreshDelaySeconds
         _ = QARuntimeOptions.forceCompactNavScale
+        _ = QARuntimeOptions.testScreenRawValue
+        _ = QARuntimeOptions.suppressQuickStartPrompt
         _ = QARuntimeOptions.setupAutoAdvance
         _ = QARuntimeOptions.setupTMDBApiKey
         _ = QARuntimeOptions.setupPreferredQuality

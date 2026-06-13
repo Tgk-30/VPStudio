@@ -33,6 +33,24 @@ struct DiscoverAICuratedSectionPolicyTests {
     }
 
     @Test
+    func loadingStateIgnoresStaleRecommendationsUntilRefreshCompletes() {
+        let staleHero = Fixtures.mediaPreview(id: "movie-tmdb-11", title: "Arrival", tmdbId: 11)
+        let state = DiscoverAICuratedSectionPolicy.makeState(
+            enabled: true,
+            isLoading: true,
+            heroPreview: staleHero,
+            recommendations: [makeRecommendation(title: "Arrival")]
+        )
+
+        #expect(state?.isLoading == true)
+        #expect(state?.isRegenerateEnabled == false)
+        #expect(state?.primaryRecommendation == nil)
+        #expect(state?.primaryPreview == nil)
+        #expect(state?.supportingRecommendations.isEmpty == true)
+        #expect(state?.showsEmptyState == false)
+    }
+
+    @Test
     func policyPromotesLeadRecommendationAndCapsSupportingRows() {
         let recommendations = [
             makeRecommendation(title: "Arrival"),
@@ -53,6 +71,23 @@ struct DiscoverAICuratedSectionPolicyTests {
         #expect(state?.primaryRecommendation?.title == "Arrival")
         #expect(state?.primaryPreview == heroPreview)
         #expect(state?.supportingRecommendations.map(\.title) == ["Dune", "Annihilation", "Blade Runner 2049"])
+        #expect(state?.showsEmptyState == false)
+    }
+
+    @Test
+    func singleRecommendationHasPrimaryWithoutSupportingRowsOrEmptyState() {
+        let state = DiscoverAICuratedSectionPolicy.makeState(
+            enabled: true,
+            isLoading: false,
+            heroPreview: nil,
+            recommendations: [makeRecommendation(title: "Arrival")]
+        )
+
+        #expect(state?.isLoading == false)
+        #expect(state?.isRegenerateEnabled == true)
+        #expect(state?.primaryRecommendation?.title == "Arrival")
+        #expect(state?.primaryPreview == nil)
+        #expect(state?.supportingRecommendations.isEmpty == true)
         #expect(state?.showsEmptyState == false)
     }
 

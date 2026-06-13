@@ -41,4 +41,15 @@ enum ImmersiveControlsPolicy {
         let t = controlsAnchorSmoothing
         return current + (target - current) * t
     }
+
+    /// Converts a head-transform forward column into a stable horizontal
+    /// direction for positioning immersive screens and floating controls.
+    static func safeHorizontalForward(from column: SIMD4<Float>) -> SIMD3<Float> {
+        let candidate = SIMD3<Float>(-column.x, 0, -column.z)
+        let lengthSquared = candidate.x * candidate.x + candidate.y * candidate.y + candidate.z * candidate.z
+        guard lengthSquared > .leastNonzeroMagnitude else {
+            return SIMD3<Float>(0, 0, -1)
+        }
+        return candidate / sqrt(lengthSquared)
+    }
 }

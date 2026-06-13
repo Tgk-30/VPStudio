@@ -1,7 +1,7 @@
 import Testing
 @testable import VPStudio
 
-struct BottomTabRoutingPolicyTests {
+struct BottomTabRoutingPolicyTestsBottomtabroutingpolicytests {
     @Test
     func navigationChromePolicyReflectsLayout() {
         #expect(NavigationChromePolicy.usesSidebar(for: .bottomTabBar) == false)
@@ -38,5 +38,45 @@ struct BottomTabRoutingPolicyTests {
 
         #expect(withPicker == .select(.settings))
         #expect(withoutPicker == .select(.settings))
+    }
+
+    @Test
+    func rootTabSelectionClearsPathWhenSwitchingTabsAndRebuildsWhenReselectingCurrentTab() {
+        #expect(
+            RootTabSelectionPolicy.navigationAction(
+                currentTab: .library,
+                selectedTab: .search
+            ) == .clearPath
+        )
+        #expect(
+            RootTabSelectionPolicy.navigationAction(
+                currentTab: .library,
+                selectedTab: .library
+            ) == .resetStack
+        )
+        #expect(
+            RootTabSelectionPolicy.shouldResetNavigationStack(
+                currentTab: .library,
+                selectedTab: .library
+            )
+        )
+        #expect(
+            RootTabSelectionPolicy.shouldResetNavigationStack(
+                currentTab: .library,
+                selectedTab: .search
+            ) == false
+        )
+        #expect(
+            RootTabSelectionPolicy.shouldClearNavigationPath(
+                currentTab: .library,
+                selectedTab: .search
+            )
+        )
+        #expect(
+            RootTabSelectionPolicy.shouldClearNavigationPath(
+                currentTab: .library,
+                selectedTab: .library
+            ) == false
+        )
     }
 }

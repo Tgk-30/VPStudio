@@ -10,8 +10,7 @@ struct LibraryCSVMultiImportTests {
     private func makeTemporaryDatabase() async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent("multi-import-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "multi-import-test-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }

@@ -8,7 +8,7 @@ struct IndexerManagerFallbackTests {
         let (database, rootDir) = try await makeDatabase(named: "indexer-fallback-none.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.initialize()
         let names = await manager.configuredIndexerNames()
 
@@ -22,7 +22,7 @@ struct IndexerManagerFallbackTests {
 
         try await database.setSetting(key: IndexerManager.bootstrapSettingKey, value: "true")
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.initialize()
         let names = await manager.configuredIndexerNames()
 
@@ -47,7 +47,7 @@ struct IndexerManagerFallbackTests {
             )
         )
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.initialize()
         let names = await manager.configuredIndexerNames()
 
@@ -88,7 +88,7 @@ struct IndexerManagerFallbackTests {
             ),
         ])
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.initialize()
 
         let stored = try await database.fetchAllIndexerConfigs()
@@ -119,7 +119,7 @@ struct IndexerManagerFallbackTests {
             )
         )
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.initialize()
         let names = await manager.configuredIndexerNames()
 
@@ -130,7 +130,7 @@ struct IndexerManagerFallbackTests {
         let (database, rootDir) = try await makeDatabase(named: "indexer-fallback-ensure-initialized.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.ensureInitialized()
         let initialNames = await manager.configuredIndexerNames()
 
@@ -159,8 +159,7 @@ struct IndexerManagerFallbackTests {
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }

@@ -59,8 +59,16 @@ struct LoadingSurfaceContractTests {
     @Test
     func contentViewLaunchScreenIsBoundToBootstrapping() throws {
         let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
-        #expect(source.contains("if appState.isBootstrapping"))
+        #expect(source.contains("RootLaunchOverlayPolicy.shouldShowLaunchOverlay"))
+        #expect(source.contains("isBootstrapping: appState.isBootstrapping"))
         #expect(source.contains("LaunchScreen()"))
+    }
+
+    @Test
+    func contentViewSuppressesBootstrappingForQATestScreens() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        #expect(source.contains("presentQATestScreenIfRequested()"))
+        #expect(source.contains("appState.isBootstrapping = false"))
     }
 
     @Test

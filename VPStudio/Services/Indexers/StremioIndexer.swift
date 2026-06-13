@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -51,6 +52,7 @@ struct StremioIndexer: TorrentIndexer {
 
     func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
         let episodeContext = EpisodeTokenMatcher.context(fromQuery: query)
+        let shouldAnnotateEpisodeContext = type == .series
         if let imdbID = extractIMDbID(from: query) {
             let results = try await search(
                 imdbId: imdbID,
@@ -58,11 +60,14 @@ struct StremioIndexer: TorrentIndexer {
                 season: episodeContext?.season,
                 episode: episodeContext?.episode
             )
-            return annotateEpisodeContextIfNeeded(
-                in: results,
-                season: episodeContext?.season,
-                episode: episodeContext?.episode
-            )
+            if shouldAnnotateEpisodeContext {
+                return annotateEpisodeContextIfNeeded(
+                    in: results,
+                    season: episodeContext?.season,
+                    episode: episodeContext?.episode
+                )
+            }
+            return results
         }
 
         let mediaIDs: [String]
@@ -105,11 +110,14 @@ struct StremioIndexer: TorrentIndexer {
         }
 
         if !collected.isEmpty {
-            return annotateEpisodeContextIfNeeded(
-                in: collected,
-                season: episodeContext?.season,
-                episode: episodeContext?.episode
-            )
+            if shouldAnnotateEpisodeContext {
+                return annotateEpisodeContextIfNeeded(
+                    in: collected,
+                    season: episodeContext?.season,
+                    episode: episodeContext?.episode
+                )
+            }
+            return collected
         }
         if let firstError {
             throw firstError
@@ -122,7 +130,8 @@ struct StremioIndexer: TorrentIndexer {
             return false
         }
         let normalized = reason.lowercased()
-        return normalized.contains("catalog")
+        return normalized == "manifest did not include any catalogs"
+            || normalized.contains("did not include any searchable")
     }
 
     private static let imdbIDPattern = try! NSRegularExpression(pattern: #"tt\d+"#, options: [.caseInsensitive])
@@ -192,7 +201,14 @@ struct StremioIndexer: TorrentIndexer {
             throw URLError(.badServerResponse)
         }
         let decoder = JSONDecoder()
-        return try decoder.decode(ManifestResponse.self, from: data)
+        do {
+            return try decoder.decode(ManifestResponse.self, from: data)
+        } catch {
+            throw IndexerParseError.invalidPayload(
+                indexer: name,
+                reason: "manifest payload malformed JSON payload"
+            )
+        }
     }
 
     private func fetchCatalogMetas(query: String, type: MediaType, catalogID: String) async throws -> [CatalogMeta] {
@@ -203,7 +219,15 @@ struct StremioIndexer: TorrentIndexer {
         }
 
         let decoder = JSONDecoder()
-        let payload = try decoder.decode(CatalogSearchResponse.self, from: data)
+        let payload: CatalogSearchResponse
+        do {
+            payload = try decoder.decode(CatalogSearchResponse.self, from: data)
+        } catch {
+            throw IndexerParseError.invalidPayload(
+                indexer: name,
+                reason: "catalog payload malformed JSON payload"
+            )
+        }
         return payload.metas ?? []
     }
 
@@ -217,7 +241,7 @@ struct StremioIndexer: TorrentIndexer {
         }
 
         let compatible = catalogs.filter { catalog in
-            catalog.type == stremioTypePath(for: type) && catalog.supportsSearch
+            catalog.type.caseInsensitiveCompare(stremioTypePath(for: type)) == .orderedSame && catalog.supportsSearch
         }
         guard !compatible.isEmpty else {
             throw IndexerParseError.invalidPayload(
@@ -243,12 +267,15 @@ struct StremioIndexer: TorrentIndexer {
         guard let url = components.url else {
             throw URLError(.badURL)
         }
+        guard IndexerURLSecurityPolicy.permits(url: url) else {
+            throw URLError(.unsupportedURL)
+        }
         return url
     }
 
     private func selectCatalogMediaIDs(from metas: [CatalogMeta], query: String, type: MediaType) -> [String] {
         let eligible = metas.filter { meta in
-            meta.type == nil || meta.type == stremioTypePath(for: type)
+            meta.type == nil || (meta.type?.caseInsensitiveCompare(stremioTypePath(for: type)) == .orderedSame)
         }
         guard !eligible.isEmpty else { return [] }
 
@@ -261,15 +288,22 @@ struct StremioIndexer: TorrentIndexer {
         let source = ranked.filter { $0.score > 0 }
         guard !source.isEmpty else { return [] }
 
-        return Array(
-            source
-                .sorted {
-                    if $0.score != $1.score { return $0.score > $1.score }
-                    return ($0.meta.name ?? "") < ($1.meta.name ?? "")
-                }
-                .prefix(3)
-                .map(\.meta.id)
-        )
+        let rankedIDs = source
+            .sorted {
+                if $0.score != $1.score { return $0.score > $1.score }
+                return ($0.meta.name ?? "") < ($1.meta.name ?? "")
+            }
+            .map { $0.meta.id }
+
+        var selected: [String] = []
+        var seen: Set<String> = []
+        for id in rankedIDs {
+            if seen.insert(id).inserted {
+                selected.append(id)
+                if selected.count == 3 { break }
+            }
+        }
+        return selected
     }
 
     private func catalogScore(for meta: CatalogMeta, normalizedQueryTitle: String, queryYear: Int?) -> Int {
@@ -346,27 +380,7 @@ struct StremioIndexer: TorrentIndexer {
     }
 
     private func makeManifestURL() throws -> URL {
-        guard var components = URLComponents(string: baseURL) else {
-            throw URLError(.badURL)
-        }
-
-        let normalizedBase = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let normalizedEndpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        switch (normalizedBase.isEmpty, normalizedEndpoint.isEmpty) {
-        case (true, false):
-            components.path = "/\(normalizedEndpoint)"
-        case (false, true):
-            components.path = "/\(normalizedBase)"
-        case (false, false):
-            components.path = "/\(normalizedBase)/\(normalizedEndpoint)"
-        default:
-            components.path = "/manifest.json"
-        }
-
-        guard let url = components.url else {
-            throw URLError(.badURL)
-        }
-        return url
+        try StremioAddonURLBuilder.manifestURL(baseURL: baseURL, endpointPath: endpointPath)
     }
 
     private func makeStreamURL(type: MediaType, mediaID: String) throws -> URL {
@@ -419,47 +433,209 @@ struct StremioIndexer: TorrentIndexer {
             let title = (stream["title"] as? String)
                 ?? (stream["name"] as? String)
                 ?? "Stremio Stream"
-            let urlString = (stream["url"] as? String)
-                ?? (stream["externalUrl"] as? String)
-                ?? ""
+            let urlString = stream["url"] as? String
+            let externalURLString = stream["externalUrl"] as? String
+            let magnetString = stream["magnet"] as? String
+            let sources = stream["sources"] as? [String]
+            let directStreamURL = Self.preferredDirectStreamURL(urlString: urlString)
+            let lookupURLString = urlString ?? externalURLString ?? ""
+            let hints = stream["behaviorHints"] as? [String: Any]
+            let requestHeaders = Self.requestHeaders(fromProxyHeaders: hints?["proxyHeaders"])
 
             let infoHash: String? = {
                 if let declared = stream["infoHash"] as? String {
                     let normalized = declared.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !normalized.isEmpty { return normalized.lowercased() }
+                    if let normalizedHash = DebridHashValidator.normalizedInfoHash(normalized),
+                       !normalizedHash.isEmpty {
+                        return normalizedHash
+                    }
                 }
 
-                if let extracted = JSONValueParsing.extractInfoHash(from: urlString), !extracted.isEmpty {
+                if let extracted = JSONValueParsing.extractInfoHash(from: lookupURLString).flatMap(DebridHashValidator.normalizedInfoHash) {
                     return extracted
                 }
 
-                if let external = stream["externalUrl"] as? String, let extracted = JSONValueParsing.extractInfoHash(from: external), !extracted.isEmpty {
+                if let external = stream["externalUrl"] as? String,
+                   let extracted = JSONValueParsing.extractInfoHash(from: external).flatMap(DebridHashValidator.normalizedInfoHash) {
                     return extracted
                 }
 
-                if let extracted = JSONValueParsing.extractInfoHash(from: stream["magnet"] as? String), !extracted.isEmpty {
+                if let extracted = JSONValueParsing.extractInfoHash(from: stream["magnet"] as? String).flatMap(DebridHashValidator.normalizedInfoHash) {
                     return extracted
                 }
 
                 return nil
             }()
-            guard let infoHash, !infoHash.isEmpty else { return nil }
+            let resultHash = infoHash ?? Self.syntheticDirectStreamHash(
+                urlString: directStreamURL,
+                title: title,
+                indexerName: name
+            )
+            guard let resultHash, !resultHash.isEmpty else { return nil }
 
-            let hints = stream["behaviorHints"] as? [String: Any]
             let size = JSONValueParsing.parseInt64(hints?["videoSize"]) ?? 0
             let seeders = JSONValueParsing.parseInt(hints?["seeders"]) ?? 0
             let leechers = JSONValueParsing.parseInt(hints?["leechers"]) ?? 0
 
             return TorrentResult.fromSearch(
-                infoHash: infoHash,
+                infoHash: resultHash,
                 title: title,
                 sizeBytes: size,
                 seeders: seeders,
                 leechers: leechers,
                 indexerName: name,
-                magnetURI: urlString.lowercased().hasPrefix("magnet:") ? urlString : nil
+                magnetURI: Self.preferredMagnetURI(
+                    infoHash: resultHash,
+                    urlString: urlString,
+                    externalURLString: externalURLString,
+                    magnetString: magnetString,
+                    sources: sources,
+                    title: title
+                ),
+                directStreamURL: directStreamURL,
+                directStreamRequestHeaders: requestHeaders
             )
         }
+    }
+
+    private static func preferredMagnetURI(
+        infoHash: String,
+        urlString: String?,
+        externalURLString: String?,
+        magnetString: String?,
+        sources: [String]?,
+        title: String
+    ) -> String? {
+        guard let normalizedHash = DebridHashValidator.normalizedInfoHash(infoHash) else {
+            return nil
+        }
+
+        for candidate in [urlString, externalURLString, magnetString] {
+            guard let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !trimmed.isEmpty,
+                  trimmed.lowercased().hasPrefix("magnet:"),
+                  DebridHashValidator.normalizedInfoHash(normalizedHash) == JSONValueParsing
+                    .extractInfoHash(from: trimmed)
+                    .flatMap(DebridHashValidator.normalizedInfoHash) else {
+                continue
+            }
+            return trimmed
+        }
+
+        var queryItems = ["xt=urn:btih:\(normalizedHash)"]
+        let displayTitle = title
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let displayTitle, !displayTitle.isEmpty {
+            queryItems.append("dn=\(percentEncodeMagnetQueryValue(displayTitle))")
+        }
+
+        for tracker in trackerURLs(from: sources) {
+            queryItems.append("tr=\(percentEncodeMagnetQueryValue(tracker))")
+        }
+
+        return "magnet:?\(queryItems.joined(separator: "&"))"
+    }
+
+    private static func trackerURLs(from sources: [String]?) -> [String] {
+        var trackers: [String] = []
+        var seen: Set<String> = []
+
+        for source in sources ?? [] {
+            let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            let tracker: String
+            if trimmed.lowercased().hasPrefix("tracker:") {
+                tracker = String(trimmed.dropFirst("tracker:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if Self.isLikelyHTTPSTracker(trimmed) {
+                tracker = trimmed
+            } else {
+                continue
+            }
+
+            guard !tracker.isEmpty else {
+                continue
+            }
+
+            let key = tracker.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            trackers.append(tracker)
+        }
+
+        return trackers
+    }
+
+    private static func isLikelyHTTPSTracker(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https", "udp"].contains(scheme) else {
+            return false
+        }
+
+        if scheme == "udp" {
+            return true
+        }
+
+        guard let host = components.host?.lowercased(),
+              !host.isEmpty else {
+            return false
+        }
+
+        let normalizedPath = components.path.lowercased()
+        if Self.hasVideoFileSuffix(normalizedPath) {
+            return false
+        }
+
+        return host.contains("tracker")
+            || normalizedPath.hasSuffix("/announce")
+            || normalizedPath.contains("/announce.")
+    }
+
+    private static func hasVideoFileSuffix(_ path: String) -> Bool {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        guard !ext.isEmpty else {
+            return false
+        }
+
+        let videoFileExtensions: Set<String> = ["3gp", "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "mpeg", "webm", "mkv2"]
+        return videoFileExtensions.contains(ext)
+    }
+
+    private static func percentEncodeMagnetQueryValue(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func preferredDirectStreamURL(urlString: String?) -> String? {
+        TorrentResult.normalizedDirectStreamURLString(urlString)
+    }
+
+    private static func requestHeaders(fromProxyHeaders value: Any?) -> [String: String]? {
+        guard let proxyHeaders = value as? [String: Any],
+              let request = proxyHeaders["request"] as? [String: Any] else {
+            return nil
+        }
+
+        let headers = request.reduce(into: [String: String]()) { result, pair in
+            guard let headerValue = pair.value as? String else { return }
+            result[pair.key] = headerValue
+        }
+
+        return StreamInfo.normalizedRequestHeaders(headers)
+    }
+
+    private static func syntheticDirectStreamHash(
+        urlString: String?,
+        title: String,
+        indexerName: String
+    ) -> String? {
+        guard let urlString else { return nil }
+        let key = "\(indexerName)\n\(title)\n\(urlString)"
+        let digest = SHA256.hash(data: Data(key.utf8))
+        return "direct-\(digest.map { String(format: "%02x", $0) }.joined().prefix(40))"
     }
 
     private func extractIMDbID(from query: String) -> String? {
@@ -469,5 +645,67 @@ struct StremioIndexer: TorrentIndexer {
             return nil
         }
         return String(query[matchRange])
+    }
+}
+
+enum StremioAddonURLBuilder {
+    static func normalizedAddonURLString(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        guard var components = URLComponents(string: trimmed),
+              components.scheme?.lowercased() == "stremio" else {
+            return trimmed
+        }
+
+        guard let host = components.host, !host.isEmpty else {
+            return trimmed
+        }
+
+        components.scheme = "https"
+        return components.string ?? trimmed
+    }
+
+    static func manifestURL(baseURL: String, endpointPath: String = "/manifest.json") throws -> URL {
+        guard let normalizedBaseURL = normalizedAddonURLString(baseURL),
+              var components = URLComponents(string: normalizedBaseURL) else {
+            throw URLError(.badURL)
+        }
+
+        let normalizedBase = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedEndpoint = normalizedEndpointPath(endpointPath)
+
+        if normalizedBase.isEmpty {
+            components.path = "/\(normalizedEndpoint)"
+        } else if path(normalizedBase, endsWith: normalizedEndpoint) {
+            components.path = "/\(normalizedBase)"
+        } else {
+            components.path = "/\(normalizedBase)/\(normalizedEndpoint)"
+        }
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+        guard IndexerURLSecurityPolicy.permits(url: url) else {
+            throw URLError(.unsupportedURL)
+        }
+        return url
+    }
+
+    private static func normalizedEndpointPath(_ endpointPath: String) -> String {
+        let trimmed = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed.isEmpty ? "manifest.json" : trimmed
+    }
+
+    private static func path(_ path: String, endsWith endpointPath: String) -> Bool {
+        let pathSegments = path.split(separator: "/").map(String.init)
+        let endpointSegments = endpointPath.split(separator: "/").map(String.init)
+        guard pathSegments.count >= endpointSegments.count else {
+            return false
+        }
+        let suffix = pathSegments.suffix(endpointSegments.count).map { $0.lowercased() }
+        return suffix == endpointSegments.map { $0.lowercased() }
     }
 }

@@ -3,7 +3,7 @@ import Testing
 @testable import VPStudio
 
 @Suite("Library Grid Policy")
-struct LibraryGridPolicyTests {
+struct LibraryGridPolicyTestsLibrarygridpolicytests {
     @Test
     func cardMinWidthMatchesExpected() {
         #expect(Double(LibraryGridPolicy.cardMinWidth) == 180)
@@ -21,10 +21,32 @@ struct LibraryGridPolicyTests {
     }
 
     @Test
+    func columnCountForNonPositiveContainersFallsBackToOne() {
+        #expect(LibraryGridPolicy.columns(containerWidth: 0) == 1)
+        #expect(LibraryGridPolicy.columns(containerWidth: -320) == 1)
+    }
+
+    @Test
+    func columnCountRemainsOneWhenPaddingConsumesAvailableWidth() {
+        let columns = LibraryGridPolicy.columns(containerWidth: 39)
+        #expect(columns == 1)
+    }
+
+    @Test
     func columnCountForWideContainer() {
         // 1200 - 40 padding + 16 spacing = 1176
         // 1176 / (180 + 16) = 6.0
         let columns = LibraryGridPolicy.columns(containerWidth: 1200)
         #expect(columns == 6)
+    }
+
+    @Test
+    func columnCountAtExactTwoColumnThreshold() {
+        let twoColumnWidth = (2 * LibraryGridPolicy.horizontalPadding)
+            + (2 * LibraryGridPolicy.cardMinWidth)
+            + LibraryGridPolicy.gridSpacing
+
+        #expect(LibraryGridPolicy.columns(containerWidth: twoColumnWidth) == 2)
+        #expect(LibraryGridPolicy.columns(containerWidth: twoColumnWidth - 1) == 1)
     }
 }

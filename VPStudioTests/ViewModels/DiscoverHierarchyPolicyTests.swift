@@ -25,6 +25,23 @@ struct DiscoverHierarchyPolicyTests {
     }
 
     @Test
+    func heroItemsLimitFeaturedBackdropsToFive() {
+        let featured = (1...7).map { Fixtures.mediaPreview(id: "featured-\($0)", type: .movie) }
+
+        let heroItems = DiscoverHeroPresentationPolicy.heroItems(
+            featuredBackdrops: featured,
+            trendingMovies: [Fixtures.mediaPreview(id: "fallback", type: .movie)],
+            trendingShows: [],
+            popularMovies: [],
+            topRatedMovies: [],
+            nowPlayingMovies: [],
+            continueWatching: []
+        )
+
+        #expect(heroItems.map(\.id) == ["featured-1", "featured-2", "featured-3", "featured-4", "featured-5"])
+    }
+
+    @Test
     func heroItemsFallBackToFirstPopulatedCatalogSource() {
         let trendingShows = [Fixtures.mediaPreview(id: "show-1", type: .series)]
         let popular = [Fixtures.mediaPreview(id: "popular-1", type: .movie)]
@@ -43,6 +60,42 @@ struct DiscoverHierarchyPolicyTests {
     }
 
     @Test
+    func heroItemsFallbackPrecedenceContinuesThroughMovieRails() {
+        let nowPlaying = [Fixtures.mediaPreview(id: "now-1", type: .movie)]
+        let topRated = [Fixtures.mediaPreview(id: "top-1", type: .movie)]
+        let popular = [Fixtures.mediaPreview(id: "popular-1", type: .movie)]
+
+        let heroItems = DiscoverHeroPresentationPolicy.heroItems(
+            featuredBackdrops: [],
+            trendingMovies: [],
+            trendingShows: [],
+            popularMovies: popular,
+            topRatedMovies: topRated,
+            nowPlayingMovies: nowPlaying,
+            continueWatching: [Fixtures.mediaPreview(id: "cw-1", type: .movie)]
+        )
+
+        #expect(heroItems.map(\.id) == ["popular-1"])
+    }
+
+    @Test
+    func heroItemsFallbackLimitsSelectedSourceToFive() {
+        let topRated = (1...8).map { Fixtures.mediaPreview(id: "top-\($0)", type: .movie) }
+
+        let heroItems = DiscoverHeroPresentationPolicy.heroItems(
+            featuredBackdrops: [],
+            trendingMovies: [],
+            trendingShows: [],
+            popularMovies: [],
+            topRatedMovies: topRated,
+            nowPlayingMovies: [],
+            continueWatching: []
+        )
+
+        #expect(heroItems.map(\.id) == ["top-1", "top-2", "top-3", "top-4", "top-5"])
+    }
+
+    @Test
     func heroItemsFallBackToContinueWatchingWhenCatalogIsEmpty() {
         let continueWatching = [Fixtures.mediaPreview(id: "cw-1", type: .movie)]
 
@@ -57,6 +110,21 @@ struct DiscoverHierarchyPolicyTests {
         )
 
         #expect(heroItems.map(\.id) == continueWatching.map(\.id))
+    }
+
+    @Test
+    func heroItemsReturnEmptyWhenAllSourcesAreEmpty() {
+        let heroItems = DiscoverHeroPresentationPolicy.heroItems(
+            featuredBackdrops: [],
+            trendingMovies: [],
+            trendingShows: [],
+            popularMovies: [],
+            topRatedMovies: [],
+            nowPlayingMovies: [],
+            continueWatching: []
+        )
+
+        #expect(heroItems.isEmpty)
     }
 
     @Test

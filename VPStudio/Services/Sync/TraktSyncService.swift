@@ -15,19 +15,8 @@ enum TraktDefaults {
         userClientId: String?,
         userClientSecret: String?
     ) -> (clientId: String, clientSecret: String)? {
-        let id: String
-        if let userClientId, !userClientId.isEmpty {
-            id = userClientId
-        } else {
-            id = clientId
-        }
-
-        let secret: String
-        if let userClientSecret, !userClientSecret.isEmpty {
-            secret = userClientSecret
-        } else {
-            secret = clientSecret
-        }
+        let id = userClientId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? clientId
+        let secret = userClientSecret?.trimmingCharacters(in: .whitespacesAndNewlines) ?? clientSecret
 
         guard !id.isEmpty, id != "TRAKT_CLIENT_ID_PLACEHOLDER",
               !secret.isEmpty, secret != "TRAKT_CLIENT_SECRET_PLACEHOLDER"
@@ -407,6 +396,16 @@ actor TraktSyncService {
         guard let token = accessToken, !token.isEmpty else {
             throw TraktError.notConnected
         }
+        if isExplicitlyExpiredPlaceholder(token) && (refreshToken?.isEmpty != false) {
+            throw TraktError.unauthorized
+        }
+        if shouldPreemptivelyRefresh(accessToken: token) {
+            try await refreshAccessToken()
+            guard let refreshedToken = accessToken, !refreshedToken.isEmpty else {
+                throw TraktError.unauthorized
+            }
+            return try await performGet(path: path, token: refreshedToken)
+        }
 
         do {
             return try await performGet(path: path, token: token)
@@ -455,6 +454,16 @@ actor TraktSyncService {
         guard let token = accessToken, !token.isEmpty else {
             throw TraktError.notConnected
         }
+        if isExplicitlyExpiredPlaceholder(token) && (refreshToken?.isEmpty != false) {
+            throw TraktError.unauthorized
+        }
+        if shouldPreemptivelyRefresh(accessToken: token) {
+            try await refreshAccessToken()
+            guard let refreshedToken = accessToken, !refreshedToken.isEmpty else {
+                throw TraktError.unauthorized
+            }
+            return try await performPost(path: path, body: body, token: refreshedToken)
+        }
 
         do {
             return try await performPost(path: path, body: body, token: token)
@@ -501,6 +510,17 @@ actor TraktSyncService {
     private func delete(path: String) async throws {
         guard let token = accessToken, !token.isEmpty else {
             throw TraktError.notConnected
+        }
+        if isExplicitlyExpiredPlaceholder(token) && (refreshToken?.isEmpty != false) {
+            throw TraktError.unauthorized
+        }
+        if shouldPreemptivelyRefresh(accessToken: token) {
+            try await refreshAccessToken()
+            guard let refreshedToken = accessToken, !refreshedToken.isEmpty else {
+                throw TraktError.unauthorized
+            }
+            try await performDelete(path: path, token: refreshedToken)
+            return
         }
 
         do {
@@ -561,6 +581,18 @@ actor TraktSyncService {
 
     private func clearAuthorizationSession() {
         TraktAuthorizationSessionStore.remove(clientId: self.clientId)
+    }
+
+    private func shouldPreemptivelyRefresh(accessToken: String) -> Bool {
+        guard let refreshToken, !refreshToken.isEmpty else { return false }
+        return isExplicitlyExpiredPlaceholder(accessToken)
+    }
+
+    private func isExplicitlyExpiredPlaceholder(_ accessToken: String) -> Bool {
+        let normalized = accessToken
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized == "expired" || normalized == "expired-token"
     }
 }
 

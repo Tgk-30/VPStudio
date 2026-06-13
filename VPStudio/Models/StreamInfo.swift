@@ -3,6 +3,7 @@ import Foundation
 struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
     var infoHash: String
     var preferredService: DebridServiceType?
+    var magnetURI: String?
     var seasonNumber: Int?
     var episodeNumber: Int?
     var torrentId: String?
@@ -13,6 +14,7 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
     init?(
         infoHash: String,
         preferredService: DebridServiceType? = nil,
+        magnetURI: String? = nil,
         seasonNumber: Int? = nil,
         episodeNumber: Int? = nil,
         torrentId: String? = nil,
@@ -27,6 +29,7 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
 
         self.infoHash = normalizedHash
         self.preferredService = preferredService
+        self.magnetURI = Self.normalizedOptionalString(magnetURI)
         self.seasonNumber = seasonNumber
         self.episodeNumber = episodeNumber
         self.torrentId = Self.normalizedOptionalString(torrentId)
@@ -50,6 +53,19 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
 }
 
 struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
+    private enum CodingKeys: String, CodingKey {
+        case streamURL
+        case quality
+        case codec
+        case audio
+        case source
+        case hdr
+        case fileName
+        case sizeBytes
+        case debridService
+        case recoveryContext
+    }
+
     var id: String {
         "\(debridService)-\(fileName)-\(quality.rawValue)-\(codec.rawValue)-\(transportIdentity)"
     }
@@ -64,6 +80,7 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
     var sizeBytes: Int64?
     var debridService: String
     var recoveryContext: StreamRecoveryContext?
+    var requestHeaders: [String: String]? = nil
     var remoteTransferID: String? {
         recoveryContext?.torrentId
     }
@@ -78,7 +95,8 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         fileName: String,
         sizeBytes: Int64?,
         debridService: String,
-        recoveryContext: StreamRecoveryContext? = nil
+        recoveryContext: StreamRecoveryContext? = nil,
+        requestHeaders: [String: String]? = nil
     ) {
         self.streamURL = streamURL
         self.quality = quality
@@ -90,6 +108,7 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         self.sizeBytes = sizeBytes
         self.debridService = debridService
         self.recoveryContext = recoveryContext
+        self.requestHeaders = Self.normalizedRequestHeaders(requestHeaders)
     }
 
     func withRecoveryContext(_ recoveryContext: StreamRecoveryContext?) -> StreamInfo {
@@ -102,6 +121,30 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         var copy = self
         copy.streamURL = streamURL
         return copy
+    }
+
+    func withRequestHeaders(_ requestHeaders: [String: String]?) -> StreamInfo {
+        var copy = self
+        copy.requestHeaders = Self.normalizedRequestHeaders(requestHeaders)
+        return copy
+    }
+
+    static func normalizedRequestHeaders(_ headers: [String: String]?) -> [String: String]? {
+        guard let headers else { return nil }
+
+        let normalized = headers.reduce(into: [String: String]()) { result, pair in
+            let rawName = pair.key
+            let rawValue = pair.value
+            guard rawName.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n:")) == nil else { return }
+            guard rawValue.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n")) == nil else { return }
+
+            let name = pair.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !value.isEmpty else { return }
+            result[name] = value
+        }
+
+        return normalized.isEmpty ? nil : normalized
     }
 
     private var transportIdentity: String {
@@ -149,6 +192,7 @@ extension StreamRecoveryContext {
         StreamRecoveryContext(
             infoHash: infoHash,
             preferredService: preferredService,
+            magnetURI: magnetURI,
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             torrentId: torrentId,

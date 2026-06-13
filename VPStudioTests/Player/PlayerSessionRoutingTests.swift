@@ -32,6 +32,7 @@ struct PlayerSessionRoutingTests {
 
         #expect(request.mediaId == "tt1234567")
         #expect(request.mediaTitle == "Example Show")
+        #expect(request.tmdbId == 100)
         #expect(request.episodeId == episode.id)
         #expect(request.availableStreams == [primaryStream, secondaryStream])
     }
@@ -48,6 +49,7 @@ struct PlayerSessionRoutingTests {
 
         #expect(request.mediaId == preview.id)
         #expect(request.mediaTitle == preview.title)
+        #expect(request.tmdbId == 90)
         #expect(request.episodeId == nil)
         #expect(request.availableStreams == [stream])
     }

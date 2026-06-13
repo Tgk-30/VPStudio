@@ -13,7 +13,7 @@ actor SimklSyncService {
 
     private let clientId: String
     private let clientSecret: String
-    private let baseURL = "https://api.simkl.com"
+    private let baseURL: String
     private let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
     private let session: URLSession
     private var accessToken: String?
@@ -23,6 +23,7 @@ actor SimklSyncService {
     init(
         clientId: String,
         clientSecret: String = "",
+        baseURL: String = "https://api.simkl.com",
         accessToken: String? = nil,
         refreshToken: String? = nil,
         session: URLSession? = nil,
@@ -30,6 +31,7 @@ actor SimklSyncService {
     ) {
         self.clientId = clientId
         self.clientSecret = clientSecret
+        self.baseURL = baseURL
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.session = session ?? Self.defaultSession
@@ -94,16 +96,17 @@ actor SimklSyncService {
             ]
         )
 
-        guard !response.accessToken.isEmpty else {
+        let trimmedAccessToken = response.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAccessToken.isEmpty else {
             throw SimklError.invalidAuthorizationResponse
         }
 
-        accessToken = response.accessToken
+        accessToken = trimmedAccessToken
         if let refreshToken = response.refreshToken, !refreshToken.isEmpty {
             self.refreshToken = refreshToken
         }
         clearAuthorizationSession()
-        await onTokensRefreshed?(response.accessToken, self.refreshToken)
+        await onTokensRefreshed?(trimmedAccessToken, self.refreshToken)
         return response
     }
 
@@ -144,7 +147,7 @@ actor SimklSyncService {
     // MARK: - Networking
 
     private func get<T: Decodable>(path: String) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SimklError.invalidURL }
+        guard let url = makeURL(path: path) else { throw SimklError.invalidURL }
         let data = try await performAuthenticatedRequest {
             var request = URLRequest(url: url)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -155,7 +158,7 @@ actor SimklSyncService {
     }
 
     private func postData<T: Decodable>(path: String, data body: Data) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SimklError.invalidURL }
+        guard let url = makeURL(path: path) else { throw SimklError.invalidURL }
         let data = try await performAuthenticatedRequest {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -168,7 +171,7 @@ actor SimklSyncService {
     }
 
     private func postForm<T: Decodable>(path: String, parameters: [(String, String)]) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SimklError.invalidURL }
+        guard let url = makeURL(path: path) else { throw SimklError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
@@ -266,6 +269,38 @@ actor SimklSyncService {
         var components = URLComponents()
         components.queryItems = parameters.map { URLQueryItem(name: $0.0, value: $0.1) }
         return Data((components.percentEncodedQuery ?? "").utf8)
+    }
+
+    private func makeURL(path: String) -> URL? {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty,
+              !trimmedBaseURL.contains("["),
+              !trimmedBaseURL.contains("]"),
+              var baseComponents = URLComponents(string: trimmedBaseURL),
+              let scheme = baseComponents.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"),
+              baseComponents.host?.isEmpty == false
+        else {
+            return nil
+        }
+
+        guard let pathComponents = URLComponents(string: path) else {
+            return nil
+        }
+
+        let basePath = baseComponents.path
+        let suffixPath = pathComponents.path
+        if basePath.isEmpty {
+            baseComponents.path = suffixPath
+        } else if suffixPath.isEmpty {
+            baseComponents.path = basePath
+        } else if basePath.hasSuffix("/") {
+            baseComponents.path = basePath + suffixPath.dropFirst()
+        } else {
+            baseComponents.path = basePath + suffixPath
+        }
+        baseComponents.percentEncodedQuery = pathComponents.percentEncodedQuery
+        return baseComponents.url
     }
 
     private func beginAuthorizationSession() -> PendingSimklAuthorizationSession {

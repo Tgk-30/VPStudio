@@ -1,6 +1,120 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum LibraryCSVImportPickerMode: Hashable, Identifiable, Sendable {
+    case csvFiles
+    case folder
+
+    var id: Self { self }
+}
+
+enum LibraryCSVImportSheetPolicy {
+    static let createNewFolderOption = "__create_new_folder_option__"
+
+    static func isPickerPresented(mode: LibraryCSVImportPickerMode?) -> Bool {
+        mode != nil
+    }
+
+    static func activeContentTypes(
+        mode: LibraryCSVImportPickerMode?,
+        supportedCSVTypes: [UTType] = supportedCSVTypes()
+    ) -> [UTType] {
+        mode == .folder ? [.folder] : supportedCSVTypes
+    }
+
+    static func destinationFolderListTypes(
+        for destination: LibraryCSVImportDestination
+    ) -> [UserLibraryEntry.ListType] {
+        switch destination {
+        case .watchlist:
+            return [.watchlist]
+        case .favorites:
+            return [.favorites]
+        case .auto:
+            return [.watchlist, .favorites]
+        case .history:
+            return []
+        }
+    }
+
+    static func destinationSupportsFolders(_ destination: LibraryCSVImportDestination) -> Bool {
+        !destinationFolderListTypes(for: destination).isEmpty
+    }
+
+    static func shouldShowCustomFolderField(
+        existingFolderOptions: [String],
+        selectedExistingFolderName: String
+    ) -> Bool {
+        existingFolderOptions.isEmpty || selectedExistingFolderName == createNewFolderOption
+    }
+
+    static func selectedManualFolderName(
+        existingFolderOptions: [String],
+        selectedExistingFolderName: String,
+        typedFolderName: String
+    ) -> String {
+        let selectedName = shouldShowCustomFolderField(
+            existingFolderOptions: existingFolderOptions,
+            selectedExistingFolderName: selectedExistingFolderName
+        ) ? typedFolderName : selectedExistingFolderName
+        return selectedName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func supportedCSVTypes(
+        from candidates: [UTType?] = [
+            UTType.commaSeparatedText,
+            UTType(filenameExtension: "csv"),
+            UTType.plainText,
+            UTType.text,
+        ]
+    ) -> [UTType] {
+        let compact = candidates.compactMap { $0 }
+        return compact.isEmpty ? [.data] : compact
+    }
+
+    static func selectedExistingFolderName(
+        afterLoading uniqueNames: [String],
+        currentSelection: String
+    ) -> String {
+        guard !uniqueNames.isEmpty else {
+            return createNewFolderOption
+        }
+        return uniqueNames.first {
+            $0.caseInsensitiveCompare(currentSelection) == .orderedSame
+        } ?? uniqueNames[0]
+    }
+
+    static func requiresManualSubfolderName(
+        fileCount: Int,
+        importToFolder: Bool,
+        destinationSupportsFolders: Bool,
+        autoSubfolderPerFile: Bool,
+        manualFolderName: String
+    ) -> Bool {
+        fileCount > 1
+            && importToFolder
+            && destinationSupportsFolders
+            && !autoSubfolderPerFile
+            && manualFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func canonicalFolderNames(from names: [String]) -> [String] {
+        var uniqueNames: [String] = []
+        let sorted = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+        for name in sorted {
+            if uniqueNames.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                continue
+            }
+            uniqueNames.append(name)
+        }
+        return uniqueNames
+    }
+}
+
 struct LibraryCSVImportSheet: View {
     let onImportComplete: (LibraryCSVImportSummary) -> Void
 
@@ -15,7 +129,7 @@ struct LibraryCSVImportSheet: View {
     @State private var autoSubfolderPerFile = true
     @State private var existingFolderOptions: [String] = []
     @State private var selectedExistingFolderName = Self.createNewFolderOption
-    @State private var importPickerMode: ImportPickerMode?
+    @State private var importPickerMode: LibraryCSVImportPickerMode?
     @State private var csvImportInFlight = false
     @State private var csvImportError: String?
     @State private var csvImportNotice: String?
@@ -23,14 +137,53 @@ struct LibraryCSVImportSheet: View {
     @State private var multiImportSummaries: [LibraryCSVImportSummary] = []
     @State private var importDiagnostics: [String] = []
 
-    private enum ImportPickerMode: Identifiable {
-        case csvFiles
-        case folder
+    private static let createNewFolderOption = LibraryCSVImportSheetPolicy.createNewFolderOption
+    private let disablesAutomaticTasks: Bool
+    private let enablesRuntimeImportControls: Bool
+    private let onFolderOptionsRefreshed: (@MainActor ([String], String) -> Void)?
+    private let onRuntimeImportControlsReady: (@MainActor () -> Void)?
 
-        var id: Int { hashValue }
+    init(
+        initialDestination: LibraryCSVImportDestination = .auto,
+        initialImportRatings: Bool = true,
+        initialPromoteLikedToFavorites: Bool = true,
+        initialFolderName: String = "",
+        initialImportToFolder: Bool = true,
+        initialAutoSubfolderPerFile: Bool = true,
+        initialExistingFolderOptions: [String] = [],
+        initialSelectedExistingFolderName: String = LibraryCSVImportSheetPolicy.createNewFolderOption,
+        initialImportInFlight: Bool = false,
+        initialImportError: String? = nil,
+        initialImportNotice: String? = nil,
+        initialImportSummary: LibraryCSVImportSummary? = nil,
+        initialMultiImportSummaries: [LibraryCSVImportSummary] = [],
+        initialImportDiagnostics: [String] = [],
+        disablesAutomaticTasks: Bool = false,
+        enablesRuntimeImportControls: Bool = false,
+        onFolderOptionsRefreshed: (@MainActor ([String], String) -> Void)? = nil,
+        onRuntimeImportControlsReady: (@MainActor () -> Void)? = nil,
+        onImportComplete: @escaping (LibraryCSVImportSummary) -> Void
+    ) {
+        self.onImportComplete = onImportComplete
+        _csvImportDestination = State(initialValue: initialDestination)
+        _csvImportRatings = State(initialValue: initialImportRatings)
+        _csvPromoteLikedToFavorites = State(initialValue: initialPromoteLikedToFavorites)
+        _folderName = State(initialValue: initialFolderName)
+        _importToFolder = State(initialValue: initialImportToFolder)
+        _autoSubfolderPerFile = State(initialValue: initialAutoSubfolderPerFile)
+        _existingFolderOptions = State(initialValue: initialExistingFolderOptions)
+        _selectedExistingFolderName = State(initialValue: initialSelectedExistingFolderName)
+        _csvImportInFlight = State(initialValue: initialImportInFlight)
+        _csvImportError = State(initialValue: initialImportError)
+        _csvImportNotice = State(initialValue: initialImportNotice)
+        _importSummary = State(initialValue: initialImportSummary)
+        _multiImportSummaries = State(initialValue: initialMultiImportSummaries)
+        _importDiagnostics = State(initialValue: initialImportDiagnostics)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+        self.enablesRuntimeImportControls = enablesRuntimeImportControls
+        self.onFolderOptionsRefreshed = onFolderOptionsRefreshed
+        self.onRuntimeImportControlsReady = onRuntimeImportControlsReady
     }
-
-    private static let createNewFolderOption = "__create_new_folder_option__"
 
     var body: some View {
         NavigationStack {
@@ -205,11 +358,23 @@ struct LibraryCSVImportSheet: View {
                 }
             }
             .task {
+                guard !disablesAutomaticTasks else { return }
                 await refreshExistingFolderOptions()
             }
             .onChange(of: csvImportDestination) { _, _ in
+                guard !disablesAutomaticTasks else { return }
                 Task { await refreshExistingFolderOptions() }
             }
+            .modifier(LibraryCSVImportControlHandlers(
+                isEnabled: enablesRuntimeImportControls,
+                onReady: onRuntimeImportControlsReady,
+                onImportFiles: { urls in
+                    Task { await importCSVFiles(.success(urls)) }
+                },
+                onImportFolder: { folderURL in
+                    Task { await importFolder(.success([folderURL])) }
+                }
+            ))
         }
         .frame(minWidth: 400, minHeight: 440)
     }
@@ -217,7 +382,7 @@ struct LibraryCSVImportSheet: View {
     /// Single binding that drives the one `.fileImporter` modifier.
     private var isPickerPresented: Binding<Bool> {
         Binding(
-            get: { importPickerMode != nil },
+            get: { LibraryCSVImportSheetPolicy.isPickerPresented(mode: importPickerMode) },
             // Keep mode until fileImporter completion callback reads it.
             // Clearing here races with callback and can drop the import action.
             set: { _ in }
@@ -226,46 +391,37 @@ struct LibraryCSVImportSheet: View {
 
     /// Content types switch based on which button was tapped.
     private var activeContentTypes: [UTType] {
-        importPickerMode == .folder ? [.folder] : supportedCSVTypes
+        LibraryCSVImportSheetPolicy.activeContentTypes(
+            mode: importPickerMode,
+            supportedCSVTypes: supportedCSVTypes
+        )
     }
 
     private var destinationFolderListTypes: [UserLibraryEntry.ListType] {
-        switch csvImportDestination {
-        case .watchlist:
-            return [.watchlist]
-        case .favorites:
-            return [.favorites]
-        case .auto:
-            return [.watchlist, .favorites]
-        case .history:
-            return []
-        }
+        LibraryCSVImportSheetPolicy.destinationFolderListTypes(for: csvImportDestination)
     }
 
     private var destinationSupportsFolders: Bool {
-        !destinationFolderListTypes.isEmpty
+        LibraryCSVImportSheetPolicy.destinationSupportsFolders(csvImportDestination)
     }
 
     private var shouldShowCustomFolderField: Bool {
-        existingFolderOptions.isEmpty || selectedExistingFolderName == Self.createNewFolderOption
+        LibraryCSVImportSheetPolicy.shouldShowCustomFolderField(
+            existingFolderOptions: existingFolderOptions,
+            selectedExistingFolderName: selectedExistingFolderName
+        )
     }
 
     private var selectedManualFolderName: String {
-        if shouldShowCustomFolderField {
-            return folderName.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return selectedExistingFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        LibraryCSVImportSheetPolicy.selectedManualFolderName(
+            existingFolderOptions: existingFolderOptions,
+            selectedExistingFolderName: selectedExistingFolderName,
+            typedFolderName: folderName
+        )
     }
 
     private var supportedCSVTypes: [UTType] {
-        let types: [UTType?] = [
-            UTType.commaSeparatedText,
-            UTType(filenameExtension: "csv"),
-            UTType.plainText,
-            UTType.text,
-        ]
-        let compact = types.compactMap { $0 }
-        return compact.isEmpty ? [.data] : compact
+        LibraryCSVImportSheetPolicy.supportedCSVTypes()
     }
 
     @MainActor
@@ -285,7 +441,13 @@ struct LibraryCSVImportSheet: View {
             let manualFolderName = selectedManualFolderName
             let useAutoSubfolderPerFile = importToFolder && destinationSupportsFolders && autoSubfolderPerFile
 
-            if urls.count > 1, importToFolder, destinationSupportsFolders, !useAutoSubfolderPerFile, manualFolderName.isEmpty {
+            if LibraryCSVImportSheetPolicy.requiresManualSubfolderName(
+                fileCount: urls.count,
+                importToFolder: importToFolder,
+                destinationSupportsFolders: destinationSupportsFolders,
+                autoSubfolderPerFile: useAutoSubfolderPerFile,
+                manualFolderName: manualFolderName
+            ) {
                 csvImportError = "Enter a subfolder name, or enable auto subfolder by filename."
                 trace("importCSVFiles validation error=missing manual subfolder name")
                 return
@@ -320,7 +482,8 @@ struct LibraryCSVImportSheet: View {
                 do {
                     let summary = try await importSingleCSV(
                         url,
-                        autoFolderFromFilename: useAutoSubfolderPerFile
+                        autoFolderFromFilename: useAutoSubfolderPerFile,
+                        postNotifications: false
                     )
                     summaries.append(summary)
                     trace("file=\(url.lastPathComponent) \(Self.summaryLogLine(summary))")
@@ -409,7 +572,11 @@ struct LibraryCSVImportSheet: View {
     }
 
     @MainActor
-    private func importSingleCSV(_ url: URL, autoFolderFromFilename: Bool = false) async throws -> LibraryCSVImportSummary {
+    private func importSingleCSV(
+        _ url: URL,
+        autoFolderFromFilename: Bool = false,
+        postNotifications: Bool = true
+    ) async throws -> LibraryCSVImportSummary {
         trace("importSingleCSV file=\(url.lastPathComponent) autoFolder=\(autoFolderFromFilename)")
         let hasSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
@@ -455,10 +622,10 @@ struct LibraryCSVImportSheet: View {
         let summary = try await appState.libraryCSVImportService.importCSV(from: url, options: options)
 
         // Refresh library only when list entries actually changed.
-        if Self.hasLibraryChanges(in: summary) {
+        if postNotifications && Self.hasLibraryChanges(in: summary) {
             NotificationCenter.default.post(name: .libraryDidChange, object: nil)
         }
-        if summary.ratingsImported > 0 {
+        if postNotifications && summary.ratingsImported > 0 {
             NotificationCenter.default.post(name: .tasteProfileDidChange, object: nil)
         }
 
@@ -470,6 +637,7 @@ struct LibraryCSVImportSheet: View {
         guard destinationSupportsFolders else {
             existingFolderOptions = []
             selectedExistingFolderName = Self.createNewFolderOption
+            onFolderOptionsRefreshed?(existingFolderOptions, selectedExistingFolderName)
             return
         }
 
@@ -480,36 +648,18 @@ struct LibraryCSVImportSheet: View {
                 names.append(contentsOf: folders.filter { !$0.isSystem }.map(\.name))
             }
 
-            var uniqueNames: [String] = []
-            let sorted = names.sorted {
-                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-            }
-            for name in sorted {
-                if uniqueNames.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
-                    continue
-                }
-                uniqueNames.append(name)
-            }
+            let uniqueNames = LibraryCSVImportSheetPolicy.canonicalFolderNames(from: names)
 
             existingFolderOptions = uniqueNames
-
-            if uniqueNames.isEmpty {
-                selectedExistingFolderName = Self.createNewFolderOption
-                return
-            }
-
-            if let match = uniqueNames.first(where: {
-                $0.caseInsensitiveCompare(selectedExistingFolderName) == .orderedSame
-            }) {
-                selectedExistingFolderName = match
-            } else if selectedExistingFolderName == Self.createNewFolderOption {
-                selectedExistingFolderName = uniqueNames[0]
-            } else {
-                selectedExistingFolderName = uniqueNames[0]
-            }
+            selectedExistingFolderName = LibraryCSVImportSheetPolicy.selectedExistingFolderName(
+                afterLoading: uniqueNames,
+                currentSelection: selectedExistingFolderName
+            )
+            onFolderOptionsRefreshed?(existingFolderOptions, selectedExistingFolderName)
         } catch {
             existingFolderOptions = []
             selectedExistingFolderName = Self.createNewFolderOption
+            onFolderOptionsRefreshed?(existingFolderOptions, selectedExistingFolderName)
             trace("existing folders load error=\(error.localizedDescription)")
         }
     }
@@ -600,5 +750,28 @@ struct LibraryCSVImportSheet: View {
 
     private static var traceLogURL: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("vpstudio-import-trace.log")
+    }
+}
+
+private struct LibraryCSVImportControlHandlers: ViewModifier {
+    let isEnabled: Bool
+    let onReady: (@MainActor () -> Void)?
+    let onImportFiles: ([URL]) -> Void
+    let onImportFolder: (URL) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                guard isEnabled else { return }
+                onReady?()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .libraryCSVImportControlImportFiles)) { notification in
+                guard isEnabled, let urls = notification.object as? [URL] else { return }
+                onImportFiles(urls)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .libraryCSVImportControlImportFolder)) { notification in
+                guard isEnabled, let folderURL = notification.object as? URL else { return }
+                onImportFolder(folderURL)
+            }
     }
 }

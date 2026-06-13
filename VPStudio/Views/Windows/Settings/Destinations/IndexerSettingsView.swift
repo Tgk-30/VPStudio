@@ -12,16 +12,36 @@ struct IndexerSettingsView: View {
     @State private var notice: SettingsInlineNotice?
     @State private var testingConfigID: String?
     @State private var pendingDeletion: PendingDeletion?
+    private let disablesAutomaticTasks: Bool
 
     private struct PendingDeletion: Identifiable {
         let id: String
         let name: String
     }
 
+    init(
+        initialConfigs: [IndexerConfig] = [],
+        initialIsShowingEditor: Bool = false,
+        initialDraft: IndexerDraft = .new(),
+        initialSurfaceError: AppError? = nil,
+        initialNotice: SettingsInlineNotice? = nil,
+        initialTestingConfigID: String? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _configs = State(initialValue: initialConfigs)
+        _isShowingEditor = State(initialValue: initialIsShowingEditor)
+        _draft = State(initialValue: initialDraft)
+        _surfaceError = State(initialValue: initialSurfaceError)
+        _notice = State(initialValue: initialNotice)
+        _testingConfigID = State(initialValue: initialTestingConfigID)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
+
     var body: some View {
         indexerList
             .navigationTitle("Indexers")
             .task {
+                guard !disablesAutomaticTasks else { return }
                 await loadConfigs()
             }
             .refreshable {
@@ -564,7 +584,13 @@ struct IndexerSettingsView: View {
 
         var normalizedURL: String? {
             let value = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty ? nil : value
+            guard !value.isEmpty else {
+                return nil
+            }
+            if indexerType == .stremio {
+                return StremioAddonURLBuilder.normalizedAddonURLString(value)
+            }
+            return value
         }
 
         var normalizedAPIKey: String? {
@@ -594,11 +620,8 @@ struct IndexerSettingsView: View {
             guard let urlString = normalizedURL else {
                 return "Base URL is required."
             }
-            guard let components = URLComponents(string: urlString),
-                  let scheme = components.scheme?.lowercased(),
-                  scheme == "https",
-                  components.host?.isEmpty == false else {
-                return "Enter a valid HTTPS base URL."
+            guard IndexerURLSecurityPolicy.permitsBaseURL(urlString) else {
+                return IndexerURLSecurityPolicy.validationMessage
             }
 
             if showsAPIKeyField, (normalizedAPIKey?.isEmpty ?? true) {

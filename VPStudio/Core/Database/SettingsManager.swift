@@ -9,6 +9,8 @@ actor SettingsManager {
         SettingsKeys.openAIApiKey,
         SettingsKeys.anthropicApiKey,
         SettingsKeys.openRouterApiKey,
+        SettingsKeys.mistralApiKey,
+        SettingsKeys.minimaxApiKey,
         SettingsKeys.traktClientId,
         SettingsKeys.traktClientSecret,
         SettingsKeys.traktAccessToken,
@@ -47,7 +49,7 @@ actor SettingsManager {
             try await database.setSetting(key: key, value: SecretReference.encode(key: migratedKey))
         } catch {
             // Roll back keychain entry — plaintext value remains in DB, migration will retry next read.
-            try? await secretStore.deleteSecret(for: migratedKey)
+            try await secretStore.deleteSecret(for: migratedKey)
             return stored
         }
         return stored
@@ -66,12 +68,12 @@ actor SettingsManager {
                 try await database.setSetting(key: key, value: SecretReference.encode(key: secretKey))
             } catch {
                 // Roll back keychain entry to avoid orphaned secrets.
-                try? await secretStore.deleteSecret(for: secretKey)
+                try await secretStore.deleteSecret(for: secretKey)
                 throw error
             }
         } else {
+            try await secretStore.deleteSecret(for: secretKey)
             try await database.setSetting(key: key, value: nil)
-            try? await secretStore.deleteSecret(for: secretKey)
         }
     }
 
@@ -139,6 +141,10 @@ enum SettingsKeys {
     nonisolated static let openAIModelPreset = "openai_model_preset"
     nonisolated static let anthropicModelPreset = "anthropic_model_preset"
     nonisolated static let openRouterModelPreset = "openrouter_model_preset"
+    nonisolated static let mistralApiKey = "mistral_api_key"
+    nonisolated static let mistralModelPreset = "mistral_model_preset"
+    nonisolated static let minimaxApiKey = "minimax_api_key"
+    nonisolated static let minimaxModelPreset = "minimax_model_preset"
     nonisolated static let geminiApiKey = "gemini_api_key"
     nonisolated static let geminiModelPreset = "gemini_model_preset"
     nonisolated static let ollamaEndpoint = "ollama_endpoint"

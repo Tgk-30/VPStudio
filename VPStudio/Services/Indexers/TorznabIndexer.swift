@@ -78,11 +78,19 @@ struct TorznabIndexer: TorrentIndexer {
         }
     }
 
-    private var isProwlarrEndpoint: Bool {
-        endpointPath.lowercased().contains("/api/v1/search")
+    internal var isProwlarrEndpoint: Bool {
+        let basePath = URLComponents(string: baseURL)?.path ?? ""
+        let endpoint = endpointPath.hasPrefix("/") ? endpointPath : "/\(endpointPath)"
+        let composedPath = "\(basePath)\(endpoint)".lowercased()
+        let segments = composedPath.split(separator: "/").filter { !$0.isEmpty }
+        let suffix = segments.suffix(3)
+        return suffix.count == 3
+            && suffix[suffix.startIndex] == "api"
+            && suffix[suffix.startIndex + 1] == "v1"
+            && suffix[suffix.startIndex + 2] == "search"
     }
 
-    private func prowlarrSearchType(for type: MediaType) -> String {
+    internal func prowlarrSearchType(for type: MediaType) -> String {
         switch type {
         case .movie:
             return "moviesearch"
@@ -91,7 +99,7 @@ struct TorznabIndexer: TorrentIndexer {
         }
     }
 
-    private func prowlarrStructuredQuery(
+    internal func prowlarrStructuredQuery(
         imdbId: String,
         type: MediaType,
         season: Int?,
@@ -132,7 +140,7 @@ struct TorznabIndexer: TorrentIndexer {
         }
     }
 
-    private func parseTorznabXML(_ data: Data) throws -> [TorrentResult] {
+    internal func parseTorznabXML(_ data: Data) throws -> [TorrentResult] {
         let parser = XMLParser(data: data)
         let delegate = TorznabXMLParserDelegate(indexerName: name)
         parser.delegate = delegate
@@ -160,7 +168,7 @@ struct TorznabIndexer: TorrentIndexer {
         return results
     }
 
-    private func parseProwlarrJSON(_ data: Data) throws -> [TorrentResult] {
+    internal func parseProwlarrJSON(_ data: Data) throws -> [TorrentResult] {
         let object: Any
         do {
             object = try JSONSerialization.jsonObject(with: data)
@@ -217,13 +225,13 @@ struct TorznabIndexer: TorrentIndexer {
         return results
     }
 
-    private func dataLooksLikeJSON(_ data: Data) -> Bool {
+    internal func dataLooksLikeJSON(_ data: Data) -> Bool {
         let bytes = data.stripLeadingBOMAndWhitespace()
         guard let first = bytes.first else { return false }
         return first == UInt8(ascii: "{") || first == UInt8(ascii: "[")
     }
 
-    private func buildRequest(queryItems: [URLQueryItem]) throws -> URLRequest {
+    internal func buildRequest(queryItems: [URLQueryItem]) throws -> URLRequest {
         guard var components = URLComponents(string: baseURL) else {
             throw URLError(.badURL)
         }
@@ -259,7 +267,7 @@ struct TorznabIndexer: TorrentIndexer {
         guard let url = components.url else {
             throw URLError(.badURL)
         }
-        guard url.scheme?.lowercased() == "https" else {
+        guard IndexerURLSecurityPolicy.permits(url: url) else {
             throw URLError(.unsupportedURL)
         }
 

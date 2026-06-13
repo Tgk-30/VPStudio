@@ -8,7 +8,8 @@ struct EnvironmentLoaderTaskLifecycleTests {
     func environmentsTabViewCoalescesNotificationDrivenLoadsAndCancelsOnDisappear() throws {
         let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
         #expect(source.contains("@State private var environmentLoadTask: Task<Void, Never>?"))
-        #expect(source.contains(".task { await coalescedLoadEnvironments() }"))
+        #expect(source.contains("guard !disablesAutomaticTasks else { return }"))
+        #expect(source.contains("await coalescedLoadEnvironments()"))
         #expect(source.contains(".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))"))
         #expect(source.contains("environmentLoadTask?.cancel()"))
         #expect(source.contains("environmentLoadTask = Task { await loadEnvironments() }"))
@@ -20,7 +21,8 @@ struct EnvironmentLoaderTaskLifecycleTests {
     func environmentPickerSheetCoalescesNotificationDrivenLoadsAndCancelsOnDisappear() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
         #expect(source.contains("@State private var environmentLoadTask: Task<Void, Never>?"))
-        #expect(source.contains(".task { await coalescedLoadEnvironments() }"))
+        #expect(source.contains("guard !disablesAutomaticTasks else { return }"))
+        #expect(source.contains("await coalescedLoadEnvironments()"))
         #expect(source.contains(".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))"))
         #expect(source.contains("environmentLoadTask?.cancel()"))
         #expect(source.contains("environmentLoadTask = Task { await loadEnvironments() }"))

@@ -159,8 +159,7 @@ struct ExternalPlayerRoutingTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let dbPath = tempDir.appendingPathComponent("external-player-settings.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "external-player-settings-\(UUID().uuidString)")
         try await database.migrate()
 
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
@@ -173,6 +172,23 @@ struct ExternalPlayerRoutingTests {
         let preference = await ExternalPlayerSettings.loadPreference(from: settings)
         #expect(preference.app == .vlc)
         #expect(preference.customURLTemplate == "custom://play?url={url}")
+    }
+
+    @Test
+    func settingsLoaderDefaultsToBuiltInWhenValuesAreMissing() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let database = try DatabaseManager(inMemoryNamed: "external-player-empty-settings-\(UUID().uuidString)")
+        try await database.migrate()
+
+        let settings = SettingsManager(database: database, secretStore: TestSecretStore())
+
+        let preference = await ExternalPlayerSettings.loadPreference(from: settings)
+        #expect(preference.app == .builtIn)
+        #expect(preference.customURLTemplate == nil)
+        #expect(preference.usesExternalPlayer == false)
     }
 
     private func encoded(_ value: String) -> String {

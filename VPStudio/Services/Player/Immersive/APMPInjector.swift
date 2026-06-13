@@ -102,6 +102,68 @@ final class APMPInjector {
     }
 }
 
+enum APMPFramePublishingPolicy {
+    static func shouldEnqueueRendererBuffer(status: OSStatus, hasBuffer: Bool) -> Bool {
+        status == noErr && hasBuffer
+    }
+
+    static func shouldEnqueueLayerBuffer(status: OSStatus, hasBuffer: Bool, isReadyForMoreMediaData: Bool) -> Bool {
+        status == noErr && hasBuffer && isReadyForMoreMediaData
+    }
+}
+
+enum APMPStereoFormatCachePolicy {
+    static func shouldReuseFormatDescription(
+        cachedWidth: Int,
+        cachedHeight: Int,
+        cachedMode: APMPInjector.Mode?,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        mode: APMPInjector.Mode
+    ) -> Bool {
+        cachedWidth == pixelWidth && cachedHeight == pixelHeight && cachedMode == mode
+    }
+
+    static func resetStateAfterFormatDescriptionFailure() -> (width: Int, height: Int, mode: APMPInjector.Mode?) {
+        (width: 0, height: 0, mode: nil)
+    }
+}
+
+enum APMPSampleTimingPolicy {
+    static func timingInfo(for itemTime: CMTime) -> CMSampleTimingInfo {
+        CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: itemTime,
+            decodeTimeStamp: .invalid
+        )
+    }
+}
+
+enum APMPStereoFormatDescriptionFactory {
+    static func make(
+        pixelFormat: OSType,
+        width: Int,
+        height: Int,
+        mode: APMPInjector.Mode
+    ) -> (status: OSStatus, description: CMVideoFormatDescription?) {
+        guard width > 0, height > 0 else {
+            return (kCMFormatDescriptionError_InvalidParameter, nil)
+        }
+
+        let extensions = APMPInjector.stereoMetadataExtensions(for: mode)
+        var description: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator: nil,
+            codecType: CMVideoCodecType(pixelFormat),
+            width: Int32(width),
+            height: Int32(height),
+            extensions: extensions as CFDictionary,
+            formatDescriptionOut: &description
+        )
+        return (status, description)
+    }
+}
+
 // MARK: - CADisplayLink trampoline (avoids retain cycle)
 
 /// `NSObject` subclass used as the `CADisplayLink` target.
@@ -144,15 +206,21 @@ private final class DisplayLinkTarget: NSObject {
         injectFrame(pixelBuffer: pixelBuffer, itemTime: itemTime)
     }
 
+#if DEBUG
+    func _testInjectFrame(pixelBuffer: CVPixelBuffer, itemTime: CMTime) {
+        injectFrame(pixelBuffer: pixelBuffer, itemTime: itemTime)
+    }
+
+    func _testStereoFormatDescription(for pixelBuffer: CVPixelBuffer) -> CMVideoFormatDescription? {
+        stereoFormatDescription(for: pixelBuffer)
+    }
+#endif
+
     private func injectFrame(pixelBuffer: CVPixelBuffer, itemTime: CMTime) {
         let formatDesc = stereoFormatDescription(for: pixelBuffer)
         guard let formatDesc else { return }
 
-        var timingInfo = CMSampleTimingInfo(
-            duration: .invalid,
-            presentationTimeStamp: itemTime,
-            decodeTimeStamp: .invalid
-        )
+        var timingInfo = APMPSampleTimingPolicy.timingInfo(for: itemTime)
 
         // Create separate sample buffers for each consumer so their
         // lifecycles don't interfere with each other (P1-IM-002).
@@ -175,12 +243,19 @@ private final class DisplayLinkTarget: NSObject {
             sampleBufferOut: &layerBuffer
         )
 
-        if rendererStatus == noErr, let rendererBuffer {
+        if APMPFramePublishingPolicy.shouldEnqueueRendererBuffer(
+            status: rendererStatus,
+            hasBuffer: rendererBuffer != nil
+        ), let rendererBuffer {
             renderer.enqueue(rendererBuffer)
         }
 
         let layerRenderer = layer.sampleBufferRenderer
-        if layerStatus == noErr, let layerBuffer, layerRenderer.isReadyForMoreMediaData {
+        if APMPFramePublishingPolicy.shouldEnqueueLayerBuffer(
+            status: layerStatus,
+            hasBuffer: layerBuffer != nil,
+            isReadyForMoreMediaData: layerRenderer.isReadyForMoreMediaData
+        ), let layerBuffer {
             layerRenderer.enqueue(layerBuffer)
         }
     }
@@ -193,9 +268,14 @@ private final class DisplayLinkTarget: NSObject {
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
         if let cached = stereoFormatDesc,
-           width == cachedWidth,
-           height == cachedHeight,
-           cachedMode == mode {
+           APMPStereoFormatCachePolicy.shouldReuseFormatDescription(
+               cachedWidth: cachedWidth,
+               cachedHeight: cachedHeight,
+               cachedMode: cachedMode,
+               pixelWidth: width,
+               pixelHeight: height,
+               mode: mode
+           ) {
             return cached
         }
 
@@ -203,26 +283,25 @@ private final class DisplayLinkTarget: NSObject {
         cachedHeight = height
         cachedMode = mode
 
-        let extensions = APMPInjector.stereoMetadataExtensions(for: mode)
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
-        var desc: CMVideoFormatDescription?
-        let status = CMVideoFormatDescriptionCreate(
-            allocator: nil,
-            codecType: CMVideoCodecType(pixelFormat),
-            width: Int32(width),
-            height: Int32(height),
-            extensions: extensions as CFDictionary,
-            formatDescriptionOut: &desc
+        let result = APMPStereoFormatDescriptionFactory.make(
+            pixelFormat: pixelFormat,
+            width: width,
+            height: height,
+            mode: mode
         )
+        let status = result.status
+        let desc = result.description
 
         if status == noErr {
             stereoFormatDesc = desc
         } else {
             // Reset caches so the next frame retries from scratch.
+            let reset = APMPStereoFormatCachePolicy.resetStateAfterFormatDescriptionFailure()
             stereoFormatDesc = nil
-            cachedWidth = 0
-            cachedHeight = 0
-            cachedMode = nil
+            cachedWidth = reset.width
+            cachedHeight = reset.height
+            cachedMode = reset.mode
             logger.warning(
                 "Failed to create stereo format description: OSStatus \(status), \(width)x\(height)"
             )
@@ -230,4 +309,34 @@ private final class DisplayLinkTarget: NSObject {
         return desc
     }
 }
+
+#if DEBUG
+@MainActor
+final class APMPDisplayLinkTargetTestHarness {
+    private let target: DisplayLinkTarget
+
+    var videoRenderer: AVSampleBufferVideoRenderer {
+        target.renderer
+    }
+
+    init(mode: APMPInjector.Mode) {
+        target = DisplayLinkTarget(
+            output: AVPlayerItemVideoOutput(outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ]),
+            renderer: AVSampleBufferVideoRenderer(),
+            layer: AVSampleBufferDisplayLayer(),
+            mode: mode
+        )
+    }
+
+    func stereoFormatDescription(for pixelBuffer: CVPixelBuffer) -> CMVideoFormatDescription? {
+        target._testStereoFormatDescription(for: pixelBuffer)
+    }
+
+    func injectFrame(pixelBuffer: CVPixelBuffer, itemTime: CMTime) {
+        target._testInjectFrame(pixelBuffer: pixelBuffer, itemTime: itemTime)
+    }
+}
+#endif
 #endif

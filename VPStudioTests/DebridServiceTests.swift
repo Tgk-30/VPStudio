@@ -287,6 +287,14 @@ struct DebridSharedContractTests {
 
 @Suite("RealDebridService")
 struct RealDebridServiceTests {
+    private func formFields(from request: URLRequest) -> [String: String] {
+        guard let body = request.httpBody.flatMap({ String(data: $0, encoding: .utf8) }),
+              let items = URLComponents(string: "?\(body)")?.queryItems else {
+            return [:]
+        }
+
+        return Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+    }
 
     @Test func validateTokenSendsAuthorizationHeader() async throws {
         final class State: @unchecked Sendable { var authHeader: String? }
@@ -319,6 +327,18 @@ struct RealDebridServiceTests {
             if case .unauthorized = error { /* OK */ }
             else { Issue.record("Unexpected DebridError: \(error)") }
         } catch { Issue.record("Unexpected error: \(error)") }
+    }
+
+    @Test func unavailableForLegalReasons451UsesExplicitDebridError() async {
+        let session = makeStubSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 451, httpVersion: nil, headerFields: nil)!
+            return (response, Data("blocked by location".utf8))
+        }
+
+        let service = RealDebridService(apiToken: "token", session: session)
+        await #expect(throws: DebridError.unavailableForLegalReasons("Real-Debrid /user returned blocked by location")) {
+            _ = try await service.validateToken()
+        }
     }
 
     @Test func rateLimitedRetriesAndEventuallySucceeds() async throws {
@@ -712,7 +732,7 @@ struct RealDebridServiceTests {
             }
 
             state.unrestrictBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
-            let body = #"{"id":"dl-1","filename":"movie.mkv","download":"https://cdn.example.com/movie.mkv","filesize":4096}"#
+            let body = #"{"id":"dl-1","filename":"Movie.2025.2160p.HDR10.WEB-DL.mkv","download":"https://cdn.example.com/movie.mkv","filesize":4096}"#
             return (response, Data(body.utf8))
         }
 
@@ -726,6 +746,36 @@ struct RealDebridServiceTests {
         #expect(stream.hdr == .hdr10)
         #expect(stream.source == .webDL)
         #expect(stream.sizeBytes == 4096)
+    }
+
+    @Test func getStreamURLUnrestrictsPreferredSelectedVideoLinkInsteadOfFirstLink() async throws {
+        final class State: @unchecked Sendable {
+            var unrestrictBody: String?
+        }
+        let state = State()
+
+        let session = makeStubSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if request.url?.path.contains("/torrents/info/") == true {
+                let body = #"{"id":"torrent-1","filename":"Season.Pack","hash":"abc","bytes":10000,"status":"downloaded","links":["https://rd.example.com/subtitle-link","https://rd.example.com/video-link"],"files":[{"id":1,"path":"/Subs/episode.srt","bytes":50,"selected":1},{"id":2,"path":"/Show.S01E02.1080p.WEB-DL.mkv","bytes":5000,"selected":1}]}"#
+                return (response, Data(body.utf8))
+            }
+
+            state.unrestrictBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+            let body = #"{"id":"dl-1","filename":"Show.S01E02.1080p.WEB-DL.mkv","download":"https://cdn.example.com/show-s01e02.mkv","filesize":5000}"#
+            return (response, Data(body.utf8))
+        }
+
+        let service = RealDebridService(apiToken: "token", session: session)
+        let stream = try await service.getStreamURL(torrentId: "torrent-1")
+
+        #expect(state.unrestrictBody?.contains("video-link") == true)
+        #expect(state.unrestrictBody?.contains("subtitle-link") == false)
+        #expect(stream.streamURL.absoluteString == "https://cdn.example.com/show-s01e02.mkv")
+        #expect(stream.fileName == "Show.S01E02.1080p.WEB-DL.mkv")
+        #expect(stream.sizeBytes == 5000)
+        #expect(stream.quality == .hd1080p)
+        #expect(stream.source == .webDL)
     }
 
     @Test func getStreamURLThrowsForNotReadyMissingLinksAndInvalidUnrestrictURL() async {
@@ -789,6 +839,78 @@ struct RealDebridServiceTests {
         #expect(captured.contains(validInfoHash40))
     }
 
+    @Test func addMagnetUsesSuppliedFullMagnetWhenHashMatches() async throws {
+        final class State: @unchecked Sendable { var capturedBody: String? }
+        let state = State()
+        let fullMagnet = "magnet:?xt=urn:btih:\(validInfoHash40)&dn=Regional.Release&tr=udp://tracker.example/announce"
+
+        let session = makeStubSession { request in
+            state.capturedBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":"new-id","uri":"magnet:..."}"#.utf8))
+        }
+
+        let service = RealDebridService(apiToken: "token", session: session)
+        let _ = try await service.addMagnet(hash: validInfoHash40, magnetURI: fullMagnet)
+
+        let captured = try #require(state.capturedBody)
+        #expect(captured.contains("magnet=magnet%3A%3Fxt%3D"))
+        #expect(captured.contains("Regional.Release"))
+        #expect(captured.contains("tracker.example"))
+        #expect(captured.contains("%26tr%3D"))
+        #expect(!captured.contains("magnet:?xt="))
+        #expect(!captured.contains("&tr="))
+    }
+
+    @Test func documentedRequestShapeForMagnetSelectionAndUnrestrict() async throws {
+        final class State: @unchecked Sendable { var requests: [URLRequest] = [] }
+        let state = State()
+        let fullMagnet = "magnet:?xt=urn:btih:\(validInfoHash40)&dn=Regional.Release&tr=udp://tracker.example/announce"
+        let restrictedLink = "https://rd.example.com/link?token=a&file=Regional.Release.mkv"
+
+        let session = makeStubSession { request in
+            state.requests.append(request)
+            switch request.url?.path {
+            case "/rest/1.0/torrents/addMagnet":
+                let response = HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!
+                return (response, Data(#"{"id":"torrent-1","uri":"magnet:..."}"#.utf8))
+            case "/rest/1.0/torrents/selectFiles/torrent-1":
+                let response = HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!
+                return (response, Data())
+            case "/rest/1.0/unrestrict/link":
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                let body = #"{"id":"dl-1","filename":"Regional.Release.mkv","download":"https://cdn.example.com/Regional.Release.mkv","filesize":1000}"#
+                return (response, Data(body.utf8))
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        let service = RealDebridService(apiToken: "token", session: session)
+        let torrentID = try await service.addMagnet(hash: validInfoHash40, magnetURI: fullMagnet)
+        try await service.selectFiles(torrentId: torrentID, fileIds: [])
+        let unrestrictedURL = try await service.unrestrict(link: restrictedLink)
+
+        let addRequest = try #require(state.requests.first { $0.url?.path == "/rest/1.0/torrents/addMagnet" })
+        let selectRequest = try #require(state.requests.first { $0.url?.path == "/rest/1.0/torrents/selectFiles/torrent-1" })
+        let unrestrictRequest = try #require(state.requests.first { $0.url?.path == "/rest/1.0/unrestrict/link" })
+
+        #expect(addRequest.httpMethod == "POST")
+        #expect(addRequest.value(forHTTPHeaderField: "Authorization") == "Bearer token")
+        #expect(addRequest.value(forHTTPHeaderField: "Content-Type") == "application/x-www-form-urlencoded")
+        #expect(formFields(from: addRequest)["magnet"] == fullMagnet)
+        #expect(addRequest.httpBody.flatMap { String(data: $0, encoding: .utf8) }?.contains("magnet=magnet%3A%3Fxt%3D") == true)
+        #expect(addRequest.url?.query == nil)
+
+        #expect(selectRequest.httpMethod == "POST")
+        #expect(formFields(from: selectRequest)["files"] == "all")
+
+        #expect(unrestrictRequest.httpMethod == "POST")
+        #expect(formFields(from: unrestrictRequest)["link"] == restrictedLink)
+        #expect(unrestrictRequest.httpBody.flatMap { String(data: $0, encoding: .utf8) }?.contains("link=https%3A%2F%2Frd.example.com%2Flink%3Ftoken%3Da%26file%3DRegional.Release.mkv") == true)
+        #expect(unrestrictedURL.absoluteString == "https://cdn.example.com/Regional.Release.mkv")
+    }
+
     @Test func unrestrictReturnsURL() async throws {
         let session = makeStubSession { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -822,6 +944,7 @@ struct RealDebridServiceTests {
         // The magnet URI contains ? and : which should be encoded in form body
         // & and = must be percent-encoded so they don't break form parsing
         let body = try #require(state.capturedBody)
+        #expect(body.contains("magnet%3A%3Fxt%3D"))
         #expect(!body.contains("&xt="))  // & must be encoded, not literal
     }
 }
@@ -860,7 +983,7 @@ struct DebridAddMagnetHashValidationTests {
 // MARK: - AllDebridService Tests
 
 @Suite("AllDebridService")
-struct AllDebridServiceTests {
+struct AllDebridServiceTestsDebridservicetests {
     @Test func getAccountInfoParsesPremiumUser() async throws {
         final class State: @unchecked Sendable {
             var capturedPath: String?
@@ -1218,8 +1341,8 @@ struct AllDebridServiceTests {
 // MARK: - TorBoxService Tests
 
 @Suite("TorBoxService")
-struct TorBoxServiceTests {
-    @Test func addMagnetPostsFormBodyAndReturnsTorrentID() async throws {
+struct TorBoxServiceTestsDebridservicetests {
+    @Test func addMagnetPostsMultipartFormBodyAndReturnsTorrentID() async throws {
         final class State: @unchecked Sendable {
             var capturedMethod: String?
             var capturedPath: String?
@@ -1247,8 +1370,9 @@ struct TorBoxServiceTests {
         #expect(state.capturedMethod == "POST")
         #expect(state.capturedPath == "/v1/api/torrents/createtorrent")
         #expect(state.capturedAuth == "Bearer token")
-        #expect(state.capturedContentType == "application/x-www-form-urlencoded")
-        #expect(state.capturedBody == "magnet=magnet:?xt%3Durn:btih:abcdef1234567890abcdef1234567890abcdef12")
+        #expect(state.capturedContentType?.hasPrefix("multipart/form-data; boundary=") == true)
+        #expect(state.capturedBody?.contains("Content-Disposition: form-data; name=\"magnet\"") == true)
+        #expect(state.capturedBody?.contains("magnet:?xt=urn:btih:abcdef1234567890abcdef1234567890abcdef12") == true)
     }
 
     @Test func addMagnetThrowsInvalidHashWhenProviderOmitsTorrentID() async {
@@ -1382,7 +1506,7 @@ struct TorBoxServiceTests {
         #expect(try await service.checkCache(hashes: []).isEmpty)
     }
 
-    @Test func requestdlDoesNotLeakTokenInURL() async throws {
+    @Test func requestdlIncludesRequiredTokenQueryParamAndParsesDocumentedStringResponse() async throws {
         final class State: @unchecked Sendable { var capturedURL: URL? }
         let state = State()
 
@@ -1394,18 +1518,19 @@ struct TorBoxServiceTests {
                 return (response, Data(body.utf8))
             }
             if request.url!.path.contains("/requestdl") {
-                let body = #"{"success":true,"data":{"data":"https://cdn.torbox.app/dl/movie.mkv"}}"#
+                let body = #"{"success":true,"data":"https://cdn.torbox.app/dl/movie.mkv"}"#
                 return (response, Data(body.utf8))
             }
             return (response, Data(#"{"success":true}"#.utf8))
         }
 
         let service = TorBoxService(apiToken: "secret-token-123", session: session)
-        let _ = try await service.getStreamURL(torrentId: "42")
+        let stream = try await service.getStreamURL(torrentId: "42")
 
         let url = try #require(state.capturedURL)
-        // Token must NOT appear as a query parameter
-        #expect(url.absoluteString.contains("secret-token-123") == false)
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(queryItems.first(where: { $0.name == "token" })?.value == "secret-token-123")
+        #expect(stream.streamURL.absoluteString == "https://cdn.torbox.app/dl/movie.mkv")
     }
 
     @Test func authorizationHeaderUsedInsteadOfQueryToken() async throws {
@@ -1822,7 +1947,7 @@ struct TorBoxServiceTests {
 // MARK: - PremiumizeService Tests
 
 @Suite("PremiumizeService")
-struct PremiumizeServiceTests {
+struct PremiumizeServiceTestsDebridservicetests {
 
     @Test func validateTokenChecksStatus() async throws {
         let session = makeStubSession { request in
@@ -2168,7 +2293,7 @@ struct PremiumizeServiceTests {
 // MARK: - EasyNewsService Tests
 
 @Suite("EasyNewsService")
-struct EasyNewsServiceTests {
+struct EasyNewsServiceTestsDebridservicetests {
 
     @Test func validateTokenReturnsTrueOnSuccess() async throws {
         let session = makeStubSession { request in
@@ -2747,7 +2872,7 @@ struct DebridLinkServiceURLEncodingTests {
 }
 
 @Suite("OffcloudService")
-struct OffcloudServiceTests {
+struct OffcloudServiceTestsDebridservicetests {
     @Test func validateTokenAndAccountInfoUseCloudHistory() async throws {
         final class State: @unchecked Sendable {
             var paths: [String] = []
@@ -3202,7 +3327,7 @@ struct PremiumizeServiceURLEncodingTests {
 // MARK: - DebridError Tests
 
 @Suite("DebridError")
-struct DebridErrorTests {
+struct DebridErrorTestsDebridservicetests {
 
     @Test func allErrorsHaveDescriptions() {
         let errors: [DebridError] = [
@@ -3229,7 +3354,7 @@ struct DebridErrorTests {
 // MARK: - CacheStatus Tests
 
 @Suite("CacheStatus")
-struct CacheStatusTests {
+struct CacheStatusTestsDebridservicetests {
 
     @Test func cachedWithDetailsIsEquatable() {
         let a = CacheStatus.cached(fileId: "1", fileName: "a.mkv", fileSize: 1000)

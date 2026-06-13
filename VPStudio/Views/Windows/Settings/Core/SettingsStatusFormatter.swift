@@ -23,6 +23,8 @@ struct SettingsStatusSnapshot: Equatable, Sendable {
     var hasGeminiKey = false
     var hasOllamaEndpoint = true
     var hasOpenRouterKey = false
+    var hasMistralKey = false
+    var hasMiniMaxKey = false
     var isLocalAIEnabled = false
     var hasUsableLocalModel = false
     var hasTraktCredentials = false
@@ -148,11 +150,16 @@ enum SettingsStatusFormatter {
     }
 
     private static func availableAIProviders(for snapshot: SettingsStatusSnapshot) -> [AIProviderKind] {
-        var cloudProviders: [AIProviderKind] = []
-        if snapshot.hasAnthropicKey { cloudProviders.append(.anthropic) }
-        if snapshot.hasOpenAIKey { cloudProviders.append(.openAI) }
-        if snapshot.hasGeminiKey { cloudProviders.append(.gemini) }
-        if snapshot.hasOpenRouterKey { cloudProviders.append(.openRouter) }
+        let cloudProviders = AISettingsPolicy.enabledCloudProviders(
+            candidates: [
+                (.anthropic, snapshot.hasAnthropicKey ? "configured" : ""),
+                (.openAI, snapshot.hasOpenAIKey ? "configured" : ""),
+                (.gemini, snapshot.hasGeminiKey ? "configured" : ""),
+                (.openRouter, snapshot.hasOpenRouterKey ? "configured" : ""),
+                (.mistral, snapshot.hasMistralKey ? "configured" : ""),
+                (.minimax, snapshot.hasMiniMaxKey ? "configured" : ""),
+            ]
+        )
 
         return AIAssistantManager.availableDefaultProviders(
             configuredCloudProviders: cloudProviders,

@@ -3,6 +3,33 @@ import os
 
 typealias DebridServiceFactory = @Sendable (DebridServiceType, String) -> any DebridServiceProtocol
 
+private final class QADebridFixtureProvider: @unchecked Sendable {
+    private let lock = NSLock()
+    private var provider: @Sendable () -> QADebridFixture? = QADebridFixtureProvider.defaultFixtureProvider
+
+    func currentFixture() -> QADebridFixture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return provider()
+    }
+
+    func setFixtureProvider(_ next: @escaping @Sendable () -> QADebridFixture?) {
+        lock.lock()
+        provider = next
+        lock.unlock()
+    }
+
+    func resetFixtureProvider() {
+        lock.lock()
+        provider = QADebridFixtureProvider.defaultFixtureProvider
+        lock.unlock()
+    }
+
+    private static func defaultFixtureProvider() -> QADebridFixture? {
+        QARuntimeOptions.debridFixture
+    }
+}
+
 actor QADebridService: DebridServiceProtocol {
     let serviceType: DebridServiceType
 
@@ -77,9 +104,13 @@ actor QADebridService: DebridServiceProtocol {
 
 actor DebridManager {
     private static let logger = Logger(subsystem: "com.vpstudio", category: "debrid-manager")
+    private static let qaDebridFixtureProvider = QADebridFixtureProvider()
     private let database: DatabaseManager
     private let secretStore: any SecretStore
     private let serviceFactory: DebridServiceFactory
+    private let resolveStreamMaxAttempts: Int
+    private let resolveStreamInitialDelayNanoseconds: UInt64
+    private let resolveStreamMaxDelayNanoseconds: UInt64
     private var services: [DebridServiceType: any DebridServiceProtocol] = [:]
     private var servicePriority: [DebridServiceType: Int] = [:]
     private var hasInitialized = false
@@ -87,11 +118,17 @@ actor DebridManager {
     init(
         database: DatabaseManager,
         secretStore: any SecretStore,
-        serviceFactory: @escaping DebridServiceFactory = DebridManager.liveServiceFactory
+        serviceFactory: @escaping DebridServiceFactory = DebridManager.liveServiceFactory,
+        resolveStreamMaxAttempts: Int = 30,
+        resolveStreamInitialDelayNanoseconds: UInt64 = 500_000_000,
+        resolveStreamMaxDelayNanoseconds: UInt64 = 5_000_000_000
     ) {
         self.database = database
         self.secretStore = secretStore
         self.serviceFactory = serviceFactory
+        self.resolveStreamMaxAttempts = max(1, resolveStreamMaxAttempts)
+        self.resolveStreamInitialDelayNanoseconds = resolveStreamInitialDelayNanoseconds
+        self.resolveStreamMaxDelayNanoseconds = resolveStreamMaxDelayNanoseconds
     }
 
     func initialize() async throws {
@@ -101,10 +138,14 @@ actor DebridManager {
         let configs = try await database.fetchDebridConfigs()
         for config in configs {
             guard config.supportsSharedMagnetResolveFlow else { continue }
-            guard let token = try await resolveToken(for: config) else { continue }
-            let service = serviceFactory(config.serviceType, token)
-            newServices[config.serviceType] = service
-            newPriority[config.serviceType] = config.priority
+            do {
+                guard let token = try await resolveToken(for: config) else { continue }
+                let service = serviceFactory(config.serviceType, token)
+                newServices[config.serviceType] = service
+                newPriority[config.serviceType] = config.priority
+            } catch {
+                Self.logger.error("Failed to initialize \(config.serviceType.rawValue, privacy: .public) debrid service: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
         // Swap atomically after all configs are resolved successfully.
@@ -124,7 +165,9 @@ actor DebridManager {
     func checkCacheAcrossServices(hashes: [String]) async throws -> [String: (CacheStatus, DebridServiceType)] {
         try await ensureServicesInitializedIfNeeded()
 
-        let normalizedHashes = Self.normalizedCacheHashes(hashes)
+        let normalizedHashes = Self.normalizedCacheHashes(
+            hashes.compactMap(DebridHashValidator.normalizedInfoHash)
+        )
         let orderedServices = orderedServiceTypes()
         guard !orderedServices.isEmpty else { return [:] }
         let cacheBatchSize = 48
@@ -147,10 +190,16 @@ actor DebridManager {
                     firstSuccessfulService = firstSuccessfulService ?? serviceType
 
                     for (hash, status) in cacheResult {
-                        guard pendingHashes.contains(hash) else { continue }
+                        let normalizedResultHash = DebridHashValidator.normalizedInfoHash(hash)
+                            ?? hash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+                        guard pendingHashes.contains(normalizedResultHash) else {
+                            continue
+                        }
+
                         if case .cached = status {
-                            results[hash] = (status, serviceType)
-                            pendingHashes.remove(hash)
+                            results[normalizedResultHash] = (status, serviceType)
+                            pendingHashes.remove(normalizedResultHash)
                         }
                     }
                 } catch {
@@ -164,9 +213,14 @@ actor DebridManager {
             throw firstFailure
         }
 
-        let fallbackService = firstSuccessfulService ?? orderedServices.first ?? .realDebrid
+        let fallback = cacheFallbackService(
+            firstSuccessfulService: firstSuccessfulService,
+            orderedServices: orderedServices,
+            firstFailure: firstFailure
+        )
+        let fallbackService = fallback.service
+        let unresolvedStatus = fallback.status
         for hash in normalizedHashes where results[hash] == nil {
-            let unresolvedStatus: CacheStatus = firstFailure == nil ? .notCached : .unknown
             results[hash] = (unresolvedStatus, fallbackService)
         }
 
@@ -176,12 +230,14 @@ actor DebridManager {
     func resolveStream(
         hash: String,
         preferredService: DebridServiceType? = nil,
+        magnetURI: String? = nil,
         seasonNumber: Int? = nil,
         episodeNumber: Int? = nil
     ) async throws -> StreamInfo {
         return try await resolveStream(
             hash: hash,
             preferredService: preferredService,
+            magnetURI: magnetURI,
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             resolvedFileNameHint: nil,
@@ -197,6 +253,7 @@ actor DebridManager {
         return try await resolveStream(
             hash: context.infoHash,
             preferredService: preferredService,
+            magnetURI: context.magnetURI,
             seasonNumber: context.seasonNumber,
             episodeNumber: context.episodeNumber,
             resolvedFileNameHint: context.resolvedFileName,
@@ -204,9 +261,48 @@ actor DebridManager {
         )
     }
 
+    func unrestrict(link: String, serviceType: DebridServiceType) async throws -> StreamInfo {
+        try await ensureServicesInitializedIfNeeded()
+        guard let service = services[serviceType] else {
+            throw DebridError.networkError("\(serviceType.displayName) is not configured. Add it in Settings > Debrid Services.")
+        }
+
+        let streamURL = try await service.unrestrict(link: link)
+        let fileName = Self.fileName(for: streamURL, fallbackLink: link)
+        return StreamInfo(
+            streamURL: streamURL,
+            quality: VideoQuality.parse(from: fileName),
+            codec: VideoCodec.parse(from: fileName),
+            audio: AudioFormat.parse(from: fileName),
+            source: SourceType.parse(from: fileName),
+            hdr: HDRFormat.parse(from: fileName),
+            fileName: fileName,
+            sizeBytes: nil,
+            debridService: serviceType.rawValue
+        )
+    }
+
+    func cacheFallbackService(
+        firstSuccessfulService: DebridServiceType?,
+        orderedServices: [DebridServiceType],
+        firstFailure: Error?
+    ) -> (service: DebridServiceType, status: CacheStatus) {
+        let fallbackService: DebridServiceType
+        if let firstSuccessfulService {
+            fallbackService = firstSuccessfulService
+        } else if let firstOrderedService = orderedServices.first {
+            fallbackService = firstOrderedService
+        } else {
+            fallbackService = .realDebrid
+        }
+        let unresolvedStatus: CacheStatus = firstFailure == nil ? .notCached : .unknown
+        return (service: fallbackService, status: unresolvedStatus)
+    }
+
     private func resolveStream(
         hash: String,
         preferredService: DebridServiceType? = nil,
+        magnetURI: String?,
         seasonNumber: Int? = nil,
         episodeNumber: Int? = nil,
         resolvedFileNameHint: String?,
@@ -219,6 +315,30 @@ actor DebridManager {
             throw DebridError.networkError("No debrid services configured. Add one in Settings > Debrid Services.")
         }
 
+        return try await resolveStreamForServices(
+            hash: hash,
+            candidateServices: candidateServices,
+            magnetURI: magnetURI,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber,
+            resolvedFileNameHint: resolvedFileNameHint,
+            resolvedFileSizeHint: resolvedFileSizeHint
+        )
+    }
+
+    private func resolveStreamForServices(
+        hash: String,
+        candidateServices: [DebridServiceType],
+        magnetURI: String?,
+        seasonNumber: Int? = nil,
+        episodeNumber: Int? = nil,
+        resolvedFileNameHint: String? = nil,
+        resolvedFileSizeHint: Int64? = nil
+    ) async throws -> StreamInfo {
+        guard !candidateServices.isEmpty else {
+            throw DebridError.networkError("No debrid services configured. Add one in Settings > Debrid Services.")
+        }
+
         var firstFailure: Error?
         for serviceType in candidateServices {
             guard let service = services[serviceType] else { continue }
@@ -227,6 +347,7 @@ actor DebridManager {
                 return try await resolveStream(
                     using: service,
                     hash: hash,
+                    magnetURI: magnetURI,
                     seasonNumber: seasonNumber,
                     episodeNumber: episodeNumber,
                     resolvedFileNameHint: resolvedFileNameHint,
@@ -249,15 +370,51 @@ actor DebridManager {
         throw DebridError.networkError("No debrid services configured. Add one in Settings > Debrid Services.")
     }
 
+#if DEBUG
+    func _testCacheFallbackService(
+        firstSuccessfulService: DebridServiceType? = nil,
+        orderedServices: [DebridServiceType],
+        hasFirstFailure: Bool = false
+    ) -> (service: DebridServiceType, status: CacheStatus) {
+        cacheFallbackService(
+            firstSuccessfulService: firstSuccessfulService,
+            orderedServices: orderedServices,
+            firstFailure: hasFirstFailure ? DebridError.networkError("test") : nil
+        )
+    }
+
+    func _testResolveStreamForServices(
+        hash: String,
+        candidateServices: [DebridServiceType],
+        magnetURI: String? = nil,
+        seasonNumber: Int? = nil,
+        episodeNumber: Int? = nil,
+        resolvedFileNameHint: String? = nil,
+        resolvedFileSizeHint: Int64? = nil
+    ) async throws -> StreamInfo {
+        try await resolveStreamForServices(
+            hash: hash,
+            candidateServices: candidateServices,
+            magnetURI: magnetURI,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber,
+            resolvedFileNameHint: resolvedFileNameHint,
+            resolvedFileSizeHint: resolvedFileSizeHint
+        )
+    }
+#endif
+
     private func resolveStream(
         using service: any DebridServiceProtocol,
         hash: String,
+        magnetURI: String?,
         seasonNumber: Int?,
         episodeNumber: Int?,
         resolvedFileNameHint: String?,
         resolvedFileSizeHint: Int64?
     ) async throws -> StreamInfo {
-            let torrentId = try await service.addMagnet(hash: hash)
+        let sanitizedMagnetURI = try DebridManager.sanitizedMagnetURI(hash: hash, magnetURI: magnetURI)
+        let torrentId = try await service.addMagnet(hash: hash, magnetURI: sanitizedMagnetURI)
         do {
             if let seasonNumber, let episodeNumber {
                 let selectedEpisodeFile = try await service.selectMatchingEpisodeFile(
@@ -276,8 +433,9 @@ actor DebridManager {
             }
 
             // Poll for completion with exponential backoff
-            var delay: UInt64 = 500_000_000 // 0.5s
-            let maxAttempts = 30
+            var delay = resolveStreamInitialDelayNanoseconds
+            let maxAttempts = resolveStreamMaxAttempts
+            let maxDelay = resolveStreamMaxDelayNanoseconds
             for attempt in 0..<maxAttempts {
                 try Task.checkCancellation()
                 do {
@@ -286,6 +444,7 @@ actor DebridManager {
                         StreamRecoveryContext(
                             infoHash: hash,
                             preferredService: service.serviceType,
+                            magnetURI: magnetURI,
                             seasonNumber: seasonNumber,
                             episodeNumber: episodeNumber,
                             torrentId: torrentId,
@@ -297,7 +456,7 @@ actor DebridManager {
                 } catch DebridError.fileNotReady {
                     if attempt < maxAttempts - 1 {
                         try await Task.sleep(nanoseconds: delay)
-                        delay = min(delay * 2, 5_000_000_000) // max 5s
+                        delay = min(delay * 2, maxDelay)
                     }
                 }
             }
@@ -315,6 +474,11 @@ actor DebridManager {
     }
 
     func cleanupRemoteTransfer(from context: StreamRecoveryContext) async {
+        do {
+            try await ensureServicesInitializedIfNeeded()
+        } catch {
+            return
+        }
         await cleanupRemoteTransfer(using: context)
     }
 
@@ -352,9 +516,19 @@ actor DebridManager {
 
     private func cleanupRemoteTransfer(using context: StreamRecoveryContext) async {
         guard let torrentId = context.torrentId else { return }
-        let serviceType = context.resolvedDebridService
+
+        let resolvedServiceType = context.resolvedDebridService
             .flatMap(DebridServiceType.init(rawValue:))
-            ?? context.preferredService
+        let preferredServiceType = context.preferredService
+
+        let serviceType = if let resolvedServiceType, services[resolvedServiceType] != nil {
+            resolvedServiceType
+        } else if let preferredServiceType, services[preferredServiceType] != nil {
+            preferredServiceType
+        } else {
+            orderedServiceTypes().first
+        }
+
         guard let serviceType else { return }
         guard let service = services[serviceType] else { return }
         await cleanupRemoteTransfer(torrentId: torrentId, on: service, serviceType: serviceType, reason: nil)
@@ -378,13 +552,30 @@ actor DebridManager {
     }
 
     private func orderedServiceTypes(preferredService: DebridServiceType? = nil) -> [DebridServiceType] {
-        var ordered = services.keys.sorted { lhs, rhs in
-            let lhsPriority = servicePriority[lhs] ?? Int.max
-            let rhsPriority = servicePriority[rhs] ?? Int.max
-            if lhsPriority != rhsPriority {
-                return lhsPriority < rhsPriority
+        var ordered: [DebridServiceType] = []
+        for serviceType in services.keys {
+            let serviceTypePriority = servicePriority[serviceType] ?? Int.max
+            var insertionIndex = ordered.count
+            var index = 0
+
+            while index < ordered.count {
+                let other = ordered[index]
+                let otherPriority = servicePriority[other] ?? Int.max
+
+                if serviceTypePriority < otherPriority {
+                    insertionIndex = index
+                    break
+                }
+
+                if serviceTypePriority == otherPriority && serviceType.rawValue < other.rawValue {
+                    insertionIndex = index
+                    break
+                }
+
+                index += 1
             }
-            return lhs.rawValue < rhs.rawValue
+
+            ordered.insert(serviceType, at: insertionIndex)
         }
 
         if let preferredService, let preferredIndex = ordered.firstIndex(of: preferredService) {
@@ -395,7 +586,7 @@ actor DebridManager {
         return ordered
     }
 
-    private static func normalizedCacheHashes(_ hashes: [String]) -> [String] {
+    internal static func normalizedCacheHashes(_ hashes: [String]) -> [String] {
         var orderedHashes: [String] = []
         var seen: Set<String> = []
 
@@ -408,7 +599,7 @@ actor DebridManager {
         return orderedHashes
     }
 
-    private static func chunked(_ hashes: [String], size: Int) -> [[String]] {
+    internal static func chunked(_ hashes: [String], size: Int) -> [[String]] {
         guard size > 0, !hashes.isEmpty else { return [] }
 
         var batches: [[String]] = []
@@ -424,7 +615,42 @@ actor DebridManager {
         return batches
     }
 
+    private static func fileName(for url: URL, fallbackLink: String) -> String {
+        let streamPathName = url.lastPathComponent
+        if let decodedStreamPathName = streamPathName.removingPercentEncoding,
+           !decodedStreamPathName.isEmpty,
+           decodedStreamPathName != "/" {
+            return decodedStreamPathName
+        }
+        if !streamPathName.isEmpty, streamPathName != "/" {
+            return streamPathName
+        }
+
+        if let fallbackURL = URL(string: fallbackLink) {
+            let fallbackPathName = fallbackURL.lastPathComponent
+            if let decodedFallbackPathName = fallbackPathName.removingPercentEncoding,
+               !decodedFallbackPathName.isEmpty,
+               decodedFallbackPathName != "/" {
+                return decodedFallbackPathName
+            }
+            if !fallbackPathName.isEmpty, fallbackPathName != "/" {
+                return fallbackPathName
+            }
+        }
+
+        return "Unknown"
+    }
+
+    private static func sanitizedMagnetURI(hash: String, magnetURI: String?) throws -> String? {
+        guard let magnetURI else { return nil }
+        return try DebridMagnetInput.preferredMagnetURI(hash: hash, suppliedMagnetURI: magnetURI)
+    }
+
     private func shouldFailover(from error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+
         if let debridError = error as? DebridError {
             switch debridError {
             case .invalidHash:
@@ -436,8 +662,16 @@ actor DebridManager {
         return true
     }
 
-    private static func liveServiceFactory(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
-        if let fixture = QARuntimeOptions.debridFixture,
+    internal static func setQAFixtureProvider(_ provider: @escaping @Sendable () -> QADebridFixture?) {
+        qaDebridFixtureProvider.setFixtureProvider(provider)
+    }
+
+    internal static func resetQAFixtureProvider() {
+        qaDebridFixtureProvider.resetFixtureProvider()
+    }
+
+    static func liveServiceFactory(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
+        if let fixture = qaDebridFixtureProvider.currentFixture(),
            fixture.serviceType == type {
             return QADebridService(fixture: fixture)
         }

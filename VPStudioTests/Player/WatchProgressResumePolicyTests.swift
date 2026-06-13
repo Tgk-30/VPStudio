@@ -78,4 +78,22 @@ struct WatchProgressResumePolicyTests {
 
         #expect(WatchProgressResumePolicy.resumeTime(for: history) == 120)
     }
+
+    @Test func rejectsMutatedNonFiniteProgressValues() {
+        var history = WatchHistory(
+            id: "movie-progress",
+            mediaId: "movie",
+            episodeId: nil,
+            title: "Movie",
+            progress: 120,
+            duration: 3_600,
+            quality: "1080p",
+            debridService: "rd",
+            streamURL: nil,
+            watchedAt: Date(),
+            isCompleted: false
+        )
+        history.progress = .infinity
+        #expect(WatchProgressResumePolicy.resumeTime(for: history) == nil)
+    }
 }

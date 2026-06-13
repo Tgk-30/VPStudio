@@ -232,7 +232,7 @@ actor LocalInferenceEngine {
 
 // MARK: - Errors
 
-enum LocalInferenceError: LocalizedError {
+enum LocalInferenceError: LocalizedError, Equatable {
     case modelNotDownloaded
     case insufficientMemory(availableMB: Int, requiredMB: Int)
     case generationTimeout
@@ -241,13 +241,13 @@ enum LocalInferenceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .modelNotDownloaded:
-            return "Model not downloaded. Please download it first in Settings → AI."
+            return "Model not downloaded."
         case .insufficientMemory(let avail, let req):
             return "Insufficient memory: \(avail)MB available, \(req)MB required."
         case .generationTimeout:
-            return "Generation timed out after 5 minutes."
+            return "Generation timed out."
         case .inferenceError(let msg):
-            return "Inference error: \(msg)"
+            return msg
         }
     }
 }

@@ -5,6 +5,9 @@ import Testing
 #if os(macOS)
 import AppKit
 #endif
+#if os(visionOS)
+import UIKit
+#endif
 
 @Suite("Component Construction")
 @MainActor
@@ -539,7 +542,7 @@ struct ComponentConstructionTests {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rootDir) }
-        let database = try DatabaseManager(path: rootDir.appendingPathComponent("downloads-view.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "downloads-view-\(UUID().uuidString)")
         try await database.migrate()
         let appState = AppState(database: database, testHooks: .init())
         let now = Date()
@@ -685,7 +688,11 @@ struct ComponentConstructionTests {
         _ = LoadingOverlay(title: "Loading", message: nil).body
         _ = InlineLoadingStatusView(title: "Refreshing").body
         _ = AppErrorInlineView(error: .unknown("Inline failure")).body
-        _ = SkeletonBlock(width: 120, height: 24, cornerRadius: 8).body
+        SwiftUIViewDiagnosticHost.render(
+            SkeletonBlock(width: 120, height: 24, cornerRadius: 8),
+            width: 160,
+            height: 56
+        )
         _ = DiscoverSkeletonView().body
         _ = DetailSkeletonView().body
         _ = LibrarySkeletonView().body
@@ -805,11 +812,11 @@ struct ComponentConstructionTests {
             feedbackValue: 9
         )
 
-        _ = MediaCardView(
+        SwiftUIViewDiagnosticHost.render(MediaCardView(
             item: preview,
             userRating: rating,
             interactionMode: .fullyAnimated
-        ).body
+        ), width: 260, height: 420)
     }
 
     @Test
@@ -831,11 +838,11 @@ struct ComponentConstructionTests {
             feedbackValue: 0
         )
 
-        _ = MediaCardView(
+        SwiftUIViewDiagnosticHost.render(MediaCardView(
             item: preview,
             userRating: rating,
             interactionMode: .systemHoverOnly
-        ).body
+        ), width: 260, height: 420)
     }
 
     @Test
@@ -850,7 +857,11 @@ struct ComponentConstructionTests {
             tmdbId: nil
         )
 
-        _ = MediaCardView(item: preview, userRating: nil).body
+        SwiftUIViewDiagnosticHost.render(
+            MediaCardView(item: preview, userRating: nil),
+            width: 260,
+            height: 420
+        )
     }
 
     @Test
@@ -1263,7 +1274,7 @@ struct ComponentConstructionTests {
     @Test
     func standaloneSharedViewsBuildBodies() {
         _ = VPMenuBackground().body
-        _ = LaunchScreen().body
+        SwiftUIViewDiagnosticHost.render(LaunchScreen(), width: 820, height: 620)
         _ = DownloadsView().body
 
         #if os(macOS)
@@ -1320,13 +1331,29 @@ struct ComponentConstructionTests {
 
     @Test
     func libraryCSVSheetsBuildInitialBodies() {
+        let appState = AppState(testHooks: .init())
         var summaries: [LibraryCSVImportSummary] = []
 
-        _ = LibraryCSVExportSheet().body
-        _ = LibraryCSVImportSheet { summary in
-            summaries.append(summary)
-        }.body
-        _ = IMDbCSVImportSheet().body
+        SwiftUIViewDiagnosticHost.render(
+            LibraryCSVExportSheet()
+                .environment(appState),
+            width: 760,
+            height: 720
+        )
+        SwiftUIViewDiagnosticHost.render(
+            LibraryCSVImportSheet { summary in
+                summaries.append(summary)
+            }
+            .environment(appState),
+            width: 760,
+            height: 720
+        )
+        SwiftUIViewDiagnosticHost.render(
+            IMDbCSVImportSheet()
+                .environment(appState),
+            width: 760,
+            height: 720
+        )
 
         #expect(summaries.isEmpty)
     }
@@ -1447,6 +1474,35 @@ struct ComponentConstructionTests {
     func lightweightSettingsDestinationScreensBuildBodies() {
         let appState = AppState(testHooks: .init())
 
+        #if os(visionOS)
+        let hostedSettingsViews: [(String, AnyView)] = [
+            ("SettingsView", AnyView(NavigationStack { SettingsView() }.environment(appState))),
+            ("SetupWizardView", AnyView(NavigationStack { SetupWizardView() }.environment(appState))),
+            ("AISettingsView", AnyView(NavigationStack { AISettingsView() }.environment(appState))),
+            ("DebridSettingsView", AnyView(NavigationStack { DebridSettingsView() }.environment(appState))),
+            ("EnvironmentSettingsView", AnyView(NavigationStack { EnvironmentSettingsView() }.environment(appState))),
+            ("IMDbImportSettingsView", AnyView(NavigationStack { IMDbImportSettingsView() }.environment(appState))),
+            ("IndexerSettingsView", AnyView(NavigationStack { IndexerSettingsView() }.environment(appState))),
+            ("MetadataSettingsView", AnyView(NavigationStack { MetadataSettingsView() }.environment(appState))),
+            ("SimklSettingsView", AnyView(NavigationStack { SimklSettingsView() }.environment(appState))),
+            ("SubtitleSettingsView", AnyView(NavigationStack { SubtitleSettingsView() }.environment(appState))),
+            ("PlayerSettingsView", AnyView(NavigationStack { PlayerSettingsView() }.environment(appState))),
+            ("ResetDataView", AnyView(NavigationStack { ResetDataView() }.environment(appState))),
+            ("TestModeView", AnyView(NavigationStack { TestModeView() }.environment(appState))),
+            ("TraktSettingsView", AnyView(NavigationStack { TraktSettingsView() }.environment(appState))),
+        ]
+
+        for (name, view) in hostedSettingsViews {
+            let host = UIHostingController(rootView: view.frame(width: 640, height: 820))
+            host.view.frame = CGRect(x: 0, y: 0, width: 640, height: 820)
+            host.loadViewIfNeeded()
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            #expect(host.view.bounds.width > 0, "\(name) should lay out")
+            #expect(host.view.bounds.height > 0, "\(name) should lay out")
+        }
+        #else
         _ = SettingsView().body
         _ = SetupWizardView().body
         _ = AISettingsView().body
@@ -1461,6 +1517,7 @@ struct ComponentConstructionTests {
         _ = ResetDataView().body
         _ = TestModeView().body
         _ = TraktSettingsView().body
+        #endif
 
         #if os(macOS)
         let environmentHost = NSHostingView(
@@ -1519,7 +1576,7 @@ struct ComponentConstructionTests {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rootDir) }
-        let database = try DatabaseManager(path: rootDir.appendingPathComponent("debrid-settings.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "debrid-settings-\(UUID().uuidString)")
         try await database.migrate()
         let appState = AppState(database: database, testHooks: .init())
         let now = Date()
@@ -1586,7 +1643,7 @@ struct ComponentConstructionTests {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rootDir) }
-        let database = try DatabaseManager(path: rootDir.appendingPathComponent("indexer-settings.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "indexer-settings-\(UUID().uuidString)")
         try await database.migrate()
         let appState = AppState(database: database, testHooks: .init())
         let configs = [
@@ -1719,6 +1776,18 @@ struct ComponentConstructionTests {
             #expect(screen.subtitle == subtitle)
             #expect(screen.icon == icon)
         }
+    }
+
+    @Test
+    func testScreenLaunchPolicyAcceptsSimulatorFriendlyNames() {
+        #expect(TestScreenLaunchPolicy.screen(for: "player") == .player)
+        #expect(TestScreenLaunchPolicy.screen(for: "Player") == .player)
+        #expect(TestScreenLaunchPolicy.screen(for: "search-results") == .searchResults)
+        #expect(TestScreenLaunchPolicy.screen(for: "search_results") == .searchResults)
+        #expect(TestScreenLaunchPolicy.screen(for: "Search + Results") == .searchResults)
+        #expect(TestScreenLaunchPolicy.screen(for: "movie detail") == .detailMovie)
+        #expect(TestScreenLaunchPolicy.screen(for: "   ") == nil)
+        #expect(TestScreenLaunchPolicy.screen(for: "unknown") == nil)
     }
 
     #if os(macOS)

@@ -21,18 +21,20 @@ struct ZileanIndexer: TorrentIndexer {
     }
 
     func search(imdbId: String, type: MediaType, season: Int?, episode: Int?) async throws -> [TorrentResult] {
+        let endpointBase = endpointPath.isEmpty ? "/api" : endpointPath
         var queryItems = [URLQueryItem(name: "imdbId", value: imdbId)]
         if let season { queryItems.append(URLQueryItem(name: "season", value: String(season))) }
         if let episode { queryItems.append(URLQueryItem(name: "episode", value: String(episode))) }
 
-        let url = try buildURL(path: endpointPath.appending("/dmm/filtered"), queryItems: queryItems)
+        let url = try buildURL(path: endpointBase.appending("/dmm/filtered"), queryItems: queryItems)
         let results = try await fetchResults(from: url)
         return filter(results: results, season: season, episode: episode, allowUntokenizedTitles: true)
     }
 
     func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
+        let endpointBase = endpointPath.isEmpty ? "/api" : endpointPath
         let context = EpisodeTokenMatcher.context(fromQuery: query)
-        let url = try buildURL(path: endpointPath.appending("/dmm/search"), queryItems: [
+        let url = try buildURL(path: endpointBase.appending("/dmm/search"), queryItems: [
             URLQueryItem(name: "query", value: query),
         ])
         let results = try await fetchResults(from: url)
@@ -77,14 +79,29 @@ struct ZileanIndexer: TorrentIndexer {
     }
 
     private func buildURL(path: String, queryItems: [URLQueryItem]) throws -> URL {
-        guard var components = URLComponents(string: "\(baseURL)\(path)") else {
+        guard var components = URLComponents(string: baseURL) else {
             throw URLError(.badURL)
         }
+
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let appendPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        switch (basePath.isEmpty, appendPath.isEmpty) {
+        case (true, false):
+            components.path = "/\(appendPath)"
+        case (false, true):
+            components.path = "/\(basePath)"
+        case (false, false):
+            components.path = "/\(basePath)/\(appendPath)"
+        default:
+            components.path = ""
+        }
+
         components.queryItems = queryItems
         guard let url = components.url else {
             throw URLError(.badURL)
         }
-        guard url.scheme?.lowercased() == "https" else {
+        guard IndexerURLSecurityPolicy.permits(url: url) else {
             throw URLError(.unsupportedURL)
         }
         return url

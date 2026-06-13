@@ -37,8 +37,7 @@ struct DetailFeedbackTests {
     @MainActor private func makeIsolatedAppState() throws -> (AppState, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("feedback-test.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "feedback-test-\(UUID().uuidString)")
         let appState = AppState(database: database)
         return (appState, tempDir)
     }
@@ -264,8 +263,7 @@ struct DatabaseDeleteLatestTasteRatingTests {
     @MainActor private func makeIsolatedDB() throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("delete-rating-test.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "delete-rating-test-\(UUID().uuidString)")
         return (database, tempDir)
     }
 

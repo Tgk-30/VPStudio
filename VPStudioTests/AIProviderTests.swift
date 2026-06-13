@@ -66,8 +66,7 @@ struct AIAssistantManagerParsingTests {
     private func makeManager() async throws -> (AIAssistantManager, DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent("ai-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
         return (manager, database, tempDir)
@@ -203,6 +202,57 @@ struct AIAssistantManagerParsingTests {
                 configuredModel: "  OpenRouter/anthropic/claude-3.5-haiku  "
             ) == "anthropic/claude-3.5-haiku"
         )
+    }
+
+    @Test func resolvedModelIDTrimsConfiguredModelIDForNonOpenRouter() {
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .openAI,
+                catalogDefault: "gpt-5.4",
+                configuredModel: "  gpt-4o-mini  "
+            ) == "gpt-4o-mini"
+        )
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .anthropic,
+                catalogDefault: "claude-sonnet-4-20250514",
+                configuredModel: "  claude-opus-4-20250514  "
+            ) == "claude-opus-4-20250514"
+        )
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .anthropic,
+                catalogDefault: "  claude-sonnet-4-20250514  ",
+                configuredModel: nil
+            ) == "claude-sonnet-4-20250514"
+        )
+    }
+
+    @Test func configureSkipsBlankAPIKeyAndLeavesProviderUnconfigured() async throws {
+        let (manager, _, tempDir) = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await manager.configure(provider: .anthropic, apiKey: "   ", model: AIModelCatalog.claudeSonnet4.id)
+
+        #expect(await manager.hasConfiguredProvider == false)
+    }
+
+    @Test func askWithOnlyBlankAPIProviderConfiguredThrowsNoProviderConfigured() async throws {
+        let (manager, _, tempDir) = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await manager.configure(provider: .anthropic, apiKey: "   ", model: AIModelCatalog.claudeSonnet4.id)
+
+        do {
+            _ = try await manager.ask(prompt: "test")
+            Issue.record("Expected AIError.noProviderConfigured")
+        } catch let error as AIError {
+            if case .noProviderConfigured = error { /* expected */ } else {
+                Issue.record("Expected noProviderConfigured, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected AIError.noProviderConfigured, got \(error)")
+        }
     }
 }
 
@@ -421,6 +471,102 @@ struct AIOllamaEndpointPolicyTests {
         #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://[::1]:11434") == nil)
         #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://example.com:11434") != nil)
     }
+
+    @Test func allowsUppercaseHttpsAndRejectsUnsupportedScheme() {
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTPS://ollama.example.com:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "ftp://ollama.example.com:11434") != nil)
+    }
+
+    @Test func allowsUppercaseLocalhostHttpAndRejectsUppercaseUnsupported() {
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://localhost:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://127.0.0.1:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://[::1]:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://Ollama.Example.Com:11434") != nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "WS://localhost:11434") != nil)
+    }
+
+    @Test func allowsExpandedLoopbackHostsForLocalHTTP() {
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://127.0.0.42:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://127.255.255.255:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://[0:0:0:0:0:0:0:1]:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://[::1]:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://[0:0:0:0:0:0:0:2]:11434") != nil)
+    }
+
+    @Test func isAllowedBaseURLMirrorsWarningPolicy() {
+        #expect(AIOllamaEndpointPolicy.isAllowedBaseURL("http://localhost:11434"))
+        #expect(AIOllamaEndpointPolicy.isAllowedBaseURL("https://ollama.example.com"))
+        #expect(!AIOllamaEndpointPolicy.isAllowedBaseURL("http://ollama.example.com"))
+        #expect(!AIOllamaEndpointPolicy.isAllowedBaseURL("nota url"))
+        #expect(!AIOllamaEndpointPolicy.isAllowedBaseURL("ftp://localhost:11434"))
+    }
+
+    @Test func appendingPathPreservesQueryParameters() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434?source=cli&mode=fast",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.query == "source=cli&mode=fast")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat?source=cli&mode=fast")
+    }
+
+    @Test func appendingPathDoesNotDuplicateExistingFullEndpointPath() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/api/chat",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat")
+    }
+
+    @Test func appendingPathCombinesApiPrefixPathAndQuery() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/api?source=cli",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.query == "source=cli")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat?source=cli")
+    }
+
+    @Test func appendingPathKeepsExplicitApiBasePath() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/api",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat")
+    }
+
+    @Test func appendingPathHandlesBlankPathAndInvalidBaseURL() {
+        let unchanged = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/base?source=cli#fragment",
+            path: "  /  "
+        )
+        let invalid = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://[::1",
+            path: "api/chat"
+        )
+
+        #expect(unchanged?.absoluteString == "http://localhost:11434/base/%20%20/%20%20?source=cli")
+        #expect(invalid == nil)
+    }
+
+    @Test func appendingPathRemovesFragmentsWhenAppending() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/base?source=cli#fragment",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/base/api/chat")
+        #expect(url?.query == "source=cli")
+        #expect(url?.fragment == nil)
+    }
 }
 
 // MARK: - AIAssistantManager Ollama Configuration Tests
@@ -431,8 +577,7 @@ struct AIAssistantManagerOllamaConfigurationTests {
     private func makeManager() async throws -> (AIAssistantManager, DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent("ai-ollama-config-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-ollama-config-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
         return (manager, database, tempDir)
@@ -465,12 +610,26 @@ struct AIAssistantManagerOllamaConfigurationTests {
 
         #expect(await manager.hasConfiguredProvider == true)
     }
+
+    @Test func acceptsRemoteHttpsOllamaEndpoint() async throws {
+        let (manager, _, tempDir) = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await manager.configure(
+            provider: .ollama,
+            apiKey: "",
+            baseURL: "HTTPS://ollama.example.com:11434",
+            model: "llama3.1"
+        )
+
+        #expect(await manager.hasConfiguredProvider == true)
+    }
 }
 
 // MARK: - OllamaProvider Tests
 
 @Suite("OllamaProvider")
-struct OllamaProviderTests {
+struct OllamaProviderTestsAiprovidertests {
 
     private func makeProvider(session: URLSession, sleep: @escaping AIHTTPSleep = { _ in }) -> OllamaProvider {
         OllamaProvider(baseURL: "http://localhost:11434", model: "llama3.1", session: session, sleep: sleep)
@@ -502,7 +661,7 @@ struct OllamaProviderTests {
 // MARK: - AIProviderResponse Tests
 
 @Suite("AIProviderResponse")
-struct AIProviderResponseTests {
+struct AIProviderResponseTestsAiprovidertests {
 
     @Test func storesAllFields() {
         let r = AIProviderResponse(provider: .anthropic, content: "Test content", model: "claude-sonnet-4-20250514", inputTokens: 100, outputTokens: 200)
@@ -515,6 +674,51 @@ struct AIProviderResponseTests {
 }
 
 // MARK: - Provider Transport Hardening Tests
+
+@Suite("AIHTTPTransport Delay Policy")
+struct AIHTTPTransportDelayPolicyTests {
+    @Test func retryAfterIntervalParsesSecondsAndRejectsBlankOrInvalidHeaders() {
+        #expect(AIHTTPTransport.retryAfterInterval(from: " 2.5 ") == 2.5)
+        #expect(AIHTTPTransport.retryAfterInterval(from: nil) == nil)
+        #expect(AIHTTPTransport.retryAfterInterval(from: "   ") == nil)
+        #expect(AIHTTPTransport.retryAfterInterval(from: "not a date") == nil)
+    }
+
+    @Test func retryAfterIntervalParsesHTTPDateHeaders() throws {
+        let interval = try #require(
+            AIHTTPTransport.retryAfterInterval(from: "Wed, 21 Oct 2037 07:28:00 GMT")
+        )
+
+        #expect(interval > 0)
+    }
+
+    @Test func retryDelayClampsRetryAfterHeadersAndExponentialBackoff() {
+        let url = URL(string: "https://example.com")!
+        let negativeRetryAfter = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: ["Retry-After": "-5"]
+        )!
+        let longRetryAfter = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: ["Retry-After": "100"]
+        )!
+        let noRetryAfter = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+
+        #expect(AIHTTPTransport.retryDelay(from: negativeRetryAfter, attempt: 1) == 0)
+        #expect(AIHTTPTransport.retryDelay(from: longRetryAfter, attempt: 1) == 30)
+        #expect(AIHTTPTransport.retryDelay(from: noRetryAfter, attempt: 1) == 1)
+        #expect(AIHTTPTransport.retryDelay(from: noRetryAfter, attempt: 5) == 8)
+    }
+}
 
 @Suite("AI Provider Transport Hardening")
 struct AIProviderTransportHardeningTests {
@@ -725,6 +929,18 @@ struct AIProviderRequestParsingTests {
             lock.lock()
             defer { lock.unlock() }
             return request?.url?.path
+        }
+
+        func query() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return request?.url?.query
+        }
+
+        func absoluteString() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return request?.url?.absoluteString
         }
 
         func jsonBody() throws -> [String: Any] {
@@ -1080,6 +1296,67 @@ struct AIProviderRequestParsingTests {
         #expect(response.content == "local response")
     }
 
+    @Test func ollamaBuildsChatRequestByAppendingToExistingApiPath() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: "http://localhost:11434/api",
+            model: "llama3.2",
+            session: session,
+            sleep: { _ in }
+        )
+
+        _ = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(capture.path() == "/api/chat")
+    }
+
+    @Test func ollamaBuildsChatRequestByAppendingToExistingApiPathAndPreservingQuery() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: "http://localhost:11434/api?source=cli",
+            model: "llama3.2",
+            session: session,
+            sleep: { _ in }
+        )
+
+        _ = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(capture.path() == "/api/chat")
+        #expect(capture.query() == "source=cli")
+        #expect(capture.absoluteString() == "http://localhost:11434/api/chat?source=cli")
+    }
+
+    @Test func ollamaBuildsChatRequestWhenBaseURLAlreadyIncludesChatPathAndQuery() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: "http://localhost:11434/api/chat?source=cli",
+            model: "llama3.2",
+            session: session,
+            sleep: { _ in }
+        )
+
+        _ = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(capture.absoluteString() == "http://localhost:11434/api/chat?source=cli")
+        #expect(capture.path() == "/api/chat")
+        #expect(capture.query() == "source=cli")
+    }
+
     @Test func ollamaRejectsBlankBaseURLWithoutNetwork() async {
         let provider = OllamaProvider(
             baseURL: "   ",
@@ -1152,7 +1429,7 @@ struct AIAssistantManagerHardeningTests {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let database = try DatabaseManager(path: tempDir.appendingPathComponent("ai-usage.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-usage-\(UUID().uuidString)")
         let manager = AIAssistantManager(database: database)
 
         await manager.registerProvider(
@@ -1182,7 +1459,7 @@ struct AIAssistantManagerHardeningTests {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let database = try DatabaseManager(path: tempDir.appendingPathComponent("ai-manager.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-manager-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 
@@ -1271,8 +1548,7 @@ struct AIPersonalizedAnalysisTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let dbURL = tempDir.appendingPathComponent("ai-analysis-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-analysis-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 
@@ -1295,8 +1571,7 @@ struct AIPersonalizedAnalysisTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let dbURL = tempDir.appendingPathComponent("ai-has-provider-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-has-provider-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 
@@ -1308,8 +1583,7 @@ struct AIPersonalizedAnalysisTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let dbURL = tempDir.appendingPathComponent("ai-has-provider-true-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-has-provider-true-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 

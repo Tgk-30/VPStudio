@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Network
 
 /// Multi-provider AI assistant for recommendations and conversation
 actor AIAssistantManager {
@@ -15,6 +16,8 @@ actor AIAssistantManager {
         .openAI,
         .gemini,
         .openRouter,
+        .mistral,
+        .minimax,
         .ollama,
         .local,
     ]
@@ -56,7 +59,16 @@ actor AIAssistantManager {
     }
 
     func configure(provider: AIProviderKind, apiKey: String, baseURL: String? = nil, model: String? = nil) {
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let configuredModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if provider != .ollama && trimmedAPIKey.isEmpty {
+            providers.removeValue(forKey: provider)
+            configuredModels.removeValue(forKey: provider)
+            Self.logger.info("Skipped \(provider.rawValue) configuration because the API key was empty.")
+            return
+        }
+
         let catalogDefaultModelID = AIModelCatalog.defaultModel(for: provider)?.id
         let resolvedModel = Self.resolvedModelID(
             provider: provider,
@@ -66,9 +78,9 @@ actor AIAssistantManager {
 
         switch provider {
         case .anthropic:
-            providers[.anthropic] = AnthropicProvider(apiKey: apiKey, model: resolvedModel)
+            providers[.anthropic] = AnthropicProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .openAI:
-            providers[.openAI] = OpenAIProvider(apiKey: apiKey, model: resolvedModel)
+            providers[.openAI] = OpenAIProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .ollama:
             let resolvedBaseURL = (baseURL ?? "http://localhost:11434")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -99,12 +111,16 @@ actor AIAssistantManager {
                 model: resolvedModel
             )
         case .gemini:
-            providers[.gemini] = GeminiProvider(apiKey: apiKey, model: resolvedModel)
+            providers[.gemini] = GeminiProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .openRouter:
             providers[.openRouter] = OpenRouterProvider(
-                apiKey: apiKey,
+                apiKey: trimmedAPIKey,
                 model: resolvedModel
             )
+        case .mistral:
+            providers[.mistral] = MistralProvider(apiKey: trimmedAPIKey, model: resolvedModel)
+        case .minimax:
+            providers[.minimax] = MiniMaxProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .local:
             break // Local provider is registered directly via registerProvider in AppState
         }
@@ -224,13 +240,15 @@ actor AIAssistantManager {
         catalogDefault: String?,
         configuredModel: String?
     ) -> String {
-        if let configuredModel, !configuredModel.isEmpty {
-            return normalizedModelID(provider: provider, modelID: configuredModel)
+        let trimmedConfiguredModel = configuredModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedConfiguredModel, !trimmedConfiguredModel.isEmpty {
+            return normalizedModelID(provider: provider, modelID: trimmedConfiguredModel)
         }
 
+        let trimmedCatalogDefault = catalogDefault?.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalizedModelID(
             provider: provider,
-            modelID: catalogDefault ?? fallbackModelID(for: provider)
+            modelID: trimmedCatalogDefault ?? fallbackModelID(for: provider)
         )
     }
 
@@ -255,6 +273,10 @@ actor AIAssistantManager {
             return AIModelCatalog.llama31.id
         case .openRouter:
             return AIModelCatalog.openRouterGeminiFlashLite.id
+        case .mistral:
+            return AIModelCatalog.mistralSmallLatest.id
+        case .minimax:
+            return AIModelCatalog.minimaxM2.id
         case .local:
             return AIModelCatalog.localSmolLM2.id
         }
@@ -282,11 +304,15 @@ actor AIAssistantManager {
     }
 
     private func parsePersonalizedAnalysis(from content: String) throws -> AIPersonalizedAnalysis {
-        let candidates = [content] + fencedCodeBlockCandidates(from: content)
+        let candidates = [content] + fencedCodeBlockCandidates(from: content) + bracketedJSONArrayCandidates(from: content)
 
         for candidate in candidates {
             guard let data = candidate.data(using: .utf8) else { continue }
-            if let analysis = try? JSONDecoder().decode(AIPersonalizedAnalysis.self, from: data) {
+            if let analysis = try? decodePersonalizedAnalysis(from: data) {
+                return analysis
+            }
+            if let json = try? JSONSerialization.jsonObject(with: data),
+               let analysis = parsePersonalizedContainer(from: json) {
                 return analysis
             }
         }
@@ -296,13 +322,182 @@ actor AIAssistantManager {
            let lastBrace = content.lastIndex(of: "}"),
            firstBrace < lastBrace {
             let slice = String(content[firstBrace...lastBrace])
-            if let data = slice.data(using: .utf8),
-               let analysis = try? JSONDecoder().decode(AIPersonalizedAnalysis.self, from: data) {
-                return analysis
+            if let sliceData = slice.data(using: .utf8) {
+                if let analysis = try? decodePersonalizedAnalysis(from: sliceData) {
+                    return analysis
+                }
+                if let json = try? JSONSerialization.jsonObject(with: sliceData),
+                   let analysis = parsePersonalizedContainer(from: json) {
+                    return analysis
+                }
             }
         }
 
         throw AIError.invalidResponse
+    }
+
+    private func parsePersonalizedContainer(from value: Any) -> AIPersonalizedAnalysis? {
+        func collect(from rawValue: Any) -> AIPersonalizedAnalysis? {
+            if let direct = decodePersonalizedAnalysis(from: rawValue) {
+                return direct
+            }
+
+            if let array = rawValue as? [Any] {
+                for element in array {
+                    if let parsed = collect(from: element) {
+                        return parsed
+                    }
+                }
+                return nil
+            }
+
+            guard let object = rawValue as? [String: Any] else { return nil }
+            for (_, nestedValue) in object {
+                if let parsed = collect(from: nestedValue) {
+                    return parsed
+                }
+            }
+            return nil
+        }
+
+        return collect(from: value)
+    }
+
+    private func decodePersonalizedAnalysis(from value: Any) -> AIPersonalizedAnalysis? {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return nil
+        }
+
+        do {
+            return try decodePersonalizedAnalysis(from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private func decodePersonalizedAnalysis(from data: Data) throws -> AIPersonalizedAnalysis? {
+        struct RawAnalysis: Decodable {
+            let personalizedDescription: String
+            let predictedRating: Double
+            let verdict: String
+            let reasons: [String]
+
+            private enum CodingKeys: String, CodingKey {
+                case personalizedDescription
+                case predictedRating
+                case verdict
+                case reasons
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                personalizedDescription = try container.decode(String.self, forKey: .personalizedDescription)
+
+                if let ratingNumber = try? container.decode(Double.self, forKey: .predictedRating) {
+                    predictedRating = ratingNumber
+                } else if let ratingString = try? container.decode(String.self, forKey: .predictedRating) {
+                    let trimmedRating = ratingString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let parsedRating = Double(trimmedRating) else {
+                        throw DecodingError.dataCorruptedError(
+                            forKey: .predictedRating,
+                            in: container,
+                            debugDescription: "Invalid predictedRating value"
+                        )
+                    }
+                    predictedRating = parsedRating
+                } else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .predictedRating,
+                        in: container,
+                        debugDescription: "Missing or invalid predictedRating value"
+                    )
+                }
+
+                verdict = try container.decode(String.self, forKey: .verdict)
+
+                if let reasonsArray = try? container.decode([String].self, forKey: .reasons) {
+                    reasons = reasonsArray
+                } else if let reasonsString = try? container.decode(String.self, forKey: .reasons) {
+                    reasons = [reasonsString]
+                } else if let reasonsArray = try? container.decode([ReasonValue].self, forKey: .reasons) {
+                    reasons = reasonsArray.compactMap(\.stringValue)
+                } else {
+                    reasons = []
+                }
+            }
+
+            private enum ReasonValue: Decodable {
+                case string(String)
+                case integer(Int)
+                case decimal(Double)
+                case boolean(Bool)
+                case none
+
+                var stringValue: String? {
+                    switch self {
+                    case .string(let value):
+                        return value
+                    case .integer(let value):
+                        return String(value)
+                    case .decimal(let value):
+                        return String(value)
+                    case .boolean(let value):
+                        return String(value)
+                    case .none:
+                        return nil
+                    }
+                }
+
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.singleValueContainer()
+                    if let string = try? container.decode(String.self) {
+                        self = .string(string)
+                    } else if let integer = try? container.decode(Int.self) {
+                        self = .integer(integer)
+                    } else if let decimal = try? container.decode(Double.self) {
+                        if decimal == decimal.rounded() {
+                            self = .integer(Int(decimal))
+                        } else {
+                            self = .decimal(decimal)
+                        }
+                    } else if let bool = try? container.decode(Bool.self) {
+                        self = .boolean(bool)
+                    } else if container.decodeNil() {
+                        self = .none
+                    } else {
+                        self = .none
+                    }
+                }
+            }
+        }
+
+        guard let raw = try? JSONDecoder().decode(RawAnalysis.self, from: data) else { return nil }
+        let normalizedVerdict = raw.verdict
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .compactMap { char in
+                if char == "-" || char == "_" || char.isWhitespace {
+                    return "_"
+                }
+                if char.isLetter || char.isNumber {
+                    return String(char)
+                }
+                return nil
+            }
+            .joined()
+            .split(whereSeparator: { $0 == "_" })
+            .joined(separator: "_")
+        guard let verdict = AIPersonalizedAnalysis.Verdict(rawValue: normalizedVerdict) else {
+            return nil
+        }
+
+        return AIPersonalizedAnalysis(
+            personalizedDescription: raw.personalizedDescription,
+            predictedRating: raw.predictedRating,
+            verdict: verdict,
+            reasons: raw.reasons
+        )
     }
 
     /// Compare recommendations across providers
@@ -416,20 +611,286 @@ actor AIAssistantManager {
             let type: String?
             let reason: String?
             let tmdbId: Int?
+
+            private enum CodingKeys: String, CodingKey {
+                case title
+                case year
+                case type
+                case reason
+                case tmdbId
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                title = try container.decode(String.self, forKey: .title)
+                if let yearNumber = try? container.decodeIfPresent(Int.self, forKey: .year) {
+                    year = yearNumber
+                } else if let yearString = try? container.decodeIfPresent(String.self, forKey: .year) {
+                    let trimmedYearString = yearString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let parsedYear = Int(trimmedYearString) {
+                        year = parsedYear
+                    } else if let parsedYearDouble = Double(trimmedYearString),
+                              parsedYearDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                        year = Int(parsedYearDouble)
+                    } else {
+                        year = nil
+                    }
+                } else if let yearDouble = try? container.decodeIfPresent(Double.self, forKey: .year),
+                          yearDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                    year = Int(yearDouble)
+                } else {
+                    year = nil
+                }
+                type = try container.decodeIfPresent(String.self, forKey: .type)
+                if let reasonString = try? container.decodeIfPresent(String.self, forKey: .reason) {
+                    reason = reasonString
+                } else if let reasonArray = try? container.decodeIfPresent([String].self, forKey: .reason) {
+                    reason = reasonArray.joined(separator: "; ")
+                } else if let reasonArray = try? container.decodeIfPresent([ReasonValue].self, forKey: .reason) {
+                    reason = reasonArray.compactMap(\.stringValue).joined(separator: "; ")
+                } else if let reasonInt = try? container.decodeIfPresent(Int.self, forKey: .reason) {
+                    reason = String(reasonInt)
+                } else if let reasonDouble = try? container.decodeIfPresent(Double.self, forKey: .reason) {
+                    reason = String(reasonDouble)
+                } else {
+                    reason = nil
+                }
+
+                if let intId = try? container.decodeIfPresent(Int.self, forKey: .tmdbId) {
+                    tmdbId = intId
+                } else if let stringId = try? container.decodeIfPresent(String.self, forKey: .tmdbId) {
+                    let trimmedIdString = stringId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let parsedId = Int(trimmedIdString) {
+                        tmdbId = parsedId
+                    } else if let parsedIdDouble = Double(trimmedIdString),
+                              parsedIdDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                        tmdbId = Int(parsedIdDouble)
+                    } else {
+                        tmdbId = nil
+                    }
+                } else if let doubleId = try? container.decodeIfPresent(Double.self, forKey: .tmdbId),
+                          doubleId.truncatingRemainder(dividingBy: 1) == 0 {
+                    tmdbId = Int(doubleId)
+                } else {
+                    tmdbId = nil
+                }
+            }
+
+            private enum ReasonValue: Decodable {
+                case string(String)
+                case number(Int)
+                case decimal(Double)
+                case boolean(Bool)
+                case none
+
+                var stringValue: String? {
+                    switch self {
+                    case .string(let value):
+                        return value
+                    case .number(let value):
+                        return String(value)
+                    case .decimal(let value):
+                        return String(value)
+                    case .boolean(let value):
+                        return String(value)
+                    case .none:
+                        return nil
+                    }
+                }
+
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.singleValueContainer()
+                    if let string = try? container.decode(String.self) {
+                        self = .string(string)
+                    } else if let decimal = try? container.decode(Double.self) {
+                        if decimal.rounded() == decimal {
+                            self = .number(Int(decimal))
+                        } else {
+                            self = .decimal(decimal)
+                        }
+                    } else if let boolean = try? container.decode(Bool.self) {
+                        self = .boolean(boolean)
+                    } else if container.decodeNil() {
+                        self = .none
+                    } else {
+                        throw DecodingError.dataCorruptedError(
+                            in: container,
+                            debugDescription: "Reason value is not supported"
+                        )
+                    }
+                }
+            }
         }
 
-        let raws = try JSONDecoder().decode([RawRec].self, from: data)
+        struct FailableRawRec: Decodable {
+            let value: RawRec?
 
-        return raws.map {
-            let normalizedType = ($0.type ?? "").lowercased()
-            return AIMovieRecommendation(
-                title: $0.title,
-                year: $0.year,
-                type: normalizedType == "series" || normalizedType == "show" || normalizedType == "tv" ? .series : .movie,
-                reason: $0.reason ?? "",
-                tmdbId: $0.tmdbId
-            )
+            init(from decoder: Decoder) throws {
+                let container = try decoder.singleValueContainer()
+                value = try? container.decode(RawRec.self)
+            }
         }
+
+        func mapRecommendations(_ raws: [RawRec]) -> [AIMovieRecommendation] {
+            return raws.compactMap { raw in
+                let normalizedTitle = raw.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedTitle.isEmpty else { return nil }
+
+                let normalizedType = (raw.type ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let isSeriesType = [
+                    "series",
+                    "show",
+                    "tv",
+                    "tv series",
+                    "tvseries",
+                    "tv_show",
+                    "tv-show",
+                    "tv show",
+                    "television",
+                ].contains(normalizedType)
+                return AIMovieRecommendation(
+                    title: normalizedTitle,
+                    year: raw.year,
+                    type: isSeriesType ? .series : .movie,
+                    reason: raw.reason ?? "",
+                    tmdbId: raw.tmdbId
+                )
+            }
+        }
+
+        func deduplicatedRecommendations(_ recommendations: [AIMovieRecommendation]) -> [AIMovieRecommendation] {
+            var seen = Set<String>()
+            var deduplicated: [AIMovieRecommendation] = []
+            for recommendation in recommendations {
+                let normalizedTitle = recommendation.title
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let key = [
+                    normalizedTitle,
+                    "\(recommendation.year ?? 0)",
+                    "\(recommendation.tmdbId ?? 0)",
+                    recommendation.type.rawValue
+                ].joined(separator: "|")
+
+                if seen.insert(key).inserted {
+                    deduplicated.append(recommendation)
+                }
+            }
+
+            return deduplicated
+        }
+
+        struct RecommendationContainer: Decodable {
+            let recommendations: [FailableRawRec]?
+            let data: [FailableRawRec]?
+            let results: [FailableRawRec]?
+            let recommendation: FailableRawRec?
+            let result: FailableRawRec?
+            let item: FailableRawRec?
+            let items: [FailableRawRec]?
+
+            private enum CodingKeys: String, CodingKey {
+                case recommendations
+                case data
+                case results
+                case recommendation
+                case result
+                case item
+                case items
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                recommendations = try? container.decodeIfPresent([FailableRawRec].self, forKey: .recommendations)
+                data = try? container.decodeIfPresent([FailableRawRec].self, forKey: .data)
+                results = try? container.decodeIfPresent([FailableRawRec].self, forKey: .results)
+                recommendation = try? container.decodeIfPresent(FailableRawRec.self, forKey: .recommendation)
+                result = try? container.decodeIfPresent(FailableRawRec.self, forKey: .result)
+                item = try? container.decodeIfPresent(FailableRawRec.self, forKey: .item)
+                items = try? container.decodeIfPresent([FailableRawRec].self, forKey: .items)
+            }
+        }
+
+        func mapValidatedRecommendations(_ raws: [FailableRawRec]) -> [AIMovieRecommendation]? {
+            let mapped = mapRecommendations(raws.compactMap { $0.value })
+            return mapped.isEmpty ? nil : mapped
+        }
+
+        func decodeRawRecommendation(_ value: Any) -> FailableRawRec? {
+            guard JSONSerialization.isValidJSONObject(value),
+                  let data = try? JSONSerialization.data(withJSONObject: value) else {
+                return nil
+            }
+
+            guard let decoded = try? JSONDecoder().decode(FailableRawRec.self, from: data),
+                  decoded.value != nil else {
+                return nil
+            }
+
+            return decoded
+        }
+
+        func parseRecommendationContainer(from value: Any) -> [FailableRawRec] {
+            var collected: [FailableRawRec] = []
+            let arrayKeys = ["recommendations", "data", "results", "items"]
+            let singleKeys = ["recommendation", "result", "item"]
+
+            func collectArray(_ array: [Any]) {
+                for child in array {
+                    if let parsed = decodeRawRecommendation(child) {
+                        collected.append(parsed)
+                    } else {
+                        collect(from: child)
+                    }
+                }
+            }
+
+            func collect(from rawValue: Any) {
+                if let array = rawValue as? [Any] {
+                    if array.isEmpty {
+                        return
+                    }
+                    collectArray(array)
+                    return
+                }
+
+                guard let object = rawValue as? [String: Any] else { return }
+                if let parsedObject = decodeRawRecommendation(object) {
+                    collected.append(parsedObject)
+                    return
+                }
+
+                for (key, nestedValue) in object {
+                    if arrayKeys.contains(key), let nestedArray = nestedValue as? [Any] {
+                        collectArray(nestedArray)
+                        continue
+                    }
+
+                    if singleKeys.contains(key), let parsedValue = decodeRawRecommendation(nestedValue) {
+                        collected.append(parsedValue)
+                        continue
+                    }
+
+                    collect(from: nestedValue)
+                }
+            }
+
+            collect(from: value)
+            return collected
+        }
+
+        if let topLevel = try? JSONSerialization.jsonObject(with: data),
+           let parsedNested = mapValidatedRecommendations(parseRecommendationContainer(from: topLevel)) {
+            return deduplicatedRecommendations(parsedNested)
+        }
+
+        let raws = try JSONDecoder().decode([FailableRawRec].self, from: data).compactMap(\.value)
+
+        guard !raws.isEmpty else {
+            throw AIError.invalidResponse
+        }
+
+        return mapRecommendations(raws)
     }
 
     private func recommendationData(from content: String) -> Data? {
@@ -783,6 +1244,38 @@ enum AIOllamaEndpointPolicy {
         warningMessage(for: baseURL) == nil
     }
 
+    static func appendingPath(to baseURL: String, path: String) -> URL? {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmedBaseURL) else { return nil }
+
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalizedPath.isEmpty else { return components.url }
+
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let baseSegments = basePath.split(separator: "/").map(String.init)
+        let appendedSegments = normalizedPath.split(separator: "/").map(String.init)
+        let fullSegments: [String]
+
+        if baseSegments.count > 0 && appendedSegments.starts(with: baseSegments) {
+            fullSegments = baseSegments + appendedSegments.dropFirst(baseSegments.count)
+        } else {
+            fullSegments = baseSegments + appendedSegments
+        }
+
+        if fullSegments.isEmpty {
+            return components.url
+        }
+
+        if basePath.isEmpty {
+            components.path = "/\(normalizedPath)"
+        } else {
+            components.path = "/\(fullSegments.joined(separator: "/"))"
+        }
+
+        components.fragment = nil
+        return components.url
+    }
+
     static func warningMessage(for baseURL: String) -> String? {
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -791,17 +1284,33 @@ enum AIOllamaEndpointPolicy {
         }
 
         let scheme = url.scheme?.lowercased() ?? ""
-        guard scheme == "http" else { return nil }
-        guard !isLocalHost(host) else { return nil }
+        guard scheme == "http" || scheme == "https" else {
+            return "Enter a valid Ollama server URL."
+        }
 
-        return "Remote Ollama endpoints must use HTTPS. Plain HTTP is only allowed for localhost and loopback addresses."
+        if scheme == "http" {
+            return isLocalHost(host)
+                ? nil
+                : "Remote Ollama endpoints must use HTTPS. Plain HTTP is only allowed for localhost and loopback addresses."
+        }
+
+        return nil
     }
 
     private static func isLocalHost(_ host: String) -> Bool {
-        host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host == "[::1]"
+        if host == "localhost" {
+            return true
+        }
+
+        if let ipv4 = IPv4Address(host), ipv4.rawValue[0] == 127 {
+            return true
+        }
+
+        if let ipv6 = IPv6Address(host), ipv6.isLoopback {
+            return true
+        }
+
+        return false
     }
 }
 

@@ -715,7 +715,7 @@ struct TraktAPICallTests {
 // MARK: - TraktError Tests
 
 @Suite("TraktError")
-struct TraktErrorTests {
+struct TraktErrorTestsSyncservicetests {
 
     @Test func allErrorsHaveDescriptions() {
         let errors: [TraktError] = [
@@ -1150,7 +1150,7 @@ struct SimklAPICallTests {
 // MARK: - SimklError Tests
 
 @Suite("SimklError")
-struct SimklErrorTests {
+struct SimklErrorTestsSyncservicetests {
 
     @Test func allErrorsHaveDescriptions() {
         let errors: [SimklError] = [

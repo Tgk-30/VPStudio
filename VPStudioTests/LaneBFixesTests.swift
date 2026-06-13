@@ -19,6 +19,16 @@ struct LaneBFixesTests {
         #expect(keep == false)
     }
 
+    @Test func discoverFilteringRejectsEachLibraryRatedAndTitleExclusion() {
+        #expect(Self.shouldKeepDiscoverRecommendation(libraryMediaIds: ["movie-local-1"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(tmdbId: 42, ratedMediaIds: ["movie-tmdb-42"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(tmdbId: 42, libraryMediaIds: ["movie-tmdb-42"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(title: "Already Rated", ratedTitles: ["already rated"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(title: "Already Watched", watchedTitles: ["already watched"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(title: "Already Saved", libraryTitles: ["already saved"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(title: "Fresh Pick") == true)
+    }
+
     @Test func discoverMissingKeyResetPolicyOnlyTriggersForConfiguredKey() {
         #expect(DiscoverViewModel.shouldResetRemoteServiceForMissingKey(configuredApiKey: "abc") == true)
         #expect(DiscoverViewModel.shouldResetRemoteServiceForMissingKey(configuredApiKey: nil) == false)
@@ -180,6 +190,17 @@ struct LaneBFixesTests {
         #expect(DownloadProgressPolicy.latestUpdatedAt(in: tasks) == newer)
     }
 
+    @Test func downloadProgressPolicyClampsRawProgressBounds() {
+        #expect(DownloadProgressPolicy.clampedUnitProgress(-0.25) == 0)
+        #expect(DownloadProgressPolicy.clampedUnitProgress(0.75) == 0.75)
+        #expect(DownloadProgressPolicy.clampedUnitProgress(1.25) == 1)
+        #expect(DownloadProgressPolicy.clampedUnitProgress(.infinity) == 0)
+    }
+
+    @Test func downloadProgressPolicyUsesDistantPastForEmptyTaskLists() {
+        #expect(DownloadProgressPolicy.latestUpdatedAt(in: []) == .distantPast)
+    }
+
     @Test func seriesPrimaryPlayPolicyUsesSharedBusyGateAndFeedbackMessage() {
         #expect(SeriesPrimaryPlayPolicy.isBusy(isLocalPlayLoading: true, isPlayerOpening: false, isLoadingSeasonEpisodes: false) == true)
         #expect(SeriesPrimaryPlayPolicy.isBusy(isLocalPlayLoading: false, isPlayerOpening: true, isLoadingSeasonEpisodes: false) == true)
@@ -212,5 +233,29 @@ struct LaneBFixesTests {
 
         let byName = SearchViewModel.remapGenre(sourceGenre, in: [Genre(id: 999, name: "action")])
         #expect(byName?.id == 999)
+    }
+
+    private static func shouldKeepDiscoverRecommendation(
+        title: String = "Fresh Pick",
+        recommendationMediaID: String = "movie-local-1",
+        recommendationType: MediaType = .movie,
+        tmdbId: Int? = nil,
+        ratedMediaIds: Set<String> = [],
+        libraryMediaIds: Set<String> = [],
+        ratedTitles: Set<String> = [],
+        watchedTitles: Set<String> = [],
+        libraryTitles: Set<String> = []
+    ) -> Bool {
+        DiscoverViewModel.shouldKeepRecommendation(
+            title: title,
+            recommendationMediaID: recommendationMediaID,
+            recommendationType: recommendationType,
+            tmdbId: tmdbId,
+            ratedMediaIds: ratedMediaIds,
+            libraryMediaIds: libraryMediaIds,
+            ratedTitles: ratedTitles,
+            watchedTitles: watchedTitles,
+            libraryTitles: libraryTitles
+        )
     }
 }

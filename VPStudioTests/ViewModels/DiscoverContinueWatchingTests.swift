@@ -16,7 +16,7 @@ struct DiscoverContinueWatchingTests {
                 return
             }
             await Task.yield()
-            try await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(for: .milliseconds(25))
         }
     }
 
@@ -24,8 +24,7 @@ struct DiscoverContinueWatchingTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("discover-test.sqlite").path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "discover-test-\(UUID().uuidString)")
         try await db.migrate()
         return db
     }
@@ -173,7 +172,7 @@ struct DiscoverContinueWatchingTests {
         let vm = DiscoverViewModel()
         vm.hasPerformedInitialLoad = true
         vm.configure(database: db)
-        try await Self.waitUntil { vm.continueWatching.count == 1 }
+        try await Self.waitUntil(timeout: .seconds(8)) { vm.continueWatching.count == 1 }
 
         #expect(vm.continueWatching.count == 1)
         #expect(vm.continueWatching.first?.preview.title == "Configured Late")
@@ -198,6 +197,7 @@ struct DiscoverContinueWatchingTests {
 
         #expect(route.preview == preview)
         #expect(route.initialAction == .resumePlayback)
+        #expect(route.id == "ttyoungpope-123-s2e5-resumePlayback")
     }
 
     @Test func browseNavigationDoesNotAutoResumePlayback() {
@@ -216,5 +216,28 @@ struct DiscoverContinueWatchingTests {
 
         #expect(route.preview == preview)
         #expect(route.initialAction == .none)
+        #expect(route.id == "tt1234567-none-none")
+    }
+
+    @Test func browseNavigationRouteIncludesEpisodeContextWhenPresent() {
+        let preview = MediaPreview(
+            id: "ttseries",
+            type: .series,
+            title: "Test Series",
+            year: 2026,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 321,
+            episodeId: "321-s1e2",
+            seasonNumber: 1,
+            episodeNumber: 2
+        )
+
+        let route = DiscoverNavigationPolicy.browseRoute(for: preview)
+
+        #expect(route.preview == preview)
+        #expect(route.initialAction == .none)
+        #expect(route.id == "ttseries-321-s1e2-none")
     }
 }

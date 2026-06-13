@@ -186,10 +186,10 @@ struct ImmersivePlayerControlsView: View {
             }
 
             // Seek back
-            controlButton(icon: "gobackward.10", size: .body) {
+            controlButton(icon: PlayerCinematicVisualPolicy.skipBackSymbolName, size: .body) {
                 NotificationCenter.default.post(name: .immersiveControlSeekBack, object: nil)
             }
-            .accessibilityLabel("Rewind 10 seconds")
+            .accessibilityLabel("Rewind \(PlayerCinematicChromePolicy.skipBackInterval) seconds")
 
             // Play / Pause — prominent center button
             Button {
@@ -208,10 +208,10 @@ struct ImmersivePlayerControlsView: View {
             .accessibilityValue(playPauseAccessibilityValue)
 
             // Seek forward
-            controlButton(icon: "goforward.30", size: .body) {
+            controlButton(icon: PlayerCinematicVisualPolicy.skipForwardSymbolName, size: .body) {
                 NotificationCenter.default.post(name: .immersiveControlSeekForward, object: nil)
             }
-            .accessibilityLabel("Fast forward 30 seconds")
+            .accessibilityLabel("Fast forward \(PlayerCinematicChromePolicy.skipForwardInterval) seconds")
 
             // Next chapter (conditional)
             if !engine.chapters.isEmpty {

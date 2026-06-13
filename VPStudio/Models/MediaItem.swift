@@ -19,12 +19,12 @@ struct MediaItem: Codable, Sendable, Identifiable, Equatable, FetchableRecord, P
     var lastFetched: Date?
 
     var posterURL: URL? {
-        guard let path = posterPath else { return nil }
+        guard let path = posterPath, !path.isEmpty else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/w500\(path)")
     }
 
     var backdropURL: URL? {
-        guard let path = backdropPath else { return nil }
+        guard let path = backdropPath, !path.isEmpty else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/original\(path)")
     }
 
@@ -130,6 +130,29 @@ struct MediaItem: Codable, Sendable, Identifiable, Equatable, FetchableRecord, P
         self.tmdbId = tmdbId
         self.lastFetched = lastFetched
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, title, year, posterPath, backdropPath
+        case overview, genres, imdbRating, runtime, status, tmdbId, lastFetched
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        let typeRaw = try container.decodeIfPresent(String.self, forKey: .type)
+        type = typeRaw.flatMap(MediaType.init(rawValue:)) ?? .movie
+        title = try container.decode(String.self, forKey: .title)
+        year = try container.decodeIfPresent(Int.self, forKey: .year)
+        posterPath = try container.decodeIfPresent(String.self, forKey: .posterPath)
+        backdropPath = try container.decodeIfPresent(String.self, forKey: .backdropPath)
+        overview = try container.decodeIfPresent(String.self, forKey: .overview)
+        genres = try container.decodeIfPresent([String].self, forKey: .genres) ?? []
+        imdbRating = try container.decodeIfPresent(Double.self, forKey: .imdbRating)
+        runtime = try container.decodeIfPresent(Int.self, forKey: .runtime)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        tmdbId = try container.decodeIfPresent(Int.self, forKey: .tmdbId)
+        lastFetched = try container.decodeIfPresent(Date.self, forKey: .lastFetched)
+    }
 }
 
 struct MediaPreview: Sendable, Identifiable, Equatable, Hashable {
@@ -146,12 +169,12 @@ struct MediaPreview: Sendable, Identifiable, Equatable, Hashable {
     var episodeNumber: Int? = nil
 
     var posterURL: URL? {
-        guard let path = posterPath else { return nil }
+        guard let path = posterPath, !path.isEmpty else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/w342\(path)")
     }
 
     var backdropURL: URL? {
-        guard let path = backdropPath else { return nil }
+        guard let path = backdropPath, !path.isEmpty else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
     }
 }

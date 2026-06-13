@@ -166,7 +166,7 @@ struct TraktTokenRefreshCallbackTests {
             }
         )
 
-        await service.setTokens(access: "expired-token", refresh: "valid-refresh")
+        await service.setTokens(access: "stale-token", refresh: "valid-refresh")
         let _: [TraktItem] = try await service.getWatchlist(type: .movie)
 
         #expect(callbackState.callCount == 1)
@@ -489,7 +489,7 @@ struct DeviceCodeResponseTests {
 // MARK: - TraktDefaults Tests
 
 @Suite("TraktDefaults")
-struct TraktDefaultsTests {
+struct TraktDefaultsTestsSyncTraktsyncservicetests {
 
     @Test func placeholderCredentialsReturnNil() {
         let result = TraktDefaults.resolvedCredentials(userClientId: nil, userClientSecret: nil)

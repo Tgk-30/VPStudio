@@ -44,7 +44,13 @@ struct HDRIOrientationAnalyzer {
     // MARK: - Core analysis (nonisolated, safe to run on any thread)
 
     nonisolated private static func analyzeSync(url: URL) -> Float? {
+        guard fileLooksDecodableByImageIO(url: url) else {
+            return nil
+        }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            return nil
+        }
+        guard imageSourceHasReadableImage(at: source, index: 0) else {
             return nil
         }
 
@@ -64,12 +70,108 @@ struct HDRIOrientationAnalyzer {
         return screenYaw(in: thumb)
     }
 
+    nonisolated private static func fileLooksDecodableByImageIO(url: URL) -> Bool {
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              FileManager.default.isReadableFile(atPath: url.path) else {
+            return false
+        }
+
+        let fileSize = fileSize(at: url)
+        guard fileSize > 0,
+              let header = readPrefix(at: url, count: 512),
+              !header.isEmpty else {
+            return false
+        }
+
+        if header.starts(with: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) {
+            guard fileSize >= 12,
+                  let trailer = readSuffix(at: url, count: 12),
+                  trailer.count == 12 else {
+                return false
+            }
+            let chunkType = trailer[
+                trailer.index(trailer.startIndex, offsetBy: 4)..<trailer.index(trailer.startIndex, offsetBy: 8)
+            ]
+            return Data(chunkType) == Data("IEND".utf8)
+        }
+
+        if header.starts(with: Data([0xFF, 0xD8])) {
+            guard let trailer = readSuffix(at: url, count: 2),
+                  trailer.count == 2 else {
+                return false
+            }
+            return trailer.starts(with: Data([0xFF, 0xD9]))
+        }
+
+        if header.starts(with: Data([0x76, 0x2F, 0x31, 0x01])) {
+            return fileSize > 32
+        }
+
+        if let asciiHeader = String(data: header, encoding: .ascii),
+           asciiHeader.hasPrefix("#?RADIANCE") || asciiHeader.hasPrefix("#?RGBE") {
+            return asciiHeader.contains("FORMAT=")
+        }
+
+        return false
+    }
+
+    nonisolated private static func fileSize(at url: URL) -> UInt64 {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+        return UInt64(max(values?.fileSize ?? 0, 0))
+    }
+
+    nonisolated private static func readPrefix(at url: URL, count: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        return try? handle.read(upToCount: count) ?? Data()
+    }
+
+    nonisolated private static func readSuffix(at url: URL, count: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return nil }
+        let offset = end > UInt64(count) ? end - UInt64(count) : 0
+        do {
+            try handle.seek(toOffset: offset)
+            return try handle.read(upToCount: count) ?? Data()
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated private static func imageSourceHasReadableImage(
+        at source: CGImageSource,
+        index: Int
+    ) -> Bool {
+        guard CGImageSourceGetCount(source) > index else { return false }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any] else {
+            return false
+        }
+
+        let width = imageDimension(from: properties[kCGImagePropertyPixelWidth])
+        let height = imageDimension(from: properties[kCGImagePropertyPixelHeight])
+        return width > 0 && height > 0
+    }
+
+    nonisolated private static func imageDimension(from value: Any?) -> Int {
+        switch value {
+        case let number as NSNumber:
+            return number.intValue
+        case let intValue as Int:
+            return intValue
+        default:
+            return 0
+        }
+    }
+
     // MARK: - Pixel analysis
 
     private static func screenYaw(in image: CGImage) -> Float? {
         let w = image.width
         let h = image.height
-        guard w > 1, h > 1 else { return nil }
+        guard w > 2, h > 2 else { return nil }
 
         // Render into an RGBA8 bitmap so we can read pixel values safely.
         let bytesPerRow = w * 4
@@ -111,40 +213,141 @@ struct HDRIOrientationAnalyzer {
             }
         }
 
-        // Box-smooth with wrap-around to suppress point lights and reflections
+        // Box-smooth with a seam-aware filter to suppress point lights and reflections
         // while preserving the broad bright rectangle of the screen.
         // Window ≈ 1/10 of image width.
         let smoothed = boxSmooth(columnLuminance, halfWidth: max(1, w / 10))
+        let peakColumn = dominantColumn(from: smoothed, rawColumns: columnLuminance)
 
-        guard let peakCol = smoothed.indices.max(by: { smoothed[$0] < smoothed[$1] }) else {
-            return nil
+        let screenYawDeg: Float
+        switch peakColumn {
+        case .front:
+            screenYawDeg = 0
+        case .back:
+            screenYawDeg = -180
+        case .value(let peakCol):
+            // Convert peak column → longitude (yaw angle of the screen centre).
+            // x=0 → −180°, x=W/2 → 0°, x=W−1 → +180°
+            screenYawDeg = (Float(peakCol) / Float(w - 1) - 0.5) * 360.0
         }
 
         // Convert peak column → longitude (yaw angle of the screen centre).
-        // x=0 → −180°, x=W/2 → 0°, x=W−1 → +180°
-        let screenYawDeg = (Float(peakCol) / Float(w - 1) - 0.5) * 360.0
-
         // Negate: the skybox `hdriYawOffset` rotates the sphere, so we need to
         // rotate by the opposite angle to bring the screen to face the user at 0°.
         return -screenYawDeg
     }
 
-    // MARK: - Box smooth (wraps around the panorama seam)
+    private enum PeakColumn {
+        case front
+        case back
+        case value(Int)
+    }
 
-    /// Wrapping box filter — treats the column array as circular so the
-    /// panorama seam at x=0/x=W doesn't create a brightness discontinuity.
+    // MARK: - Peak and smoothing helpers
+
+    private static func dominantColumn(
+        from smoothed: [Float],
+        rawColumns: [Float]
+    ) -> PeakColumn {
+        guard !smoothed.isEmpty else { return .value(0) }
+        let n = smoothed.count
+
+        guard let maxValue = smoothed.max(), maxValue > 0 else {
+            return .value(0)
+        }
+
+        let indices = smoothed.indices.filter { smoothed[$0] == maxValue }
+        let edgeBand = max(1, n / 20)
+        if let first = indices.first,
+           let last = indices.last,
+           (first == 0 || last == n - 1),
+           let rawPeak = rawColumns.indices.max(
+            by: { lhs, rhs in
+                let lhsValue = rawColumns[lhs]
+                let rhsValue = rawColumns[rhs]
+                if lhsValue == rhsValue {
+                    return lhs < rhs
+                }
+                return lhsValue < rhsValue
+            }
+           ) {
+            if rawPeak < edgeBand {
+                return .front
+            }
+            if rawPeak >= n - edgeBand {
+                return .back
+            }
+        }
+
+        let baseline = smoothed.min() ?? 0
+        var vectorX = 0.0
+        var vectorY = 0.0
+        var totalWeight = 0.0
+        let fullTurn = Double.pi * 2
+
+        for (index, value) in smoothed.enumerated() {
+            let weight = max(0.0, Double(value - baseline))
+            guard weight > 0 else { continue }
+
+            let angle = Double(index) / Double(n) * fullTurn
+            vectorX += cos(angle) * weight
+            vectorY += sin(angle) * weight
+            totalWeight += weight
+        }
+
+        if totalWeight > 0 {
+            let magnitude = hypot(vectorX, vectorY)
+            if magnitude > 0.0001 {
+                var angle = atan2(vectorY, vectorX)
+                if angle < 0 { angle += fullTurn }
+                let normalized = angle / fullTurn
+                let peakIndex = Int((normalized * Double(n)).rounded(.toNearestOrAwayFromZero)) % n
+                return .value(peakIndex)
+            }
+        }
+
+        guard let first = indices.first, let last = indices.last else { return .value(0) }
+
+        if first == 0 && last == n - 1,
+           let rawPeak = rawColumns.indices.max(
+            by: { lhs, rhs in
+                let lhsValue = rawColumns[lhs]
+                let rhsValue = rawColumns[rhs]
+                if lhsValue == rhsValue {
+                    return lhs < rhs
+                }
+                return lhsValue < rhsValue
+            }
+        ) {
+            return rawPeak < n / 2 ? .front : .back
+        }
+
+        if indices.count == 1 { return .value(first) }
+        return .value(indices[indices.count / 2])
+    }
+
+    // MARK: - Box smooth (panorama-edge aware)
+
+    /// Edge-aware box filter that keeps a fixed kernel width while preventing
+    /// seam artifacts from a circular wrap for narrow windows.
     private static func boxSmooth(_ values: [Float], halfWidth h: Int) -> [Float] {
         let n = values.count
         guard n > 0, h > 0 else { return values }
+
+        let windowCount = 2 * h + 1
+        if windowCount >= n {
+            let average = values.reduce(0, +) / Float(n)
+            return [Float](repeating: average, count: n)
+        }
+
         var out = [Float](repeating: 0, count: n)
         for i in 0 ..< n {
+            let center = min(max(i, h), n - h - 1)
             var sum: Float = 0
-            let count = 2 * h + 1
-            for d in -h ... h {
-                let j = ((i + d) % n + n) % n
-                sum += values[j]
+            for index in (center - h)...(center + h) {
+                sum += values[index]
             }
-            out[i] = sum / Float(count)
+            out[i] = sum / Float(windowCount)
         }
         return out
     }

@@ -7,8 +7,7 @@ import Testing
 private func makeBugFixVerificationDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbURL = tempDir.appendingPathComponent(fileName)
-    let database = try DatabaseManager(path: dbURL.path)
+    let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
     try await database.migrate()
     return (database, tempDir)
 }
@@ -170,16 +169,11 @@ struct BugFixVerificationTests {
         @Test("database property returns injected DatabaseManager without crashing")
         @MainActor
         func injectedDatabaseReturns() throws {
-            let tempDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("vpstudio-test-\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-            let path = tempDir.appendingPathComponent("test.sqlite").path
-            let db = try DatabaseManager(path: path)
+            let db = try DatabaseManager(inMemoryNamed: "vpstudio-test-\(UUID().uuidString)")
             let appState = AppState(database: db, testHooks: .init())
             // Should not fatalError — returns the injected instance.
             let returned = appState.database
             #expect(returned === db)
-            try? FileManager.default.removeItem(at: tempDir)
         }
     }
 
@@ -263,13 +257,11 @@ struct BugFixVerificationTests {
     @Suite("Fix 6 — Forward skip icon consistency")
     struct ForwardSkipIconTests {
 
-        @Test("PlayerView transport forward skip is 30 seconds (not 10)")
+        @Test("PlayerView transport forward skip uses the shared interval")
         @MainActor
         func playerViewForwardSkipInterval() {
-            // The PlayerView's forward skip button calls seekRelative(30).
-            // The icon should be "goforward.30" to match.
-            // This test verifies the skip interval constant used in PlayerView.
-            // (The icon is "goforward.30" in the main transport; immersive was "goforward.10" before fix.)
+            // The PlayerView and immersive transport now use the same shared
+            // skip-forward interval and symbol policy.
             // We verify the VPPlayerEngine.cycleRate rates are consistent.
             let engine = VPPlayerEngine()
             let initialRate = engine.playbackRate

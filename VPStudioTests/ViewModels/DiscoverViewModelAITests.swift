@@ -52,10 +52,7 @@ struct DiscoverViewModelAITests {
         [{"title":"Test Movie","year":2024,"type":"movie","reason":"Great","tmdbId":123}]
         """
     ) async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager) {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpstudio-discover-ai-tests-\(UUID().uuidString).sqlite")
-            .path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-tests-\(UUID().uuidString)")
         try await db.migrate()
         let secretStore = TestSecretStore()
         let settings = SettingsManager(database: db, secretStore: secretStore)
@@ -77,10 +74,7 @@ struct DiscoverViewModelAITests {
     private static func makeSequencedDependencies(
         jsonResponses: [String]
     ) async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager, provider: SequencedAIProvider) {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpstudio-discover-ai-sequenced-tests-\(UUID().uuidString).sqlite")
-            .path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-sequenced-tests-\(UUID().uuidString)")
         try await db.migrate()
         let secretStore = TestSecretStore()
         let settings = SettingsManager(database: db, secretStore: secretStore)
@@ -93,10 +87,7 @@ struct DiscoverViewModelAITests {
     private static func makeUnconfiguredDependencies()
         async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager)
     {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpstudio-discover-ai-unconfigured-tests-\(UUID().uuidString).sqlite")
-            .path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-unconfigured-tests-\(UUID().uuidString)")
         try await db.migrate()
         let secretStore = TestSecretStore()
         let settings = SettingsManager(database: db, secretStore: secretStore)

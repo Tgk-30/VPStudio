@@ -1,0 +1,119 @@
+# VPStudio CI Workflow
+#
+# Automatically builds and tests VPStudio on every push to main and on all
+# pull requests. Runs on macOS with Xcode 16+ targeting the visionOS Simulator.
+#
+# For local verification, run:
+#   xcodebuild -scheme VPStudio -destination 'platform=visionOS Simulator,name=Apple Vision Pro' build
+#   xcodebuild test -scheme VPStudio -destination 'platform=visionOS Simulator,name=Apple Vision Pro' -only-testing:VPStudioTests
+
+name: Build and Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-test:
+    name: Build & Test (visionOS Simulator)
+    runs-on: macos-15
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout repository
+      # ------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Select Xcode 16 (visionOS development requires Xcode 16+)
+      #
+      # GitHub's macos-15 runner ships with multiple Xcode versions.
+      # We explicitly select Xcode 16.x and verify the selection.
+      # ------------------------------------------------------------------
+      - name: Select Xcode 16
+        run: |
+          # Try common Xcode 16 installation paths on GitHub Actions runners
+          if [ -d "/Applications/Xcode_16.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          elif [ -d "/Applications/Xcode_16.1.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.1.app
+          elif [ -d "/Applications/Xcode_16.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.2.app
+          fi
+
+          echo "Selected Xcode version:"
+          xcodebuild -version
+          echo ""
+          echo "Available SDKs:"
+          xcodebuild -showsdks | grep -i visionos || true
+
+      # ------------------------------------------------------------------
+      # 3. Build for testing
+      #
+      # Separating build and test steps lets us isolate compilation failures
+      # from test failures and speeds up iteration when only tests change.
+      # ------------------------------------------------------------------
+      - name: Build for testing
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -scheme VPStudio \
+            -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+            -enableCodeCoverage YES \
+            | xcpretty
+
+      # ------------------------------------------------------------------
+      # 4. Run tests
+      #
+      # Tests are executed against the pre-built test bundle produced above.
+      # Results are written to a named bundle so we can upload them on failure.
+      # ------------------------------------------------------------------
+      - name: Run tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -scheme VPStudio \
+            -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+            -only-testing:VPStudioTests \
+            -resultBundlePath TestResults.xcresult \
+            -enableCodeCoverage YES \
+            | xcpretty --report junit
+
+      # ------------------------------------------------------------------
+      # 5. Generate coverage report
+      # ------------------------------------------------------------------
+      - name: Generate coverage report
+        if: always()
+        run: |
+          if [ ! -d TestResults.xcresult ]; then
+            echo "Missing TestResults.xcresult; cannot generate coverage."
+            exit 1
+          fi
+          xcrun xccov view --report --json TestResults.xcresult > coverage.json
+          xcrun xccov view --report TestResults.xcresult > coverage.txt
+          test -s coverage.json
+          test -s coverage.txt
+
+      # ------------------------------------------------------------------
+      # 6. Upload test and coverage results
+      #
+      # Preserve the xcresult bundle, coverage reports, and JUnit XML so
+      # coverage regressions and failures can be diagnosed offline.
+      # ------------------------------------------------------------------
+      - name: Upload test and coverage results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: |
+            TestResults.xcresult
+            coverage.json
+            coverage.txt
+            build/reports/junit.xml
+          if-no-files-found: error
+          retention-days: 7

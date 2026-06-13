@@ -75,6 +75,7 @@ final class VPPlayerEngine {
 
     private var externalSubtitles: [Subtitle] = []
     private var parsedSubtitleCues: [Int: [SubtitleParser.SubtitleCue]] = [:]
+    private var preserveExplicitSubtitleDisable = false
 
     // MARK: - Supporting Types
 
@@ -111,6 +112,9 @@ final class VPPlayerEngine {
     // MARK: - Track Selection
 
     func selectAudioTrack(_ index: Int) {
+        guard audioTracks.isEmpty || audioTracks.contains(where: { $0.id == index }) else {
+            return
+        }
         selectedAudioTrack = index
     }
 
@@ -130,8 +134,15 @@ final class VPPlayerEngine {
     }
 
     func selectSubtitleTrack(_ index: Int) {
-        guard index >= -1, index < subtitleTracks.count else { return }
+        guard index == -1 || subtitleTracks.isEmpty || subtitleTracks.contains(where: { $0.id == index }) else {
+            return
+        }
         selectedSubtitleTrack = index
+        if index == -1 {
+            preserveExplicitSubtitleDisable = true
+        } else {
+            preserveExplicitSubtitleDisable = false
+        }
         if index == -1 {
             subtitlesEnabled = false
             currentSubtitleText = nil
@@ -139,6 +150,13 @@ final class VPPlayerEngine {
             subtitlesEnabled = true
             updateSubtitleText(at: currentTime)
         }
+    }
+
+    func clearSubtitleSelection() {
+        selectedSubtitleTrack = -1
+        subtitlesEnabled = false
+        currentSubtitleText = nil
+        preserveExplicitSubtitleDisable = false
     }
 
     /// Clears session-scoped playback state when a stream ends, is canceled,
@@ -165,6 +183,7 @@ final class VPPlayerEngine {
         error = nil
         externalSubtitles = []
         parsedSubtitleCues = [:]
+        preserveExplicitSubtitleDisable = false
     }
 
     // MARK: - Playback Rate
@@ -253,10 +272,16 @@ final class VPPlayerEngine {
             selectedSubtitleTrack = -1
             subtitlesEnabled = false
             currentSubtitleText = nil
-        } else if selectedSubtitleTrack < 0 || selectedSubtitleTrack >= subtitleTracks.count {
-            selectedSubtitleTrack = subtitleTracks[0].id
-            subtitlesEnabled = true
-            updateSubtitleText(at: currentTime)
+        } else if selectedSubtitleTrack < 0 || !subtitleTracks.contains(where: { $0.id == selectedSubtitleTrack }) {
+            if preserveExplicitSubtitleDisable {
+                selectedSubtitleTrack = -1
+                subtitlesEnabled = false
+                currentSubtitleText = nil
+            } else {
+                selectedSubtitleTrack = subtitleTracks[0].id
+                subtitlesEnabled = true
+                updateSubtitleText(at: currentTime)
+            }
         } else {
             subtitlesEnabled = true
             updateSubtitleText(at: currentTime)
@@ -307,8 +332,8 @@ final class VPPlayerEngine {
     // MARK: - Computed
 
     var progressPercent: Double {
-        guard duration > 0 else { return 0 }
-        return currentTime / duration
+        guard duration.isFinite, duration > 0, currentTime.isFinite else { return 0 }
+        return min(1, max(0, currentTime / duration))
     }
 
     var currentTimeFormatted: String { currentTime.formattedDuration }

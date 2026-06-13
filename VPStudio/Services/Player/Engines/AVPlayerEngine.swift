@@ -14,7 +14,13 @@ struct AVPlayerEngine: PlayerEngine {
             throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
         }
 
-        let item = AVPlayerItem(url: stream.streamURL)
+        let item: AVPlayerItem
+        if let options = Self.assetOptions(for: stream) {
+            let asset = AVURLAsset(url: stream.streamURL, options: options)
+            item = AVPlayerItem(asset: asset)
+        } else {
+            item = AVPlayerItem(url: stream.streamURL)
+        }
         item.preferredForwardBufferDuration = preferredForwardBufferDuration(for: stream)
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         let player = AVPlayer(playerItem: item)
@@ -36,6 +42,14 @@ struct AVPlayerEngine: PlayerEngine {
             return 3.0
         }
         return 1.5
+    }
+
+    static func assetOptions(for stream: StreamInfo) -> [String: Any]? {
+        guard let headers = StreamInfo.normalizedRequestHeaders(stream.requestHeaders) else {
+            return nil
+        }
+
+        return ["AVURLAssetHTTPHeaderFieldsKey": headers]
     }
 
     @MainActor
@@ -90,25 +104,27 @@ struct AVPlayerEngine: PlayerEngine {
     }
 
     private static func failureDescription(for item: AVPlayerItem) -> String {
-        if let event = item.errorLog()?.events.last {
-            let statusCode = event.errorStatusCode
-            let comment = event.errorComment?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        let statusCode = item.errorLog()?.events.last?.errorStatusCode ?? 0
+        let comment = item.errorLog()?.events.last?.errorComment
+        return failureDescription(statusCode: statusCode, comment: comment, itemError: item.error)
+    }
 
-            if statusCode > 0, let comment, !comment.isEmpty {
-                return "HTTP \(statusCode): \(comment)"
-            }
+    static func failureDescription(statusCode: Int, comment: String?, itemError: Error?) -> String {
+        let trimmedComment = comment?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            if statusCode > 0 {
-                return "HTTP \(statusCode) while loading stream."
-            }
-
-            if let comment, !comment.isEmpty {
-                return comment
-            }
+        if statusCode > 0, let trimmedComment, !trimmedComment.isEmpty {
+            return "HTTP \(statusCode): \(trimmedComment)"
         }
 
-        if let itemError = item.error {
+        if statusCode > 0 {
+            return "HTTP \(statusCode) while loading stream."
+        }
+
+        if let trimmedComment, !trimmedComment.isEmpty {
+            return trimmedComment
+        }
+
+        if let itemError = itemError {
             return itemError.localizedDescription
         }
 

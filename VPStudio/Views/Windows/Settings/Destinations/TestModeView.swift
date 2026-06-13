@@ -120,7 +120,7 @@ private struct TestScreenTile: View {
 
 // MARK: - Test Screen Definitions
 
-enum TestScreen: String, CaseIterable, Identifiable {
+enum TestScreen: String, CaseIterable, Identifiable, Sendable {
     case discover
     case search
     case searchResults
@@ -187,6 +187,25 @@ enum TestScreen: String, CaseIterable, Identifiable {
         case .player: return .red
         case .settings: return .gray
         }
+    }
+}
+
+enum TestScreenLaunchPolicy {
+    static func screen(for rawValue: String?) -> TestScreen? {
+        guard let normalizedValue = rawValue.map(normalized), !normalizedValue.isEmpty else {
+            return nil
+        }
+
+        return TestScreen.allCases.first { screen in
+            normalized(screen.rawValue) == normalizedValue
+                || normalized(screen.title) == normalizedValue
+        }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
     }
 }
 
@@ -762,88 +781,27 @@ private struct TestPlayerView: View {
 
     var body: some View {
         ZStack {
-            // Video area
-            Rectangle()
-                .fill(.black)
+            LinearGradient(
+                colors: [.black, .black.opacity(0.84), .indigo.opacity(0.28)],
+                startPoint: .top,
+                endPoint: .bottomTrailing
+            )
 
-            VStack {
-                Spacer()
-
-                // Controls overlay
-                if isShowingControls {
-                    VStack(spacing: 16) {
-                        // Top bar
-                        HStack {
-                            Image(systemName: "chevron.left")
-                            Spacer()
-                            Text("Dune: Part Two")
-                                .font(.caption)
-                            Spacer()
-                            Image(systemName: "airplayaudio")
-                        }
-                        .foregroundStyle(.white)
-
+            if isShowingControls {
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        testPlayerTopBar
                         Spacer()
-
-                        // Center play/pause
-                        HStack(spacing: 60) {
-                            Image(systemName: "backward.fill")
-                                .font(.title)
-                            Image(systemName: "play.fill")
-                                .font(.largeTitle)
-                            Image(systemName: "forward.fill")
-                                .font(.title)
-                        }
-                        .foregroundStyle(.white)
-
-                        Spacer()
-
-                        // Scrubber
-                        VStack(spacing: 4) {
-                            Slider(value: .constant(0.35), in: 0...1)
-                                .tint(.white)
-                                .accessibilityLabel("Playback position")
-                                .accessibilityValue("35 percent")
-                                .accessibilityHint("Preview-only playback progress in test mode.")
-                            HStack {
-                                Text("58:21")
-                                Spacer()
-                                Text("2:46:00")
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.7))
-                        }
-
-                        // Bottom bar
-                        HStack {
-                            Image(systemName: "speaker.fill")
-                            Slider(value: .constant(0.7), in: 0...1)
-                                .frame(width: 80)
-                                .tint(.white)
-                                .accessibilityLabel("Volume")
-                                .accessibilityValue("70 percent")
-                                .accessibilityHint("Preview-only volume level in test mode.")
-
-                            Spacer()
-
-                            HStack(spacing: 20) {
-                                Image(systemName: "captions.bubble")
-                                Image(systemName: "pip.enter")
-                                Image(systemName: "gear")
-                            }
-                        }
-                        .foregroundStyle(.white)
                     }
-                    .padding(24)
-                    .background(
-                        LinearGradient(
-                            colors: [.clear, .black.opacity(0.7)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .transition(.opacity)
+
+                    VStack(spacing: PlayerCinematicChromePolicy.controlsDockSpacing) {
+                        testPlayerQuickPills
+                        testPlayerTransportDock
+                    }
+                    .padding(.horizontal, PlayerCinematicChromePolicy.controlsDockHorizontalPadding)
+                    .padding(.bottom, PlayerCinematicChromePolicy.controlsDockBottomPadding)
                 }
+                .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -853,6 +811,172 @@ private struct TestPlayerView: View {
                 isShowingControls.toggle()
             }
         }
+    }
+
+    private var testPlayerTopBar: some View {
+        HStack(spacing: 12) {
+            testCircleButton(systemName: PlayerCinematicVisualPolicy.backSymbolName)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Dune: Part Two")
+                    .font(.headline.weight(.semibold))
+                Text("2160p HDR  |  AVPlayer")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
+            }
+            .lineLimit(1)
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                testCircleButton(systemName: PlayerCinematicVisualPolicy.subtitlesSymbolName)
+                testCircleButton(systemName: PlayerCinematicVisualPolicy.audioSymbolName)
+                testCircleButton(systemName: PlayerCinematicVisualPolicy.menuSymbolName)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+        .background(
+            LinearGradient(
+                colors: [.black.opacity(0.58), .black.opacity(0.18), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: PlayerCinematicChromePolicy.topScrimHeight),
+            alignment: .top
+        )
+    }
+
+    private var testPlayerQuickPills: some View {
+        HStack(spacing: 8) {
+            testPill("1.0x")
+            testPill("2160p")
+            testPill("HDR")
+            testPill("AVPlayer")
+        }
+    }
+
+    private var testPlayerTransportDock: some View {
+        VStack(spacing: 10) {
+            GeometryReader { geo in
+                let width = geo.size.width
+                let progress = width * 0.35
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.white.opacity(PlayerCinematicVisualPolicy.progressTrackOpacity))
+                        .frame(height: PlayerCinematicChromePolicy.progressBarIdleHeight)
+                    Capsule()
+                        .fill(.white.opacity(PlayerCinematicVisualPolicy.progressBufferedOpacity))
+                        .frame(width: width * 0.58, height: PlayerCinematicChromePolicy.progressBarIdleHeight)
+                    Capsule()
+                        .fill(.white)
+                        .frame(width: progress, height: PlayerCinematicChromePolicy.progressBarIdleHeight)
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 10, height: 10)
+                        .position(x: progress, y: geo.size.height / 2)
+                }
+            }
+            .frame(height: 22)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue("58:21 elapsed, 1:47:39 remaining")
+
+            HStack {
+                Text("58:21")
+                Spacer()
+                Text("-1:47:39")
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
+
+            HStack(spacing: 24) {
+                testTransportButton(systemName: PlayerCinematicVisualPolicy.skipBackSymbolName)
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(
+                        width: PlayerCinematicChromePolicy.primaryTransportButtonSize,
+                        height: PlayerCinematicChromePolicy.primaryTransportButtonSize
+                    )
+                    .background(.white, in: Circle())
+                    .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
+                testTransportButton(systemName: PlayerCinematicVisualPolicy.skipForwardSymbolName)
+            }
+            .frame(minHeight: PlayerCinematicChromePolicy.primaryTransportButtonSize)
+
+            Capsule()
+                .fill(.white.opacity(0.24))
+                .frame(width: 34, height: 3)
+        }
+        .padding(.horizontal, PlayerCinematicChromePolicy.transportCardHorizontalPadding)
+        .padding(.vertical, PlayerCinematicChromePolicy.transportCardVerticalPadding)
+        .frame(maxWidth: PlayerCinematicChromePolicy.transportCardMaxWidth)
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(
+                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
+                style: .continuous
+            )
+            .strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(0.26), .white.opacity(0.08)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1
+            )
+        }
+        .shadow(color: .black.opacity(0.24), radius: 24, y: 10)
+    }
+
+    private func testCircleButton(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.body.weight(.semibold))
+            .frame(
+                width: PlayerCinematicChromePolicy.topBarButtonSize,
+                height: PlayerCinematicChromePolicy.topBarButtonSize
+            )
+            .background(.ultraThinMaterial, in: Circle())
+            .overlay {
+                Circle()
+                    .strokeBorder(.white.opacity(PlayerCinematicVisualPolicy.iconSurfaceBorderOpacity), lineWidth: 0.8)
+            }
+    }
+
+    private func testTransportButton(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(
+                width: PlayerCinematicChromePolicy.secondaryTransportButtonSize,
+                height: PlayerCinematicChromePolicy.secondaryTransportButtonSize
+            )
+            .background(.white.opacity(0.10), in: Circle())
+            .overlay {
+                Circle()
+                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.8)
+            }
+    }
+
+    private func testPill(_ title: String) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+            }
     }
 }
 

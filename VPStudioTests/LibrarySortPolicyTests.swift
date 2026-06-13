@@ -2,7 +2,7 @@ import Testing
 @testable import VPStudio
 
 @Suite("Library Sort Policy")
-struct LibrarySortPolicyTests {
+struct LibrarySortPolicyTestsLibrarysortpolicytests {
 
     @Test
     func allCasesAreIterable() {

@@ -205,16 +205,70 @@ final class AppState {
         var failureMessages: [String] = []
 
         do {
+            if let databasePath = Self.defaultDatabasePath() {
+                if !Self.canWriteDatabase(at: databasePath) {
+                    let readOnlyMessage = "Primary database path is not writable: \(databasePath)"
+                    throw CocoaError(.fileWriteNoPermission, userInfo: [NSLocalizedDescriptionKey: readOnlyMessage])
+                }
+            } else {
+                let pathMessage = "Unable to resolve primary database path"
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: pathMessage])
+            }
+
             return try DatabaseManager(path: nil)
         } catch {
             let message = "Primary database initialization failed: \(error.localizedDescription)"
             failureMessages.append(message)
-            Self.logger.fault("\(message, privacy: .public). Refusing to silently downgrade persistence to temporary or in-memory storage.")
+            Self.logger.fault("\(message, privacy: .public). Attempting in-memory fallback.")
+            // In constrained environments (for example read-only home directories),
+            // fallback to an in-memory database to keep core services functional.
+            // The caller can still surface this as degraded persistence if needed.
+            let inMemoryIdentifier = "vpstudio-fallback-\(UUID().uuidString)"
+            do {
+                return try DatabaseManager(inMemoryNamed: inMemoryIdentifier)
+            } catch {
+                let inMemoryMessage = "In-memory database fallback failed: \(error.localizedDescription)"
+                failureMessages.append(inMemoryMessage)
+                Self.logger.fault("Failed to initialize in-memory fallback: \(inMemoryMessage, privacy: .public)")
+            }
         }
 
         let failureSummary = failureMessages.joined(separator: " | ")
         Self.logger.fault("All database initialization fallbacks failed. Database operations will remain unavailable. \(failureSummary, privacy: .public)")
         return DatabaseManager.unavailable(message: "Unable to initialize any database storage. \(failureSummary)")
+    }
+
+    private static func defaultDatabasePath() -> String? {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+
+        let databaseDir = appSupport.appendingPathComponent("VPStudio", isDirectory: true)
+        return databaseDir.appendingPathComponent("vpstudio.sqlite").path
+    }
+
+    private static func canWriteDatabase(at databasePath: String) -> Bool {
+        let url = URL(fileURLWithPath: databasePath)
+        let directory = url.deletingLastPathComponent()
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+
+        if FileManager.default.fileExists(atPath: databasePath) && !FileManager.default.isWritableFile(atPath: databasePath) {
+            return false
+        }
+
+        let probePath = directory.appendingPathComponent(".vpstudio-db-probe-\(UUID().uuidString)")
+        do {
+            try Data().write(to: probePath)
+            try FileManager.default.removeItem(at: probePath)
+            return true
+        } catch {
+            return false
+        }
     }
 
     nonisolated static func cleanupPersistentArtifacts(
@@ -779,30 +833,49 @@ final class AppState {
         let openAIKey = (try? await settingsManager.getString(key: SettingsKeys.openAIApiKey)) ?? ""
         let geminiKey = (try? await settingsManager.getString(key: SettingsKeys.geminiApiKey)) ?? ""
         let openRouterKey = (try? await settingsManager.getString(key: SettingsKeys.openRouterApiKey)) ?? ""
+        let mistralKey = (try? await settingsManager.getString(key: SettingsKeys.mistralApiKey)) ?? ""
+        let minimaxKey = (try? await settingsManager.getString(key: SettingsKeys.minimaxApiKey)) ?? ""
         let ollamaURL = (try? await settingsManager.getString(key: SettingsKeys.ollamaEndpoint)) ?? "http://localhost:11434"
         let anthropicModel = try? await settingsManager.getString(key: SettingsKeys.anthropicModelPreset)
         let openAIModel = try? await settingsManager.getString(key: SettingsKeys.openAIModelPreset)
         let geminiModel = try? await settingsManager.getString(key: SettingsKeys.geminiModelPreset)
         let openRouterModel = try? await settingsManager.getString(key: SettingsKeys.openRouterModelPreset)
+        let mistralModel = try? await settingsManager.getString(key: SettingsKeys.mistralModelPreset)
+        let minimaxModel = try? await settingsManager.getString(key: SettingsKeys.minimaxModelPreset)
         let ollamaModel = try? await settingsManager.getString(key: SettingsKeys.ollamaModelPreset)
 
         let manager = aiAssistantManager
         await manager.clearProviders()
 
-        if !anthropicKey.isEmpty {
-            await manager.configure(provider: .anthropic, apiKey: anthropicKey, model: anthropicModel)
+        let configuredCloudProviders = AISettingsPolicy.enabledCloudProviders(
+            candidates: [
+                (.anthropic, anthropicKey),
+                (.openAI, openAIKey),
+                (.gemini, geminiKey),
+                (.openRouter, openRouterKey),
+                (.mistral, mistralKey),
+                (.minimax, minimaxKey),
+            ]
+        )
+        for provider in configuredCloudProviders {
+            switch provider {
+            case .anthropic:
+                await manager.configure(provider: .anthropic, apiKey: anthropicKey, model: anthropicModel)
+            case .openAI:
+                await manager.configure(provider: .openAI, apiKey: openAIKey, model: openAIModel)
+            case .gemini:
+                await manager.configure(provider: .gemini, apiKey: geminiKey, model: geminiModel)
+            case .openRouter:
+                await manager.configure(provider: .openRouter, apiKey: openRouterKey, model: openRouterModel)
+            case .mistral:
+                await manager.configure(provider: .mistral, apiKey: mistralKey, model: mistralModel)
+            case .minimax:
+                await manager.configure(provider: .minimax, apiKey: minimaxKey, model: minimaxModel)
+            case .ollama, .local:
+                break
+            }
         }
-        if !openAIKey.isEmpty {
-            await manager.configure(provider: .openAI, apiKey: openAIKey, model: openAIModel)
-        }
-        if !geminiKey.isEmpty {
-            await manager.configure(provider: .gemini, apiKey: geminiKey, model: geminiModel)
-        }
-        if !openRouterKey.isEmpty {
-            await manager.configure(provider: .openRouter, apiKey: openRouterKey, model: openRouterModel)
-        }
-        let hasOllamaModel = ollamaModel != nil && !(ollamaModel?.isEmpty ?? true)
-        let shouldRegisterOllama = !ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && hasOllamaModel
+        let shouldRegisterOllama = !ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if shouldRegisterOllama {
             await manager.configure(provider: .ollama, apiKey: "", baseURL: ollamaURL, model: ollamaModel)
         }
@@ -937,6 +1010,8 @@ final class AppState {
             isImmersiveSpaceOpen = false
             isImmersiveTransitionInFlight = false
             shouldRestoreImmersiveAfterSuspension = false
+            spatialAudioManager.exitImmersiveMode()
+            isMainWindowSuppressedForPlayer = false
             environmentBootstrapWarning = nil
             indexerReloadWarning = nil
 
@@ -1000,13 +1075,29 @@ final class AppState {
     func releasePlayerResources(clearSession: Bool = true, sessionID: UUID? = nil) {
         activeAVPlayer = nil
         activeVideoRenderer = nil
+        let currentSessionID = activePlayerSession?.id
+        let targetSessionID = sessionID ?? currentSessionID
+        let shouldClearSessionState = sessionID == nil || currentSessionID == nil || currentSessionID == targetSessionID
+
+        if clearSession,
+           shouldClearSessionState {
+            spatialAudioManager.exitImmersiveMode()
+            isImmersiveTransitionInFlight = false
+            shouldRestoreImmersiveAfterSuspension = false
+            pendingImmersiveDismissReason = .userInitiated
+            if sessionID == nil {
+                isMainWindowSuppressedForPlayer = false
+            }
+        }
 
         guard clearSession else { return }
 
-        if let targetSessionID = sessionID ?? activePlayerSession?.id {
+        if let targetSessionID {
             fullscreenBySessionID.removeValue(forKey: targetSessionID)
         }
-        activePlayerSession = nil
+        if shouldClearSessionState {
+            activePlayerSession = nil
+        }
     }
 }
 

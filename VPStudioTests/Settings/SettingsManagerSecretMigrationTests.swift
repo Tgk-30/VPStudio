@@ -15,6 +15,10 @@ struct SettingsManagerSecretMigrationTests {
         SettingsKeys.openSubtitlesApiKey,
         SettingsKeys.openAIApiKey,
         SettingsKeys.anthropicApiKey,
+        SettingsKeys.openRouterApiKey,
+        SettingsKeys.geminiApiKey,
+        SettingsKeys.mistralApiKey,
+        SettingsKeys.minimaxApiKey,
         SettingsKeys.traktClientId,
         SettingsKeys.traktClientSecret,
         SettingsKeys.traktAccessToken,
@@ -97,8 +101,7 @@ struct SettingsManagerSecretMigrationTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let result: T = try await {
-            let dbPath = tempDir.appendingPathComponent(databaseName).path
-            let database = try DatabaseManager(path: dbPath)
+            let database = try DatabaseManager(inMemoryNamed: "\(databaseName)-\(UUID().uuidString)")
             try await database.migrate()
             let secretStore = TestSecretStore()
             let manager = SettingsManager(database: database, secretStore: secretStore)
@@ -162,6 +165,32 @@ struct SettingsManagerSecretMigrationTests {
             #expect(persisted == nil)
             #expect(raw == nil)
             #expect(storedSecret == nil)
+        }
+    }
+
+    @Test
+    func aiProviderSecretKeysClearStoredSecretsWhenDeleted() async throws {
+        try await withTempSettingsEnvironment(databaseName: "ai-settings-clear.sqlite") { database, secretStore, manager in
+            for key in [SettingsKeys.mistralApiKey, SettingsKeys.minimaxApiKey] {
+                let value = "token-\(key)"
+                let secretKey = SecretKey.setting(key)
+
+                try await manager.setString(key: key, value: value)
+
+                let rawReference = try await database.getSetting(key: key)
+                let storedSecret = try await secretStore.getSecret(for: secretKey)
+                #expect(rawReference == SecretReference.encode(key: secretKey))
+                #expect(storedSecret == value)
+
+                try await manager.setString(key: key, value: nil)
+
+                let persisted = try await manager.getString(key: key)
+                let rawAfterDelete = try await database.getSetting(key: key)
+                let secretAfterDelete = try await secretStore.getSecret(for: secretKey)
+                #expect(persisted == nil)
+                #expect(rawAfterDelete == nil)
+                #expect(secretAfterDelete == nil)
+            }
         }
     }
 }

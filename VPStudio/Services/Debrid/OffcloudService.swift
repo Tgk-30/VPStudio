@@ -53,8 +53,15 @@ actor OffcloudService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
         let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: normalizedHash,
+            suppliedMagnetURI: magnetURI
+        )
         let decoded: OCAddResponse = try await request(
             method: "POST",
             path: "/cloud",

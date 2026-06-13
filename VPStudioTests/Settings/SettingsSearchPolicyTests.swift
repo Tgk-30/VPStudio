@@ -16,6 +16,18 @@ struct SettingsSearchPolicyTests {
     }
 
     @Test
+    func suggestionsTrimWhitespaceAndIgnoreCase() {
+        let suggestions = SettingsSearchPolicy.suggestions(for: "  TM ")
+        #expect(suggestions == ["tmdb"])
+    }
+
+    @Test
+    func suggestionsMatchTermsContainingQuery() {
+        let suggestions = SettingsSearchPolicy.suggestions(for: "key")
+        #expect(suggestions == ["api key"])
+    }
+
+    @Test
     func resultsSummarySingularFormatting() {
         let summary = SettingsSearchPolicy.resultsSummary(count: 1, query: "tmdb")
         #expect(summary == "1 result for \"tmdb\"")
@@ -34,9 +46,20 @@ struct SettingsSearchPolicyTests {
     }
 
     @Test
+    func resultsSummaryTrimsQueryBeforeFormatting() {
+        let summary = SettingsSearchPolicy.resultsSummary(count: 2, query: "  hdr \n")
+        #expect(summary == "2 results for \"hdr\"")
+    }
+
+    @Test
     func emptyStateVisibleWhenNoResultsAndQueryPresent() {
         #expect(SettingsSearchPolicy.shouldShowEmptyState(resultCount: 0, query: "xyz") == true)
         #expect(SettingsSearchPolicy.shouldShowEmptyState(resultCount: 0, query: "") == false)
         #expect(SettingsSearchPolicy.shouldShowEmptyState(resultCount: 1, query: "xyz") == false)
+    }
+
+    @Test
+    func emptyStateHiddenForWhitespaceOnlyQuery() {
+        #expect(SettingsSearchPolicy.shouldShowEmptyState(resultCount: 0, query: " \n\t ") == false)
     }
 }

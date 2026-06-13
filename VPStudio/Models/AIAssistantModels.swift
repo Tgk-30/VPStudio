@@ -5,6 +5,8 @@ enum AIProviderKind: String, Codable, CaseIterable, Sendable, Identifiable, Hash
     case ollama = "ollama"
     case gemini = "gemini"
     case openRouter = "openrouter"
+    case mistral = "mistral"
+    case minimax = "minimax"
     case local = "local"
 
     var id: String { rawValue }
@@ -16,6 +18,8 @@ enum AIProviderKind: String, Codable, CaseIterable, Sendable, Identifiable, Hash
         case .ollama: return "Ollama"
         case .gemini: return "Google Gemini"
         case .openRouter: return "OpenRouter"
+        case .mistral: return "Mistral"
+        case .minimax: return "MiniMax"
         case .local: return "On-Device (Local)"
         }
     }

@@ -68,6 +68,17 @@ actor DownloadManager {
     struct TransferRequest: Sendable {
         let url: URL?
         let resumeData: Data?
+        let requestHeaders: [String: String]?
+
+        init(url: URL?, resumeData: Data?, requestHeaders: [String: String]? = nil) {
+            self.url = url
+            self.resumeData = resumeData
+            self.requestHeaders = StreamInfo.normalizedRequestHeaders(requestHeaders)
+        }
+
+        var hasTransportState: Bool {
+            url != nil || resumeData != nil || requestHeaders != nil
+        }
     }
 
     typealias DownloadPerformer = @Sendable (TransferRequest, @escaping @Sendable (Int64, Int64, Int64) -> Void, DownloadCancellationController) async throws -> (URL, URLResponse)
@@ -95,6 +106,10 @@ actor DownloadManager {
     }
 
     private var jobs: [String: DownloadJob] = [:]
+    private var isSchedulingQueuedJobs: Bool = false
+    private var shouldRescheduleQueuedJobs: Bool = false
+    private var startingJobIDs: Set<String> = []
+    private var removalBatchDepth: Int = 0
     private var inMemoryReplayableRequestsByTaskID: [String: TransferRequest] = [:]
     private var reservedDestinationByTaskID: [String: URL] = [:]
     private var reservedDestinationPaths: Set<String> = []
@@ -170,7 +185,11 @@ actor DownloadManager {
         cacheReplayableTransferRequestIfNeeded(
             id: task.id,
             taskHasRecoveryContext: task.recoveryContext != nil,
-            request: TransferRequest(url: stream.streamURL, resumeData: nil)
+            request: TransferRequest(
+                url: stream.streamURL,
+                resumeData: nil,
+                requestHeaders: stream.requestHeaders
+            )
         )
         try await database.saveDownloadTask(persistenceReadyTask(task))
         reserveDestinationIfNeeded(for: task.id, fileName: task.fileName)
@@ -186,12 +205,16 @@ actor DownloadManager {
     func cancelDownload(id: String) async {
         let existingTask = try? await database.fetchDownloadTask(id: id)
         if let job = jobs[id] {
-            job.cancellationController.cancel()
-            Task {
-                await self.escalateCancellationIfNeeded(id: id, job: job)
+            await requestJobCancellation(id: id, job: job, allowGracefulResume: true)
+
+            if let currentTask = try? await database.fetchDownloadTask(id: id),
+               !currentTask.status.isTerminal {
+                try? await database.updateDownloadTaskStatus(id: id, status: .cancelled, errorMessage: nil)
             }
+        } else {
+            releaseReservedDestination(for: id)
+            try? await database.updateDownloadTaskStatus(id: id, status: .cancelled, errorMessage: nil)
         }
-        try? await database.updateDownloadTaskStatus(id: id, status: .cancelled, errorMessage: nil)
         if let existingTask {
             await clearReplayableTransferStateIfNeeded(for: existingTask, id: id)
             await cleanupRemoteTransferIfNeeded(for: existingTask)
@@ -207,7 +230,19 @@ actor DownloadManager {
         guard let existing = try await database.fetchDownloadTask(id: id) else { return }
 
         let persistReplayableState = shouldPersistReplayableState(for: existing)
-        let replayableRequest = replayableTransferRequest(for: existing)
+        var replayableRequest = replayableTransferRequest(for: existing)
+
+        if persistReplayableState,
+           let refreshedURLString = existing.persistedStreamURL,
+           let refreshedURL = URL(string: refreshedURLString),
+           replayableRequest.url != refreshedURL {
+            replayableRequest = TransferRequest(
+                url: refreshedURL,
+                resumeData: replayableRequest.resumeData,
+                requestHeaders: replayableRequest.requestHeaders
+            )
+        }
+
         let canResumePartially = replayableRequest.resumeData != nil
 
         let resetTask = DownloadTask(
@@ -249,6 +284,8 @@ actor DownloadManager {
     func removeDownload(id: String) async throws {
         if let job = jobs[id] {
             await requestJobCancellation(id: id, job: job, allowGracefulResume: false)
+        } else {
+            releaseReservedDestination(for: id)
         }
 
         let existing = try await database.fetchDownloadTask(id: id)
@@ -287,6 +324,12 @@ actor DownloadManager {
     }
 
     func removeDownloads(mediaId: String) async throws {
+        removalBatchDepth += 1
+        defer {
+            removalBatchDepth -= 1
+            Task { await self.maybeStartQueuedJobs() }
+        }
+
         let tasks = try await database.fetchDownloadTasks()
         let matching = tasks.filter { $0.mediaId == mediaId }
         for task in matching {
@@ -294,14 +337,18 @@ actor DownloadManager {
         }
     }
 
-    private func startJob(for id: String) {
-        guard jobs[id] == nil else { return }
+    private func startJob(for id: String) -> Bool {
+        guard jobs[id] == nil else { return false }
+        guard !startingJobIDs.contains(id) else { return false }
+
+        startingJobIDs.insert(id)
 
         let cancellationController = DownloadCancellationController()
         let task = Task {
             await self.processDownload(id: id, cancellationController: cancellationController)
         }
         jobs[id] = DownloadJob(task: task, cancellationController: cancellationController)
+        return true
     }
 
     private func waitForJobTeardown(id: String) async {
@@ -400,6 +447,7 @@ actor DownloadManager {
     private func processDownload(id: String, cancellationController: DownloadCancellationController) async {
         defer {
             jobs[id] = nil
+            startingJobIDs.remove(id)
             releaseReservedDestination(for: id)
             reservedExpectedBytesByTaskID[id] = nil
             Task { await self.maybeStartQueuedJobs() }
@@ -411,6 +459,11 @@ actor DownloadManager {
                 status: .failed,
                 errorMessage: "Invalid stream URL"
             )
+            notifyDownloadsChanged()
+            return
+        }
+
+        guard task.status == .downloading else {
             notifyDownloadsChanged()
             return
         }
@@ -452,6 +505,16 @@ actor DownloadManager {
         var linkRefreshAttempted = false
 
         do {
+            guard Self.isViableDownloadRequest(currentRequest) else {
+                try? await database.updateDownloadTaskStatus(
+                    id: id,
+                    status: .failed,
+                    errorMessage: URLError(.badURL).localizedDescription
+                )
+                notifyDownloadsChanged()
+                return
+            }
+
             let tempURL = try await attemptDownload(request: currentRequest, id: id, cancellationController: cancellationController)
             defer { try? fileManager.removeItem(at: tempURL) }
 
@@ -483,9 +546,13 @@ actor DownloadManager {
                     notifyDownloadsChanged()
 
                     let freshURL = try await refresher(context)
-                    currentRequest = TransferRequest(url: freshURL, resumeData: nil)
+                    currentRequest = TransferRequest(
+                        url: freshURL,
+                        resumeData: nil,
+                        requestHeaders: currentRequest.requestHeaders
+                    )
 
-                    await persistReplayableTransferStateForRetry(url: freshURL, task: task, id: id)
+                    await persistReplayableTransferStateForRetry(request: currentRequest, task: task, id: id)
 
                     try? await database.updateDownloadTaskStatus(id: id, status: .downloading, errorMessage: nil)
                     notifyDownloadsChanged()
@@ -549,9 +616,13 @@ actor DownloadManager {
                     notifyDownloadsChanged()
 
                     let freshURL = try await refresher(context)
-                    currentRequest = TransferRequest(url: freshURL, resumeData: nil)
+                    currentRequest = TransferRequest(
+                        url: freshURL,
+                        resumeData: nil,
+                        requestHeaders: currentRequest.requestHeaders
+                    )
 
-                    await persistReplayableTransferStateForRetry(url: freshURL, task: task, id: id)
+                    await persistReplayableTransferStateForRetry(request: currentRequest, task: task, id: id)
 
                     // Retry with fresh URL
                     try? await database.updateDownloadTaskStatus(id: id, status: .downloading, errorMessage: nil)
@@ -588,21 +659,46 @@ actor DownloadManager {
     }
 
     private func startingRequest(for task: DownloadTask, id: String) async throws -> TransferRequest {
-        if !shouldPersistReplayableState(for: task),
-           linkRefresher == nil,
-           let inMemoryRequest = inMemoryReplayableRequestsByTaskID[id] {
-            if inMemoryRequest.resumeData != nil || inMemoryRequest.url != nil {
-                return inMemoryRequest
+        if shouldPersistReplayableState(for: task) {
+            if let inMemoryRequest = inMemoryReplayableRequestsByTaskID[id] {
+                let persistedRequestURL = task.persistedStreamURL.flatMap(URL.init(string:))
+                let merged = TransferRequest(
+                    url: inMemoryRequest.url ?? persistedRequestURL,
+                    resumeData: task.resumeData ?? inMemoryRequest.resumeData,
+                    requestHeaders: inMemoryRequest.requestHeaders
+                )
+
+                if merged.hasTransportState {
+                    return merged
+                }
+            }
+
+            return TransferRequest(
+                url: task.persistedStreamURL.flatMap(URL.init(string:)),
+                resumeData: task.resumeData
+            )
+        }
+
+        if let inMemoryRequest = inMemoryReplayableRequestsByTaskID[id] {
+            let merged = TransferRequest(
+                url: inMemoryRequest.url ?? task.persistedStreamURL.flatMap(URL.init(string:)),
+                resumeData: inMemoryRequest.resumeData ?? task.resumeData,
+                requestHeaders: inMemoryRequest.requestHeaders
+            )
+
+            if Self.isViableDownloadRequest(merged) {
+                return merged
             }
         }
 
         if !shouldPersistReplayableState(for: task),
            let refresher = linkRefresher,
            let context = task.recoveryContext {
+            let requestHeaders = inMemoryReplayableRequestsByTaskID[id]?.requestHeaders
             await clearReplayableTransferStateIfNeeded(for: task, id: id)
             try? await database.updateDownloadTaskStatus(id: id, status: .resolving, errorMessage: nil)
             notifyDownloadsChanged()
-            return TransferRequest(url: try await refresher(context), resumeData: nil)
+            return TransferRequest(url: try await refresher(context), resumeData: nil, requestHeaders: requestHeaders)
         }
 
         if let resumeData = task.resumeData {
@@ -624,7 +720,11 @@ actor DownloadManager {
 
         try? await database.updateDownloadTaskStatus(id: id, status: .resolving, errorMessage: nil)
         notifyDownloadsChanged()
-        return TransferRequest(url: try await refresher(context), resumeData: nil)
+        return TransferRequest(
+            url: try await refresher(context),
+            resumeData: nil,
+            requestHeaders: inMemoryReplayableRequestsByTaskID[id]?.requestHeaders
+        )
     }
 
     private func attemptDownload(request: TransferRequest, id: String, cancellationController: DownloadCancellationController) async throws -> URL {
@@ -729,16 +829,35 @@ actor DownloadManager {
         updatedTask.status = .cancelled
         updatedTask.errorMessage = nil
         let shouldPersistReplayableState = shouldPersistReplayableState(for: updatedTask)
-        updatedTask.resumeData = shouldPersistReplayableState ? resumeData : nil
+        let persistedResumeData = shouldPersistReplayableState ? resumeData : nil
+        let shouldCacheReplayState = shouldPersistReplayableState || linkRefresher == nil
+        let cachedResumeData = shouldCacheReplayState ? resumeData : nil
+        updatedTask.resumeData = persistedResumeData
         if shouldPersistReplayableState {
-            inMemoryReplayableRequestsByTaskID[id] = nil
+            let fallbackRequest = inMemoryReplayableRequestsByTaskID[id]
+            let fallbackURL = fallbackRequest?.url ?? fallbackTask.persistedStreamURL.flatMap(URL.init(string:))
+            cacheReplayableTransferRequestIfNeeded(
+                id: id,
+                taskHasRecoveryContext: false,
+                request: TransferRequest(
+                    url: fallbackURL,
+                    resumeData: cachedResumeData,
+                    requestHeaders: fallbackRequest?.requestHeaders
+                )
+            )
         } else {
-            let fallbackURL = inMemoryReplayableRequestsByTaskID[id]?.url
-                ?? fallbackTask.persistedStreamURL.flatMap(URL.init(string:))
+            let fallbackRequest = inMemoryReplayableRequestsByTaskID[id]
+            let fallbackURL = shouldCacheReplayState
+                ? (fallbackRequest?.url ?? fallbackTask.persistedStreamURL.flatMap(URL.init(string:)))
+                : nil
             cacheReplayableTransferRequestIfNeeded(
                 id: id,
                 taskHasRecoveryContext: true,
-                request: TransferRequest(url: fallbackURL, resumeData: resumeData)
+                request: TransferRequest(
+                    url: fallbackURL,
+                    resumeData: cachedResumeData,
+                    requestHeaders: fallbackRequest?.requestHeaders
+                )
             )
         }
         updatedTask.updatedAt = Date()
@@ -799,7 +918,7 @@ actor DownloadManager {
     }
 
     /// Detect network errors that indicate an expired or dead download link.
-    /// Works for any debrid service — checks for SSL timeouts, connection refused, HTTP 403/410.
+    /// Works for any debrid service — checks for SSL timeouts, connection refused, HTTP 403/410/451.
     private static func isLinkExpiredError(_ error: Error) -> Bool {
         let nsError = error as NSError
 
@@ -827,7 +946,7 @@ actor DownloadManager {
         }
 
         if case let DownloadTransferError.badHTTPStatus(statusCode) = error {
-            return statusCode == 403 || statusCode == 410
+            return statusCode == 403 || statusCode == 410 || statusCode == 451
         }
 
         return false
@@ -838,6 +957,29 @@ actor DownloadManager {
         guard (200...299).contains(http.statusCode) else {
             throw DownloadTransferError.badHTTPStatus(http.statusCode)
         }
+    }
+
+    private static func isViableDownloadRequest(_ request: TransferRequest) -> Bool {
+        guard request.url != nil || request.resumeData != nil else {
+            return false
+        }
+
+        if request.resumeData != nil {
+            return true
+        }
+
+        guard let url = request.url else {
+            return true
+        }
+
+        if url.isFileURL {
+            return true
+        }
+
+        guard let host = url.host, !host.isEmpty else {
+            return false
+        }
+        return true
     }
 
     private func persistedRecoveryContext(for stream: StreamInfo) -> StreamRecoveryContext? {
@@ -881,6 +1023,10 @@ actor DownloadManager {
         }
 
         let finalBytes = max(0, (try? fileSize(at: destination)) ?? task.bytesWritten)
+        if let expectedBytes = task.expectedBytes ?? task.totalBytes, expectedBytes > 0, finalBytes != expectedBytes {
+            return false
+        }
+
         try? await database.updateDownloadTaskProgress(
             id: task.id,
             progress: 1.0,
@@ -894,14 +1040,14 @@ actor DownloadManager {
         return true
     }
 
-    private func persistReplayableTransferStateForRetry(url: URL, task: DownloadTask, id: String) async {
+    private func persistReplayableTransferStateForRetry(request: TransferRequest, task: DownloadTask, id: String) async {
         cacheReplayableTransferRequestIfNeeded(
             id: id,
             taskHasRecoveryContext: task.recoveryContext != nil,
-            request: TransferRequest(url: url, resumeData: nil)
+            request: request
         )
         if shouldPersistReplayableState(for: task) {
-            try? await database.updateDownloadTaskStreamURL(id: id, streamURL: url.absoluteString)
+            try? await database.updateDownloadTaskStreamURL(id: id, streamURL: request.url?.absoluteString)
             try? await database.clearDownloadTaskResumeData(id: id)
             return
         }
@@ -917,26 +1063,59 @@ actor DownloadManager {
     }
 
     private func replayableTransferRequest(for task: DownloadTask) -> TransferRequest {
+        if task.recoveryContext != nil,
+           linkRefresher != nil,
+           task.resumeData != nil {
+            return TransferRequest(url: nil, resumeData: nil)
+        }
+
+        let persistedURL = task.persistedStreamURL.flatMap(URL.init(string:))
+        let persistedResumeData = task.resumeData
+
+        if let inMemoryRequest = inMemoryReplayableRequestsByTaskID[task.id], let _ = task.recoveryContext, linkRefresher != nil {
+            if let persistedURL = task.persistedStreamURL,
+               inMemoryRequest.url?.absoluteString != persistedURL {
+                return TransferRequest(
+                    url: URL(string: persistedURL),
+                    resumeData: inMemoryRequest.resumeData ?? persistedResumeData,
+                    requestHeaders: inMemoryRequest.requestHeaders
+                )
+            }
+
+            if task.status == .queued || task.status == .downloading || task.status == .resolving {
+                return TransferRequest(
+                    url: inMemoryRequest.url ?? persistedURL,
+                    resumeData: inMemoryRequest.resumeData ?? persistedResumeData,
+                    requestHeaders: inMemoryRequest.requestHeaders
+                )
+            }
+        }
+
         if let inMemoryRequest = inMemoryReplayableRequestsByTaskID[task.id] {
-            return inMemoryRequest
+            return TransferRequest(
+                url: inMemoryRequest.url ?? persistedURL,
+                resumeData: inMemoryRequest.resumeData ?? persistedResumeData,
+                requestHeaders: inMemoryRequest.requestHeaders
+            )
         }
         return TransferRequest(
-            url: task.persistedStreamURL.flatMap(URL.init(string:)),
-            resumeData: task.resumeData
+            url: persistedURL,
+            resumeData: persistedResumeData
         )
     }
 
     private func cacheReplayableTransferRequestIfNeeded(id: String, taskHasRecoveryContext: Bool, request: TransferRequest) {
-        guard taskHasRecoveryContext, linkRefresher == nil else {
-            inMemoryReplayableRequestsByTaskID[id] = nil
+        if taskHasRecoveryContext && linkRefresher != nil {
+            inMemoryReplayableRequestsByTaskID[id] = request.requestHeaders.map {
+                TransferRequest(url: nil, resumeData: nil, requestHeaders: $0)
+            }
             return
         }
 
-        guard request.url != nil || request.resumeData != nil else {
+        guard request.hasTransportState else {
             inMemoryReplayableRequestsByTaskID[id] = nil
             return
         }
-
         inMemoryReplayableRequestsByTaskID[id] = request
     }
 
@@ -959,7 +1138,11 @@ actor DownloadManager {
                 if let resumeData = request.resumeData {
                     task = session.downloadTask(withResumeData: resumeData)
                 } else {
-                    task = session.downloadTask(with: request.url!)
+                    var urlRequest = URLRequest(url: request.url!)
+                    for (name, value) in request.requestHeaders ?? [:] {
+                        urlRequest.setValue(value, forHTTPHeaderField: name)
+                    }
+                    task = session.downloadTask(with: urlRequest)
                 }
                 delegate.setContinuation(continuation)
                 cancellationController.register {
@@ -982,7 +1165,8 @@ actor DownloadManager {
         let existingDirectory = targetDirectory.path.isEmpty ? FileManager.default.temporaryDirectory : targetDirectory
 
         if let resourceValues = try? existingDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-           let capacity = resourceValues.volumeAvailableCapacityForImportantUsage {
+           let capacity = resourceValues.volumeAvailableCapacityForImportantUsage,
+           capacity > 0 {
             return capacity
         }
 
@@ -1059,7 +1243,7 @@ actor DownloadManager {
             options: .regularExpression
         )
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
+        if trimmed.isEmpty || trimmed == "." || trimmed == ".." {
             return "download-\(UUID().uuidString).mp4"
         }
         return trimmed
@@ -1091,8 +1275,31 @@ actor DownloadManager {
     }
 
     private func maybeStartQueuedJobs() async {
-        guard jobs.count < maxConcurrentTransfers,
-              let tasks = try? await database.fetchDownloadTasks() else {
+        guard removalBatchDepth == 0 else {
+            shouldRescheduleQueuedJobs = true
+            return
+        }
+
+        guard !isSchedulingQueuedJobs else {
+            shouldRescheduleQueuedJobs = true
+            return
+        }
+
+        guard jobs.count < maxConcurrentTransfers else {
+            return
+        }
+
+        isSchedulingQueuedJobs = true
+        defer {
+            isSchedulingQueuedJobs = false
+
+            if shouldRescheduleQueuedJobs {
+                shouldRescheduleQueuedJobs = false
+                Task { await self.maybeStartQueuedJobs() }
+            }
+        }
+
+        guard let tasks = try? await database.fetchDownloadTasks() else {
             return
         }
 
@@ -1110,7 +1317,17 @@ actor DownloadManager {
         guard availableSlots > 0 else { return }
 
         for task in queued.prefix(availableSlots) {
-            startJob(for: task.id)
+            guard let currentTask = try? await database.fetchDownloadTask(id: task.id),
+                  currentTask.status == .queued else {
+                continue
+            }
+
+            let wasClaimed = (try? await database.claimDownloadTaskForDownloadStart(id: task.id)) ?? false
+            guard wasClaimed else {
+                continue
+            }
+
+            guard startJob(for: task.id) else { continue }
         }
     }
 

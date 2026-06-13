@@ -3,6 +3,9 @@ import Foundation
 enum WatchProgressResumePolicy {
     static func resumeTime(for history: WatchHistory?) -> TimeInterval? {
         guard let history else { return nil }
+        guard history.hasFiniteNumericValues else { return nil }
+
+        guard history.progress.isFinite, history.duration.isFinite else { return nil }
 
         let progress = max(0, history.progress)
         let duration = max(0, history.duration)
