@@ -2541,9 +2541,14 @@ struct PlayerView: View {
             context: resolvedMediaTitle
         )
 
+        // Snapshot + persist watch progress and stop scrobbling first. Both capture the
+        // engine state synchronously (cheap) and hand the DB/network work to detached
+        // tasks, so they must run before the engine is torn down — but they never block.
         stopProgressPersistence()
         scrobbleStop()
         persistCurrentWatchProgress()
+
+        // Cancel every in-flight load/prepare task so Back never waits on "loading".
         initialPlayerStateTask?.cancel()
         initialPlayerStateTask = nil
         activePreparePlaybackID = nil
@@ -2564,25 +2569,42 @@ struct PlayerView: View {
         autoPlayNextResolveTask?.cancel()
         autoPlayNextResolveTask = nil
         cancelVisionLifecycleTasksOnClose()
-        cleanupPlayback(clearSession: true)
         controlsHideTask?.cancel()
         controlsHideTask = nil
 
+        // Silence playback immediately so Back stops sound the instant it is tapped,
+        // without waiting for the heavier coordinator/session teardown below.
+        avPlayer?.pause()
         #if os(visionOS)
+        apmpInjector.stop()
+        isAPMPActive = false
+        #endif
+
+        #if os(visionOS)
+        // Surface the app page and close the player window *before* tearing down the
+        // player. The heavy cleanupPlayback() (KSPlayer/AVPlayer release) is deferred to
+        // the next main-actor tick so it can never block the Back transition; onDisappear
+        // also runs cleanupPlayback() as a safety net and it is idempotent + sessionID-guarded.
         if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
+            scheduleMainWindowRestoreIfNeeded()
             dismissDedicatedPlayerWindow()
         }
         if PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack {
             dismiss()
         }
-        scheduleImmersiveDismiss(reason: .playerClosed)
+        scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)
+        Task { @MainActor in
+            cleanupPlayback(clearSession: true)
+        }
         #elseif os(macOS)
+        cleanupPlayback(clearSession: true)
         if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
             dismissDedicatedPlayerWindow()
         } else {
             dismiss()
         }
         #else
+        cleanupPlayback(clearSession: true)
         dismiss()
         #endif
     }
