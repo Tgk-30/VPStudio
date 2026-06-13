@@ -730,30 +730,15 @@ actor DatabaseManager {
                     || sanitized.id == legacyWatchedID
                 {
                     // A finished title should leave Continue Watching: drop any leftover
-                    // in-progress checkpoint row for this media/episode.
+                    // in-progress checkpoint row for this media/episode. (Completion rows are
+                    // intentionally kept distinct per watch event for rewatch history.)
                     try WatchHistory.deleteOne(db, key: resumeCheckpointID)
 
-                    // Reuse an existing completion row for this media/episode so repeated
-                    // completion saves (periodic + close + the one-shot 90% trigger) update a
-                    // single watched record instead of minting duplicate rows.
-                    var completionQuery = WatchHistory
-                        .filter(WatchHistory.Columns.mediaId == sanitized.mediaId)
-                        .filter(WatchHistory.Columns.isCompleted == true)
-                    if let episodeId = sanitized.episodeId {
-                        completionQuery = completionQuery.filter(WatchHistory.Columns.episodeId == episodeId)
-                    } else {
-                        completionQuery = completionQuery.filter(WatchHistory.Columns.episodeId == nil)
-                    }
-
-                    if let existingCompletion = try completionQuery.fetchOne(db) {
-                        sanitized.id = existingCompletion.id
-                    } else {
-                        sanitized.id = Self.completionEntryID(
-                            mediaId: sanitized.mediaId,
-                            episodeId: sanitized.episodeId,
-                            watchedAt: sanitized.watchedAt
-                        )
-                    }
+                    sanitized.id = Self.completionEntryID(
+                        mediaId: sanitized.mediaId,
+                        episodeId: sanitized.episodeId,
+                        watchedAt: sanitized.watchedAt
+                    )
                 }
             } else if sanitized.id == legacyProgressID
                         || sanitized.id == legacyWatchedID
