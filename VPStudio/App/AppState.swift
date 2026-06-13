@@ -1133,7 +1133,17 @@ final class AppState {
             return nil
         }
         do {
-            let stream = try await debridManager.resolveStream(from: context)
+            // Resolve the stream and look up the autoplay-next candidate concurrently so the
+            // extra metadata fetch doesn't add latency to resume.
+            async let streamResult = debridManager.resolveStream(from: context)
+            async let nextEpisodeResult = fetchNextEpisodeCandidate(
+                isSeries: history.episodeId != nil,
+                tmdbId: preview.tmdbId,
+                season: context.seasonNumber,
+                episodeNumber: context.episodeNumber
+            )
+            let stream = try await streamResult
+            let nextEpisode = await nextEpisodeResult
             return PlayerSessionRequest(
                 stream: stream,
                 availableStreams: [stream],
@@ -1141,11 +1151,37 @@ final class AppState {
                 mediaId: history.mediaId,
                 tmdbId: preview.tmdbId,
                 episodeId: history.episodeId,
-                nextEpisode: nil
+                nextEpisode: nextEpisode
             )
         } catch {
             return nil
         }
+    }
+
+    /// Looks up the next-episode autoplay candidate for a resumed series episode, mirroring
+    /// `DetailViewModel.nextEpisodeCandidate`. Returns nil for movies, missing metadata, or the
+    /// last episode of the season.
+    private func fetchNextEpisodeCandidate(
+        isSeries: Bool,
+        tmdbId: Int?,
+        season: Int?,
+        episodeNumber: Int?
+    ) async -> PlayerSessionRequest.NextEpisodeCandidate? {
+        guard isSeries, let tmdbId, let season, let episodeNumber else { return nil }
+        let apiKey = (try? await settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+        guard !apiKey.isEmpty else { return nil }
+        let service = createMetadataService(apiKey: apiKey)
+        guard let episodes = try? await service.getEpisodes(tmdbId: tmdbId, season: season) else { return nil }
+        let sorted = episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+        guard let index = sorted.firstIndex(where: { $0.episodeNumber == episodeNumber }),
+              sorted.indices.contains(index + 1) else { return nil }
+        let next = sorted[index + 1]
+        return PlayerSessionRequest.NextEpisodeCandidate(
+            episodeId: next.id,
+            seasonNumber: next.seasonNumber,
+            episodeNumber: next.episodeNumber,
+            title: next.displayTitle
+        )
     }
 }
 

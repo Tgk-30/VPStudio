@@ -177,4 +177,11 @@ struct MediaPreview: Sendable, Identifiable, Equatable, Hashable {
         guard let path = backdropPath, !path.isEmpty else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
     }
+
+    /// Stable per-tile identity that distinguishes individual in-progress episodes of the same
+    /// series (which share `id`). Equals `id` for movies / browse items. Used for Continue
+    /// Watching `ForEach` identity and progress/last-frame map keys.
+    var continueWatchingRowID: String {
+        episodeId.map { "\(id)#\($0)" } ?? id
+    }
 }

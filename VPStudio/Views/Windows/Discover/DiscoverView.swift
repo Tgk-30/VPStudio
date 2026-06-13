@@ -674,17 +674,17 @@ struct DiscoverView: View {
     private var continueWatchingProgress: [String: Double] {
         var result: [String: Double] = [:]
         for entry in viewModel.continueWatching {
-            result[entry.preview.id] = entry.history.progressPercent
+            result[entry.preview.continueWatchingRowID] = entry.history.progressPercent
         }
         return result
     }
 
-    /// Per-item last-frame artwork file URLs for Continue Watching tiles, keyed by preview id.
+    /// Per-item last-frame artwork file URLs for Continue Watching tiles, keyed by row id.
     private var continueWatchingFrames: [String: URL] {
         var result: [String: URL] = [:]
         for entry in viewModel.continueWatching {
             if let path = entry.history.lastFrameImagePath {
-                result[entry.preview.id] = URL(fileURLWithPath: path)
+                result[entry.preview.continueWatchingRowID] = URL(fileURLWithPath: path)
             }
         }
         return result
@@ -702,12 +702,14 @@ struct DiscoverView: View {
         }
         // Ignore repeat taps while a resume is already resolving.
         guard resumingItemID == nil else { return }
-        guard let entry = viewModel.continueWatching.first(where: { $0.preview.id == preview.id }) else {
+        guard let entry = viewModel.continueWatching.first(where: {
+            $0.preview.continueWatchingRowID == preview.continueWatchingRowID
+        }) else {
             appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
             return
         }
 
-        resumingItemID = preview.id
+        resumingItemID = preview.continueWatchingRowID
         continueWatchingResumeTask?.cancel()
         continueWatchingResumeTask = Task { @MainActor in
             defer { resumingItemID = nil }
@@ -715,7 +717,14 @@ struct DiscoverView: View {
                 history: entry.history,
                 preview: entry.preview
             ) {
-                guard !Task.isCancelled, appState.activePlayerSession == nil else { return }
+                guard !Task.isCancelled else { return }
+                // Another entry point may have claimed the player during the resolve await; rather
+                // than dead-end, route through the detail page (which shows the "already playing"
+                // toast or resumes once the slot frees).
+                guard appState.activePlayerSession == nil else {
+                    appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+                    return
+                }
                 appState.activePlayerSession = request
                 openWindow(id: "player", value: request)
             } else {
@@ -1136,14 +1145,14 @@ struct MediaRow: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
-                    ForEach(items) { item in
+                    ForEach(items, id: \.continueWatchingRowID) { item in
                         Button { onSelect(item) } label: {
                             MediaCardView(
                                 item: item,
                                 userRating: userRatings[item.id],
-                                progressPercent: progressByItemID[item.id],
-                                lastFrameURL: lastFrameByItemID[item.id],
-                                isResuming: resumingItemID == item.id
+                                progressPercent: progressByItemID[item.continueWatchingRowID],
+                                lastFrameURL: lastFrameByItemID[item.continueWatchingRowID],
+                                isResuming: resumingItemID == item.continueWatchingRowID
                             )
                         }
                         .buttonStyle(.plain)

@@ -3308,6 +3308,7 @@ struct PlayerView: View {
                     engine.duration = newDuration
                 }
                 handlePlaybackProgressForAutoplay(currentTime: newTime, duration: newDuration)
+                persistCompletionIfCrossedThreshold(currentTime: newTime, duration: newDuration)
             }
         }
 
@@ -3354,6 +3355,7 @@ struct PlayerView: View {
                     engine.duration = duration
                 }
                 handlePlaybackProgressForAutoplay(currentTime: newTime, duration: engine.duration)
+                persistCompletionIfCrossedThreshold(currentTime: newTime, duration: engine.duration)
 
                 // Trigger async video size detection once
                 if detectedVideoRatio == nil, let asset = player.currentItem?.asset {
@@ -4082,6 +4084,11 @@ struct PlayerView: View {
         guard let mediaId else { return }
         if let last = lastFrameCaptureAt, Date().timeIntervalSince(last) < 28 { return }
 
+        // Frame generation suspends the main actor; an autoplay-next transition can advance the
+        // episode while we await. Pin the episode at capture start and discard the frame if it
+        // changed, so we never store one episode's frame under another's key.
+        let episodeIdAtCaptureStart = activeEpisodeId
+
         var jpeg: Data?
         switch activeEngine {
         case .avPlayer:
@@ -4097,7 +4104,8 @@ struct PlayerView: View {
         }
 
         guard let data = jpeg else { return }
-        if let path = FrameCaptureService.store(jpegData: data, mediaId: mediaId, episodeId: activeEpisodeId) {
+        guard activeEpisodeId == episodeIdAtCaptureStart else { return }
+        if let path = FrameCaptureService.store(jpegData: data, mediaId: mediaId, episodeId: episodeIdAtCaptureStart) {
             lastFrameCaptureAt = Date()
             lastFrameImagePath = path
         }

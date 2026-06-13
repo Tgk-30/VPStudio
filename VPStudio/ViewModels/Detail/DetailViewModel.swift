@@ -215,7 +215,11 @@ final class DetailViewModel {
             .map(\.episodeCount)
             .reduce(0, +)
         let watched = episodeWatchStates.keys.filter { episodeId in
-            (parseSeasonAndEpisode(from: episodeId)?.seasonNumber ?? 1) > 0
+            // Only count episodes we can confidently place in a regular (non-special) season.
+            // IDs we can't parse (e.g. Trakt-imported tt.../sXXeYY forms) are excluded rather
+            // than defaulted to season 1, so they can't inflate the watched count.
+            guard let parsed = parseSeasonAndEpisode(from: episodeId) else { return false }
+            return parsed.seasonNumber > 0
         }.count
         return (watched, total)
     }
