@@ -981,9 +981,10 @@ struct SeriesDetailLayout: View {
     }
 
     private var seriesWatchProgressLabel: String {
-        SeriesDetailPresentationPolicy.seriesWatchProgressLabel(
-            watchedCount: viewModel.episodeWatchStates.count,
-            seasonEpisodeCounts: viewModel.seasons.map(\.episodeCount)
+        let tally = viewModel.seriesWatchTally
+        return SeriesDetailPresentationPolicy.seriesWatchProgressLabel(
+            watchedCount: tally.watched,
+            seasonEpisodeCounts: [tally.total]
         )
     }
 

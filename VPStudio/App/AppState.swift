@@ -1116,6 +1116,37 @@ final class AppState {
             activePlayerSession = nil
         }
     }
+
+    /// Re-resolves a Continue Watching entry's stored stream reference into a ready-to-play
+    /// session so a tile tap can resume playback directly, bypassing the detail page.
+    ///
+    /// Returns `nil` when there is no stored recovery context or the source can no longer be
+    /// resolved (e.g. the cached debrid transfer expired). Callers must fall back to the
+    /// normal detail route, which performs a fresh indexer search.
+    func resolveContinueWatchingSession(
+        history: WatchHistory,
+        preview: MediaPreview
+    ) async -> PlayerSessionRequest? {
+        guard let json = history.recoveryContextJSON,
+              let data = json.data(using: .utf8),
+              let context = try? JSONDecoder().decode(StreamRecoveryContext.self, from: data) else {
+            return nil
+        }
+        do {
+            let stream = try await debridManager.resolveStream(from: context)
+            return PlayerSessionRequest(
+                stream: stream,
+                availableStreams: [stream],
+                mediaTitle: preview.title,
+                mediaId: history.mediaId,
+                tmdbId: preview.tmdbId,
+                episodeId: history.episodeId,
+                nextEpisode: nil
+            )
+        } catch {
+            return nil
+        }
+    }
 }
 
 // MARK: - Navigation

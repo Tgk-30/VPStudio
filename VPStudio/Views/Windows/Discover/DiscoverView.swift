@@ -223,6 +223,7 @@ enum DiscoverNavigationPolicy {
 struct DiscoverView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityVoiceOverEnabled) private var accessibilityVoiceOverEnabled
+    @Environment(\.openWindow) private var openWindow
     @Bindable var viewModel: DiscoverViewModel
     /// Pushed detail route for the Discover tab, hoisted to AppState so it survives the player
     /// dismissing/re-opening the main window (see `AppState.discoverDetailRoute`).
@@ -234,6 +235,10 @@ struct DiscoverView: View {
     @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var recommendationsFilterTask: Task<Void, Never>?
     @State private var userRatings: [String: TasteEvent] = [:]
+    /// The Continue Watching item currently being resolved for direct resume (drives the tile
+    /// spinner and prevents duplicate taps while debrid re-resolves the stored source).
+    @State private var resumingItemID: String?
+    @State private var continueWatchingResumeTask: Task<Void, Never>?
 
     private var catalogRows: [DiscoverMediaRowSpec] {
         DiscoverHierarchyPolicy.visibleCatalogRows(
@@ -316,9 +321,12 @@ struct DiscoverView: View {
                             symbol: "play.circle",
                             items: viewModel.continueWatching.map(\.preview),
                             userRatings: userRatings,
-                            animationDelay: DiscoverHierarchyPolicy.continueWatchingDelay
+                            animationDelay: DiscoverHierarchyPolicy.continueWatchingDelay,
+                            progressByItemID: continueWatchingProgress,
+                            lastFrameByItemID: continueWatchingFrames,
+                            resumingItemID: resumingItemID
                         ) { item in
-                            appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: item)
+                            handleContinueWatchingTap(item)
                         }
                     }
 
@@ -660,6 +668,61 @@ struct DiscoverView: View {
             aiManager: appState.aiAssistantManager,
             settingsManager: appState.settingsManager
         )
+    }
+
+    /// Per-item watch progress (0...1) for Continue Watching tiles, keyed by preview id.
+    private var continueWatchingProgress: [String: Double] {
+        var result: [String: Double] = [:]
+        for entry in viewModel.continueWatching {
+            result[entry.preview.id] = entry.history.progressPercent
+        }
+        return result
+    }
+
+    /// Per-item last-frame artwork file URLs for Continue Watching tiles, keyed by preview id.
+    private var continueWatchingFrames: [String: URL] {
+        var result: [String: URL] = [:]
+        for entry in viewModel.continueWatching {
+            if let path = entry.history.lastFrameImagePath {
+                result[entry.preview.id] = URL(fileURLWithPath: path)
+            }
+        }
+        return result
+    }
+
+    /// Continue Watching tap: resume playback directly at the saved position instead of opening
+    /// the detail page. Tries the stored stream reference (fast, no indexer search); if that is
+    /// unavailable or fails, falls back to the detail route which performs a fresh search.
+    private func handleContinueWatchingTap(_ preview: MediaPreview) {
+        // If something is already playing, defer to the detail route (it shows the
+        // "already playing" toast and avoids opening a second player window).
+        guard appState.activePlayerSession == nil else {
+            appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+            return
+        }
+        // Ignore repeat taps while a resume is already resolving.
+        guard resumingItemID == nil else { return }
+        guard let entry = viewModel.continueWatching.first(where: { $0.preview.id == preview.id }) else {
+            appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+            return
+        }
+
+        resumingItemID = preview.id
+        continueWatchingResumeTask?.cancel()
+        continueWatchingResumeTask = Task { @MainActor in
+            defer { resumingItemID = nil }
+            if let request = await appState.resolveContinueWatchingSession(
+                history: entry.history,
+                preview: entry.preview
+            ) {
+                guard !Task.isCancelled, appState.activePlayerSession == nil else { return }
+                appState.activePlayerSession = request
+                openWindow(id: "player", value: request)
+            } else {
+                // No usable stored source — fall back to the normal search→resolve→play path.
+                appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+            }
+        }
     }
 }
 
@@ -1047,6 +1110,11 @@ struct MediaRow: View {
     let items: [MediaPreview]
     var userRatings: [String: TasteEvent] = [:]
     var animationDelay: Double = 0
+    /// Continue Watching only: per-item watch progress (0...1) and last-frame artwork, plus the
+    /// item currently resolving a direct resume. Empty/nil for normal browse rows.
+    var progressByItemID: [String: Double] = [:]
+    var lastFrameByItemID: [String: URL] = [:]
+    var resumingItemID: String? = nil
     let onSelect: (MediaPreview) -> Void
 
     @State private var appeared = false
@@ -1070,7 +1138,13 @@ struct MediaRow: View {
                 LazyHStack(spacing: 12) {
                     ForEach(items) { item in
                         Button { onSelect(item) } label: {
-                            MediaCardView(item: item, userRating: userRatings[item.id])
+                            MediaCardView(
+                                item: item,
+                                userRating: userRatings[item.id],
+                                progressPercent: progressByItemID[item.id],
+                                lastFrameURL: lastFrameByItemID[item.id],
+                                isResuming: resumingItemID == item.id
+                            )
                         }
                         .buttonStyle(.plain)
                     }

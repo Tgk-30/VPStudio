@@ -13,7 +13,10 @@ enum WatchProgressResumePolicy {
 
         if duration > 0 {
             let completion = progress / duration
-            if completion >= 0.95 {
+            // Past the completion threshold the title counts as watched, so don't offer a
+            // resume point — start it over instead. Kept in sync with auto-watched + the
+            // Continue Watching filter via the single PlayerWatchProgressPolicy constant.
+            if completion >= PlayerWatchProgressPolicy.completionThreshold {
                 return nil
             }
             return min(progress, max(duration - 5, 0))

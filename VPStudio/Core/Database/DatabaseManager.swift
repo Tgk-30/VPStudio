@@ -588,6 +588,19 @@ actor DatabaseManager {
             )
         }
 
+        migrator.registerMigration("v16_watch_history_resume_artwork") { db in
+            let columns = try db.columns(in: "watch_history")
+            func hasColumn(_ name: String) -> Bool {
+                columns.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            }
+            if !hasColumn("lastFrameImagePath") {
+                try db.execute(sql: "ALTER TABLE \"watch_history\" ADD COLUMN \"lastFrameImagePath\" TEXT")
+            }
+            if !hasColumn("recoveryContextJSON") {
+                try db.execute(sql: "ALTER TABLE \"watch_history\" ADD COLUMN \"recoveryContextJSON\" TEXT")
+            }
+        }
+
         let writer = try dbPool
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             migrator.asyncMigrate(writer) { result in
@@ -716,11 +729,31 @@ actor DatabaseManager {
                     || sanitized.id == legacyProgressID
                     || sanitized.id == legacyWatchedID
                 {
-                    sanitized.id = Self.completionEntryID(
-                        mediaId: sanitized.mediaId,
-                        episodeId: sanitized.episodeId,
-                        watchedAt: sanitized.watchedAt
-                    )
+                    // A finished title should leave Continue Watching: drop any leftover
+                    // in-progress checkpoint row for this media/episode.
+                    try WatchHistory.deleteOne(db, key: resumeCheckpointID)
+
+                    // Reuse an existing completion row for this media/episode so repeated
+                    // completion saves (periodic + close + the one-shot 90% trigger) update a
+                    // single watched record instead of minting duplicate rows.
+                    var completionQuery = WatchHistory
+                        .filter(WatchHistory.Columns.mediaId == sanitized.mediaId)
+                        .filter(WatchHistory.Columns.isCompleted == true)
+                    if let episodeId = sanitized.episodeId {
+                        completionQuery = completionQuery.filter(WatchHistory.Columns.episodeId == episodeId)
+                    } else {
+                        completionQuery = completionQuery.filter(WatchHistory.Columns.episodeId == nil)
+                    }
+
+                    if let existingCompletion = try completionQuery.fetchOne(db) {
+                        sanitized.id = existingCompletion.id
+                    } else {
+                        sanitized.id = Self.completionEntryID(
+                            mediaId: sanitized.mediaId,
+                            episodeId: sanitized.episodeId,
+                            watchedAt: sanitized.watchedAt
+                        )
+                    }
                 }
             } else if sanitized.id == legacyProgressID
                         || sanitized.id == legacyWatchedID

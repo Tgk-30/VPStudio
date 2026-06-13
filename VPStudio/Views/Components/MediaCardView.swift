@@ -13,6 +13,12 @@ struct MediaCardView: View {
     let item: MediaPreview
     var userRating: TasteEvent? = nil
     var interactionMode: InteractionMode = .fullyAnimated
+    /// Watch progress (0...1) for Continue Watching tiles; draws a resume bar when > 0.
+    var progressPercent: Double? = nil
+    /// Local file URL of the captured last frame, shown as the artwork when available.
+    var lastFrameURL: URL? = nil
+    /// True while this tile's stored source is being re-resolved for direct resume.
+    var isResuming: Bool = false
     @State private var isHovered = false
 
     private let cardWidth: CGFloat = 170
@@ -64,6 +70,23 @@ struct MediaCardView: View {
                 }
                 .opacity(hoverActive ? 1 : 0)
                 .animation(hoverChromeEnabled ? .easeInOut(duration: 0.15) : nil, value: hoverActive)
+            }
+            .overlay(alignment: .bottom) {
+                if let progressPercent, progressPercent > 0 {
+                    resumeProgressBar(progressPercent)
+                }
+            }
+            .overlay {
+                if isResuming {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: radius)
+                            .fill(.black.opacity(0.45))
+                        ProgressView()
+                            .controlSize(.large)
+                            .tint(.white)
+                    }
+                    .transition(.opacity)
+                }
             }
 
             // Metadata below the poster
@@ -145,8 +168,43 @@ struct MediaCardView: View {
         }
     }
 
+    /// Thin "resume" progress bar drawn along the bottom edge of Continue Watching tiles.
+    private func resumeProgressBar(_ progress: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.black.opacity(0.45))
+                Capsule()
+                    .fill(.white)
+                    .frame(width: max(4, geo.size.width * min(max(progress, 0), 1)))
+            }
+        }
+        .frame(height: 4)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+
     @ViewBuilder
     private var posterArtwork: some View {
+        if let lastFrameURL {
+            AsyncImage(url: lastFrameURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                case .failure, .empty:
+                    fallbackPosterArtwork
+                @unknown default:
+                    fallbackPosterArtwork
+                }
+            }
+        } else {
+            fallbackPosterArtwork
+        }
+    }
+
+    @ViewBuilder
+    private var fallbackPosterArtwork: some View {
         if let posterURL = item.posterURL {
             AsyncImage(url: posterURL) { phase in
                 switch phase {

@@ -10,6 +10,7 @@ enum PlayerWatchProgressPolicy {
         stream: StreamInfo,
         currentTime: TimeInterval,
         duration: TimeInterval,
+        lastFrameImagePath: String? = nil,
         watchedAt: Date = Date()
     ) -> WatchHistory? {
         guard let mediaId else { return nil }
@@ -27,8 +28,18 @@ enum PlayerWatchProgressPolicy {
             quality: stream.quality.rawValue,
             debridService: stream.debridService,
             streamURL: stream.streamURL.absoluteString,
+            lastFrameImagePath: lastFrameImagePath,
+            recoveryContextJSON: encodedRecoveryContext(stream.recoveryContext),
             watchedAt: watchedAt,
             isCompleted: normalizedCurrentTime / duration >= completionThreshold
         )
+    }
+
+    /// JSON-encodes the stream's recovery context so a Continue Watching tap can re-resolve
+    /// the source via debrid without re-searching the indexer. Nil when unavailable.
+    static func encodedRecoveryContext(_ context: StreamRecoveryContext?) -> String? {
+        guard let context else { return nil }
+        guard let data = try? JSONEncoder().encode(context) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }

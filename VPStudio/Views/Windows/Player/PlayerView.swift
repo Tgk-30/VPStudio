@@ -656,6 +656,15 @@ struct PlayerView: View {
     @State private var playbackError: String?
     @State private var activeEngine: PlayerEngineKind?
 
+    /// Most recent captured last-frame thumbnail path (for the Continue Watching tile) and
+    /// when it was captured. Captured periodically while the engine is alive so there is never
+    /// a teardown race at close time.
+    @State private var lastFrameImagePath: String?
+    @State private var lastFrameCaptureAt: Date?
+    /// One-shot guard so the ≥90% "watched" snapshot is persisted exactly once per stream, the
+    /// moment progress crosses the completion threshold (covers abrupt closes between periodic saves).
+    @State private var didPersistCompletion = false
+
     @State private var avPlayer: AVPlayer?
     @State private var ksPlayerCoordinator: KSVideoPlayer.Coordinator?
     @State private var ksOptions: KSOptions?
@@ -960,6 +969,7 @@ struct PlayerView: View {
             onProgress: { currentTime, duration in
                 recordAutoplayRuntimeEvent(.progressObserved(currentTime: currentTime, duration: duration))
                 handlePlaybackProgressForAutoplay(currentTime: currentTime, duration: duration)
+                persistCompletionIfCrossedThreshold(currentTime: currentTime, duration: duration)
             }
         ))
         .modifier(SubtitleControlHandlers(
@@ -2878,6 +2888,11 @@ struct PlayerView: View {
         playbackMessage = PlayerViewStatePolicy.preparationStartMessage()
         isShowingControls = true
         hasPlayedOnce = false
+        // New stream/episode: re-arm the one-shot completion save and drop the previous
+        // episode's captured frame so it isn't reused for this one.
+        didPersistCompletion = false
+        lastFrameImagePath = nil
+        lastFrameCaptureAt = nil
         guard Self.preparePlaybackShouldRun(
             requestedPreparationID: preparationID,
             activePreparationID: activePreparePlaybackID
@@ -4052,8 +4067,39 @@ struct PlayerView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 guard !Task.isCancelled else { return }
+                await captureLastFrameIfDue()
                 await saveWatchProgress()
             }
+        }
+    }
+
+    /// Captures the current video frame for the Continue Watching tile while the engine is alive.
+    /// Throttled, skips stereo/3D content (a raw SBS/OU frame would look squished — the tile
+    /// falls back to the backdrop in that case), and never blocks the player.
+    @MainActor
+    private func captureLastFrameIfDue() async {
+        guard engine.stereoMode == .mono else { return }
+        guard let mediaId else { return }
+        if let last = lastFrameCaptureAt, Date().timeIntervalSince(last) < 28 { return }
+
+        var jpeg: Data?
+        switch activeEngine {
+        case .avPlayer:
+            if let item = avPlayer?.currentItem {
+                jpeg = await FrameCaptureService.captureAVPlayerFrameJPEG(asset: item.asset, at: item.currentTime())
+            }
+        case .ksPlayer:
+            if let image = await ksPlayerCoordinator?.playerLayer?.player.thumbnailImageAtCurrentTime() {
+                jpeg = FrameCaptureService.encodeJPEG(image)
+            }
+        case .none:
+            return
+        }
+
+        guard let data = jpeg else { return }
+        if let path = FrameCaptureService.store(jpegData: data, mediaId: mediaId, episodeId: activeEpisodeId) {
+            lastFrameCaptureAt = Date()
+            lastFrameImagePath = path
         }
     }
 
@@ -4077,6 +4123,17 @@ struct PlayerView: View {
         }
     }
 
+    /// Persists a completion snapshot once, the instant playback crosses the watched threshold,
+    /// so an abrupt close before the next periodic save still records the title as watched.
+    @MainActor
+    private func persistCompletionIfCrossedThreshold(currentTime: TimeInterval, duration: TimeInterval) {
+        guard !didPersistCompletion else { return }
+        guard duration.isFinite, duration > 0, currentTime.isFinite else { return }
+        guard currentTime / duration >= PlayerWatchProgressPolicy.completionThreshold else { return }
+        didPersistCompletion = true
+        persistCurrentWatchProgress()
+    }
+
     @MainActor
     private func makeWatchProgressSnapshot() -> WatchHistory? {
         PlayerWatchProgressPolicy.makeSnapshot(
@@ -4085,7 +4142,8 @@ struct PlayerView: View {
             mediaTitle: activeMediaTitle,
             stream: currentStream,
             currentTime: engine.currentTime,
-            duration: engine.duration
+            duration: engine.duration,
+            lastFrameImagePath: lastFrameImagePath
         )
     }
 

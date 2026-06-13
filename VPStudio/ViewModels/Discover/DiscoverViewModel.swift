@@ -182,7 +182,9 @@ final class DiscoverViewModel {
         do {
             let recentHistory = try await database.fetchWatchHistory(limit: 20)
             let inProgress = Array(recentHistory.filter {
-                !$0.isCompleted && $0.progressPercent > 0.02 && $0.progressPercent < 0.95
+                // Upper bound kept in sync with the auto-watched / resume threshold so a title
+                // that has crossed "watched" drops out of Continue Watching.
+                !$0.isCompleted && $0.progressPercent > 0.02 && $0.progressPercent < PlayerWatchProgressPolicy.completionThreshold
             }.prefix(10))
 
             let cachedItems = try await database.fetchMediaItems(ids: inProgress.map(\.mediaId))

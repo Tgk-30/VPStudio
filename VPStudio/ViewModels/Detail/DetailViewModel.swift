@@ -205,6 +205,27 @@ final class DetailViewModel {
     var isLoadingDetail: Bool { isLoading(.detail) || isLoading(.seasonEpisodes) }
     var isLoadingTorrents: Bool { isLoading(.torrentSearch) }
     var isResolvingStream: Bool { isLoading(.streamResolution) || isLoading(.downloadQueue) }
+
+    /// Non-special (season > 0) episode watch tally for the whole series. The total comes from
+    /// season metadata so it's accurate even before every season's episodes are loaded; specials
+    /// (season 0) are excluded per product spec.
+    var seriesWatchTally: (watched: Int, total: Int) {
+        let total = seasons
+            .filter { $0.seasonNumber > 0 }
+            .map(\.episodeCount)
+            .reduce(0, +)
+        let watched = episodeWatchStates.keys.filter { episodeId in
+            (parseSeasonAndEpisode(from: episodeId)?.seasonNumber ?? 1) > 0
+        }.count
+        return (watched, total)
+    }
+
+    /// True when every aired regular episode of the series is watched (auto-derived from the
+    /// ≥90% per-episode completion state — no manual marking required).
+    var isSeriesFullyWatched: Bool {
+        let tally = seriesWatchTally
+        return tally.total > 0 && tally.watched >= tally.total
+    }
     var currentFeedbackSummary: String? {
         guard let currentFeedbackValue else { return nil }
         return feedbackScaleMode.format(currentFeedbackValue)
