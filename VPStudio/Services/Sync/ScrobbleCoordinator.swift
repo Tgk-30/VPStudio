@@ -42,6 +42,22 @@ actor ScrobbleCoordinator {
         progress: Double,
         episodeId: String? = nil
     ) async {
+        // If a DIFFERENT item is still actively scrobbling (auto-play-next switched the movie or
+        // episode), stop the prior scrobble first so Trakt doesn't leave it "started" forever.
+        // Series share one show-level mediaId across episodes, so episodeId must be compared too.
+        if isScrobbling,
+           let priorMediaId = activeMediaId,
+           let priorMediaType = activeMediaType,
+           priorMediaId != mediaId || activeEpisodeId != episodeId,
+           let priorService = await traktServiceIfAvailable() {
+            do {
+                try await priorService.stopScrobble(imdbId: priorMediaId, type: priorMediaType, progress: 0)
+            } catch {
+                recordError(error, operation: "Trakt stop scrobble failed")
+            }
+            isScrobbling = false
+        }
+
         activeMediaId = mediaId
         activeMediaType = mediaType
         activeEpisodeId = episodeId

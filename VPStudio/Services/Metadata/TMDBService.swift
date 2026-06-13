@@ -244,7 +244,10 @@ actor TMDBService: MetadataProvider {
             return exponentialDelay
         }
 
-        let retryAfterNanoseconds = UInt64((parsedDelay * 1_000_000_000).rounded())
+        // Cap in Double space BEFORE converting — a hostile `Retry-After: 1e12` would make
+        // UInt64(1e21) trap before the min() clamp runs.
+        let cappedDelay = min(parsedDelay, Double(maximumBackoffNanoseconds) / 1_000_000_000)
+        let retryAfterNanoseconds = UInt64((cappedDelay * 1_000_000_000).rounded())
         return min(maximumBackoffNanoseconds, max(exponentialDelay, retryAfterNanoseconds))
     }
 

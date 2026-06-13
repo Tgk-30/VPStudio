@@ -631,13 +631,13 @@ actor AIAssistantManager {
                         year = parsedYear
                     } else if let parsedYearDouble = Double(trimmedYearString),
                               parsedYearDouble.truncatingRemainder(dividingBy: 1) == 0 {
-                        year = Int(parsedYearDouble)
+                        year = Int(exactly: parsedYearDouble) // nil (not a trap) if out of Int range
                     } else {
                         year = nil
                     }
                 } else if let yearDouble = try? container.decodeIfPresent(Double.self, forKey: .year),
                           yearDouble.truncatingRemainder(dividingBy: 1) == 0 {
-                    year = Int(yearDouble)
+                    year = Int(exactly: yearDouble) // nil (not a trap) if out of Int range
                 } else {
                     year = nil
                 }
@@ -664,13 +664,13 @@ actor AIAssistantManager {
                         tmdbId = parsedId
                     } else if let parsedIdDouble = Double(trimmedIdString),
                               parsedIdDouble.truncatingRemainder(dividingBy: 1) == 0 {
-                        tmdbId = Int(parsedIdDouble)
+                        tmdbId = Int(exactly: parsedIdDouble) // nil (not a trap) if out of Int range
                     } else {
                         tmdbId = nil
                     }
                 } else if let doubleId = try? container.decodeIfPresent(Double.self, forKey: .tmdbId),
                           doubleId.truncatingRemainder(dividingBy: 1) == 0 {
-                    tmdbId = Int(doubleId)
+                    tmdbId = Int(exactly: doubleId) // nil (not a trap) if out of Int range
                 } else {
                     tmdbId = nil
                 }

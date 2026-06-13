@@ -513,7 +513,10 @@ struct DownloadsView: View {
         #if os(macOS)
         vm.playFile(task)
         #else
-        guard appState.activePlayerSession == nil else { return }
+        guard appState.activePlayerSession == nil else {
+            playbackValidationMessage = "A video is already playing. Close it before starting another."
+            return
+        }
         let stream = StreamInfo(
             streamURL: fileURL,
             quality: .unknown,

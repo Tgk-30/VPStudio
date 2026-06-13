@@ -318,6 +318,19 @@ private final class TorznabXMLParserDelegate: NSObject, XMLParserDelegate {
         currentCharacters += string
     }
 
+    // Many Torznab/Jackett trackers CDATA-wrap <title>/<link>. Foundation delivers CDATA via
+    // this separate callback; without it a CDATA <title> leaves currentCharacters empty and the
+    // whole <item> is dropped. (CDATA and foundCharacters are mutually exclusive per text node,
+    // so this never double-appends.)
+    func parser(_ parser: XMLParser, foundCDATABlock CDATABlock: Data) {
+        guard let string = String(data: CDATABlock, encoding: .utf8) else { return }
+        rawText += string
+        guard let currentElement,
+              currentItem != nil,
+              Self.textElements.contains(currentElement) else { return }
+        currentCharacters += string
+    }
+
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes attributeDict: [String : String] = [:]) {
         rawText += "<\(elementName)>"
         let lower = elementName.lowercased()

@@ -371,7 +371,11 @@ struct LibraryView: View {
     @State private var folders: [LibraryFolder] = []
     @State private var mediaItems: [String: MediaItem] = [:]
 
-    @State private var selectedItem: MediaPreview?
+    /// Pushed detail for the Library tab, hoisted to AppState so it survives the player
+    /// dismissing/re-opening the main window (see `AppState.libraryDetailSelection`).
+    private var librarySelection: Binding<MediaPreview?> {
+        Binding(get: { appState.libraryDetailSelection }, set: { appState.libraryDetailSelection = $0 })
+    }
     @State private var loadTask: Task<Void, Never>?
     @State private var metadataHydrationTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
@@ -546,7 +550,7 @@ struct LibraryView: View {
                         if selectedList == .history {
                             ForEach(displayedHistoryMediaIDs, id: \.self) { mediaId in
                                 if let preview = historyPreview(for: mediaId) {
-                                    Button { selectedItem = preview } label: {
+                                    Button { appState.libraryDetailSelection = preview } label: {
                                         MediaCardView(item: preview, userRating: userRatings[preview.id])
                                     }
                                     .buttonStyle(.plain)
@@ -555,7 +559,7 @@ struct LibraryView: View {
                         } else {
                             ForEach(entries, id: \.id) { entry in
                                 if let preview = preview(for: entry.mediaId) {
-                                    Button { selectedItem = preview } label: {
+                                    Button { appState.libraryDetailSelection = preview } label: {
                                         MediaCardView(item: preview, userRating: userRatings[entry.mediaId])
                                     }
                                     .buttonStyle(.plain)
@@ -599,7 +603,7 @@ struct LibraryView: View {
                 .ignoresSafeArea()
         }
         .navigationTitle("Library")
-        .navigationDestination(item: $selectedItem) { item in
+        .navigationDestination(item: librarySelection) { item in
             DetailView(preview: item)
         }
         .sheet(isPresented: $isShowingCreateFolderSheet) {

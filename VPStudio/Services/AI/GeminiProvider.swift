@@ -61,9 +61,16 @@ struct GeminiProvider: AIProvider, Sendable {
         }
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let candidates = json?["candidates"] as? [[String: Any]]
-        let parts = (candidates?.first?["content"] as? [String: Any])?["parts"] as? [[String: Any]]
-        guard let content = parts?.first?["text"] as? String, !content.isEmpty else {
+        let candidates = json?["candidates"] as? [[String: Any]] ?? []
+        // Gemini 2.5 (thinking on by default) can split output across multiple parts/candidates,
+        // sometimes with a non-text first part — join all text parts so a valid answer isn't
+        // misreported as "invalid response". Still throws when genuinely empty.
+        let content = candidates
+            .compactMap { ($0["content"] as? [String: Any])?["parts"] as? [[String: Any]] }
+            .flatMap { $0 }
+            .compactMap { $0["text"] as? String }
+            .joined()
+        guard !content.isEmpty else {
             throw AIError.invalidResponse
         }
         let usage = json?["usageMetadata"] as? [String: Any]

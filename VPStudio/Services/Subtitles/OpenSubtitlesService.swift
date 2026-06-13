@@ -220,8 +220,12 @@ actor OpenSubtitlesService {
             let (data, response): (Data, URLResponse)
             do {
                 (data, response) = try await session.data(for: request)
-            } catch is URLError {
-                throw SubtitleError.invalidURL
+            } catch let urlError as URLError {
+                // A transient transport failure (timeout/offline/connection-lost) is NOT a
+                // config error — don't mislabel it as "Invalid subtitle API URL". Propagate
+                // cancellation as cancellation; map the rest to a generic transport error.
+                if urlError.code == .cancelled { throw CancellationError() }
+                throw SubtitleError.httpError(0)
             }
             guard let http = response as? HTTPURLResponse else {
                 throw SubtitleError.httpError(0)
@@ -404,9 +408,11 @@ extension SubtitleItem: Decodable {}
 private struct SubtitleAttributes: Sendable {
     let language: String
     let release: String?
-    let ratings: Double
-    let downloadCount: Int
-    let hearingImpaired: Bool
+    // Display-only metadata — optional so one item missing a key doesn't fail the WHOLE
+    // /subtitles array decode (which would return zero subtitles instead of the valid ones).
+    let ratings: Double?
+    let downloadCount: Int?
+    let hearingImpaired: Bool?
     let files: [SubtitleFile]
 
     enum CodingKeys: String, CodingKey {
@@ -467,6 +473,8 @@ private extension String {
 
 private extension OpenSubtitlesService {
     static func nanoseconds(for interval: TimeInterval) -> UInt64 {
-        UInt64(max(interval, 0) * 1_000_000_000)
+        // Cap before converting — an unbounded server `Retry-After` would overflow UInt64 and trap.
+        let capped = min(max(interval, 0), 60)
+        return UInt64((capped * 1_000_000_000).rounded())
     }
 }

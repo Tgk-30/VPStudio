@@ -30,7 +30,7 @@ actor TorBoxService: DebridServiceProtocol {
     func checkCache(hashes: [String]) async throws -> [String: CacheStatus] {
         guard !hashes.isEmpty else { return [:] }
         let hashParam = hashes.joined(separator: ",")
-        let response: TBResponse<[TBCacheItem]> = try await request(
+        let response: TBResponse<TBCacheData> = try await request(
             method: "GET",
             path: "/torrents/checkcached",
             queryItems: [
@@ -41,7 +41,7 @@ actor TorBoxService: DebridServiceProtocol {
         var result: [String: CacheStatus] = [:]
         for hash in hashes {
             let lowered = hash.lowercased()
-            if response.data?.contains(where: { $0.hash?.lowercased() == lowered }) == true {
+            if response.data?.items.contains(where: { $0.hash?.lowercased() == lowered }) == true {
                 result[lowered] = .cached(fileId: nil, fileName: nil, fileSize: nil)
             } else {
                 result[lowered] = .notCached
@@ -242,6 +242,10 @@ actor TorBoxService: DebridServiceProtocol {
         }
         let fileId = selectedFile?.id.map(String.init) ?? "0"
 
+        // SECURITY: `/torrents/requestdl` requires the raw API token as a query param to mint the
+        // CDN link (the Bearer header is not honored here), so it cannot be removed. The resulting
+        // URL is therefore secret-bearing — never log `url.absoluteString` for this request, and rely
+        // on the `token` query name being in the log sanitizer's redaction set.
         let linkResponse: TBResponse<TBDownloadLink> = try await request(
             method: "GET",
             path: "/torrents/requestdl",
@@ -368,6 +372,20 @@ private struct TBCacheItem: Sendable {
     let name: String?
 }
 extension TBCacheItem: Decodable {}
+
+/// TorBox's `checkcached` returns `"data": [ ... ]` when items are cached, but `"data": {}`
+/// (empty object) or `"data": false` when nothing is cached. Decoding straight into
+/// `[TBCacheItem]` makes those normal "nothing cached" payloads a hard decode error.
+/// This wrapper normalizes any non-array payload to an empty list so an uncached batch is
+/// reported as `.notCached` instead of throwing.
+private struct TBCacheData: Decodable, Sendable {
+    let items: [TBCacheItem]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        items = (try? container.decode([TBCacheItem].self)) ?? []
+    }
+}
 
 private struct TBCreateResponse: Sendable {
     let torrentId: Int?

@@ -235,12 +235,20 @@ enum SearchQueryBarPolicy {
 struct SearchView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel = SearchViewModel()
-    @State private var selectedItem: MediaPreview?
+    /// Pushed detail for the Search tab, hoisted to AppState so it survives the player
+    /// dismissing/re-opening the main window (see `AppState.searchDetailSelection`).
+    private var searchSelection: Binding<MediaPreview?> {
+        Binding(get: { appState.searchDetailSelection }, set: { appState.searchDetailSelection = $0 })
+    }
     @State private var tmdbReloadTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var selectedYear: Int? = nil
     @State private var selectedLanguages: Set<String> = ["en-US"]
     @State private var isShowingFilters = false
+    // Genre + sort are local drafts (like year/language) so the filter sheet commits ALL filters
+    // once via applyFilterDraft on Apply, instead of live-browsing genre/sort on every change.
+    @State private var draftSortOption: DiscoverFilters.SortOption = .popularityDesc
+    @State private var draftGenre: Genre?
     @State private var userRatings: [String: TasteEvent] = [:]
     @State private var hasLoadedUserRatings = false
     @State private var hasHydratedRecentSearches = false
@@ -306,7 +314,7 @@ struct SearchView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         #endif
-        .navigationDestination(item: $selectedItem) { item in
+        .navigationDestination(item: searchSelection) { item in
             DetailView(preview: item)
         }
         .task {
@@ -344,26 +352,31 @@ struct SearchView: View {
         }
         .sheet(isPresented: $isShowingFilters) {
             ExploreFilterSheet(
-                sortOption: Bindable(viewModel).sortOption,
+                sortOption: $draftSortOption,
                 selectedYear: $selectedYear,
                 selectedLanguages: $selectedLanguages,
                 genres: viewModel.genres,
-                selectedGenre: Binding(
-                    get: { viewModel.selectedGenre },
-                    set: { viewModel.selectGenre($0) }
-                ),
+                selectedGenre: $draftGenre,
                 displayedSortOptions: displayedSortOptions,
                 onApply: {
-                    viewModel.applyYearFilter(selectedYear)
-                    viewModel.applyLanguageFilters(selectedLanguages)
+                    // Commit all filters in ONE batched requery instead of genre/sort browsing
+                    // live and year/language re-querying separately.
+                    viewModel.applyFilterDraft(SearchFilterDraft(
+                        sortOption: draftSortOption,
+                        selectedYear: selectedYear,
+                        selectedLanguages: selectedLanguages,
+                        selectedGenre: draftGenre
+                    ))
                 }
             )
         }
         .onChange(of: isShowingFilters) { _, showing in
             if showing {
-                // Sync local filter state from viewModel when sheet opens
+                // Sync local filter drafts from viewModel when sheet opens
                 selectedYear = viewModel.yearFilter
                 selectedLanguages = SearchLanguageOption.normalizeSelection(from: viewModel.languageFilters)
+                draftSortOption = viewModel.sortOption
+                draftGenre = viewModel.selectedGenre
                 // Ensure genres are loaded for the filter sheet
                 if viewModel.genres.isEmpty {
                     viewModel.loadGenres()
@@ -1024,7 +1037,7 @@ struct SearchView: View {
 
                             SearchResultsGrid(
                                 viewModel: viewModel,
-                                selectedItem: $selectedItem,
+                                selectedItem: searchSelection,
                                 userRatings: userRatings
                             )
 
@@ -1111,7 +1124,7 @@ struct SearchView: View {
                     HStack(spacing: 12) {
                         ForEach(viewModel.aiRecommendations) { rec in
                             Button {
-                                selectedItem = rec.toMediaPreview()
+                                appState.searchDetailSelection = rec.toMediaPreview()
                             } label: {
                                 AIRecommendationCard(recommendation: rec)
                             }
@@ -1194,7 +1207,7 @@ struct SearchView: View {
     private func applySearchResultQARuntimeIfNeeded() {
         guard QARuntimeOptions.autoOpenFirstSearchResult else { return }
         guard !hasAutoOpenedQAResult else { return }
-        guard selectedItem == nil else { return }
+        guard appState.searchDetailSelection == nil else { return }
         guard !viewModel.results.isEmpty else { return }
 
         let selectedResult = SearchAutoOpenPolicy.selectedResult(
@@ -1203,7 +1216,7 @@ struct SearchView: View {
         )
         guard let selectedResult else { return }
         hasAutoOpenedQAResult = true
-        selectedItem = selectedResult
+        appState.searchDetailSelection = selectedResult
     }
 
     @MainActor

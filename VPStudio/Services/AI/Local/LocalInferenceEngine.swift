@@ -41,8 +41,11 @@ actor LocalInferenceEngine {
 
     // MARK: - Memory Pressure Monitoring
 
-    /// Call once after init to start listening for memory/thermal pressure.
+    /// Start listening for memory/thermal pressure. Idempotent: cancels any prior source/observer
+    /// first so a repeat call (e.g. re-arming after resetAllData) can't leak a DispatchSource +
+    /// NotificationCenter observer.
     func startMonitoring() {
+        stopMonitoring()
         // Memory pressure via GCD
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global())
         source.setEventHandler { [weak self] in

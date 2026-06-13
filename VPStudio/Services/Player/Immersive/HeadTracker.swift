@@ -160,6 +160,9 @@ final class HeadTracker {
                     let headMatrix = mat
 
                     await MainActor.run {
+                        // A poll iteration may already be suspended waiting for this hop when
+                        // stop()/deinit resets state; bail so a stale pose isn't resurrected.
+                        guard self.isRunning, !Task.isCancelled else { return }
                         self.headTransform = headMatrix
                         if self.initialHeadTransform == nil {
                             self.initialHeadTransform = headMatrix

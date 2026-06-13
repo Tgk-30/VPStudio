@@ -123,11 +123,13 @@ final class SpatialAudioManager {
     }
 
     @objc private func handleAudioRouteChange(_ notification: Notification) {
-        refreshSpatialCapabilities()
+        // CoreAudio posts route-change notifications on an arbitrary thread; this @MainActor
+        // @Observable's state must be mutated on the main actor (mirrors NetworkMonitor).
+        Task { @MainActor in self.refreshSpatialCapabilities() }
     }
 
     @available(iOS 15.0, tvOS 15.0, visionOS 1.0, *)
     @objc private func handleSpatialPlaybackCapabilitiesChange(_ notification: Notification) {
-        refreshSpatialCapabilities()
+        Task { @MainActor in self.refreshSpatialCapabilities() }
     }
 }

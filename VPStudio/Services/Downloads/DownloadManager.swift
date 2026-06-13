@@ -740,12 +740,15 @@ actor DownloadManager {
                     let last = lastUpdateTime.load()
                     let elapsed = now - last
                     guard elapsed > 1_000_000_000 || totalBytesWritten == totalBytesExpected else { return }
-                    lastUpdateTime.store(now)
 
                     let progress = totalBytesExpected > 0
                         ? Double(totalBytesWritten) / Double(totalBytesExpected)
                         : 0.0
                     guard !updateInFlight.load() else { return }
+                    // Advance the throttle clock only once a write is actually committed. Storing it
+                    // above the in-flight guard meant a skipped tick still reset the clock, deferring
+                    // the next progress write by an extra ~1s and making the progress bar choppy.
+                    lastUpdateTime.store(now)
                     updateInFlight.store(true)
                     let db = self.database
                     Task {

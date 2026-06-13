@@ -1154,8 +1154,11 @@ struct PlayerView: View {
         .onDisappear {
             guard !disablesAutomaticTasks else { return }
             stopProgressPersistence()
-            scrobbleStop()
+            // Skip the terminal scrobbleStop()/persist when the explicit close path already ran
+            // them — calling scrobbleStop() again here makes onDisappear's scrobbleTask?.cancel()
+            // cancel the in-flight >80% addToHistory write, intermittently losing the watch.
             if !didInitiateClose {
+                scrobbleStop()
                 persistCurrentWatchProgress()
             }
             initialPlayerStateTask?.cancel()

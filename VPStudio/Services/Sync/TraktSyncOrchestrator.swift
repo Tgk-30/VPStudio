@@ -275,13 +275,20 @@ actor TraktSyncOrchestrator {
                 do {
                     let existing = try await database.fetchLatestTasteRating(mediaId: mediaId)
                     let remoteRating = Double(item.rating)
-                    let localRating = existing?.feedbackValue?.rounded()
                     let remoteRatedAt = parseHistoryDate(item.ratedAt)
+                    // Compare ratings in normalized [0,1] space using the existing event's own
+                    // scale, so e.g. a local 80/100 equals Trakt 8 and isn't mistaken for a change
+                    // (which would write a spurious shadow .oneToTen rating that shadows the real
+                    // one). The write below intentionally still records the canonical remote value.
+                    let remoteNormalized = FeedbackScaleMode.oneToTen.normalizedValue(remoteRating)
+                    let localScale = (existing?.feedbackScale ?? .oneToTen).canonicalMode
+                    let localNormalized = existing?.feedbackValue.map { localScale.normalizedValue($0) }
+                    let ratingsDiffer = localNormalized.map { abs($0 - remoteNormalized) > (0.5 / 9.0) } ?? true
                     let shouldWriteEvent: Bool
 
                     if existing == nil {
                         shouldWriteEvent = true
-                    } else if localRating != remoteRating.rounded() {
+                    } else if ratingsDiffer {
                         shouldWriteEvent = true
                     } else if let existing,
                               let remoteRatedAt,
@@ -773,10 +780,24 @@ actor TraktSyncOrchestrator {
                 } else {
                     // New Trakt list — create local folder + mapping
                     do {
-                        let folder = try await database.createLibraryFolder(
+                        var folder = try await database.createLibraryFolder(
                             name: list.name,
                             listType: .watchlist
                         )
+                        // createLibraryFolder dedupes by name, so a Trakt list whose name matches a
+                        // folder already mapped to a DIFFERENT Trakt list would make
+                        // saveTraktListMapping violate the UNIQUE(localFolderId) index and throw —
+                        // silently dropping this list from sync. Disambiguate with a suffixed name
+                        // so one folder maps to exactly one Trakt list.
+                        var disambiguationSuffix = 2
+                        while let collidingMapping = try await database.fetchTraktListMapping(localFolderId: folder.id),
+                              collidingMapping.traktListId != traktId {
+                            folder = try await database.createLibraryFolder(
+                                name: "\(list.name) (\(disambiguationSuffix))",
+                                listType: .watchlist
+                            )
+                            disambiguationSuffix += 1
+                        }
                         localRefreshTargets.insert(.library)
                         let mapping = TraktListMapping(
                             traktListId: traktId,

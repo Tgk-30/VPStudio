@@ -283,7 +283,10 @@ enum DebridHTTPExecutor {
 
         let trimmed = retryAfter.trimmingCharacters(in: .whitespacesAndNewlines)
         if let retryAfterSeconds = TimeInterval(trimmed), retryAfterSeconds > 0 {
-            let retryAfterDelay = UInt64((retryAfterSeconds * 1_000_000_000).rounded())
+            // Cap in Double space BEFORE converting — a hostile `Retry-After: 1e12` makes
+            // UInt64(1e21) trap before the min() clamp can run.
+            let cappedSeconds = min(retryAfterSeconds, Double(maximumRetryAfterNanoseconds) / 1_000_000_000)
+            let retryAfterDelay = UInt64((cappedSeconds * 1_000_000_000).rounded())
             return min(maximumRetryAfterNanoseconds, max(exponentialDelay, retryAfterDelay))
         }
 
@@ -296,7 +299,9 @@ enum DebridHTTPExecutor {
             return exponentialDelay
         }
 
-        let retryAfterDelay = UInt64((retryAfterSeconds * 1_000_000_000).rounded())
+        // Cap in Double space BEFORE converting (a far-future date would overflow UInt64).
+        let cappedSeconds = min(retryAfterSeconds, Double(maximumRetryAfterNanoseconds) / 1_000_000_000)
+        let retryAfterDelay = UInt64((cappedSeconds * 1_000_000_000).rounded())
         return min(maximumRetryAfterNanoseconds, max(exponentialDelay, retryAfterDelay))
     }
 

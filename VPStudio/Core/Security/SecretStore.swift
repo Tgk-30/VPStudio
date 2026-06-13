@@ -70,9 +70,21 @@ actor KeychainSecretStore: SecretStore {
         return deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound
     }
 
+    /// Only statuses that mean "this environment has no usable keychain at all" may
+    /// permanently downgrade to the in-memory store. Transient failures (device locked,
+    /// `errSecAuthFailed`, `errSecInteractionNotAllowed`, etc.) must NOT flip the store:
+    /// `inMemoryValues` is never seeded from the keychain, so flipping on a transient
+    /// error would erase every stored secret — including the TMDB API key — for the rest
+    /// of the session (the cause of keys "disappearing" after a search or some idle time).
+    /// Those transient cases instead surface as a thrown `SecretStoreError.unexpectedStatus`
+    /// for that single operation, leaving the persisted keychain value intact.
     private static func shouldFallbackToMemory(_ status: OSStatus) -> Bool {
-        guard status != errSecSuccess else { return false }
-        return true
+        switch status {
+        case errSecNotAvailable, errSecMissingEntitlement:
+            return true
+        default:
+            return false
+        }
     }
 
     private func fallbackToMemoryIfNeeded(_ status: OSStatus, operation: String) -> Bool {

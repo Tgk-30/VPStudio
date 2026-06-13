@@ -224,7 +224,11 @@ struct DiscoverView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityVoiceOverEnabled) private var accessibilityVoiceOverEnabled
     @Bindable var viewModel: DiscoverViewModel
-    @State private var selectedRoute: DiscoverDetailRoute?
+    /// Pushed detail route for the Discover tab, hoisted to AppState so it survives the player
+    /// dismissing/re-opening the main window (see `AppState.discoverDetailRoute`).
+    private var discoverRoute: Binding<DiscoverDetailRoute?> {
+        Binding(get: { appState.discoverDetailRoute }, set: { appState.discoverDetailRoute = $0 })
+    }
     @State private var currentHeroIndex = 0
     @State private var tmdbReloadTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
@@ -294,7 +298,7 @@ struct DiscoverView: View {
                         TabView(selection: $currentHeroIndex) {
                             ForEach(Array(heroItems.enumerated()), id: \.element.id) { index, featured in
                                 FeaturedHeroView(item: featured) {
-                                    selectedRoute = DiscoverNavigationPolicy.browseRoute(for: featured)
+                                    appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: featured)
                                 }
                                 .tag(index)
                             }
@@ -314,7 +318,7 @@ struct DiscoverView: View {
                             userRatings: userRatings,
                             animationDelay: DiscoverHierarchyPolicy.continueWatchingDelay
                         ) { item in
-                            selectedRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: item)
+                            appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: item)
                         }
                     }
 
@@ -328,7 +332,7 @@ struct DiscoverView: View {
                             userRatings: userRatings,
                             animationDelay: row.animationDelay
                         ) { item in
-                            selectedRoute = DiscoverNavigationPolicy.browseRoute(for: item)
+                            appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: item)
                         }
                     }
                 }
@@ -345,7 +349,7 @@ struct DiscoverView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         #endif
-        .navigationDestination(item: $selectedRoute) { route in
+        .navigationDestination(item: discoverRoute) { route in
             DetailView(preview: route.preview, initialAction: route.initialAction)
         }
         .refreshable {
@@ -587,7 +591,7 @@ struct DiscoverView: View {
                             preview: primaryPreview,
                             recommendation: primaryRecommendation
                         ) {
-                            selectedRoute = DiscoverNavigationPolicy.browseRoute(for: primaryPreview)
+                            appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: primaryPreview)
                         }
 
                         if !state.supportingRecommendations.isEmpty {
@@ -595,7 +599,7 @@ struct DiscoverView: View {
                                 ForEach(state.supportingRecommendations) { recommendation in
                                     let recommendationPreview = viewModel.aiPreview(for: recommendation)
                                     AICuratedSupportingRow(recommendation: recommendation) {
-                                        selectedRoute = DiscoverNavigationPolicy.browseRoute(for: recommendationPreview)
+                                        appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: recommendationPreview)
                                     }
                                 }
                             }

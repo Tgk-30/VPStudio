@@ -62,7 +62,9 @@ struct SubtitleParser {
 
         let lines = normalizedContent.components(separatedBy: "\n")
         for line in lines {
-            if line.isEmpty {
+            // Treat a whitespace-only line as a block separator too — a stray space/tab between
+            // cues (common in re-encoded SRTs) otherwise merges two cues into one.
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
                 parseBlock(block)
                 block.removeAll(keepingCapacity: true)
             } else {

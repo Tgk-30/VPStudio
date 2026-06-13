@@ -126,6 +126,10 @@ actor LocalDownloadService {
                     repo,
                     { progress in
                         Task {
+                            // Drop writes from a download that was cancelled or superseded
+                            // (cancelDownload/deleteModel nil out activeTaskToken), so a stale
+                            // tick can't resurrect cancelled progress or regress the percentage.
+                            guard await self.isActiveToken(taskToken) else { return }
                             try? await catalogStore.updateProgress(
                                 id: id,
                                 progress: progress.fractionCompleted,
@@ -155,6 +159,13 @@ actor LocalDownloadService {
             }
         }
         activeTask = task
+    }
+
+    /// True while `token` is still the in-flight download's token. Progress callbacks that
+    /// fire after the download was cancelled or superseded (which nil out `activeTaskToken`)
+    /// use this to drop stale writes.
+    func isActiveToken(_ token: UUID) -> Bool {
+        activeTaskToken == token
     }
 
     // MARK: - Cancel

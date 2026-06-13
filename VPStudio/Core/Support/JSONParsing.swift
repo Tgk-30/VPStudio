@@ -12,7 +12,13 @@ enum JSONValueParsing {
     static func parseInt(_ value: Any?) -> Int? {
         if let intValue = value as? Int { return intValue }
         if let int64Value = value as? Int64 { return Int(int64Value) }
-        if let doubleValue = value as? Double { return Int(doubleValue) }
+        if let doubleValue = value as? Double {
+            // Guard before converting: JSONSerialization can yield a finite Double that
+            // exceeds Int's range (e.g. 1e30 from a hostile/garbage indexer field), and
+            // Int(Double) TRAPS on out-of-range/non-finite values. Callers use `?? 0`.
+            guard doubleValue.isFinite, doubleValue >= Double(Int.min), doubleValue < Double(Int.max) else { return nil }
+            return Int(doubleValue)
+        }
         if let stringValue = value as? String { return Int(stringValue) }
         return nil
     }
@@ -22,7 +28,14 @@ enum JSONValueParsing {
     static func parseInt64(_ value: Any?) -> Int64? {
         if let intValue = value as? Int64 { return intValue }
         if let intValue = value as? Int { return Int64(intValue) }
-        if let doubleValue = value as? Double { return Int64(doubleValue) }
+        if let doubleValue = value as? Double {
+            // Guard before converting: a finite Double > Int64.max (e.g. 1e30) traps in
+            // Int64(Double). Bounds use Double-representable limits (2^63). Callers use `?? 0`.
+            guard doubleValue.isFinite,
+                  doubleValue >= -9_223_372_036_854_775_808.0,
+                  doubleValue < 9_223_372_036_854_775_808.0 else { return nil }
+            return Int64(doubleValue)
+        }
         if let stringValue = value as? String { return Int64(stringValue) }
         return nil
     }

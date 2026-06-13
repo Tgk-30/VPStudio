@@ -111,6 +111,15 @@ final class AppState {
     var isBootstrapping: Bool = true
     var runtimeDiagnosticsEnabled: Bool = false
 
+    // MARK: - Per-tab detail navigation
+    // These drive each tab's item-based `.navigationDestination`. They live on AppState
+    // (which outlives the "main" WindowGroup) rather than in transient view-local @State so
+    // the pushed detail survives the player's dismiss/re-open of the main window — otherwise
+    // returning from the player rebuilds a fresh ContentView and the user loses their place.
+    var libraryDetailSelection: MediaPreview?
+    var discoverDetailRoute: DiscoverDetailRoute?
+    var searchDetailSelection: MediaPreview?
+
     // MARK: - Warnings
     var environmentBootstrapWarning: String?
     var indexerReloadWarning: String?
@@ -1000,6 +1009,9 @@ final class AppState {
             isShowingSetup = false
             setupRecommendationNeeded = true
             navigationResetID = UUID()
+            libraryDetailSelection = nil
+            discoverDetailRoute = nil
+            searchDetailSelection = nil
             runtimeDiagnosticsEnabled = false
             activePlayerSession = nil
             activeAVPlayer = nil
@@ -1038,6 +1050,11 @@ final class AppState {
                     Self.logger.error("Secret cleanup after namespace rotation failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
+
+            // Re-arm on-device memory/thermal monitoring on the fresh engine — bootstrap() runs
+            // only once at launch, so without this an in-session reset leaves the next loaded
+            // model with no auto-unload guard. (startMonitoring is now idempotent.)
+            await localInferenceEngine.startMonitoring()
 
             NotificationCenter.default.post(name: .settingsDidChange, object: nil)
             NotificationCenter.default.post(name: .appDidResetAllData, object: nil)

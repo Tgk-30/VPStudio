@@ -422,7 +422,13 @@ struct ContentView: View {
 
             if navigationAction == .resetStack {
                 rootNavigationPath = NavigationPath()
-                state.navigationResetID = UUID()
+                // Same-tab reselect = pop to root. Clear the active tab's item-driven detail
+                // selection so an open DetailView dismisses. (This previously regenerated
+                // navigationResetID, which tore down and rebuilt the entire tab subtree — a
+                // blank/reload flash — and, now that detail state lives in AppState, would just
+                // re-push the same detail instead of popping it. navigationResetID is now
+                // reserved for hard resets via AppState.resetAllData.)
+                clearActiveTabDetailSelection(tab, state: state)
             }
         }
 
@@ -432,6 +438,16 @@ struct ContentView: View {
             enabled: appState.runtimeDiagnosticsEnabled,
             context: tab.rawValue
         )
+    }
+
+    /// Clears the given tab's hoisted detail selection so a same-tab reselect pops to root.
+    private func clearActiveTabDetailSelection(_ tab: SidebarTab, state: AppState) {
+        switch tab {
+        case .library: state.libraryDetailSelection = nil
+        case .discover: state.discoverDetailRoute = nil
+        case .search: state.searchDetailSelection = nil
+        case .downloads, .environments, .settings: break
+        }
     }
 
     private func presentQATestScreenIfRequested() {
