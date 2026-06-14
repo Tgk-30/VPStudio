@@ -101,34 +101,26 @@ struct VPBackground: View {
 
     var body: some View {
         ZStack {
+            // Deep, near-black base — premium glossy black (Apple TV+ / Netflix dark), not navy.
             LinearGradient(
-                colors: [VPColor.void, VPColor.abyss, VPColor.void],
+                colors: [
+                    Color(red: 0.022, green: 0.022, blue: 0.026),
+                    Color(red: 0.008, green: 0.008, blue: 0.011),
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
 
             if !reduceTransparency {
-                // Blurred ambient orbs (kept subtle; behind everything).
-                Circle().fill(VPColor.orbBlue.opacity(0.22))
-                    .frame(width: 520, height: 520).blur(radius: 140)
-                    .offset(x: -240, y: -180)
-                Circle().fill(VPColor.orbPurple.opacity(0.18))
-                    .frame(width: 460, height: 460).blur(radius: 150)
-                    .offset(x: 260, y: 200)
-                Circle().fill(VPColor.orbRed.opacity(0.12))
-                    .frame(width: 380, height: 380).blur(radius: 150)
-                    .offset(x: 60, y: -260)
+                // Two whisper-quiet glows for depth — just enough to avoid a flat dead black,
+                // never a colored wash. One cool high-left, one faint brand-warm low-right.
+                Circle().fill(VPColor.orbBlue.opacity(0.07))
+                    .frame(width: 680, height: 680).blur(radius: 200)
+                    .offset(x: -260, y: -360)
+                Circle().fill(VPColor.orbRed.opacity(0.05))
+                    .frame(width: 460, height: 460).blur(radius: 200)
+                    .offset(x: 300, y: 380)
             }
-
-            // Content-plane lift: a soft brighter pool in the middle for text contrast.
-            RadialGradient(
-                colors: [VPColor.contentPlane.opacity(0.9), .clear],
-                center: .center,
-                startRadius: 0,
-                endRadius: 700
-            )
-            .blendMode(.plusLighter)
-            .opacity(reduceTransparency ? 0 : 0.5)
         }
         .ignoresSafeArea()
     }

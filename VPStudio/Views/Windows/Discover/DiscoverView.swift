@@ -315,7 +315,7 @@ struct DiscoverView: View {
                         #if !os(macOS)
                         .tabViewStyle(.page(indexDisplayMode: .always))
                         #endif
-                        .frame(height: 520)
+                        .frame(height: 604)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
@@ -962,7 +962,7 @@ struct FeaturedHeroView: View {
                 }
             }
             .id(item.id)
-            .frame(height: 520)
+            .frame(height: 540)
             .clipped()
 
             // Cinematic gradient fade to dark at bottom
@@ -981,11 +981,11 @@ struct FeaturedHeroView: View {
             VStack(alignment: .leading, spacing: 14) {
                 // Clean, confident title — the artwork carries the drama (Netflix/Apple TV style).
                 Text(item.title)
-                    .font(.system(size: 46, weight: .bold))
+                    .font(.system(size: 52, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.6)
-                    .shadow(color: .black.opacity(0.55), radius: 10, y: 4)
+                    .minimumScaleFactor(0.55)
+                    .shadow(color: .black.opacity(0.6), radius: 12, y: 4)
 
                 // Metadata row
                 HStack(spacing: 12) {
@@ -1024,67 +1024,65 @@ struct FeaturedHeroView: View {
                     GlassTag(text: "HDR", symbol: "sparkles", weight: .bold)
                 }
 
-                // Action buttons
-                HStack(spacing: 12) {
-                    // Primary details button — red pill
+                // Action buttons — Apple TV+ / Netflix language: solid light primary + glass secondary.
+                HStack(spacing: 14) {
+                    // Primary — solid white "Play"
                     Button(action: onTap) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "info.circle.fill")
-                                .font(.system(size: 14))
-                            Text("View Details")
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
+                        HStack(spacing: 9) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 17, weight: .bold))
+                            Text("Play")
+                                .font(.system(size: 18, weight: .semibold))
                         }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 12)
-                        .background(
-                            Capsule().fill(.linearGradient(
-                                colors: [.vpRed, .vpRedLight],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ))
-                        )
-                        .shadow(color: .vpRed.opacity(0.5), radius: 16, y: 4)
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 30)
+                        .padding(.vertical, 15)
+                        .background(Capsule().fill(.white))
+                        .shadow(color: .black.opacity(0.28), radius: 14, y: 5)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("View details for \(item.title)")
+                    .accessibilityLabel("Play \(item.title)")
                     #if os(visionOS)
                     .hoverEffect(.lift)
                     #endif
 
-                    // Secondary: More info
+                    // Secondary — glass "More Info"
                     Button(action: onTap) {
-                        Image(systemName: "info")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.8))
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .overlay {
-                                Circle().strokeBorder(
-                                    LinearGradient(
-                                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: 1
-                                )
-                            }
+                        HStack(spacing: 8) {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("More Info")
+                                .font(.system(size: 17, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 15)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay {
+                            Capsule().strokeBorder(
+                                LinearGradient(
+                                    colors: [.white.opacity(0.30), .white.opacity(0.08)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                        }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("More details for \(item.title)")
+                    .accessibilityLabel("More info about \(item.title)")
                     #if os(visionOS)
-                    .hoverEffect(.highlight)
+                    .hoverEffect(.lift)
                     #endif
                 }
-                .padding(.top, 6)
+                .padding(.top, 10)
             }
-            .padding(32)
+            .padding(36)
         }
-        .frame(height: 440)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .frame(height: 540)
+        .clipShape(RoundedRectangle(cornerRadius: 28))
         .overlay(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 28)
                 .strokeBorder(
                     LinearGradient(
                         colors: [
@@ -1138,21 +1136,14 @@ struct MediaRow: View {
         VStack(alignment: .leading, spacing: 16) {
             // Section header
             if useObsidianGlass {
-                HStack(spacing: VPSpace.snug) {
-                    if !symbol.isEmpty {
-                        Image(systemName: symbol)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(VPColor.accent)
-                            .frame(width: 36, height: 36)
-                            .glassSurface(.rest, cornerRadius: VPRadius.chip)
-                            .accessibilityHidden(true)
-                    }
+                // Clean, confident section header — the artwork carries the weight, not chrome.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(title)
-                        .font(VPFont.title2)
+                        .font(.system(size: 23, weight: .bold))
                         .foregroundStyle(VPColor.textPrimary)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 12)
                 .accessibilityAddTraits(.isHeader)
             } else {
                 HStack(spacing: 8) {
