@@ -240,9 +240,9 @@ struct TestScreenSheet: View {
         case .searchResults:
             TestSearchResultsView()
         case .detailMovie:
-            TestDetailMovieView()
+            SeededDetailPreview(mediaType: .movie)
         case .detailSeries:
-            TestDetailSeriesView()
+            SeededDetailPreview(mediaType: .series)
         case .library:
             TestLibraryView()
         case .downloads:
@@ -265,6 +265,37 @@ private struct SeededDiscoverPreview: View {
 
     var body: some View {
         DiscoverView(viewModel: viewModel)
+    }
+}
+
+// MARK: - Detail (real surface, seeded)
+
+/// Renders the **production** `DetailView` (→ `SeriesDetailLayout`) populated with seeded content so
+/// the actual hero, metadata, genre chips, season picker, and stream sections can be visually QA'd
+/// without API keys or network calls. `AppState` is inherited from the surrounding app environment;
+/// `disablesAutomaticLoading` keeps the seeded view model from being overwritten by a TMDB refresh.
+private struct SeededDetailPreview: View {
+    @Environment(AppState.self) private var appState
+    let mediaType: MediaType
+    @State private var viewModel: DetailViewModel?
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                DetailView(
+                    preview: DetailPreviewSeed.preview(for: mediaType),
+                    initialViewModel: viewModel,
+                    disablesAutomaticLoading: true
+                )
+            } else {
+                Color.clear
+            }
+        }
+        .task {
+            if viewModel == nil {
+                viewModel = DetailPreviewSeed.seededViewModel(appState: appState, type: mediaType)
+            }
+        }
     }
 }
 
@@ -459,230 +490,6 @@ private struct TestSearchResultsView: View {
                     }
                 }
                 .padding()
-            }
-        }
-    }
-}
-
-// MARK: - Detail Movie Test
-
-private struct TestDetailMovieView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Hero
-                ZStack(alignment: .bottomLeading) {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.indigo.opacity(0.9), .clear],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .frame(height: 300)
-
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.8)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 200)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("DUNE: PART TWO")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                        HStack(spacing: 12) {
-                            Text("2024")
-                            Text("166 min")
-                            HStack(spacing: 3) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                Text("8.8 IMDb")
-                            }
-                            Image(systemName: "heart.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
-
-                        Text("Science Fiction · Adventure · Drama")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-
-                        Text("Denis Villeneuve")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    .padding(20)
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    // Synopsis
-                    Text("Follow the mythic journey of Paul Atreides as he unites with Chani and the Fremen while on a warpath of revenge against the conspirators who destroyed his family.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-
-                    // Genres
-                    HStack(spacing: 6) {
-                        ForEach(["Sci-Fi", "Adventure", "Drama"], id: \.self) { g in
-                            Text(g)
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .background(.ultraThinMaterial, in: Capsule())
-                        }
-                    }
-
-                    // Streams section
-                    Text("Available Streams")
-                        .font(.headline)
-
-                    ForEach(0..<3, id: \.self) { i in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(["Dune.Part.Two.2024.2160p.WEB", "Dune Part Two 2024 1080p WEB-DL", "Dune.Part.Two.2024.720p.WEB"][i])
-                                    .font(.subheadline)
-                                    .lineLimit(1)
-                                HStack(spacing: 4) {
-                                    Text(["2160p · HDR · Dolby Vision", "1080p · DDP 5.1", "720p · x264"][i])
-                                        .font(.caption2)
-                                    Text("·")
-                                    Text(["342 seeders", "1204 seeders", "567 seeders"][i])
-                                        .font(.caption2)
-                                        .foregroundStyle(.green)
-                                }
-                                .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text("8.5 GB")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "play.circle.fill")
-                                .font(.title3)
-                                .foregroundStyle(.blue)
-                        }
-                        .padding(12)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-                .padding(20)
-            }
-        }
-    }
-}
-
-// MARK: - Detail Series Test
-
-private struct TestDetailSeriesView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Hero
-                ZStack(alignment: .bottomLeading) {
-                    Rectangle()
-                        .fill(LinearGradient(
-                            colors: [.indigo.opacity(0.9), .clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
-                        .frame(height: 300)
-
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.8)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 200)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("SHRINKING")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                        HStack(spacing: 12) {
-                            Text("2023")
-                            Text("35 min")
-                            HStack(spacing: 3) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                Text("8.1 IMDb")
-                            }
-                            Image(systemName: "heart.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
-
-                        Text("Comedy · Drama")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-
-                        Text("Jason Segel · Harrison Ford")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    .padding(20)
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("A therapist starts breaking the rules with his patients after a tragedy changes everything.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-
-                    // Seasons tabs
-                    HStack(spacing: 8) {
-                        ForEach(["Season 1 · 10 eps", "Season 2 · 10 eps", "Season 3 · 9 eps"], id: \.self) { s in
-                            Text(s)
-                                .font(.caption)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(s.contains("3") ? AnyShapeStyle(.tint) : AnyShapeStyle(.ultraThinMaterial), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-
-                    // Episodes row
-                    Text("Episodes")
-                        .font(.headline)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 14) {
-                            ForEach(0..<6, id: \.self) { i in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ZStack(alignment: .bottomLeading) {
-                                        Rectangle()
-                                            .fill(Color.gray.opacity(0.3 + Double(i) * 0.08))
-                                            .frame(width: 180, height: 100)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                                        HStack(spacing: 4) {
-                                            Text("S03E0\(i+1)")
-                                                .font(.caption2.weight(.semibold))
-                                            Text("·")
-                                            Text("\([35, 34, 36, 37, 35, 38][i])m")
-                                                .font(.caption2)
-                                        }
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(.ultraThinMaterial, in: Capsule())
-                                        .padding(6)
-                                    }
-
-                                    Text(["Fanatics", "The Ghosts", "The Medal", "The River", "The Bowl", "The High Price"][i])
-                                        .font(.caption2)
-                                        .lineLimit(1)
-
-                                    if i == 0 {
-                                        Text("3/6 watched")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(width: 180)
-                            }
-                        }
-                    }
-                }
-                .padding(20)
             }
         }
     }

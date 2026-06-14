@@ -431,14 +431,15 @@ struct SeriesDetailLayout: View {
                     .accessibilityLabel(viewModel.currentFeedbackValue != nil ? "Edit rating" : "Rate title")
                     .accessibilityHint("Opens rating controls for this title.")
                     
-                    // AI button
+                    // AI button — glass to match the utility cluster, purple glyph keeps the AI brand
                     Button {
                         Task { await viewModel.fetchAIAnalysis() }
                     } label: {
                         Image(systemName: "brain")
                             .font(.system(size: 18))
+                            .foregroundStyle(.purple)
                             .frame(width: 44, height: 44)
-                            .background(Color.purple.opacity(0.8), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Analyze with AI")
@@ -755,10 +756,10 @@ struct SeriesDetailLayout: View {
             Text("\(season.seasonNumber)")
                 .font(.subheadline)
                 .fontWeight(isSelected ? .bold : .medium)
-                .foregroundStyle(isSelected ? .white : .white.opacity(0.85))
+                .foregroundStyle(isSelected ? .black : .white.opacity(0.85))
                 .frame(width: 44, height: 44)
                 .background(
-                    isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.white.opacity(0.15)),
+                    isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.ultraThinMaterial),
                     in: Circle()
                 )
         }
@@ -875,7 +876,7 @@ struct SeriesDetailLayout: View {
                 .frame(width: 240, height: 135)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? Color.purple : Color.clear, lineWidth: 2)
+                        .stroke(isSelected ? Color.white : Color.clear, lineWidth: 2)
                 )
             
                 // Episode info
