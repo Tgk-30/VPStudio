@@ -33,17 +33,18 @@ jobs:
       # GitHub's macos-15 runner ships with multiple Xcode versions.
       # We explicitly select Xcode 16.x and verify the selection.
       # ------------------------------------------------------------------
-      - name: Select Xcode 16
+      - name: Select Xcode
         run: |
-          # Try common Xcode 16 installation paths on GitHub Actions runners
-          if [ -d "/Applications/Xcode_16.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.app
-          elif [ -d "/Applications/Xcode_16.0.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.0.app
-          elif [ -d "/Applications/Xcode_16.1.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.1.app
-          elif [ -d "/Applications/Xcode_16.2.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.2.app
+          # GRDB 7.10+ requires Swift tools 6.1 (Xcode 16.3+); pinning to 16.0
+          # (Swift 6.0) breaks `Could not resolve package dependencies`. Select the
+          # NEWEST installed Xcode 16.x so the toolchain satisfies the dependency.
+          XCODE="$(ls -d /Applications/Xcode_16.*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$XCODE" ]; then
+            XCODE="$(ls -d /Applications/Xcode_1[7-9].*.app /Applications/Xcode_2*.app 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -n "$XCODE" ]; then
+            echo "Selecting $XCODE"
+            sudo xcode-select -s "$XCODE"
           fi
 
           echo "Selected Xcode version:"
