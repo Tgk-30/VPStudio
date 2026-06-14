@@ -54,6 +54,28 @@ jobs:
           xcodebuild -showsdks | grep -i visionos || true
 
       # ------------------------------------------------------------------
+      # 2b. Resolve a concrete visionOS simulator
+      #
+      # Newer Xcodes ship multiple "Apple Vision Pro" devices (e.g. visionOS
+      # 26.1, 26.2), so `name=Apple Vision Pro` is ambiguous. Pick the newest
+      # available one by UDID and reuse it for both build and test.
+      # ------------------------------------------------------------------
+      - name: Resolve visionOS simulator
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available --json | jq -r '
+            [ .devices | to_entries[]
+              | (.key | capture("[^0-9]*(?<maj>[0-9]+)[-.](?<min>[0-9]+)")) as $v
+              | .value[]
+              | select(.isAvailable and (.name | test("Vision Pro")))
+              | { sort: (($v.maj | tonumber) * 1000 + ($v.min | tonumber)), udid }
+            ] | sort_by(.sort) | last.udid // empty')
+          test -n "$UDID" || { echo "No available Apple Vision Pro simulator"; xcrun simctl list devices available; exit 1; }
+          echo "Using visionOS simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          echo "VISIONOS_UDID=$UDID" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------
       # 3. Build for testing
       #
       # Separating build and test steps lets us isolate compilation failures
@@ -64,7 +86,7 @@ jobs:
           set -o pipefail
           xcodebuild build-for-testing \
             -scheme VPStudio \
-            -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+            -destination "platform=visionOS Simulator,id=${VISIONOS_UDID}" \
             -enableCodeCoverage YES \
             | xcpretty
 
@@ -79,7 +101,7 @@ jobs:
           set -o pipefail
           xcodebuild test-without-building \
             -scheme VPStudio \
-            -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+            -destination "platform=visionOS Simulator,id=${VISIONOS_UDID}" \
             -only-testing:VPStudioTests \
             -resultBundlePath TestResults.xcresult \
             -enableCodeCoverage YES \
