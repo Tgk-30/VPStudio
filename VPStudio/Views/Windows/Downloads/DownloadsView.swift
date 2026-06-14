@@ -38,6 +38,7 @@ struct DownloadsView: View {
     @State private var confirmDeleteTaskID: String?
     @State private var playbackValidationMessage: String?
     @State private var didPerformQADownloadAction = false
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     private let disablesAutomaticTasks: Bool
 
     init(
@@ -69,7 +70,7 @@ struct DownloadsView: View {
         )
     }
 
-    var body: some View {
+    private var legacyRoot: some View {
         Group {
             if shouldShowRootLoadingSurface {
                 VStack {
@@ -90,7 +91,17 @@ struct DownloadsView: View {
             VPMenuBackground()
                 .ignoresSafeArea()
         }
-        .navigationTitle("Downloads")
+    }
+
+    var body: some View {
+        Group {
+            if useObsidianGlass {
+                obsidianRoot
+            } else {
+                legacyRoot
+            }
+        }
+        .navigationTitle(useObsidianGlass ? "" : "Downloads")
         .alert(
             "Download Unavailable",
             isPresented: Binding(
@@ -124,6 +135,265 @@ struct DownloadsView: View {
                 await performQADownloadActionIfNeeded(vm)
             }
         }
+    }
+
+    // MARK: - Obsidian Glass
+
+    private var obsidianRoot: some View {
+        ZStack {
+            VPBackground()
+            if shouldShowRootLoadingSurface {
+                LoadingOverlay(
+                    title: DownloadsLoadingSurfacePolicy.title,
+                    message: DownloadsLoadingSurfacePolicy.message
+                )
+            } else if let vm = viewModel {
+                obsidianContent(vm)
+            } else {
+                Color.clear
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func obsidianContent(_ vm: DownloadsViewModel) -> some View {
+        switch errorSurfaceMode(for: vm) {
+        case .rootError:
+            if let error = vm.rootError {
+                obsidianStateSurface(
+                    icon: "exclamationmark.triangle",
+                    title: error.errorDescription ?? "Downloads couldn’t load right now.",
+                    message: error.recoverySuggestion,
+                    tint: VPColor.warning,
+                    actionTitle: "Retry"
+                ) { retryRootLoad(vm) }
+            }
+        case .inlineError, .none:
+            if vm.groups.isEmpty {
+                obsidianStateSurface(
+                    icon: "arrow.down.circle",
+                    title: "Build your offline shelf",
+                    message: "Downloaded movies and episodes show up here with progress, retry, and one-tap playback. Grab a title from Discover, then download the stream you want to keep.",
+                    tint: VPColor.info,
+                    actionTitle: "Browse Discover"
+                ) { appState.selectedTab = .discover }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: VPSpace.roomy) {
+                        Text("Downloads")
+                            .font(VPFont.title1)
+                            .foregroundStyle(VPColor.textPrimary)
+                            .accessibilityAddTraits(.isHeader)
+
+                        if case .inlineError = errorSurfaceMode(for: vm), let error = vm.rootError {
+                            obsidianInlineErrorBanner(error, vm: vm)
+                        }
+
+                        LazyVStack(spacing: VPSpace.roomy) {
+                            ForEach(vm.groups) { group in
+                                obsidianGroupCard(group, vm: vm)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, VPSpace.roomy)
+                    .padding(.top, VPSpace.hero)
+                    .padding(.bottom, VPSpace.section)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .refreshable { await vm.load() }
+            }
+        }
+    }
+
+    private func obsidianStateSurface(
+        icon: String,
+        title: String,
+        message: String?,
+        tint: Color,
+        actionTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack {
+            Spacer()
+            VPStateCard(systemImage: icon, title: title, message: message, tint: tint, actionTitle: actionTitle, action: action)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(VPSpace.roomy)
+    }
+
+    private func obsidianInlineErrorBanner(_ error: AppError, vm: DownloadsViewModel) -> some View {
+        HStack(spacing: VPSpace.snug) {
+            Image(systemName: "wifi.exclamationmark")
+                .foregroundStyle(VPColor.warning)
+                .accessibilityHidden(true)
+            Text(error.errorDescription ?? "Couldn’t refresh downloads.")
+                .font(VPFont.bodyEmphasis)
+                .foregroundStyle(VPColor.textPrimary)
+            Spacer(minLength: VPSpace.snug)
+            Button { retryRootLoad(vm) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(VPButtonStyle(kind: .secondary))
+        }
+        .padding(VPSpace.normal)
+        .glassSurface(.rest, cornerRadius: VPRadius.control)
+    }
+
+    private func obsidianGroupCard(_ group: DownloadMediaGroup, vm: DownloadsViewModel) -> some View {
+        VPCard(elevation: .raised, padding: VPSpace.tight) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: VPSpace.normal) {
+                    AsyncImage(url: group.posterURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().aspectRatio(2 / 3, contentMode: .fill)
+                        case .empty:
+                            posterPlaceholder(for: group).overlay { ProgressView().controlSize(.small) }
+                        default:
+                            posterPlaceholder(for: group)
+                        }
+                    }
+                    .frame(width: 96, height: 144)
+                    .clipShape(RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: VPSpace.tight) {
+                        Text(group.mediaTitle.isEmpty ? "Unknown Title" : group.mediaTitle)
+                            .font(VPFont.title2)
+                            .foregroundStyle(VPColor.textPrimary)
+                            .lineLimit(2)
+                        HStack(spacing: VPSpace.tight) {
+                            VPBadge(
+                                text: group.mediaType == "series" ? "Series" : "Movie",
+                                tint: group.mediaType == "series" ? VPColor.info : VPColor.accent
+                            )
+                            Text("\(group.completedCount)/\(group.totalCount) downloaded")
+                                .font(VPFont.caption)
+                                .foregroundStyle(VPColor.textSecondary)
+                        }
+                        if group.hasActiveDownloads {
+                            VPProgressBar(value: group.overallProgress, height: 8, tint: VPColor.accent)
+                                .padding(.top, VPSpace.micro)
+                        }
+                    }
+
+                    Spacer(minLength: VPSpace.tight)
+
+                    obsidianIconButton("trash", label: "Delete all downloads", tint: VPColor.danger) {
+                        confirmDeleteMediaId = group.mediaId
+                    }
+                    .confirmationDialog(
+                        "Delete All Downloads?",
+                        isPresented: Binding(
+                            get: { confirmDeleteMediaId == group.mediaId },
+                            set: { if !$0 { confirmDeleteMediaId = nil } }
+                        ),
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete All", role: .destructive) {
+                            Task { await vm.removeAll(mediaId: group.mediaId) }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("This will permanently delete all downloaded files for \"\(group.mediaTitle)\" from storage.")
+                    }
+                }
+                .padding(VPSpace.snug)
+
+                Divider().overlay(VPColor.specularDim).padding(.horizontal, VPSpace.snug)
+
+                ForEach(group.tasks, id: \.id) { task in
+                    obsidianTaskRow(task, vm: vm, isSeries: group.mediaType == "series")
+                    if task.id != group.tasks.last?.id {
+                        Divider().overlay(VPColor.specularDim).padding(.leading, VPSpace.snug)
+                    }
+                }
+            }
+        }
+    }
+
+    private func obsidianTaskRow(_ task: DownloadTask, vm: DownloadsViewModel, isSeries: Bool) -> some View {
+        HStack(spacing: VPSpace.snug) {
+            VStack(alignment: .leading, spacing: VPSpace.micro) {
+                Text(isSeries ? task.displayTitle : task.fileName)
+                    .font(VPFont.bodyEmphasis)
+                    .foregroundStyle(VPColor.textPrimary)
+                    .lineLimit(1)
+                HStack(spacing: VPSpace.tight) {
+                    VPBadge(text: task.status.rawValue.capitalized, tint: statusColor(for: task.status))
+                    if task.status == .completed, let bytes = task.totalBytes, bytes > 0 {
+                        Text(formatBytes(bytes))
+                            .font(VPFont.caption)
+                            .foregroundStyle(VPColor.textTertiary)
+                    }
+                }
+                if task.status == .downloading || task.status == .queued || task.status == .resolving {
+                    VPProgressBar(value: task.progress, height: 6, label: progressText(for: task), tint: statusColor(for: task.status))
+                        .padding(.top, 2)
+                }
+                if let message = task.errorMessage, !message.isEmpty {
+                    Text(message)
+                        .font(VPFont.caption)
+                        .foregroundStyle(VPColor.danger)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: VPSpace.tight)
+
+            HStack(spacing: VPSpace.tight) {
+                if task.status == .completed {
+                    obsidianIconButton("play.fill", label: "Play", tint: VPColor.accent) { playDownload(task, vm: vm) }
+                }
+                if task.status == .downloading || task.status == .queued || task.status == .resolving {
+                    obsidianIconButton("xmark", label: "Cancel download", tint: VPColor.textSecondary) { Task { await vm.cancel(task) } }
+                }
+                if task.status == .failed || task.status == .cancelled {
+                    obsidianIconButton("arrow.clockwise", label: "Retry download", tint: VPColor.info) { Task { await vm.retry(task) } }
+                }
+                obsidianIconButton("trash", label: "Delete download", tint: VPColor.danger) {
+                    confirmDeleteTaskID = task.id
+                }
+                .confirmationDialog(
+                    "Delete Download?",
+                    isPresented: Binding(
+                        get: { confirmDeleteTaskID == task.id },
+                        set: { if !$0 { confirmDeleteTaskID = nil } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete", role: .destructive) {
+                        confirmDeleteTaskID = nil
+                        Task { await vm.remove(task) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This will permanently delete \"\(task.displayTitle)\" from storage.")
+                }
+            }
+        }
+        .padding(.horizontal, VPSpace.snug)
+        .padding(.vertical, VPSpace.tight)
+        .frame(minHeight: VPSpace.minTapTarget)
+    }
+
+    private func obsidianIconButton(
+        _ systemName: String,
+        label: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: VPSpace.minTapTarget, height: VPSpace.minTapTarget)
+                .glassSurface(.rest, cornerRadius: VPSpace.minTapTarget / 2)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .vpInteractive()
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder
