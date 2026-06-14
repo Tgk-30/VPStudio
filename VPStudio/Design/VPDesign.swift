@@ -47,6 +47,13 @@ enum VPColor {
     static let accent      = Color(red: 1.00, green: 0.16, blue: 0.33)
     static let accentLight = Color(red: 1.00, green: 0.35, blue: 0.35)
     static let accentGlow  = Color(red: 1.00, green: 0.16, blue: 0.33).opacity(0.45)
+    /// Canonical accent gradient (the single source of truth the legacy `LinearGradient.vpAccent`
+    /// now aliases to).
+    static let accentGradient = LinearGradient(
+        colors: [accent, accentLight],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
 
     // Ambient backdrop orbs (blurred, behind glass).
     static let orbBlue   = Color(red: 0.08, green: 0.42, blue: 0.94)

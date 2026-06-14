@@ -497,16 +497,17 @@ struct CinematicStateCard<Content: View>: View {
 
 /// The signature neon red/pink gradient used throughout the cinematic UI.
 extension LinearGradient {
-    static let vpAccent = LinearGradient(
-        colors: [Color(red: 1.0, green: 0.16, blue: 0.33), Color(red: 1.0, green: 0.35, blue: 0.35)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    /// Aliased to the canonical `VPColor.accentGradient` — single source of truth, identical value.
+    static let vpAccent = VPColor.accentGradient
 }
 
 extension Color {
-    static let vpRed = Color(red: 1.0, green: 0.16, blue: 0.33)
-    static let vpRedLight = Color(red: 1.0, green: 0.35, blue: 0.35)
+    /// Aliased to the canonical accent tokens (identical RGB) so there is one source of truth.
+    /// (Specular/shadow literals in this file are intentionally NOT unified yet: the legacy
+    /// specular 0.28 differs from VPColor.specularBright 0.32, and the dual glass shadow pair has
+    /// no VPElevation equivalent — unifying them is a deliberate visual change for a later pass.)
+    static let vpRed = VPColor.accent
+    static let vpRedLight = VPColor.accentLight
 }
 
 // MARK: - Paste Button
