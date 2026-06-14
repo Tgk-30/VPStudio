@@ -315,7 +315,7 @@ struct DiscoverView: View {
                         #if !os(macOS)
                         .tabViewStyle(.page(indexDisplayMode: .always))
                         #endif
-                        .frame(height: 440)
+                        .frame(height: 520)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
@@ -939,14 +939,15 @@ struct FeaturedHeroView: View {
             // Background image — edge-to-edge.
             // Using .id(item.id) on the content prevents SwiftUI from destroying and
             // re-fetching the image every time TabView auto-advances to the next hero card.
-            AsyncImage(url: backdropURL) { phase in
+            AsyncImage(url: backdropURL, transaction: Transaction(animation: .easeOut(duration: 0.45))) { phase in
                 switch phase {
                 case .success(let image):
                     image
                         .resizable()
                         .aspectRatio(16 / 9, contentMode: .fill)
-                        .scaleEffect(isHovered ? 1.03 : 1.0)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isHovered)
+                        .scaleEffect(isHovered ? 1.04 : 1.0)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isHovered)
+                        .transition(.opacity)
                 default:
                     Rectangle().fill(
                         LinearGradient(
@@ -961,7 +962,7 @@ struct FeaturedHeroView: View {
                 }
             }
             .id(item.id)
-            .frame(height: 440)
+            .frame(height: 520)
             .clipped()
 
             // Cinematic gradient fade to dark at bottom
@@ -978,17 +979,13 @@ struct FeaturedHeroView: View {
 
             // Content overlay
             VStack(alignment: .leading, spacing: 14) {
-                // Title with red/white gradient fill — large, bold, italic
-                Text(item.title.uppercased())
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .italic()
-                    .foregroundStyle(.linearGradient(
-                        colors: [.white, .vpRed, .vpRedLight],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ))
-                    .shadow(color: .vpRed.opacity(0.4), radius: 16, y: 4)
-                    .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
+                // Clean, confident title — the artwork carries the drama (Netflix/Apple TV style).
+                Text(item.title)
+                    .font(.system(size: 46, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+                    .shadow(color: .black.opacity(0.55), radius: 10, y: 4)
 
                 // Metadata row
                 HStack(spacing: 12) {

@@ -146,7 +146,7 @@ struct MediaCardView: View {
             .padding(.horizontal, 2)
         }
         .contentShape(Rectangle())
-        .scaleEffect(hoverActive ? 1.04 : 1.0)
+        .scaleEffect(hoverActive ? 1.06 : 1.0)
         .modifier(MediaCardInteractionModifier(hoverChromeEnabled: hoverChromeEnabled, isHovered: $isHovered))
     }
 
@@ -186,12 +186,13 @@ struct MediaCardView: View {
     @ViewBuilder
     private var posterArtwork: some View {
         if let lastFrameURL {
-            AsyncImage(url: lastFrameURL) { phase in
+            AsyncImage(url: lastFrameURL, transaction: Transaction(animation: .easeOut(duration: 0.4))) { phase in
                 switch phase {
                 case .success(let image):
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .transition(.opacity)
                 case .failure, .empty:
                     fallbackPosterArtwork
                 @unknown default:
@@ -206,12 +207,13 @@ struct MediaCardView: View {
     @ViewBuilder
     private var fallbackPosterArtwork: some View {
         if let posterURL = item.posterURL {
-            AsyncImage(url: posterURL) { phase in
+            AsyncImage(url: posterURL, transaction: Transaction(animation: .easeOut(duration: 0.4))) { phase in
                 switch phase {
                 case .success(let image):
                     image
                         .resizable()
                         .aspectRatio(2 / 3, contentMode: .fill)
+                        .transition(.opacity)
                 case .failure:
                     posterPlaceholder
                 case .empty:
