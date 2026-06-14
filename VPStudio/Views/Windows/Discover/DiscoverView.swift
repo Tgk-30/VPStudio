@@ -224,6 +224,7 @@ struct DiscoverView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityVoiceOverEnabled) private var accessibilityVoiceOverEnabled
     @Environment(\.openWindow) private var openWindow
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @Bindable var viewModel: DiscoverViewModel
     /// Pushed detail route for the Discover tab, hoisted to AppState so it survives the player
     /// dismissing/re-opening the main window (see `AppState.discoverDetailRoute`).
@@ -350,8 +351,12 @@ struct DiscoverView: View {
             .padding(.bottom, 24)
         }
         .background {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            if useObsidianGlass {
+                VPBackground()
+            } else {
+                VPMenuBackground()
+                    .ignoresSafeArea()
+            }
         }
         #if !os(macOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -1126,22 +1131,42 @@ struct MediaRow: View {
     var resumingItemID: String? = nil
     let onSelect: (MediaPreview) -> Void
 
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // Section header
-            HStack(spacing: 8) {
-                if !symbol.isEmpty {
-                    Image(systemName: symbol)
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
+            if useObsidianGlass {
+                HStack(spacing: VPSpace.snug) {
+                    if !symbol.isEmpty {
+                        Image(systemName: symbol)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(VPColor.accent)
+                            .frame(width: 36, height: 36)
+                            .glassSurface(.rest, cornerRadius: VPRadius.chip)
+                            .accessibilityHidden(true)
+                    }
+                    Text(title)
+                        .font(VPFont.title2)
+                        .foregroundStyle(VPColor.textPrimary)
+                    Spacer(minLength: 0)
                 }
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .accessibilityAddTraits(.isHeader)
+            } else {
+                HStack(spacing: 8) {
+                    if !symbol.isEmpty {
+                        Image(systemName: symbol)
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 8)
             }
-            .padding(.horizontal, 8)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
