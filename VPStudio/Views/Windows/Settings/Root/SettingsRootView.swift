@@ -82,7 +82,7 @@ struct SettingsView: View {
         self.disablesAutomaticTasks = disablesAutomaticTasks
     }
 
-    var body: some View {
+    private var legacyBody: some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
@@ -206,6 +206,16 @@ struct SettingsView: View {
             VPMenuBackground()
                 .ignoresSafeArea()
         }
+    }
+
+    var body: some View {
+        Group {
+            if VPDesignFlags.useObsidianGlass {
+                obsidianBody
+            } else {
+                legacyBody
+            }
+        }
         .navigationTitle("Settings")
         .sheet(isPresented: $isShowingResetSheet) {
             ResetDataView()
@@ -266,6 +276,207 @@ struct SettingsView: View {
             isShowingResetSheet = false
             Task { await refreshStatuses() }
         }
+    }
+
+    // MARK: - Obsidian Glass body
+
+    private var obsidianBody: some View {
+        VPPageShell(title: "Settings") {
+            obsidianHealthCard
+
+            if let recentDestination, recentDestination.matches(normalizedQuery) {
+                obsidianSection("Continue", icon: "clock.arrow.circlepath") {
+                    obsidianDestinationLink(recentDestination, isRecent: true)
+                }
+            }
+
+            if SettingsSearchPolicy.shouldShowEmptyState(
+                resultCount: filteredGroups.flatMap(\.destinations).count,
+                query: query
+            ) {
+                VPStateCard(
+                    systemImage: "magnifyingglass",
+                    title: "No Matching Settings",
+                    message: SettingsSearchPolicy.resultsSummary(count: 0, query: query)
+                )
+                .frame(maxWidth: .infinity)
+            } else {
+                ForEach(filteredGroups) { group in
+                    obsidianSection(
+                        group.category.title,
+                        icon: categoryIcon(group.category),
+                        badge: "\(configuredCountForCategory(group.category))/\(group.destinations.count)"
+                    ) {
+                        ForEach(Array(group.destinations.enumerated()), id: \.element.id) { index, destination in
+                            obsidianDestinationLink(destination, isRecent: false)
+                            if index < group.destinations.count - 1 {
+                                Divider().overlay(VPColor.specularDim).padding(.leading, 72)
+                            }
+                        }
+                    }
+                }
+            }
+
+            obsidianSection("Appearance", icon: "circle.lefthalf.filled") {
+                obsidianAppearanceCardContent
+            }
+
+            obsidianSection("Quick Actions", icon: "bolt.fill") {
+                HStack(spacing: VPSpace.snug) {
+                    Button { appState.isShowingSetup = true } label: {
+                        Label("Run Setup", systemImage: "wand.and.stars")
+                    }
+                    .buttonStyle(VPButtonStyle(kind: .secondary))
+
+                    Button { Task { await refreshStatuses() } } label: {
+                        Label(isRefreshingStatuses ? "Refreshing…" : "Refresh Status",
+                              systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(VPButtonStyle(kind: .secondary))
+                    .disabled(isRefreshingStatuses)
+                }
+                .padding(VPSpace.snug)
+            }
+
+            obsidianSection("About", icon: "info.circle") {
+                obsidianAboutRow("Version", appVersion)
+                Divider().overlay(VPColor.specularDim).padding(.leading, VPSpace.normal)
+                obsidianAboutRow("Build", appBuild)
+            }
+
+            VPCard(elevation: .raised) {
+                VStack(alignment: .leading, spacing: VPSpace.snug) {
+                    Button { isShowingResetSheet = true } label: {
+                        Label("Reset All Data", systemImage: "trash")
+                    }
+                    .buttonStyle(VPButtonStyle(kind: .destructive))
+
+                    Text("Permanently erases all settings, credentials, downloads, and local data.")
+                        .font(VPFont.caption)
+                        .foregroundStyle(VPColor.textTertiary)
+                }
+            }
+        }
+    }
+
+    private var obsidianHealthCard: some View {
+        VPCard(elevation: .raised) {
+            VStack(alignment: .leading, spacing: VPSpace.normal) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Configuration Health")
+                            .font(VPFont.title2)
+                            .foregroundStyle(VPColor.textPrimary)
+                        Text(SettingsHealthPolicy.progressLabel(configured: configuredCount, total: totalCount))
+                            .font(VPFont.caption)
+                            .foregroundStyle(VPColor.textSecondary)
+                    }
+                    Spacer()
+                    if SettingsHealthPolicy.shouldShowWarningBadge(warningCount: warningCount) {
+                        VPBadge(
+                            text: "\(warningCount) warning\(warningCount == 1 ? "" : "s")",
+                            systemImage: "exclamationmark.triangle",
+                            tint: VPColor.warning
+                        )
+                    }
+                }
+                VPProgressBar(value: healthProgress, height: 10, tint: healthTintToken)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var obsidianAppearanceCardContent: some View {
+        VStack(alignment: .leading, spacing: VPSpace.snug) {
+            HStack {
+                Label("Menu Background Intensity", systemImage: "circle.lefthalf.filled")
+                    .font(VPFont.body)
+                    .foregroundStyle(VPColor.textPrimary)
+                Spacer()
+                Text(SettingsAppearancePolicy.menuBackgroundIntensityLabel(for: menuBackgroundIntensity.wrappedValue))
+                    .font(VPFont.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(VPColor.textSecondary)
+            }
+            Slider(value: menuBackgroundIntensity, in: VPMenuBackgroundIntensityPolicy.range)
+                .tint(VPColor.accent)
+                .accessibilityLabel("Menu background intensity")
+                .accessibilityValue(SettingsAppearancePolicy.menuBackgroundIntensityLabel(for: menuBackgroundIntensity.wrappedValue))
+        }
+        .padding(VPSpace.snug)
+    }
+
+    @ViewBuilder
+    private func obsidianSection<Content: View>(
+        _ title: String,
+        icon: String,
+        badge: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: VPSpace.snug) {
+            HStack {
+                VPSectionHeader(title: title, systemImage: icon)
+                if let badge { VPBadge(text: badge) }
+            }
+            VPCard(padding: VPSpace.tight) {
+                VStack(spacing: 0) { content() }
+            }
+        }
+    }
+
+    private func obsidianDestinationLink(_ destination: SettingsDestination, isRecent: Bool) -> some View {
+        NavigationLink(value: destination) {
+            VPRow(destination.title, subtitle: destination.summary, systemImage: destination.icon) {
+                HStack(spacing: VPSpace.tight) {
+                    if isRecent { VPBadge(text: "Recent", tint: VPColor.accent) }
+                    if let status = destinationStatuses[destination] {
+                        Circle()
+                            .fill(statusColor(status.kind))
+                            .frame(width: 9, height: 9)
+                            .shadow(color: statusColor(status.kind).opacity(0.6), radius: 3)
+                            .accessibilityLabel(status.message)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(VPColor.textTertiary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(destinationStatuses[destination]?.message ?? "")
+    }
+
+    private func obsidianAboutRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(VPFont.body).foregroundStyle(VPColor.textPrimary)
+            Spacer()
+            Text(value).font(VPFont.body).monospacedDigit().foregroundStyle(VPColor.textSecondary)
+        }
+        .padding(.horizontal, VPSpace.normal)
+        .frame(minHeight: 52)
+    }
+
+    private func statusColor(_ kind: SettingsStatusKind) -> Color {
+        switch kind {
+        case .positive: return VPColor.success
+        case .warning:  return VPColor.warning
+        case .neutral:  return VPColor.textTertiary
+        }
+    }
+
+    private func categoryIcon(_ category: SettingsCategory) -> String {
+        switch category {
+        case .connect:  return "link"
+        case .watch:    return "play.rectangle"
+        case .discover: return "safari"
+        case .library:  return "books.vertical"
+        case .about:    return "info.circle"
+        }
+    }
+
+    private var healthTintToken: Color {
+        if healthProgress >= 0.75 { return VPColor.success }
+        return VPColor.warning
     }
 
     private var normalizedQuery: String {
