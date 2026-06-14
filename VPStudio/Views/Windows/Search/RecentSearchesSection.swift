@@ -55,11 +55,46 @@ struct RecentSearchesSection: View {
 }
 
 private struct RecentSearchChip: View {
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     let term: String
     let onSelect: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
+        if useObsidianGlass {
+            HStack(spacing: VPSpace.tight) {
+                Button(action: onSelect) {
+                    Text(term)
+                        .font(VPFont.label)
+                        .foregroundStyle(VPColor.textSecondary)
+                        .lineLimit(1)
+                        .padding(.leading, VPSpace.normal)
+                        .frame(minHeight: VPSpace.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Search for \(term) again")
+                .accessibilityHint("Runs this recent search again.")
+
+                // 60pt remove target (was an 8.5pt glyph — 78% under the visionOS minimum).
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(VPColor.textTertiary)
+                        .frame(width: VPSpace.minTapTarget, height: VPSpace.minTapTarget)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .vpInteractive()
+                .accessibilityLabel("Remove \(term) from recent searches")
+                .accessibilityHint("Removes this search term from your recent searches.")
+            }
+            .glassSurface(.rest, cornerRadius: VPSpace.minTapTarget / 2)
+        } else {
+            legacyChip
+        }
+    }
+
+    private var legacyChip: some View {
         HStack(spacing: 4) {
             Button(action: onSelect) {
                 Text(term)
