@@ -507,7 +507,10 @@ struct ContentView: View {
     private func contentView(for tab: SidebarTab) -> some View {
         switch tab {
         case .discover:
-            DiscoverView(viewModel: discoverViewModel)
+            DiscoverView(
+                viewModel: discoverViewModel,
+                suppressSetupSurface: isShowingQuickStartPrompt
+            )
         case .search:
             SearchView()
         case .library:

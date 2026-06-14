@@ -226,6 +226,9 @@ struct DiscoverView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @Bindable var viewModel: DiscoverViewModel
+    /// When the first-run Quick Start prompt is on screen, suppress Discover's own setup panel so
+    /// the user isn't shown two competing "finish setup" surfaces at once.
+    var suppressSetupSurface: Bool = false
     /// Pushed detail route for the Discover tab, hoisted to AppState so it survives the player
     /// dismissing/re-opening the main window (see `AppState.discoverDetailRoute`).
     private var discoverRoute: Binding<DiscoverDetailRoute?> {
@@ -285,7 +288,7 @@ struct DiscoverView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 36) {
-                if let error = viewModel.error {
+                if let error = viewModel.error, !suppressSetupSurface {
                     discoverStatePanel(error: error)
                 }
 
