@@ -644,6 +644,9 @@ struct PlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    /// Obsidian Glass chrome. Branches ONLY visual modifiers (background/stroke/foreground/shadow)
+    /// of the player chrome — never the playback, gesture, or lifecycle code.
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
 
     @State private var currentStream: StreamInfo
     @State private var streamQueue: [StreamInfo]
@@ -1594,11 +1597,17 @@ struct PlayerView: View {
         .padding(.bottom, 18)
         .background(
             LinearGradient(
-                colors: [
-                    .black.opacity(PlayerCinematicVisualPolicy.topScrimOpacity + 0.24),
-                    .black.opacity(0.18),
-                    .clear
-                ],
+                colors: useObsidianGlass
+                    ? [
+                        VPColor.void.opacity(PlayerCinematicVisualPolicy.topScrimOpacity + 0.24),
+                        VPColor.void.opacity(0.18),
+                        .clear
+                    ]
+                    : [
+                        .black.opacity(PlayerCinematicVisualPolicy.topScrimOpacity + 0.24),
+                        .black.opacity(0.18),
+                        .clear
+                    ],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -1646,12 +1655,22 @@ struct PlayerView: View {
                 height: PlayerCinematicChromePolicy.topBarButtonSize
             )
             .background(
-                isActive ? AnyShapeStyle(.tint.opacity(0.34)) : AnyShapeStyle(.ultraThinMaterial),
+                useObsidianGlass
+                    ? (isActive ? AnyShapeStyle(VPColor.accentGlow) : AnyShapeStyle(VPElevation.raised.material))
+                    : (isActive ? AnyShapeStyle(.tint.opacity(0.34)) : AnyShapeStyle(.ultraThinMaterial)),
                 in: Circle()
             )
             .overlay {
-                Circle()
-                    .strokeBorder(.white.opacity(PlayerCinematicVisualPolicy.iconSurfaceBorderOpacity), lineWidth: 0.8)
+                if useObsidianGlass {
+                    Circle().strokeBorder(
+                        LinearGradient(colors: [VPColor.specularBright, VPColor.specularDim],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: VPElevation.raised.strokeWidth
+                    )
+                } else {
+                    Circle()
+                        .strokeBorder(.white.opacity(PlayerCinematicVisualPolicy.iconSurfaceBorderOpacity), lineWidth: 0.8)
+                }
             }
             .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
             .contentShape(Circle())
@@ -1845,7 +1864,9 @@ struct PlayerView: View {
             )
             .strokeBorder(
                 LinearGradient(
-                    colors: [.white.opacity(0.26), .white.opacity(0.08)],
+                    colors: useObsidianGlass
+                        ? [VPColor.specularBright, VPColor.specularDim]
+                        : [.white.opacity(0.26), .white.opacity(0.08)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
