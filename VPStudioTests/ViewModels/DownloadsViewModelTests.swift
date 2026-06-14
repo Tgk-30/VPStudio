@@ -757,3 +757,46 @@ private actor NonCooperativeBlockingDownloadManager: DownloadManaging {
     func removeDownload(id: String) async throws {}
     func removeDownloads(mediaId: String) async throws {}
 }
+
+// MARK: - Downloads UX revamp: sections / counts / sort / bulk
+
+@Suite(.serialized)
+struct DownloadsSectionsAndBulkTests {
+    @Test
+    @MainActor
+    func sectionsCountsStorageAndBulkClear() async {
+        let appState = AppState()
+        let stub = StubDownloadManager()
+        let active = DownloadTask(mediaId: "ttA", fileName: "a.mkv", status: .downloading, progress: 0.5, totalBytes: 1_000, mediaTitle: "A", mediaType: "movie")
+        let done1 = DownloadTask(mediaId: "ttB", fileName: "b.mkv", status: .completed, progress: 1, totalBytes: 2_000, mediaTitle: "B", mediaType: "movie")
+        let done2 = DownloadTask(mediaId: "ttC", fileName: "c.mkv", status: .completed, progress: 1, totalBytes: 3_000, mediaTitle: "C", mediaType: "movie")
+        let failed = DownloadTask(mediaId: "ttD", fileName: "d.mkv", status: .failed, mediaTitle: "D", mediaType: "movie")
+        await stub.setDownloads([active, done1, done2, failed])
+
+        let vm = DownloadsViewModel(appState: appState, downloadManager: stub)
+        await vm.load()
+
+        #expect(vm.activeTaskCount == 1)
+        #expect(vm.completedTaskCount == 2)
+        #expect(vm.failedTaskCount == 1)
+        #expect(vm.totalDownloadedBytes == 5_000) // 2000 + 3000 (completed only)
+        #expect(vm.hasActiveTasks && vm.hasCompletedTasks && vm.hasFailedTasks)
+
+        // Active section = in-progress groups only; everything terminal drops to "Downloaded".
+        #expect(vm.activeGroups.map(\.mediaId) == ["ttA"])
+        #expect(Set(vm.completedGroups.map(\.mediaId)) == ["ttB", "ttC", "ttD"])
+
+        await vm.clearCompleted()
+        #expect(vm.completedTaskCount == 0)
+        #expect(vm.tasks.contains { $0.mediaId == "ttA" }) // active kept
+        #expect(vm.tasks.contains { $0.mediaId == "ttD" }) // failed not cleared
+    }
+
+    @Test
+    func sortOptionMetadataIsStable() {
+        #expect(DownloadSortOption.allCases.count == 4)
+        #expect(DownloadSortOption.recent.label == "Recent")
+        #expect(DownloadSortOption.size.label == "Size")
+        #expect(Set(DownloadSortOption.allCases.map(\.systemImage)).count == 4)
+    }
+}

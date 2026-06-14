@@ -79,6 +79,27 @@ struct DownloadMediaGroup: Identifiable {
     }
 }
 
+enum DownloadSortOption: String, CaseIterable, Identifiable, Sendable {
+    case recent, size, name, status
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .recent: return "Recent"
+        case .size:   return "Size"
+        case .name:   return "Name"
+        case .status: return "Status"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .recent: return "clock"
+        case .size:   return "externaldrive"
+        case .name:   return "textformat"
+        case .status: return "circle.lefthalf.filled"
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class DownloadsViewModel {
@@ -183,6 +204,93 @@ final class DownloadsViewModel {
         )
         appState.activePlayerSession = request
         #endif
+    }
+
+    // MARK: - Sections, summary, sorting (UX revamp)
+
+    var sortOption: DownloadSortOption = .recent
+
+    var sortedGroups: [DownloadMediaGroup] {
+        switch sortOption {
+        case .recent:
+            return groups.sorted {
+                DownloadProgressPolicy.latestUpdatedAt(in: $0.tasks) > DownloadProgressPolicy.latestUpdatedAt(in: $1.tasks)
+            }
+        case .size:
+            return groups.sorted { groupBytes($0) > groupBytes($1) }
+        case .name:
+            return groups.sorted { $0.mediaTitle.localizedCaseInsensitiveCompare($1.mediaTitle) == .orderedAscending }
+        case .status:
+            return groups.sorted { lhs, rhs in
+                if lhs.hasActiveDownloads != rhs.hasActiveDownloads { return lhs.hasActiveDownloads }
+                return DownloadProgressPolicy.latestUpdatedAt(in: lhs.tasks) > DownloadProgressPolicy.latestUpdatedAt(in: rhs.tasks)
+            }
+        }
+    }
+
+    /// In-progress titles (anything not fully terminal), pinned to the top of the screen.
+    var activeGroups: [DownloadMediaGroup] { sortedGroups.filter { $0.hasActiveDownloads } }
+    /// Fully-downloaded titles.
+    var completedGroups: [DownloadMediaGroup] { sortedGroups.filter { !$0.hasActiveDownloads } }
+
+    var activeTaskCount: Int { tasks.filter { !$0.status.isTerminal }.count }
+    var completedTaskCount: Int { tasks.filter { $0.status == .completed }.count }
+    var failedTaskCount: Int { tasks.filter { $0.status == .failed }.count }
+
+    /// Total on-disk bytes of completed downloads (for the storage overview).
+    var totalDownloadedBytes: Int64 {
+        tasks.filter { $0.status == .completed }.compactMap { $0.totalBytes }.reduce(0, +)
+    }
+
+    /// Aggregate progress across all active downloads (for the summary progress bar).
+    var aggregateActiveProgress: Double {
+        let active = tasks.filter { !$0.status.isTerminal }
+        guard !active.isEmpty else { return 0 }
+        let sum = active.reduce(0.0) {
+            $0 + DownloadProgressPolicy.normalizedProgress(
+                progress: $1.progress, bytesWritten: $1.bytesWritten, totalBytes: $1.totalBytes, status: $1.status
+            )
+        }
+        return DownloadProgressPolicy.clampedUnitProgress(sum / Double(active.count))
+    }
+
+    var hasActiveTasks: Bool { activeTaskCount > 0 }
+    var hasCompletedTasks: Bool { completedTaskCount > 0 }
+    var hasFailedTasks: Bool { failedTaskCount > 0 }
+
+    private func groupBytes(_ group: DownloadMediaGroup) -> Int64 {
+        group.tasks.compactMap { $0.totalBytes ?? $0.expectedBytes }.reduce(0, +)
+    }
+
+    // MARK: - Bulk actions
+
+    func clearCompleted() async {
+        let completed = tasks.filter { $0.status == .completed }
+        for task in completed { try? await downloadManager.removeDownload(id: task.id) }
+        applyTasks(tasks.filter { $0.status != .completed })
+    }
+
+    func retryAllFailed() async {
+        let failed = tasks.filter { $0.status == .failed }
+        for task in failed { try? await downloadManager.retryDownload(id: task.id) }
+        applyTasks(tasks.map { task in
+            guard task.status == .failed else { return task }
+            var updated = task
+            updated.status = .queued
+            updated.errorMessage = nil
+            return updated
+        })
+    }
+
+    func cancelAllActive() async {
+        let active = tasks.filter { !$0.status.isTerminal }
+        for task in active { await downloadManager.cancelDownload(id: task.id) }
+        applyTasks(tasks.map { task in
+            guard !task.status.isTerminal else { return task }
+            var updated = task
+            updated.status = .cancelled
+            return updated
+        })
     }
 
     private func applyTasks(_ latestTasks: [DownloadTask]) {

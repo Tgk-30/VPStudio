@@ -180,18 +180,32 @@ struct DownloadsView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: VPSpace.roomy) {
-                        Text("Downloads")
-                            .font(VPFont.title1)
-                            .foregroundStyle(VPColor.textPrimary)
-                            .accessibilityAddTraits(.isHeader)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Downloads")
+                                .font(VPFont.title1)
+                                .foregroundStyle(VPColor.textPrimary)
+                                .accessibilityAddTraits(.isHeader)
+                            Spacer()
+                            downloadsMenu(vm)
+                        }
 
                         if case .inlineError = errorSurfaceMode(for: vm), let error = vm.rootError {
                             obsidianInlineErrorBanner(error, vm: vm)
                         }
 
-                        LazyVStack(spacing: VPSpace.roomy) {
-                            ForEach(vm.groups) { group in
-                                obsidianGroupCard(group, vm: vm)
+                        downloadsSummaryCard(vm)
+
+                        if !vm.activeGroups.isEmpty {
+                            downloadsSectionHeader("Active", systemImage: "arrow.down.circle.fill", count: vm.activeTaskCount)
+                            LazyVStack(spacing: VPSpace.roomy) {
+                                ForEach(vm.activeGroups) { obsidianGroupCard($0, vm: vm) }
+                            }
+                        }
+
+                        if !vm.completedGroups.isEmpty {
+                            downloadsSectionHeader("Downloaded", systemImage: "checkmark.circle.fill", count: vm.completedGroups.count)
+                            LazyVStack(spacing: VPSpace.roomy) {
+                                ForEach(vm.completedGroups) { obsidianGroupCard($0, vm: vm) }
                             }
                         }
                     }
@@ -203,6 +217,81 @@ struct DownloadsView: View {
                 .refreshable { await vm.load() }
             }
         }
+    }
+
+    // MARK: Summary + sections + menu
+
+    private func downloadsSummaryCard(_ vm: DownloadsViewModel) -> some View {
+        VPCard(elevation: .raised) {
+            VStack(alignment: .leading, spacing: VPSpace.normal) {
+                HStack(alignment: .top, spacing: VPSpace.section) {
+                    summaryStat("\(vm.activeTaskCount)", "Active", tint: vm.hasActiveTasks ? VPColor.accent : VPColor.textTertiary)
+                    summaryStat("\(vm.completedTaskCount)", "Downloaded", tint: VPColor.success)
+                    summaryStat(formatBytes(vm.totalDownloadedBytes), "On device", tint: VPColor.info)
+                    if vm.hasFailedTasks {
+                        summaryStat("\(vm.failedTaskCount)", "Failed", tint: VPColor.danger)
+                    }
+                    Spacer(minLength: 0)
+                }
+                if vm.hasActiveTasks {
+                    VPProgressBar(
+                        value: vm.aggregateActiveProgress,
+                        height: 8,
+                        label: "\(Int((vm.aggregateActiveProgress * 100).rounded()))% overall",
+                        tint: VPColor.accent
+                    )
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func summaryStat(_ value: String, _ label: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(VPFont.title2).foregroundStyle(tint)
+            Text(label).font(VPFont.caption).foregroundStyle(VPColor.textSecondary)
+        }
+    }
+
+    private func downloadsSectionHeader(_ title: String, systemImage: String, count: Int) -> some View {
+        HStack {
+            VPSectionHeader(title: title, systemImage: systemImage)
+            VPBadge(text: "\(count)").accessibilityLabel("\(count) \(title)")
+        }
+    }
+
+    private func downloadsMenu(_ vm: DownloadsViewModel) -> some View {
+        Menu {
+            Picker("Sort by", selection: Binding(get: { vm.sortOption }, set: { vm.sortOption = $0 })) {
+                ForEach(DownloadSortOption.allCases) { option in
+                    Label(option.label, systemImage: option.systemImage).tag(option)
+                }
+            }
+            Divider()
+            if vm.hasFailedTasks {
+                Button { Task { await vm.retryAllFailed() } } label: {
+                    Label("Retry All Failed", systemImage: "arrow.clockwise")
+                }
+            }
+            if vm.hasActiveTasks {
+                Button(role: .destructive) { Task { await vm.cancelAllActive() } } label: {
+                    Label("Cancel All Active", systemImage: "xmark")
+                }
+            }
+            if vm.hasCompletedTasks {
+                Button(role: .destructive) { Task { await vm.clearCompleted() } } label: {
+                    Label("Clear Completed", systemImage: "trash")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(VPColor.textSecondary)
+                .frame(width: VPSpace.minTapTarget, height: VPSpace.minTapTarget)
+                .glassSurface(.rest, cornerRadius: VPSpace.minTapTarget / 2)
+                .contentShape(Circle())
+        }
+        .accessibilityLabel("Downloads options")
     }
 
     private func obsidianStateSurface(
@@ -308,6 +397,13 @@ struct DownloadsView: View {
                         Divider().overlay(VPColor.specularDim).padding(.leading, VPSpace.snug)
                     }
                 }
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                confirmDeleteMediaId = group.mediaId
+            } label: {
+                Label("Delete \(group.mediaTitle)", systemImage: "trash")
             }
         }
     }
