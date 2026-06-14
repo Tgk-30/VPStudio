@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftUI
 @testable import VPStudio
 
 @Suite("VPDesign tokens")
@@ -64,5 +65,14 @@ struct VPDesignTokenTests {
 
     @Test func featureFlagKeyIsStable() {
         #expect(VPDesignFlags.useObsidianGlassKey == "useObsidianGlass")
+    }
+
+    // MARK: Legacy accent aliases (token teardown invariant)
+
+    @Test func legacyAccentAliasesMatchCanonicalTokens() {
+        // GlassCard's legacy accent names now alias VPColor — this locks the byte-identity so a
+        // later change to either side can't silently re-introduce a split-token divergence.
+        #expect(Color.vpRed == VPColor.accent)
+        #expect(Color.vpRedLight == VPColor.accentLight)
     }
 }
