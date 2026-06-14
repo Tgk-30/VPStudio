@@ -396,6 +396,7 @@ struct LibraryView: View {
     @State private var manualFolderOrderIDs: [String] = []
     @State private var isLoadingSelection = true
     @State private var selectionLoadToken = 0
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
 
     private let disablesAutomaticTasks: Bool
     private let initialCreateFolderName: String
@@ -599,8 +600,12 @@ struct LibraryView: View {
             alignment: LibraryLayoutPolicy.rootPinsContentToTop ? .top : .center
         )
         .background {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            if useObsidianGlass {
+                VPBackground()
+            } else {
+                VPMenuBackground()
+                    .ignoresSafeArea()
+            }
         }
         .navigationTitle("Library")
         .navigationDestination(item: librarySelection) { item in
@@ -907,24 +912,42 @@ struct LibraryView: View {
 
     private func folderChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                    isSelected ? AnyShapeStyle(Color.vpRed) : AnyShapeStyle(.ultraThinMaterial),
-                    in: Capsule()
-                )
-                .overlay {
-                    if !isSelected {
-                        Capsule()
-                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+            if useObsidianGlass {
+                Text(title)
+                    .font(VPFont.label)
+                    .lineLimit(1)
+                    .foregroundStyle(isSelected ? VPColor.textPrimary : VPColor.textSecondary)
+                    .padding(.horizontal, VPSpace.normal)
+                    .frame(minHeight: VPSpace.minTapTarget)
+                    // Selected state stays glass with an accent ring + glow — never an opaque red slab.
+                    .glassSurface(isSelected ? .hero : .rest, cornerRadius: VPSpace.minTapTarget / 2)
+                    .overlay {
+                        if isSelected {
+                            Capsule().strokeBorder(VPColor.accent, lineWidth: 1.5)
+                        }
                     }
-                }
-                .foregroundStyle(isSelected ? .white : .primary)
+                    .shadow(color: isSelected ? VPColor.accentGlow : .clear, radius: 8)
+            } else {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        isSelected ? AnyShapeStyle(Color.vpRed) : AnyShapeStyle(.ultraThinMaterial),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        if !isSelected {
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                        }
+                    }
+                    .foregroundStyle(isSelected ? .white : .primary)
+            }
         }
         .buttonStyle(.plain)
+        .vpInteractive()
     }
 
     private func folderChip(for folder: LibraryFolder) -> some View {
