@@ -25,7 +25,9 @@ struct MediaItem: Codable, Sendable, Identifiable, Equatable, FetchableRecord, P
 
     var backdropURL: URL? {
         guard let path = backdropPath, !path.isEmpty else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/original\(path)")
+        // w1280 (not original): hero backdrops render at <=280pt; cuts payload ~5x with no
+        // visible quality loss, and matches MediaPreview.backdropURL.
+        return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
     }
 
     var hasArtwork: Bool {

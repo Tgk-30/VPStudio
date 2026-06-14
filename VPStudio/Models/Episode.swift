@@ -16,7 +16,9 @@ struct Episode: Codable, Sendable, Identifiable, Equatable, FetchableRecord, Per
 
     var stillURL: URL? {
         guard let path = stillPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w300\(path)")
+        // w500 (not w300): episode stills render at ~160-220pt, where w300 was upscaled — sharper
+        // on Retina at a negligible size cost.
+        return URL(string: "https://image.tmdb.org/t/p/w500\(path)")
     }
 
     var displayTitle: String {

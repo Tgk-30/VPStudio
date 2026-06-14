@@ -46,6 +46,11 @@ struct VPStudioApp: App {
             Self.logger.error("Failed to configure AVAudioSession: \(error.localizedDescription, privacy: .public)")
         }
         #endif
+
+        // Large shared image/data cache so posters & backdrops load from disk (~1ms) instead of
+        // re-fetching over the network on every tab switch / scroll-back. Cached bytes are identical
+        // to the network response — same resolution, zero quality change.
+        URLCache.shared = URLCache(memoryCapacity: 50_000_000, diskCapacity: 300_000_000)
     }
 
     @State private var appState = AppState()
