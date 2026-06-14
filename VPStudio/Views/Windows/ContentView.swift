@@ -194,7 +194,9 @@ struct ContentView: View {
         .sheet(isPresented: $state.isShowingSetup) {
             SetupWizardView()
         }
-        .sheet(item: $qaPresentedTestScreen) { screen in
+        // QA visual screens render full-window (not a narrow sheet) so previews match
+        // the production presentation and screenshots aren't clipped by sheet insets.
+        .fullScreenCover(item: $qaPresentedTestScreen) { screen in
             TestScreenSheet(screen: screen)
                 .environment(appState)
         }

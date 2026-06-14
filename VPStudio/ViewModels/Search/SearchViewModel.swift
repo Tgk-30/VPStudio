@@ -1460,3 +1460,33 @@ final class SearchViewModel {
         isLoadingAI = false
     }
 }
+
+// MARK: - Visual QA Seeding
+
+extension SearchViewModel {
+    /// A `SearchViewModel` pre-populated for visual QA of the **real** Search surface, mirroring
+    /// `DiscoverViewModel.seededPreview()`. `showsResults == false` yields the idle Explore grid
+    /// (seeded genres + recent searches); `true` yields a populated results grid with an active
+    /// query and media-type filter so the production filter bar and result tiles can be QA'd.
+    ///
+    /// Lives here rather than in SearchPreviewSeed.swift because it assigns `private(set)` query
+    /// state. Render behind `SearchView(initialViewModel:disablesAutomaticTasks: true)` so the
+    /// `.task` configuration pass — which clears seeded results without a TMDB key — is skipped.
+    @MainActor
+    static func seededPreview(showsResults: Bool = false) -> SearchViewModel {
+        let viewModel = SearchViewModel()
+        viewModel.genres = SearchPreviewSeed.genres
+        viewModel.recentSearches = SearchPreviewSeed.recentSearches
+        guard showsResults else { return viewModel }
+
+        viewModel.submittedQuery = SearchPreviewSeed.resultsQuery
+        viewModel.hasAttemptedTextSearch = true
+        viewModel.queryDraft = SearchPreviewSeed.resultsQuery
+        viewModel.query = SearchPreviewSeed.resultsQuery
+        viewModel.selectedType = .movie
+        viewModel.results = SearchPreviewSeed.results
+        viewModel.isSearching = false
+        viewModel.error = nil
+        return viewModel
+    }
+}

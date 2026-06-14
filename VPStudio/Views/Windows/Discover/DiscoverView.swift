@@ -313,9 +313,24 @@ struct DiscoverView: View {
                             }
                         }
                         #if !os(macOS)
-                        .tabViewStyle(.page(indexDisplayMode: .always))
+                        .tabViewStyle(.page(indexDisplayMode: .never))
                         #endif
                         .frame(height: 604)
+                        // Premium bar-style page indicator (Apple TV+ feel) instead of the
+                        // default UIPageControl dots.
+                        .overlay(alignment: .bottom) {
+                            if heroItems.count > 1 {
+                                HStack(spacing: 6) {
+                                    ForEach(heroItems.indices, id: \.self) { idx in
+                                        Capsule()
+                                            .fill(.white.opacity(idx == currentHeroIndex ? 0.95 : 0.32))
+                                            .frame(width: idx == currentHeroIndex ? 22 : 6, height: 6)
+                                    }
+                                }
+                                .padding(.bottom, 20)
+                                .animation(.easeInOut(duration: 0.25), value: currentHeroIndex)
+                            }
+                        }
                         .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 

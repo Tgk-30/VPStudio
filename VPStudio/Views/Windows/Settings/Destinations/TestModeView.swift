@@ -236,21 +236,21 @@ struct TestScreenSheet: View {
         case .discover:
             SeededDiscoverPreview()
         case .search:
-            TestSearchView()
+            SeededSearchPreview(showsResults: false)
         case .searchResults:
-            TestSearchResultsView()
+            SeededSearchPreview(showsResults: true)
         case .detailMovie:
             SeededDetailPreview(mediaType: .movie)
         case .detailSeries:
             SeededDetailPreview(mediaType: .series)
         case .library:
-            TestLibraryView()
+            SeededLibraryPreview()
         case .downloads:
-            TestDownloadsView()
+            SeededDownloadsPreview()
         case .player:
-            TestPlayerView()
+            SeededPlayerPreview()
         case .settings:
-            TestSettingsView()
+            SeededSettingsPreview()
         }
     }
 }
@@ -299,549 +299,128 @@ private struct SeededDetailPreview: View {
     }
 }
 
-// MARK: - Discover Test (legacy static mock — kept for reference)
+// MARK: - Search (real surface, seeded)
 
-private struct TestDiscoverView: View {
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                // Hero
-                ZStack(alignment: .bottomLeading) {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.indigo.opacity(0.8), .purple.opacity(0.6)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(height: 300)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Featured")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-                        Text("Dune: Part Two")
-                            .font(.title.bold())
-                            .foregroundStyle(.white)
-                        HStack {
-                            Text("2024 · 8.8 ★")
-                            Text("·")
-                            Text("Sci-Fi")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
-                    }
-                    .padding(20)
-                }
-
-                // Section: Trending
-                discoverSection("Trending Now") {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack {
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.3 + Double(i) * 0.1))
-                                    .frame(width: 120, height: 70)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(["Oppenheimer", "Poor Things", "The Bear", "Shrinking"][i])
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-
-                // Section: New Releases
-                discoverSection("New Releases") {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack {
-                                Rectangle()
-                                    .fill(Color.blue.opacity(0.3 + Double(i) * 0.1))
-                                    .frame(width: 120, height: 70)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(["Rebel Ridge", "A Quiet Place", "Fallout", "Presumed Innocent"][i])
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-
-                // Section: Your Watchlist
-                discoverSection("Your Watchlist") {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack {
-                                Rectangle()
-                                    .fill(Color.green.opacity(0.3 + Double(i) * 0.1))
-                                    .frame(width: 120, height: 70)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(["Killers", "The Holdovers", "Anatomy", "Ad Astra"][i])
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding()
-        }
-    }
-
-    @ViewBuilder
-    private func discoverSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-            content()
-        }
-    }
-}
-
-// MARK: - Search Test
-
-private struct TestSearchView: View {
-    @State private var query = ""
+/// Renders the **production** `SearchView` seeded for visual QA. `showsResults == false` shows the
+/// idle Explore grid (genres + recent searches); `true` shows a populated results grid with an
+/// active query and media-type filter. `disablesAutomaticTasks` keeps the seeded view model from
+/// being cleared by the TMDB configuration pass that runs without an API key.
+private struct SeededSearchPreview: View {
+    let showsResults: Bool
+    @State private var viewModel: SearchViewModel?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Search bar
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Movies, shows, people...", text: $query)
+        Group {
+            if let viewModel {
+                SearchView(initialViewModel: viewModel, disablesAutomaticTasks: true)
+            } else {
+                Color.clear
             }
-            .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .padding()
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .font(.largeTitle)
-                    .foregroundStyle(.tertiary)
-                Text("Search for movies and TV shows")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                Text("Find streams, explore cast, and more")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer()
         }
-    }
-}
-
-// MARK: - Search Results Test
-
-private struct TestSearchResultsView: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            // Filter bar
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(["Movies", "TV", "Anime", "2024", "8.0+ ★", "HD"], id: \.self) { filter in
-                        Text(filter)
-                            .font(.caption)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background(filter == "Movies" ? AnyShapeStyle(.tint) : AnyShapeStyle(.ultraThinMaterial), in: Capsule())
-                    }
-                    Image(systemName: "slider.horizontal.3")
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .padding(.horizontal)
-            }
-            .padding(.vertical, 8)
-
-            Divider()
-
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(0..<6, id: \.self) { i in
-                        HStack {
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.3))
-                                .frame(width: 60, height: 36)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(["Dune: Part Two", "Dune", "Dune Prophecy", "Messiah: Dune", "Dune: Part Three", "Dune (1984)"][i])
-                                    .font(.subheadline)
-                                Text(["2024 · Sci-Fi", "2021 · Sci-Fi", "2024 · Sci-Fi", "1971 · Sci-Fi", "2030 · Sci-Fi", "1984 · Sci-Fi"][i])
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Text(["8.8", "8.0", "7.1", "7.8", "—", "6.5"][i])
-                                .font(.caption)
-                                .foregroundStyle(.yellow)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-                .padding()
+        .task {
+            if viewModel == nil {
+                viewModel = SearchViewModel.seededPreview(showsResults: showsResults)
             }
         }
     }
 }
 
-// MARK: - Library Test
+// MARK: - Library (real surface, seeded)
 
-private struct TestLibraryView: View {
+/// Renders the **production** `LibraryView` seeded with a populated watchlist so the real grid,
+/// folder chips, and `MediaCardView` tiles can be visually QA'd without credentials or database
+/// access. `disablesAutomaticTasks` skips the reload that would otherwise replace seeded content.
+private struct SeededLibraryPreview: View {
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Your Library")
-                    .font(.title2.bold())
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], spacing: 14) {
-                    ForEach(0..<6, id: \.self) { i in
-                        VStack(alignment: .leading, spacing: 4) {
-                            ZStack(alignment: .bottomLeading) {
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.3 + Double(i) * 0.08))
-                                    .aspectRatio(2/3, contentMode: .fit)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                                if i % 3 == 0 {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.green)
-                                        .padding(6)
-                                }
-                            }
-
-                            Text(["Oppenheimer", "Poor Things", "The Bear", "Killers", "Slow Horses", "The Holdovers"][i])
-                                .font(.caption2)
-                                .lineLimit(2)
-                        }
-                    }
-                }
-            }
-            .padding()
-        }
-    }
-}
-
-// MARK: - Downloads Test
-
-private struct TestDownloadsView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("Downloads")
-                        .font(.title2.bold())
-                    Spacer()
-                    Text("2 active")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal)
-
-                ForEach(0..<2, id: \.self) { i in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(["Dune.Part.Two.2024.2160p", "Shrinking.S03E01.1080p"][i])
-                                    .font(.subheadline)
-                                    .lineLimit(1)
-                                Text(["73% · 6.2 GB of 8.5 GB", "Completed · 1.9 GB"][i])
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-
-                            if i == 0 {
-                                Image(systemName: "xmark.circle")
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityHidden(true)
-                            } else {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                            }
-                        }
-
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(.ultraThinMaterial)
-                                    .frame(height: 4)
-                                Capsule()
-                                    .fill(i == 0 ? .blue : .green)
-                                    .frame(width: geo.size.width * CGFloat(i == 0 ? 0.73 : 1.0), height: 4)
-                            }
-                        }
-                        .frame(height: 4)
-                    }
-                    .padding(14)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                }
-            }
-            .padding(.vertical)
-        }
-    }
-}
-
-// MARK: - Player Test
-
-private struct TestPlayerView: View {
-    @State private var isShowingControls = true
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [.black, .black.opacity(0.84), .indigo.opacity(0.28)],
-                startPoint: .top,
-                endPoint: .bottomTrailing
-            )
-
-            if isShowingControls {
-                ZStack(alignment: .bottom) {
-                    VStack(spacing: 0) {
-                        testPlayerTopBar
-                        Spacer()
-                    }
-
-                    VStack(spacing: PlayerCinematicChromePolicy.controlsDockSpacing) {
-                        testPlayerQuickPills
-                        testPlayerTransportDock
-                    }
-                    .padding(.horizontal, PlayerCinematicChromePolicy.controlsDockHorizontalPadding)
-                    .padding(.bottom, PlayerCinematicChromePolicy.controlsDockBottomPadding)
-                }
-                .transition(.opacity)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isShowingControls.toggle()
-            }
-        }
-    }
-
-    private var testPlayerTopBar: some View {
-        HStack(spacing: 12) {
-            testCircleButton(systemName: PlayerCinematicVisualPolicy.backSymbolName)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Dune: Part Two")
-                    .font(.headline.weight(.semibold))
-                Text("2160p HDR  |  AVPlayer")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
-            }
-            .lineLimit(1)
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                testCircleButton(systemName: PlayerCinematicVisualPolicy.subtitlesSymbolName)
-                testCircleButton(systemName: PlayerCinematicVisualPolicy.audioSymbolName)
-                testCircleButton(systemName: PlayerCinematicVisualPolicy.menuSymbolName)
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
-        .padding(.bottom, 18)
-        .background(
-            LinearGradient(
-                colors: [.black.opacity(0.58), .black.opacity(0.18), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: PlayerCinematicChromePolicy.topScrimHeight),
-            alignment: .top
+        LibraryView(
+            initialSelectedList: LibraryPreviewSeed.listType,
+            initialEntries: LibraryPreviewSeed.entries,
+            initialFolders: LibraryPreviewSeed.folders,
+            initialMediaItems: LibraryPreviewSeed.mediaItems,
+            initialIsLoadingSelection: false,
+            disablesAutomaticTasks: true
         )
     }
+}
 
-    private var testPlayerQuickPills: some View {
-        HStack(spacing: 8) {
-            testPill("1.0x")
-            testPill("2160p")
-            testPill("HDR")
-            testPill("AVPlayer")
+// MARK: - Downloads (real surface, seeded)
+
+/// Renders the **production** `DownloadsView` with a seeded view model (two active downloads + one
+/// completed) so the real group cards, progress bars, and status chips can be visually QA'd.
+/// `disablesAutomaticTasks` skips the manager refresh that would clear the seeded groups.
+private struct SeededDownloadsPreview: View {
+    @Environment(AppState.self) private var appState
+    @State private var viewModel: DownloadsViewModel?
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                DownloadsView(viewModel: viewModel, disablesAutomaticTasks: true)
+            } else {
+                Color.clear
+            }
         }
-    }
-
-    private var testPlayerTransportDock: some View {
-        VStack(spacing: 10) {
-            GeometryReader { geo in
-                let width = geo.size.width
-                let progress = width * 0.35
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.white.opacity(PlayerCinematicVisualPolicy.progressTrackOpacity))
-                        .frame(height: PlayerCinematicChromePolicy.progressBarIdleHeight)
-                    Capsule()
-                        .fill(.white.opacity(PlayerCinematicVisualPolicy.progressBufferedOpacity))
-                        .frame(width: width * 0.58, height: PlayerCinematicChromePolicy.progressBarIdleHeight)
-                    Capsule()
-                        .fill(.white)
-                        .frame(width: progress, height: PlayerCinematicChromePolicy.progressBarIdleHeight)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 10, height: 10)
-                        .position(x: progress, y: geo.size.height / 2)
-                }
+        .task {
+            if viewModel == nil {
+                let model = DownloadsViewModel(appState: appState)
+                model.groups = DownloadsPreviewSeed.groups
+                model.tasks = DownloadsPreviewSeed.tasks
+                model.isLoading = false
+                viewModel = model
             }
-            .frame(height: 22)
-            .accessibilityLabel("Playback position")
-            .accessibilityValue("58:21 elapsed, 1:47:39 remaining")
-
-            HStack {
-                Text("58:21")
-                Spacer()
-                Text("-1:47:39")
-            }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
-
-            HStack(spacing: 24) {
-                testTransportButton(systemName: PlayerCinematicVisualPolicy.skipBackSymbolName)
-                Image(systemName: "pause.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(.black)
-                    .frame(
-                        width: PlayerCinematicChromePolicy.primaryTransportButtonSize,
-                        height: PlayerCinematicChromePolicy.primaryTransportButtonSize
-                    )
-                    .background(.white, in: Circle())
-                    .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
-                testTransportButton(systemName: PlayerCinematicVisualPolicy.skipForwardSymbolName)
-            }
-            .frame(minHeight: PlayerCinematicChromePolicy.primaryTransportButtonSize)
-
-            Capsule()
-                .fill(.white.opacity(0.24))
-                .frame(width: 34, height: 3)
         }
-        .padding(.horizontal, PlayerCinematicChromePolicy.transportCardHorizontalPadding)
-        .padding(.vertical, PlayerCinematicChromePolicy.transportCardVerticalPadding)
-        .frame(maxWidth: PlayerCinematicChromePolicy.transportCardMaxWidth)
-        .background(
-            .ultraThinMaterial,
-            in: RoundedRectangle(
-                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
-                style: .continuous
-            )
-            .strokeBorder(
-                LinearGradient(
-                    colors: [.white.opacity(0.26), .white.opacity(0.08)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                lineWidth: 1
-            )
-        }
-        .shadow(color: .black.opacity(0.24), radius: 24, y: 10)
-    }
-
-    private func testCircleButton(systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.body.weight(.semibold))
-            .frame(
-                width: PlayerCinematicChromePolicy.topBarButtonSize,
-                height: PlayerCinematicChromePolicy.topBarButtonSize
-            )
-            .background(.ultraThinMaterial, in: Circle())
-            .overlay {
-                Circle()
-                    .strokeBorder(.white.opacity(PlayerCinematicVisualPolicy.iconSurfaceBorderOpacity), lineWidth: 0.8)
-            }
-    }
-
-    private func testTransportButton(systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(
-                width: PlayerCinematicChromePolicy.secondaryTransportButtonSize,
-                height: PlayerCinematicChromePolicy.secondaryTransportButtonSize
-            )
-            .background(.white.opacity(0.10), in: Circle())
-            .overlay {
-                Circle()
-                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.8)
-            }
-    }
-
-    private func testPill(_ title: String) -> some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay {
-                Capsule()
-                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
-            }
     }
 }
 
-// MARK: - Settings Test
+// MARK: - Settings (real surface)
 
-private struct TestSettingsView: View {
-    private let categories = [
-        ("Connect", "link", "Accounts, providers, and API keys", ["Streaming Providers", "Search Providers", "TMDB API", "AI Recommendations", "Trakt", "Simkl", "IMDb Import"]),
-        ("Watch", "play.circle", "Playback, quality, and subtitles", ["Playback", "Subtitles"]),
-        ("Discover", "sparkles", "Environments and browsing", ["Environments"]),
-        ("Library", "books.vertical", "Downloads and local content", ["Library", "Downloads"]),
-        ("About", "info.circle", "App info, health, and data", ["Reset All Data"]),
-    ]
+/// Renders the **production** `SettingsView` root. Its category list comes from the static
+/// `SettingsNavigationCatalog`, so no seeding is needed; `disablesAutomaticTasks` skips the
+/// per-destination status refresh that would otherwise hit the database / network.
+private struct SeededSettingsPreview: View {
+    var body: some View {
+        SettingsView(disablesAutomaticTasks: true)
+    }
+}
+
+// MARK: - Player (real surface, seeded)
+
+/// Renders the **production** `PlayerView` chrome seeded for visual QA. `disablesAutomaticTasks`
+/// skips `preparePlayback`, so no `AVPlayer` is created and no stream/network is touched — the
+/// playback surface stays a harmless black fill while the real transport dock, top bar, info pills,
+/// scrubber, time labels, and chapter markers render from a pre-seeded `VPPlayerEngine` injected
+/// through the environment (the same way the live "player" window provides its `sharedEngine`).
+/// `initialPlaybackState: .playing` suppresses the startup/"Playback Failed" overlay. The seed is
+/// built in `.task` because `VPPlayerEngine` is `@MainActor` and can't initialize a `@State` default
+/// from the view's nonisolated `init`. See `PlayerPreviewSeed`.
+private struct SeededPlayerPreview: View {
+    @State private var engine: VPPlayerEngine?
+    #if os(visionOS)
+    @State private var cinemaSettings = CinemaSettings()
+    #endif
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 20) {
-                ForEach(categories, id: \.0) { category in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Image(systemName: category.1)
-                                .font(.caption)
-                            Text(category.0)
-                                .font(.headline)
-                        }
-                        .foregroundStyle(.secondary)
-
-                        VStack(spacing: 4) {
-                            ForEach(category.3, id: \.self) { item in
-                                HStack {
-                                    Text(item)
-                                        .font(.subheadline)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(14)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                            }
-                        }
-                    }
-                }
+        Group {
+            if let engine {
+                PlayerView(
+                    stream: PlayerPreviewSeed.stream,
+                    mediaTitle: PlayerPreviewSeed.mediaTitle,
+                    initialPlaybackState: .playing,
+                    initialActiveEngine: PlayerPreviewSeed.activeEngine,
+                    disablesAutomaticTasks: true
+                )
+                .environment(engine)
+                #if os(visionOS)
+                .environment(cinemaSettings)
+                #endif
+            } else {
+                Color.black
             }
-            .padding()
+        }
+        .task {
+            if engine == nil {
+                engine = PlayerPreviewSeed.makeSeededEngine()
+            }
         }
     }
 }

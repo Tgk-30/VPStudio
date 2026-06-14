@@ -115,8 +115,7 @@ struct ViewModelTaskLifecycleTests {
     @Test
     func detailViewEpisodeSelectionKeepsEpisodeContextAndTriggersSearch() throws {
         let layoutSource = try contents(of: "VPStudio/Views/Windows/Detail/SeriesDetailLayout.swift")
-        let seasonsSource = (try? contents(of: "VPStudio/Views/Windows/Detail/DetailSeasonsSection.swift")) ?? ""
-        let source = layoutSource + "\n" + seasonsSource
+        let source = layoutSource
         let seasonsSectionBody: String
         if layoutSource.contains("private func episodesSection()") {
             let episodesBody = try functionBody(containing: "private func episodesSection()", in: layoutSource)

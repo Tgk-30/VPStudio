@@ -469,13 +469,19 @@ struct SeriesDetailLayout: View {
                     .foregroundStyle(.white.opacity(0.85))
             }
             
-            if !viewModel.seasons.isEmpty {
+            if mediaType == .series, !viewModel.seasons.isEmpty {
+                // Series: show seasons + episode count, not a single (misleading) runtime.
                 Text(SeriesDetailPresentationPolicy.seasonCountText(viewModel.seasons.count) ?? "")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.85))
-            }
 
-            if let runtimeText = SeriesDetailPresentationPolicy.runtimeText(minutes: viewModel.mediaItem?.runtime) {
+                let episodeTotal = viewModel.seasons.reduce(0) { $0 + $1.episodeCount }
+                if episodeTotal > 0 {
+                    Text("\(episodeTotal) Episodes")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            } else if let runtimeText = SeriesDetailPresentationPolicy.runtimeText(minutes: viewModel.mediaItem?.runtime) {
                 Text(runtimeText)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.85))

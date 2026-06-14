@@ -3743,6 +3743,11 @@ struct PlayerView: View {
 
     #if os(visionOS)
     private func applyVisionOSWindowGeometry() {
+        // Seeded QA previews (Test Mode) render this chrome with `disablesAutomaticTasks` and share
+        // the presenting window's scene — they must never request a geometry update, which would
+        // resize the host window. The other automatic paths are already gated; this one is reached
+        // via the window-scene accessor's onChange, so guard it here too.
+        guard !disablesAutomaticTasks else { return }
         visionGeometryTask?.cancel()
 
         guard let windowScene = playerWindowScene else {
