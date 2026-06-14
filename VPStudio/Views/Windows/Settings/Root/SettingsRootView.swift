@@ -18,6 +18,7 @@ struct SettingsView: View {
     private let seededRecentDestination: SettingsDestination?
     private let disablesAutomaticTasks: Bool
 
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @AppStorage("settings.last_destination") private var lastDestinationRawValue = ""
     @AppStorage("settings.search_query") private var persistedSearchQuery = ""
     @AppStorage(VPMenuBackgroundIntensityPolicy.appStorageKey)
@@ -210,13 +211,15 @@ struct SettingsView: View {
 
     var body: some View {
         Group {
-            if VPDesignFlags.useObsidianGlass {
+            if useObsidianGlass {
                 obsidianBody
             } else {
                 legacyBody
             }
         }
-        .navigationTitle("Settings")
+        // Obsidian provides its own hero title via VPPageShell; empty the system nav title to
+        // avoid a duplicate while keeping the searchable field.
+        .navigationTitle(useObsidianGlass ? "" : "Settings")
         .sheet(isPresented: $isShowingResetSheet) {
             ResetDataView()
         }
@@ -402,6 +405,7 @@ struct SettingsView: View {
                 .tint(VPColor.accent)
                 .accessibilityLabel("Menu background intensity")
                 .accessibilityValue(SettingsAppearancePolicy.menuBackgroundIntensityLabel(for: menuBackgroundIntensity.wrappedValue))
+                .accessibilityHint("Adjusts the strength of the cinematic menu background.")
         }
         .padding(VPSpace.snug)
     }
@@ -416,7 +420,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: VPSpace.snug) {
             HStack {
                 VPSectionHeader(title: title, systemImage: icon)
-                if let badge { VPBadge(text: badge) }
+                if let badge {
+                    VPBadge(text: badge)
+                        .accessibilityLabel("\(badge) configured")
+                }
             }
             VPCard(padding: VPSpace.tight) {
                 VStack(spacing: 0) { content() }
@@ -434,11 +441,12 @@ struct SettingsView: View {
                             .fill(statusColor(status.kind))
                             .frame(width: 9, height: 9)
                             .shadow(color: statusColor(status.kind).opacity(0.6), radius: 3)
-                            .accessibilityLabel(status.message)
+                            .accessibilityHidden(true) // status conveyed via the row's hint
                     }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(VPColor.textTertiary)
+                        .accessibilityHidden(true)
                 }
             }
         }
@@ -476,7 +484,8 @@ struct SettingsView: View {
 
     private var healthTintToken: Color {
         if healthProgress >= 0.75 { return VPColor.success }
-        return VPColor.warning
+        if healthProgress >= 0.45 { return VPColor.warning }
+        return .yellow
     }
 
     private var normalizedQuery: String {

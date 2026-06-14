@@ -59,9 +59,14 @@ extension View {
 /// system gesture driver. A subtle custom scale is used only where the system effect is absent.
 /// Honors Reduce Motion.
 struct VPInteractiveModifier: ViewModifier {
+    #if os(visionOS)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #endif
+
     func body(content: Content) -> some View {
         #if os(visionOS)
-        content.hoverEffect(.lift)
+        // Reduce Motion: use the static highlight instead of the animated lift.
+        content.hoverEffect(reduceMotion ? .highlight : .lift)
         #else
         content.modifier(VPMacHoverModifier())
         #endif

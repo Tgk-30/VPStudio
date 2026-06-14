@@ -67,6 +67,7 @@ struct VPSectionHeader: View {
                     .foregroundStyle(VPColor.accent)
                     .frame(width: 36, height: 36)
                     .glassSurface(.rest, cornerRadius: VPRadius.chip)
+                    .accessibilityHidden(true)
             }
             Text(title.uppercased())
                 .font(VPFont.sectionHeader)

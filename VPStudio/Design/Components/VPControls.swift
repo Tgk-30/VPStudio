@@ -37,10 +37,12 @@ private struct VPButtonSurface: View {
             .background { background(shape) }
             .overlay { shape.strokeBorder(strokeGradient, lineWidth: 1) }
             .clipShape(shape)
-            .shadow(color: shadowColor, radius: pressed ? 6 : 12, y: pressed ? 3 : 7)
+            .shadow(color: shadowColor,
+                    radius: (pressed && !reduceMotion) ? 6 : 12,
+                    y: (pressed && !reduceMotion) ? 3 : 7)
             .opacity(isEnabled ? 1 : 0.45)
             .scaleEffect(pressed && !reduceMotion ? 0.97 : 1)
-            .animation(VPMotion.snappy, value: pressed)
+            .animation(reduceMotion ? nil : VPMotion.snappy, value: pressed)
             .vpInteractive()
             .contentShape(shape)
     }
@@ -162,11 +164,13 @@ struct VPProgressBar: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.12))
-                    Capsule()
-                        .fill(LinearGradient(colors: [tint.opacity(0.85), tint],
-                                             startPoint: .leading, endPoint: .trailing))
-                        .frame(width: max(height, geo.size.width * clamped))
-                        .shadow(color: tint.opacity(0.5), radius: 6)
+                    if clamped > 0 {
+                        Capsule()
+                            .fill(LinearGradient(colors: [tint.opacity(0.85), tint],
+                                                 startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(height, geo.size.width * clamped))
+                            .shadow(color: tint.opacity(0.5), radius: 6)
+                    }
                 }
             }
             .frame(height: height)

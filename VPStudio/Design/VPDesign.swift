@@ -5,19 +5,17 @@ import SwiftUI
 /// Gate for the "Obsidian Glass" design system. Migrated screens branch on this so the
 /// revamp can roll out screen-by-screen with a safe fallback to the legacy UI.
 ///
-/// Defaults to `true` (show the new design). Flip to `false` (Settings → toggle, or
-/// `UserDefaults`) to fall back to the legacy presentation on migrated screens.
+/// Defaults to `true` (show the new design). Flip to `false` to fall back to the legacy
+/// presentation on migrated screens.
+///
+/// For reactive use inside a `View`, read it via `@AppStorage(VPDesignFlags.useObsidianGlassKey)`
+/// so SwiftUI re-evaluates when it changes — the static accessor below is for non-reactive checks.
 enum VPDesignFlags {
     static let useObsidianGlassKey = "useObsidianGlass"
 
     static var useObsidianGlass: Bool {
         UserDefaults.standard.object(forKey: useObsidianGlassKey) as? Bool ?? true
     }
-}
-
-extension EnvironmentValues {
-    /// Convenience for views that want to read the flag reactively via `@Environment`.
-    var useObsidianGlass: Bool { VPDesignFlags.useObsidianGlass }
 }
 
 // MARK: - Color Tokens
@@ -34,8 +32,11 @@ enum VPColor {
     static let contentPlane = Color(red: 0.060, green: 0.070, blue: 0.105)
 
     // Glass tints — layered as a fill ON a system material, never as the whole background.
-    static let glassTintRest   = Color.white.opacity(0.06)
-    static let glassTintRaised = Color.white.opacity(0.10)
+    // NOTE (bright-room contrast): over a very bright visionOS passthrough, the `.rest` tier is
+    // the thinnest material, so `textTertiary` on a bare `.rest` surface should be validated
+    // on-device. The rest tint is kept a touch higher for a minimum opacity floor.
+    static let glassTintRest   = Color.white.opacity(0.08)
+    static let glassTintRaised = Color.white.opacity(0.11)
     static let glassTintHero   = Color.white.opacity(0.14)
 
     // The single specular gloss (top-leading bright → bottom-trailing dim, one light source).

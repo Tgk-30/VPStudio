@@ -16,7 +16,7 @@ struct VPDesignTokenTests {
 
         #expect(primary >= 4.5)   // titles/body clear AA comfortably
         #expect(secondary >= 4.5) // secondary body still clears AA (was the failing 0.4–0.5 case)
-        #expect(tertiary >= 3.0)  // hints clear AA-large
+        #expect(tertiary >= 4.5)  // all on-glass text tokens clear AA over the content plane
         #expect(primary > secondary)
         #expect(secondary > tertiary)
     }
@@ -56,7 +56,8 @@ struct VPDesignTokenTests {
         #expect(VPElevation.raised.shadow.radius < VPElevation.hero.shadow.radius)
         #expect(VPElevation.rest.shadow.opacity < VPElevation.raised.shadow.opacity)
         #expect(VPElevation.raised.shadow.opacity < VPElevation.hero.shadow.opacity)
-        #expect(VPElevation.rest.strokeWidth < VPElevation.hero.strokeWidth)
+        #expect(VPElevation.rest.strokeWidth < VPElevation.raised.strokeWidth)
+        #expect(VPElevation.raised.strokeWidth < VPElevation.hero.strokeWidth)
     }
 
     // MARK: Feature flag
