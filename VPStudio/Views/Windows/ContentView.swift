@@ -135,7 +135,8 @@ struct ContentView: View {
         initialSettingsWarningCount: Int = 0,
         disablesAutomaticTasks: Bool = false
     ) {
-        _discoverViewModel = State(initialValue: initialDiscoverViewModel ?? DiscoverViewModel())
+        _discoverViewModel = State(initialValue: initialDiscoverViewModel
+            ?? (QARuntimeOptions.seedDiscoverPreview ? .seededPreview() : DiscoverViewModel()))
         _isShowingQuickStartPrompt = State(initialValue: initialIsShowingQuickStartPrompt)
         _activeDownloadCount = State(initialValue: initialActiveDownloadCount)
         _settingsWarningCount = State(initialValue: initialSettingsWarningCount)

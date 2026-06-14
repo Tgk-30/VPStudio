@@ -234,7 +234,7 @@ struct TestScreenSheet: View {
     private var screenContent: some View {
         switch screen {
         case .discover:
-            TestDiscoverView()
+            SeededDiscoverPreview()
         case .search:
             TestSearchView()
         case .searchResults:
@@ -255,7 +255,20 @@ struct TestScreenSheet: View {
     }
 }
 
-// MARK: - Discover Test
+// MARK: - Discover (real surface, seeded)
+
+/// Renders the **production** `DiscoverView` populated with real TMDB artwork so the actual
+/// hero carousel, rows, and tiles can be visually QA'd without API keys. `AppState` is inherited
+/// from the surrounding app environment.
+private struct SeededDiscoverPreview: View {
+    @State private var viewModel = DiscoverViewModel.seededPreview()
+
+    var body: some View {
+        DiscoverView(viewModel: viewModel)
+    }
+}
+
+// MARK: - Discover Test (legacy static mock — kept for reference)
 
 private struct TestDiscoverView: View {
     var body: some View {

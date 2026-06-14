@@ -154,6 +154,7 @@ enum QARuntimeOptions {
     static func suppressQuickStartPrompt(from snapshot: EnvironmentSnapshot) -> Bool {
         snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START")
             || snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START_PROMPT")
+            || snapshot.bool("VPSTUDIO_QA_SEED_DISCOVER")
             || testScreenRawValue(from: snapshot) != nil
     }
 
@@ -202,6 +203,8 @@ enum QARuntimeOptions {
 
     // QA-only visual/debug helpers for deterministic screenshot capture.
     static let forceCompactNavScale = bool("VPSTUDIO_QA_FORCE_COMPACT_NAV_SCALE")
+    /// Seeds the main-window Discover tab with realistic TMDB artwork (no API key) for visual QA.
+    static let seedDiscoverPreview = bool("VPSTUDIO_QA_SEED_DISCOVER")
     static let testScreenRawValue = testScreenRawValue(from: environment)
     static let suppressQuickStartPrompt = suppressQuickStartPrompt(from: environment)
 
