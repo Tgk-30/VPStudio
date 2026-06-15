@@ -79,6 +79,29 @@ struct VPSectionHeader: View {
     }
 }
 
+/// A haloed circular gradient badge with an icon — the premium section marker shared by
+/// Downloads and Settings (blue→purple glow). Pairs with `VPSectionHeader` for the title.
+struct VPSectionBadge: View {
+    let systemImage: String
+
+    var body: some View {
+        let gradient = LinearGradient(
+            colors: [Color(red: 0.40, green: 0.48, blue: 0.97), Color(red: 0.64, green: 0.38, blue: 0.98)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        return ZStack {
+            Circle().fill(gradient).opacity(0.16)
+            Circle().strokeBorder(gradient, lineWidth: 1).opacity(0.55)
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(gradient)
+        }
+        .frame(width: 40, height: 40)
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Row
 
 /// A 60pt list/destination row with optional leading icon chip and trailing accessory.

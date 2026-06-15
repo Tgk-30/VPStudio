@@ -418,8 +418,9 @@ struct SettingsView: View {
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: VPSpace.snug) {
-            HStack {
-                VPSectionHeader(title: title, systemImage: icon)
+            HStack(spacing: VPSpace.snug) {
+                VPSectionBadge(systemImage: icon)
+                VPSectionHeader(title: title)
                 if let badge {
                     VPBadge(text: badge)
                         .accessibilityLabel("\(badge) configured")
