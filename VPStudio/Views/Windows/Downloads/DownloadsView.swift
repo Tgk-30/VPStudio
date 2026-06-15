@@ -221,38 +221,70 @@ struct DownloadsView: View {
 
     // MARK: Summary + sections + menu
 
+    /// Premium "storage hero": a haloed drive badge, the downloaded-of-total figure, a glowing
+    /// gradient capacity bar, and used / available context. Replaces the flat stat row.
     private func downloadsSummaryCard(_ vm: DownloadsViewModel) -> some View {
-        VPCard(elevation: .raised) {
-            VStack(alignment: .leading, spacing: VPSpace.normal) {
-                HStack(alignment: .top, spacing: VPSpace.section) {
-                    // Active/progress use a calm "in-progress" blue, not the brand red —
-                    // red is reserved for danger (failed/delete) so downloads don't read as errors.
-                    summaryStat("\(vm.activeTaskCount)", "Active", tint: vm.hasActiveTasks ? VPColor.info : VPColor.textTertiary)
-                    summaryStat("\(vm.completedTaskCount)", "Downloaded", tint: VPColor.success)
-                    summaryStat(formatBytes(vm.totalDownloadedBytes), "On device", tint: VPColor.info)
-                    if vm.hasFailedTasks {
-                        summaryStat("\(vm.failedTaskCount)", "Failed", tint: VPColor.danger)
+        let storage = deviceStorage()
+        let used = vm.totalDownloadedBytes
+        let total = max(storage.total, used + storage.available, used, 1)
+        let usedFraction = min(1.0, max(0.02, Double(used) / Double(total)))
+        let heroGradient = LinearGradient(
+            colors: [Color(red: 0.36, green: 0.45, blue: 0.96), Color(red: 0.62, green: 0.36, blue: 0.97)],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        return VPCard(elevation: .raised) {
+            HStack(alignment: .center, spacing: VPSpace.roomy) {
+                ZStack {
+                    Circle().fill(heroGradient).opacity(0.22).blur(radius: 16).frame(width: 78, height: 78)
+                    Circle()
+                        .fill(VPColor.contentPlane)
+                        .overlay { Circle().strokeBorder(heroGradient, lineWidth: 1.5) }
+                        .frame(width: 60, height: 60)
+                    Image(systemName: "internaldrive")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(VPColor.textPrimary)
+                }
+
+                VStack(alignment: .leading, spacing: VPSpace.tight) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(formatBytes(used))
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundStyle(VPColor.textPrimary)
+                        Text("of \(formatBytes(total)) used")
+                            .font(VPFont.caption)
+                            .foregroundStyle(VPColor.textSecondary)
                     }
-                    Spacer(minLength: 0)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(VPColor.contentPlane)
+                            Capsule().fill(heroGradient)
+                                .frame(width: max(10, geo.size.width * usedFraction))
+                                .shadow(color: Color(red: 0.55, green: 0.36, blue: 0.97).opacity(0.55), radius: 6)
+                        }
+                    }
+                    .frame(height: 8)
+                    HStack(spacing: 6) {
+                        Text("\(Int((usedFraction * 100).rounded()))% used").foregroundStyle(VPColor.textPrimary)
+                        Text("•").foregroundStyle(VPColor.textTertiary)
+                        Text("\(formatBytes(storage.available)) available").foregroundStyle(VPColor.textSecondary)
+                    }
+                    .font(VPFont.caption)
                 }
-                if vm.hasActiveTasks {
-                    VPProgressBar(
-                        value: vm.aggregateActiveProgress,
-                        height: 8,
-                        label: "\(Int((vm.aggregateActiveProgress * 100).rounded()))% overall",
-                        tint: VPColor.info
-                    )
-                }
+
+                Spacer(minLength: 0)
             }
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func summaryStat(_ value: String, _ label: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(VPFont.title2).foregroundStyle(tint)
-            Text(label).font(VPFont.caption).foregroundStyle(VPColor.textSecondary)
-        }
+    private func deviceStorage() -> (total: Int64, available: Int64) {
+        let values = try? URL.documentsDirectory.resourceValues(
+            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
+        )
+        let total = Int64(values?.volumeTotalCapacity ?? 0)
+        let available = values?.volumeAvailableCapacityForImportantUsage ?? 0
+        return (total, available)
     }
 
     private func downloadsSectionHeader(_ title: String, systemImage: String, count: Int) -> some View {
