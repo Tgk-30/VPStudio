@@ -315,7 +315,10 @@ struct DiscoverView: View {
                         #if !os(macOS)
                         .tabViewStyle(.page(indexDisplayMode: .never))
                         #endif
-                        .frame(height: 604)
+                        // Match the hero's own height (540) — the legacy 604 left a 64pt dead
+                        // band below the card now that the default page dots are hidden, which
+                        // the custom indicator was floating in.
+                        .frame(height: 540)
                         // Premium bar-style page indicator (Apple TV+ feel) instead of the
                         // default UIPageControl dots.
                         .overlay(alignment: .bottom) {

@@ -866,10 +866,12 @@ struct SearchView: View {
                         }
                     )
                 }
-                .padding(.horizontal, 40)
                 .padding(.top, 12)
                 .padding(.bottom, 32)
             }
+            // Match searchBarSection: pad OUTSIDE centeredStage (was an inner .horizontal 40
+            // that pushed Recent/Browse ~40pt right of the search bar's left edge).
+            .padding(.horizontal, 34)
         }
     }
 

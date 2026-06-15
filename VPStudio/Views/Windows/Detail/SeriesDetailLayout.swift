@@ -546,7 +546,10 @@ struct SeriesDetailLayout: View {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .black))
                 } else {
-                    Image(systemName: "play.fill")
+                    // Icon tracks the label: a stack glyph for the "Select Episode" state,
+                    // a play glyph only when the button actually starts playback.
+                    let needsEpisodeSelection = mediaType == .series && viewModel.selectedEpisode == nil
+                    Image(systemName: needsEpisodeSelection ? "rectangle.stack" : "play.fill")
                         .font(.system(size: 22))
                     Text(
                         SeriesPrimaryPlayPolicy.title(
@@ -561,6 +564,9 @@ struct SeriesDetailLayout: View {
             .frame(maxWidth: .infinity)
             .frame(height: 56)
             .background(.white, in: RoundedRectangle(cornerRadius: 10))
+            // Dim the pill when inert (e.g. series with no episode selected) so the
+            // disabled state is legible — .buttonStyle(.plain) doesn't dim on its own.
+            .opacity(isPrimaryPlayEnabled ? 1 : 0.55)
         }
         .buttonStyle(.plain)
         .padding(.top, 8)
@@ -664,7 +670,9 @@ struct SeriesDetailLayout: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.72))
             } else {
-                Label("Select an episode, then press and hold it for watched options.", systemImage: "hand.point.up.left.fill")
+                // Avoid repeating "Select an episode" — currentEpisodeRow already prompts that
+                // right above; keep only the press-and-hold tip here.
+                Label("Press and hold an episode for watch options.", systemImage: "hand.point.up.left.fill")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.72))
             }

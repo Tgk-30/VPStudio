@@ -972,6 +972,9 @@ struct DownloadsView: View {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .file
+        // Emit "0 MB" rather than the spelled-out "Zero KB" (reads like debug text) for
+        // zero/just-started downloads, keeping both sides of "x / y" numeric.
+        formatter.allowsNonnumericFormatting = false
         return formatter
     }()
 
