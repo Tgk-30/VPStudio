@@ -35,13 +35,12 @@ jobs:
       # ------------------------------------------------------------------
       - name: Select Xcode
         run: |
-          # GRDB 7.10+ requires Swift tools 6.1 (Xcode 16.3+); pinning to 16.0
-          # (Swift 6.0) breaks `Could not resolve package dependencies`. Select the
-          # NEWEST installed Xcode 16.x so the toolchain satisfies the dependency.
-          XCODE="$(ls -d /Applications/Xcode_16.*.app 2>/dev/null | sort -V | tail -1)"
-          if [ -z "$XCODE" ]; then
-            XCODE="$(ls -d /Applications/Xcode_1[7-9].*.app /Applications/Xcode_2*.app 2>/dev/null | sort -V | tail -1)"
-          fi
+          # The app targets the visionOS 26 SDK and uses Swift 6.2 language features
+          # (e.g. stable `isolated deinit`), matching the dev toolchain (Xcode 27). The
+          # runner ships Xcode 26.x alongside 16.x and DEFAULTS to 16.4 — pinning to 16.x
+          # breaks dependency resolution (GRDB 7.10 needs Swift 6.1) and compilation. So
+          # select the NEWEST installed Xcode (26.x) to match the dev toolchain.
+          XCODE="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
           if [ -n "$XCODE" ]; then
             echo "Selecting $XCODE"
             sudo xcode-select -s "$XCODE"
