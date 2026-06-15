@@ -84,10 +84,14 @@ jobs:
       - name: Build for testing
         run: |
           set -o pipefail
+          # The app target compiles VPStudio/*.swift directly (synced folders), so the
+          # package-level swiftSettings don't reach it. `isolated deinit` is experimental
+          # on the CI toolchain (Xcode 16.x / Swift 6.1), so enable it here for the build.
           xcodebuild build-for-testing \
             -scheme VPStudio \
             -destination "platform=visionOS Simulator,id=${VISIONOS_UDID}" \
             -enableCodeCoverage YES \
+            OTHER_SWIFT_FLAGS='$(inherited) -enable-experimental-feature IsolatedDeinit' \
             | xcpretty
 
       # ------------------------------------------------------------------
