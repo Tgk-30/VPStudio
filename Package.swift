@@ -43,6 +43,12 @@ let package = Package(
             ],
             resources: [
                 .process("Resources"),
+            ],
+            swiftSettings: [
+                // `isolated deinit` is stable on Xcode 26/27 (Swift 6.2) but still gated
+                // behind an experimental flag on the CI toolchain (Xcode 16.x / Swift 6.1).
+                // Enabling it keeps APMPInjector / HeadTracker compiling on both toolchains.
+                .enableExperimentalFeature("IsolatedDeinit"),
             ]
         ),
         .testTarget(
