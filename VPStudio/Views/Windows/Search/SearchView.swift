@@ -234,6 +234,7 @@ enum SearchQueryBarPolicy {
 
 struct SearchView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @State private var viewModel = SearchViewModel()
     /// Pushed detail for the Search tab, hoisted to AppState so it survives the player
     /// dismissing/re-opening the main window (see `AppState.searchDetailSelection`).
@@ -279,8 +280,14 @@ struct SearchView: View {
 
     var body: some View {
         ZStack {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            // Match the rest of the app's Obsidian-Glass background instead of the legacy
+            // purple menu background (Explore was missed in the v2.0.1 migration).
+            if useObsidianGlass {
+                VPBackground()
+            } else {
+                VPMenuBackground()
+                    .ignoresSafeArea()
+            }
 
             VStack(spacing: 0) {
                 searchBarSection
