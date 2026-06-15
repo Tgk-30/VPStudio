@@ -288,9 +288,25 @@ struct DownloadsView: View {
     }
 
     private func downloadsSectionHeader(_ title: String, systemImage: String, count: Int) -> some View {
-        HStack {
-            VPSectionHeader(title: title, systemImage: systemImage)
+        let gradient = LinearGradient(
+            colors: [Color(red: 0.40, green: 0.48, blue: 0.97), Color(red: 0.64, green: 0.38, blue: 0.98)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        return HStack(spacing: VPSpace.snug) {
+            ZStack {
+                Circle().fill(gradient).opacity(0.16)
+                Circle().strokeBorder(gradient, lineWidth: 1).opacity(0.55)
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(gradient)
+            }
+            .frame(width: 40, height: 40)
+            Text(title)
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(VPColor.textPrimary)
             VPBadge(text: "\(count)").accessibilityLabel("\(count) \(title)")
+            Spacer(minLength: 0)
         }
     }
 
@@ -377,8 +393,13 @@ struct DownloadsView: View {
                             posterPlaceholder(for: group)
                         }
                     }
-                    .frame(width: 96, height: 144)
+                    .frame(width: 108, height: 162)
                     .clipShape(RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous)
+                            .strokeBorder(.white.opacity(0.10), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
 
                     VStack(alignment: .leading, spacing: VPSpace.tight) {
                         Text(group.mediaTitle.isEmpty ? "Unknown Title" : group.mediaTitle)
@@ -395,8 +416,13 @@ struct DownloadsView: View {
                                 .foregroundStyle(VPColor.textSecondary)
                         }
                         if group.hasActiveDownloads {
-                            VPProgressBar(value: group.overallProgress, height: 8, tint: VPColor.info)
-                                .padding(.top, VPSpace.micro)
+                            VPProgressBar(
+                                value: group.overallProgress,
+                                height: 8,
+                                label: "\(Int((group.overallProgress * 100).rounded()))%",
+                                tint: VPColor.info
+                            )
+                            .padding(.top, VPSpace.micro)
                         }
                     }
 
