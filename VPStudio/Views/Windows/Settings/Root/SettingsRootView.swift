@@ -433,7 +433,7 @@ struct SettingsView: View {
 
     private func obsidianDestinationLink(_ destination: SettingsDestination, isRecent: Bool) -> some View {
         NavigationLink(value: destination) {
-            VPRow(destination.title, subtitle: destination.summary, systemImage: destination.icon) {
+            VPRow(destination.title, subtitle: destination.summary, systemImage: destination.icon, iconTint: destination.tintColor) {
                 HStack(spacing: VPSpace.tight) {
                     if isRecent { VPBadge(text: "Recent", tint: VPColor.accent) }
                     if let status = destinationStatuses[destination] {

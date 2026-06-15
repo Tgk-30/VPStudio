@@ -225,7 +225,9 @@ struct DownloadsView: View {
         VPCard(elevation: .raised) {
             VStack(alignment: .leading, spacing: VPSpace.normal) {
                 HStack(alignment: .top, spacing: VPSpace.section) {
-                    summaryStat("\(vm.activeTaskCount)", "Active", tint: vm.hasActiveTasks ? VPColor.accent : VPColor.textTertiary)
+                    // Active/progress use a calm "in-progress" blue, not the brand red —
+                    // red is reserved for danger (failed/delete) so downloads don't read as errors.
+                    summaryStat("\(vm.activeTaskCount)", "Active", tint: vm.hasActiveTasks ? VPColor.info : VPColor.textTertiary)
                     summaryStat("\(vm.completedTaskCount)", "Downloaded", tint: VPColor.success)
                     summaryStat(formatBytes(vm.totalDownloadedBytes), "On device", tint: VPColor.info)
                     if vm.hasFailedTasks {
@@ -238,7 +240,7 @@ struct DownloadsView: View {
                         value: vm.aggregateActiveProgress,
                         height: 8,
                         label: "\(Int((vm.aggregateActiveProgress * 100).rounded()))% overall",
-                        tint: VPColor.accent
+                        tint: VPColor.info
                     )
                 }
             }
@@ -361,7 +363,7 @@ struct DownloadsView: View {
                                 .foregroundStyle(VPColor.textSecondary)
                         }
                         if group.hasActiveDownloads {
-                            VPProgressBar(value: group.overallProgress, height: 8, tint: VPColor.accent)
+                            VPProgressBar(value: group.overallProgress, height: 8, tint: VPColor.info)
                                 .padding(.top, VPSpace.micro)
                         }
                     }
