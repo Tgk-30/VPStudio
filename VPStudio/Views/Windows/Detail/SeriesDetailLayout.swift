@@ -248,9 +248,7 @@ struct SeriesDetailLayout: View {
 
                 // MARK: - Main Content
                 VStack(alignment: .leading, spacing: 20) {
-                    // Title & Navigation
-                    titleAndNavRow
-
+                    // Title now lives on the hero artwork (see heroOverlay).
                     // Metadata row
                     metadataRow
 
@@ -373,17 +371,37 @@ struct SeriesDetailLayout: View {
     
     private var heroOverlay: some View {
         ZStack(alignment: .top) {
-            // Gradient fade
+            // Cinematic scrim: subtle darkening up top for the back/utility controls,
+            // strong fade to near-black at the bottom so the title reads on the artwork.
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.7), location: 0.0),
-                    .init(color: .black.opacity(0.3), location: 0.3),
-                    .init(color: .clear, location: 0.6),
+                    .init(color: .black.opacity(0.45), location: 0.0),
+                    .init(color: .clear, location: 0.28),
+                    .init(color: .black.opacity(0.35), location: 0.62),
+                    .init(color: .black.opacity(0.95), location: 1.0),
                 ],
-                startPoint: .bottom,
-                endPoint: .top
+                startPoint: .top,
+                endPoint: .bottom
             )
-            
+
+            // Title overlaid on the bottom of the artwork (Apple TV+ / Netflix pattern).
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack {
+                    Text(title.uppercased())
+                        .font(.system(size: 40, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                        .shadow(color: .black.opacity(0.6), radius: 10, y: 4)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 18)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             // Top bar
             HStack {
                 // Back button
@@ -448,16 +466,6 @@ struct SeriesDetailLayout: View {
             }
             .padding(.horizontal, 20)
             .padding(.top, 20)
-        }
-    }
-    
-    private var titleAndNavRow: some View {
-        HStack(alignment: .top) {
-            Text(title.uppercased())
-                .font(.system(size: 32, weight: .bold, design: .default))
-                .foregroundStyle(.white)
-            
-            Spacer()
         }
     }
     
