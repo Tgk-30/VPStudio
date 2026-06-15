@@ -411,6 +411,9 @@ struct DownloadsView: View {
                                 text: group.mediaType == "series" ? "Series" : "Movie",
                                 tint: group.mediaType == "series" ? VPColor.info : VPColor.accent
                             )
+                            if let quality = group.tasks.first.flatMap({ downloadQuality(from: $0.fileName) }) {
+                                VPBadge(text: quality, tint: VPColor.info)
+                            }
                             Text("\(group.completedCount)/\(group.totalCount) downloaded")
                                 .font(VPFont.caption)
                                 .foregroundStyle(VPColor.textSecondary)
@@ -1018,7 +1021,11 @@ struct DownloadsView: View {
         if let total = task.totalBytes, total > 0 {
             let written = formatBytes(task.bytesWritten)
             let totalText = formatBytes(total)
-            return "\(pct)% \u{2022} \(written) / \(totalText)"
+            var text = "\(pct)% \u{2022} \(written) / \(totalText)"
+            if let eta = downloadETA(for: task) {
+                text += " \u{2022} \(eta)"
+            }
+            return text
         }
 
         if task.bytesWritten > 0 {
@@ -1026,6 +1033,34 @@ struct DownloadsView: View {
         }
 
         return "\(pct)%"
+    }
+
+    /// Real quality label parsed from the actual downloaded file name (e.g. "…2160p…" -> "4K").
+    private func downloadQuality(from fileName: String) -> String? {
+        let lower = fileName.lowercased()
+        if lower.contains("2160p") || lower.contains("4k") || lower.contains("uhd") { return "4K" }
+        if lower.contains("1080p") { return "1080p" }
+        if lower.contains("720p") { return "720p" }
+        if lower.contains("480p") { return "480p" }
+        return nil
+    }
+
+    /// Honest ETA from the average download speed since the task started
+    /// (bytesWritten / elapsed). Returns nil when it can't be estimated reliably.
+    private func downloadETA(for task: DownloadTask) -> String? {
+        guard task.status == .downloading,
+              let total = task.totalBytes, total > 0,
+              task.bytesWritten > 0, task.bytesWritten < total else { return nil }
+        let elapsed = Date().timeIntervalSince(task.createdAt)
+        guard elapsed > 2 else { return nil }
+        let bytesPerSec = Double(task.bytesWritten) / elapsed
+        guard bytesPerSec > 0 else { return nil }
+        let remaining = Double(total - task.bytesWritten) / bytesPerSec
+        guard remaining.isFinite, remaining > 0, remaining < 86_400 else { return nil }
+        let secs = Int(remaining.rounded())
+        if secs < 60 { return "~\(secs)s left" }
+        if secs < 3600 { return "~\(Int((Double(secs) / 60).rounded()))m left" }
+        return "~\(String(format: "%.1f", Double(secs) / 3600))h left"
     }
 
     private static let byteFormatter: ByteCountFormatter = {

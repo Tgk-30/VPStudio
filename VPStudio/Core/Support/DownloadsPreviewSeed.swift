@@ -26,7 +26,9 @@ enum DownloadsPreviewSeed {
             mediaTitle: dune.title,
             mediaType: "movie",
             posterPath: dune.poster,
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+            // Recent start so the average-speed ETA renders realistically in QA
+            // (5.3 GB in ~200s ≈ 26 MB/s → ~2 min left on the remaining 3.2 GB).
+            createdAt: Date(timeIntervalSinceNow: -200)
         )
         let resolving = DownloadTask(
             id: "seed-dl-severance",
