@@ -23,10 +23,16 @@ struct LocalDownloadServiceTests {
         }
 
         func waitUntilStarted(repo: String) async {
-            while true {
+            // Fast Task.yield polling (preserves the original timing so race tests still
+            // observe transient start states), but BOUNDED by a wall-clock deadline so it
+            // can never hang forever the way a `while true` loop could under executor
+            // starvation. Mirrors the project's own `waitUntil` test helper.
+            let deadline = ContinuousClock.now + .seconds(10)
+            while ContinuousClock.now < deadline {
                 if readyToResume(repo: repo) { return }
                 await Task.yield()
             }
+            Issue.record("Timed out waiting for download to start for repo \(repo)")
         }
 
         func started(repo: String) -> Bool {

@@ -475,9 +475,10 @@ struct TMDBImageURLTests {
         #expect(item.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w500/abc.jpg")
     }
 
-    @Test func backdropURLUsesOriginalForMediaItem() {
+    @Test func backdropURLUsesW1280ForMediaItem() {
         let item = MediaItem(id: "tt123", type: .movie, title: "Test", backdropPath: "/xyz.jpg")
-        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/original/xyz.jpg")
+        // w1280 (not original): intentional payload reduction with no visible quality loss (see MediaItem.backdropURL).
+        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/xyz.jpg")
     }
 
     @Test func previewPosterURLUsesW342() {

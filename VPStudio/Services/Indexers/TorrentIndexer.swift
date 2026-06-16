@@ -33,7 +33,7 @@ enum IndexerLogSanitizer {
         options: []
     )
     private static let looseTokenPattern = try! NSRegularExpression(
-        pattern: #"(?<=(^|[\s\(\[\{<:""'\-]))([A-Za-z0-9._~-]{16,})(?=($|[\s\)\]\}>"'!?.,:;]))"#,
+        pattern: #"(?<=(^|[\s\(\[\{<:=""'\-]))([A-Za-z0-9._~-]{16,})(?=($|[\s\)\]\}>"'!?.,:;]))"#,
         options: []
     )
 

@@ -33,14 +33,15 @@ struct MediaItemComputedPropertiesTests {
         #expect(item.posterURL == nil)
     }
 
-    @Test func backdropURLBuildsTMDBOriginal() {
+    @Test func backdropURLBuildsTMDBW1280() {
         let item = MediaItem(
             id: "tt123",
             type: .movie,
             title: "Test",
             backdropPath: "/backdrop.jpg"
         )
-        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/original/backdrop.jpg")
+        // w1280 (not original): intentional payload reduction with no visible quality loss (see MediaItem.backdropURL).
+        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/backdrop.jpg")
     }
 
     @Test func backdropURLIsNilWhenPathMissingOrEmpty() {

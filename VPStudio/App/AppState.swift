@@ -969,6 +969,11 @@ final class AppState {
             : nil
         let activeSecretStore: any SecretStore = injectedSecretStore ?? secretStore
         let rotatesSecretNamespace = namespaceRotation != nil
+        // The full-domain wipe below clears this key too; preserve the value that
+        // must survive a reset — the rotated namespace when rotating, otherwise the
+        // current one — so an injected-store reset doesn't silently drop it to 0.
+        let preservedSecretStoreNamespace = namespaceRotation?.next
+            ?? Self.currentSecretStoreNamespace(defaults: defaults)
 
         do {
             // Clean up downloaded and environment files left on disk
@@ -996,9 +1001,7 @@ final class AppState {
             if let bundleIdentifier = Bundle.main.bundleIdentifier {
                 defaults.removePersistentDomain(forName: bundleIdentifier)
             }
-            if let namespaceRotation {
-                defaults.set(namespaceRotation.next, forKey: Self.secretStoreNamespaceKey)
-            }
+            defaults.set(preservedSecretStoreNamespace, forKey: Self.secretStoreNamespaceKey)
             defaults.set(false, forKey: "onboarding.soft_setup_dismissed")
             defaults.set("", forKey: "settings.last_destination")
             defaults.set("", forKey: "settings.search_query")

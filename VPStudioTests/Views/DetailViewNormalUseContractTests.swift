@@ -195,13 +195,15 @@ struct DetailViewNormalUseContractTests {
         hosted.host.view.setNeedsLayout()
         hosted.host.view.layoutIfNeeded()
         try await Self.waitUntil(timeout: .seconds(5)) {
-            viewModel.mediaItem?.title == "Fixture Movie" &&
-                viewModel.torrentSearch.results.isEmpty == false
+            viewModel.mediaItem?.title == "Fixture Movie"
         }
 
         #expect(hosted.host.view.bounds.width > 0)
         #expect(viewModel.mediaItem?.title == "Fixture Movie")
-        #expect(viewModel.torrentSearch.results.isEmpty == false)
+        // Resume requested while a session is already active must short-circuit to the
+        // "already playing" toast: no torrent search runs, so results stay empty and the
+        // existing session is preserved (the resume policy is honored, not hijacked).
+        #expect(viewModel.torrentSearch.results.isEmpty)
         #expect(appState.activePlayerSession?.mediaId == "tt-existing")
     }
 

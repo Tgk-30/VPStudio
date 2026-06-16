@@ -157,7 +157,7 @@ struct EpisodeStillURLModelTests {
             stillPath: nil
         )
 
-        #expect(episode1.stillURL == URL(string: "https://image.tmdb.org/t/p/w300/still.jpg")!)
+        #expect(episode1.stillURL == URL(string: "https://image.tmdb.org/t/p/w500/still.jpg")!)
         #expect(episode2.stillURL == nil)
     }
 }

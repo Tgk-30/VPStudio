@@ -862,7 +862,7 @@ struct EpisodeTests {
 
     @Test func stillURLConstructsFromPath() {
         let episode = Episode(id: "1", mediaId: "m1", seasonNumber: 1, episodeNumber: 1, stillPath: "/abc.jpg")
-        #expect(episode.stillURL?.absoluteString == "https://image.tmdb.org/t/p/w300/abc.jpg")
+        #expect(episode.stillURL?.absoluteString == "https://image.tmdb.org/t/p/w500/abc.jpg")
     }
 
     @Test func stillURLIsNilWhenNoPath() {
@@ -888,7 +888,7 @@ struct MediaItemTests {
 
     @Test func backdropURLConstructsFromPath() {
         let item = MediaItem(id: "1", type: .movie, title: "Test", backdropPath: "/bg.jpg")
-        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/original/bg.jpg")
+        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/bg.jpg")
     }
 
     @Test func artworkDetectionTreatsBlankPathsAsMissing() {
