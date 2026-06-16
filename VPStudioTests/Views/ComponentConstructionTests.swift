@@ -61,7 +61,7 @@ struct ComponentConstructionTests {
         _ = picker.body
         #expect(PillPickerAnimationPolicy.springResponse == 0.35)
         #expect(PillPickerAnimationPolicy.springDamping == 0.82)
-        #expect(PillPickerAnimationPolicy.pillHeight == 36)
+        #expect(PillPickerAnimationPolicy.pillHeight == 44)
         #expect(PillPickerAnimationPolicy.horizontalPadding == 16)
     }
 

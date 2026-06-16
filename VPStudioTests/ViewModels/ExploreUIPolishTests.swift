@@ -220,8 +220,8 @@ struct ExploreUIPolishTests {
     }
 
     @Test func genreTilePolicyKeepsScreenshotGeometryStable() {
-        #expect(ExploreGenreTilePolicy.columns == 7)
-        #expect(ExploreGenreTilePolicy.tileWidth == 128)
+        #expect(ExploreGenreTilePolicy.columns == 6)
+        #expect(ExploreGenreTilePolicy.tileWidth == 152)
         #expect(ExploreGenreTilePolicy.columnSpacing == 16)
         #expect(ExploreGenreTilePolicy.rowSpacing == 15)
         #expect(ExploreGenreTilePolicy.cornerRadius == 17)

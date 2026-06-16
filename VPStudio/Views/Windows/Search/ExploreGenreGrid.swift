@@ -1,8 +1,8 @@
 import SwiftUI
 
 enum ExploreGenreTilePolicy {
-    static let columns = 7
-    static let tileWidth: CGFloat = 128
+    static let columns = 6
+    static let tileWidth: CGFloat = 152
     static let columnSpacing: CGFloat = 16
     static let rowSpacing: CGFloat = 15
     static let cornerRadius: CGFloat = 17

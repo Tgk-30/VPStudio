@@ -94,29 +94,29 @@ struct MediaCardView: View {
                 Text(item.title)
                     .font(.subheadline)
                     .fontWeight(.bold)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
                     .foregroundStyle(.white)
 
                 HStack(spacing: 4) {
                     if let year = item.year {
                         Text(item.type.displayName)
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.6))
+                            .foregroundStyle(.white.opacity(0.72))
                         Text("\u{2022}")
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.3))
+                            .foregroundStyle(.white.opacity(0.45))
                         Text(String(year))
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.6))
+                            .foregroundStyle(.white.opacity(0.72))
                     }
                     if let rating = item.imdbRating, rating > 0 {
                         Text("\u{2022}")
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.3))
+                            .foregroundStyle(.white.opacity(0.45))
                         HStack(spacing: 2) {
                             Image(systemName: "star.fill")
-                                .font(.system(size: 8))
-                                .foregroundStyle(.white.opacity(0.85))
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white.opacity(0.9))
                             Text(String(format: "%.1f", rating))
                                 .font(.caption2)
                                 .fontWeight(.semibold)
@@ -129,7 +129,7 @@ struct MediaCardView: View {
                         let isPositive = normalized >= 0.555
                         Text("\u{2022}")
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.3))
+                            .foregroundStyle(.white.opacity(0.45))
                         HStack(spacing: 2) {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 8))

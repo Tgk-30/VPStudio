@@ -266,7 +266,7 @@ struct TorrentResultRow: View {
                         .font(.subheadline.weight(.medium))
                 }
                 .buttonStyle(.bordered)
-                .tint(.red)
+                .tint(VPColor.accent)
                 .help("Retry download")
                 .accessibilityLabel("Retry download for \(torrent.title)")
                 .accessibilityHint("Attempts this download again.")

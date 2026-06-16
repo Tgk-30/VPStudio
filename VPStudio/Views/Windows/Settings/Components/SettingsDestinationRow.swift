@@ -119,7 +119,7 @@ extension SettingsDestination {
         case .indexers: return .teal
         case .metadata: return .green
         case .ai: return .purple
-        case .trakt: return .red
+        case .trakt: return .pink
         case .simkl: return .indigo
         case .imdbImport: return Color(red: 0.96, green: 0.77, blue: 0.10)
         case .player: return .orange

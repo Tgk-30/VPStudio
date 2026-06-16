@@ -326,7 +326,7 @@ struct DiscoverView: View {
                                 HStack(spacing: 6) {
                                     ForEach(heroItems.indices, id: \.self) { idx in
                                         Capsule()
-                                            .fill(.white.opacity(idx == currentHeroIndex ? 0.95 : 0.32))
+                                            .fill(idx == currentHeroIndex ? VPColor.accent : Color.white.opacity(0.32))
                                             .frame(width: idx == currentHeroIndex ? 22 : 6, height: 6)
                                     }
                                 }
@@ -1028,6 +1028,9 @@ struct FeaturedHeroView: View {
                             .frame(width: 4, height: 4)
 
                         HStack(spacing: 3) {
+                            Text("IMDb")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.6))
                             Image(systemName: "star.fill")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.white.opacity(0.85))
@@ -1038,8 +1041,15 @@ struct FeaturedHeroView: View {
                         }
                     }
 
-                    // HDR badge
-                    GlassTag(text: "HDR", weight: .bold)
+                    // HDR — rendered as plain meta text (matches the row) rather than a lone glass pill.
+                    Circle()
+                        .fill(.white.opacity(0.4))
+                        .frame(width: 4, height: 4)
+
+                    Text("HDR")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white.opacity(0.8))
                 }
 
                 // Action buttons — Apple TV+ / Netflix language: solid light primary + glass secondary.
@@ -1159,7 +1169,20 @@ struct MediaRow: View {
                     Text(title)
                         .font(.system(size: 23, weight: .bold))
                         .foregroundStyle(VPColor.textPrimary)
+
                     Spacer(minLength: 0)
+
+                    // Scroll cue: signals the row continues past the right edge.
+                    // Non-interactive on purpose — there is no dedicated "See All"
+                    // destination yet, so this must not read or behave as a tappable control.
+                    HStack(spacing: 3) {
+                        Text("See All")
+                            .font(.subheadline.weight(.semibold))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(VPColor.textSecondary)
+                    .accessibilityHidden(true)
                 }
                 .padding(.horizontal, 12)
                 .accessibilityAddTraits(.isHeader)
@@ -1195,6 +1218,19 @@ struct MediaRow: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
+            // Right-edge fade so the trailing tile dissolves into the background instead of
+            // hard-clipping, reinforcing that the row scrolls horizontally.
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0.0),
+                        .init(color: .black, location: 0.92),
+                        .init(color: .clear, location: 1.0),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
         }
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 18)

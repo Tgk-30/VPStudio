@@ -3,15 +3,17 @@ import SwiftUI
 // MARK: - Button Style
 
 enum VPButtonKind {
-    case primary       // accent CTA
+    case primary       // THE primary action: white fill, near-black glyph + label (the hero Play look)
     case secondary     // glass
     case tertiary      // subtle glass
+    case accent        // rare branded/selection CTA: accent-gradient fill + accent glow (the old red look)
     case destructive   // glass with danger glow (never an opaque red slab)
-    case icon          // square 60pt glass icon button
+    case icon          // round 60pt glass icon button
 }
 
-/// Canonical button style. Enforces the 60pt minimum interactive target, the glass aesthetic,
-/// one press animation, and the single hover model. Selection/CTA use the accent as a glow.
+/// Canonical button style. Encodes the app's action language: WHITE = primary (one look app-wide),
+/// brand RED = `.accent` only (rare branded/selection CTAs). Enforces the 60pt minimum interactive
+/// target, the glass aesthetic, one press animation, and the single hover model.
 struct VPButtonStyle: ButtonStyle {
     var kind: VPButtonKind = .secondary
 
@@ -33,7 +35,7 @@ private struct VPButtonSurface: View {
             .font(VPFont.label)
             .foregroundStyle(foreground)
             .padding(.horizontal, kind == .icon ? 0 : VPSpace.roomy)
-            .frame(minWidth: VPSpace.minTapTarget, minHeight: VPSpace.minTapTarget)
+            .modifier(VPButtonFrame(kind: kind))
             .background { background(shape) }
             .overlay { shape.strokeBorder(strokeGradient, lineWidth: 1) }
             .clipShape(shape)
@@ -53,8 +55,11 @@ private struct VPButtonSurface: View {
     private func background(_ shape: RoundedRectangle) -> some View {
         switch kind {
         case .primary:
-            shape.fill(LinearGradient(colors: [VPColor.accentLight, VPColor.accent],
-                                      startPoint: .topLeading, endPoint: .bottomTrailing))
+            // THE primary action is WHITE — one filled white pill app-wide (the hero Play look).
+            shape.fill(.white)
+        case .accent:
+            // Rare branded/selection CTA — the old red look, kept for selection/identity only.
+            shape.fill(VPColor.accentGradient)
         case .secondary, .icon:
             ZStack { shape.fill(.regularMaterial); shape.fill(VPColor.glassTintRaised) }
         case .tertiary:
@@ -66,7 +71,8 @@ private struct VPButtonSurface: View {
 
     private var foreground: Color {
         switch kind {
-        case .primary:     return VPColor.textOnAccent
+        case .primary:     return VPColor.void          // near-black glyph + label on the white pill
+        case .accent:      return VPColor.textOnAccent
         case .destructive: return VPColor.danger
         default:           return VPColor.textPrimary
         }
@@ -75,19 +81,35 @@ private struct VPButtonSurface: View {
     private var strokeGradient: LinearGradient {
         let top: Color
         switch kind {
-        case .primary:     top = Color.white.opacity(0.5)
+        case .primary:     top = Color.black.opacity(0.12)   // faint edge so the white pill reads on dark glass
+        case .accent:      top = Color.white.opacity(0.5)
         case .destructive: top = VPColor.danger.opacity(0.55)
         default:           top = VPColor.specularBright
         }
-        return LinearGradient(colors: [top, VPColor.specularDim],
+        let bottom: Color = (kind == .primary) ? .clear : VPColor.specularDim
+        return LinearGradient(colors: [top, bottom],
                               startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
     private var shadowColor: Color {
         switch kind {
-        case .primary:     return VPColor.accentGlow
+        case .primary:     return .black.opacity(0.32)   // neutral lift; white pill never glows red
+        case .accent:      return VPColor.accentGlow
         case .destructive: return VPColor.danger.opacity(0.35)
         default:           return .black.opacity(0.28)
+        }
+    }
+}
+
+/// Sizing rule: `.icon` is a fixed 60pt circle (token specular stroke applied by the surface);
+/// every other kind fills to the 60pt minimum target and grows with its label.
+private struct VPButtonFrame: ViewModifier {
+    let kind: VPButtonKind
+    func body(content: Content) -> some View {
+        if kind == .icon {
+            content.frame(width: VPSpace.minTapTarget, height: VPSpace.minTapTarget)
+        } else {
+            content.frame(minWidth: VPSpace.minTapTarget, minHeight: VPSpace.minTapTarget)
         }
     }
 }

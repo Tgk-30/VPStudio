@@ -31,17 +31,17 @@ struct PlayerCinematicChromePolicyButtonSizesTests {
 
     @Test
     func topBarButtonSize() {
-        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 42)
+        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 50)
     }
 
     @Test
     func primaryTransportButtonSize() {
-        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 56)
+        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 72)
     }
 
     @Test
     func secondaryTransportButtonSize() {
-        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == 48)
+        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == VPSpace.minTapTarget)
     }
 }
 

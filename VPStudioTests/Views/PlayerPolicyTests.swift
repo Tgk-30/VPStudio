@@ -172,19 +172,19 @@ struct PlayerCinematicChromePolicyTestsViewsPlayerpolicytests {
         #expect(PlayerCinematicChromePolicy.quickActionsCornerRadius == 20)
     }
 
-    @Test("topBarButtonSize is 42")
+    @Test("topBarButtonSize is 50")
     func topBarButtonSizeIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 42)
+        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 50)
     }
 
-    @Test("primaryTransportButtonSize is 56")
+    @Test("primaryTransportButtonSize is 72")
     func primaryTransportButtonSizeIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 56)
+        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 72)
     }
 
-    @Test("secondaryTransportButtonSize is 48")
+    @Test("secondaryTransportButtonSize matches the minimum tap target")
     func secondaryTransportButtonSizeIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == 48)
+        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == VPSpace.minTapTarget)
     }
 
     @Test("controlsDockMaxWidth is 860")

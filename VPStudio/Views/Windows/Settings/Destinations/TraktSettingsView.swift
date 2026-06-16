@@ -278,7 +278,7 @@ struct TraktSettingsView: View {
                     Label("Login with Trakt", systemImage: "person.crop.circle.badge.checkmark")
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .tint(.white)
                 .disabled(!hasCredentials)
 
                 if TraktSettingsPolicy.shouldShowMissingCredentialsHelp(

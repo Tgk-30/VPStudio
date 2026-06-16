@@ -135,11 +135,11 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         case .metadata:
             return "Add your TMDB key for posters, details, and Discover results."
         case .ai:
-            return "Connect an AI provider for personalized recommendations and rating help."
+            return "Choose and configure your AI provider for personalized recommendations and rating help."
         case .trakt:
             return "Connect Trakt to sync watch history, ratings, and watchlist."
         case .simkl:
-            return "Disconnect your Simkl account."
+            return "Simkl sync is unavailable in this build — cleanup-only."
         case .imdbImport:
             return "Import your IMDb watchlist, ratings, and watch history from CSV exports."
         case .player:

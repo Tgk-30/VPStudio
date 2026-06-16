@@ -364,8 +364,8 @@ struct LibraryFolderLabelPolicyTests {
             isSystem: true
         )
 
-        #expect(LibraryFolderLabelPolicy.chipTitle(for: root, in: [root]) == "Top Level")
-        #expect(LibraryFolderLabelPolicy.fullPath(for: root, in: [root]) == "Top Level")
+        #expect(LibraryFolderLabelPolicy.chipTitle(for: root, in: [root]) == "Unsorted")
+        #expect(LibraryFolderLabelPolicy.fullPath(for: root, in: [root]) == "Unsorted")
     }
 
     @Test

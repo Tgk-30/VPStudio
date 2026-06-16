@@ -242,7 +242,9 @@ struct SeriesDetailLayout: View {
             VStack(alignment: .leading, spacing: 0) {
                 // MARK: - Hero Image
                 heroImage
-                    .frame(height: 380)
+                    // Bias the fill toward the top so character heads clip less than a
+                    // centered crop would.
+                    .frame(height: 380, alignment: .top)
                     .clipped()
                     .overlay(heroOverlay)
 
@@ -379,7 +381,8 @@ struct SeriesDetailLayout: View {
                 stops: [
                     .init(color: .black.opacity(0.45), location: 0.0),
                     .init(color: .clear, location: 0.28),
-                    .init(color: .black.opacity(0.35), location: 0.62),
+                    .init(color: .black.opacity(0.55), location: 0.62),
+                    .init(color: .black.opacity(0.75), location: 0.80),
                     .init(color: .black.opacity(0.95), location: 1.0),
                 ],
                 startPoint: .top,
@@ -473,41 +476,49 @@ struct SeriesDetailLayout: View {
     
     private var metadataRow: some View {
         HStack(spacing: 16) {
+            // Year/season/runtime are secondary context — de-emphasize so the rating reads
+            // as the primary signal in this row.
             if let year = viewModel.mediaItem?.year {
                 Text(String(year))
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.white.opacity(0.6))
             }
-            
+
             if mediaType == .series, !viewModel.seasons.isEmpty {
                 // Series: show seasons + episode count, not a single (misleading) runtime.
                 Text(SeriesDetailPresentationPolicy.seasonCountText(viewModel.seasons.count) ?? "")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.white.opacity(0.6))
 
                 let episodeTotal = viewModel.seasons.reduce(0) { $0 + $1.episodeCount }
                 if episodeTotal > 0 {
                     Text("\(episodeTotal) Episodes")
                         .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(.white.opacity(0.6))
                 }
             } else if let runtimeText = SeriesDetailPresentationPolicy.runtimeText(minutes: viewModel.mediaItem?.runtime) {
                 Text(runtimeText)
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.white.opacity(0.6))
             }
-            
+
             if let ratingText = SeriesDetailPresentationPolicy.imdbRatingText(viewModel.mediaItem?.imdbRating) {
                 HStack(spacing: 4) {
+                    // Small gold accent, not a loud badge — shrink to caption2 so it reads
+                    // as a subtle mark beside the weighted rating value.
                     Image(systemName: "star.fill")
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.yellow)
                     Text(ratingText)
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.85))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
                 }
             }
-            
+
+            // Separate the favorite affordance from the rating group so the heart no longer
+            // visually attaches to the IMDb mark.
+            Spacer(minLength: 0)
+
             // Favorite button
             Button {
                 Task { await viewModel.toggleFavorites() }
@@ -525,84 +536,110 @@ struct SeriesDetailLayout: View {
     }
     
     private var playButtonRow: some View {
-        Button {
-            guard isPrimaryPlayEnabled else { return }
-            playerOpeningError = nil
-            isPlayButtonLoading = true
-            Task {
-                defer { isPlayButtonLoading = false }
+        // Primary play paired with a secondary glass action so the white pill no longer
+        // reads as a lone full-width web-form button.
+        HStack(spacing: 12) {
+            Button {
+                guard isPrimaryPlayEnabled else { return }
+                playerOpeningError = nil
+                isPlayButtonLoading = true
+                Task {
+                    defer { isPlayButtonLoading = false }
 
-                // Ensure we have torrents for the selected episode
-                if viewModel.torrentSearch.results.isEmpty {
-                    await viewModel.searchTorrents()
+                    // Ensure we have torrents for the selected episode
+                    if viewModel.torrentSearch.results.isEmpty {
+                        await viewModel.searchTorrents()
+                    }
+
+                    guard let torrent = viewModel.torrentSearch.results.first else {
+                        playerOpeningError = SeriesPrimaryPlayPolicy.noStreamsMessage
+                        return
+                    }
+
+                    onPlayTorrent(torrent)
                 }
-
-                guard let torrent = viewModel.torrentSearch.results.first else {
-                    playerOpeningError = SeriesPrimaryPlayPolicy.noStreamsMessage
-                    return
-                }
-
-                onPlayTorrent(torrent)
-            }
-        } label: {
-            HStack(spacing: 12) {
-                if isPrimaryPlayBusy {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .black))
-                } else {
-                    // Icon tracks the label: a stack glyph for the "Select Episode" state,
-                    // a play glyph only when the button actually starts playback.
-                    let needsEpisodeSelection = mediaType == .series && viewModel.selectedEpisode == nil
-                    Image(systemName: needsEpisodeSelection ? "rectangle.stack" : "play.fill")
-                        .font(.system(size: 22))
-                    Text(
-                        SeriesPrimaryPlayPolicy.title(
-                            mediaType: mediaType,
-                            hasSelectedEpisode: viewModel.selectedEpisode != nil
+            } label: {
+                HStack(spacing: 12) {
+                    if isPrimaryPlayBusy {
+                        // Spinner is tinted to match the white pill's near-black glyph.
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: VPColor.void))
+                    } else {
+                        // Icon tracks the label: a stack glyph for the "Select Episode" state,
+                        // a play glyph only when the button actually starts playback.
+                        let needsEpisodeSelection = mediaType == .series && viewModel.selectedEpisode == nil
+                        Image(systemName: needsEpisodeSelection ? "rectangle.stack" : "play.fill")
+                            .font(.system(size: 22))
+                        Text(
+                            SeriesPrimaryPlayPolicy.title(
+                                mediaType: mediaType,
+                                hasSelectedEpisode: viewModel.selectedEpisode != nil
+                            )
                         )
-                    )
+                            .font(.headline)
+                    }
+                }
+                // Fixed-width pill instead of full-bleed so it reads as a focused CTA;
+                // VPButtonStyle(.primary) supplies the white fill, VPColor.void glyph,
+                // VPRadius.control corner, 60pt min height, pressed scale, and 0.45
+                // disabled opacity (the canonical WHITE-primary hero look).
+                .frame(width: 220)
+            }
+            .buttonStyle(VPButtonStyle(kind: .primary))
+            .disabled(!isPrimaryPlayEnabled)
+            .accessibilityHint(
+                SeriesPrimaryPlayPolicy.accessibilityHint(
+                    mediaType: mediaType,
+                    hasSelectedEpisode: viewModel.selectedEpisode != nil
+                )
+            )
+
+            // Secondary watchlist action in glass to balance the primary CTA.
+            Button {
+                Task { await viewModel.toggleWatchlist() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: viewModel.isInWatchlist ? "checkmark" : "plus")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Watchlist")
                         .font(.headline)
                 }
             }
-            .foregroundStyle(.black)
-            .frame(maxWidth: .infinity)
-            .frame(height: 56)
-            .background(.white, in: RoundedRectangle(cornerRadius: 10))
-            // Dim the pill when inert (e.g. series with no episode selected) so the
-            // disabled state is legible — .buttonStyle(.plain) doesn't dim on its own.
-            .opacity(isPrimaryPlayEnabled ? 1 : 0.55)
+            // Canonical glass secondary beside the WHITE primary CTA.
+            .buttonStyle(VPButtonStyle(kind: .secondary))
+            .accessibilityLabel(viewModel.isInWatchlist ? "Remove from Watchlist" : "Add to Watchlist")
+            .accessibilityHint("Toggles this title in your watchlist.")
+
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
         .padding(.top, 8)
-        .disabled(!isPrimaryPlayEnabled)
-        .accessibilityHint(
-            SeriesPrimaryPlayPolicy.accessibilityHint(
-                mediaType: mediaType,
-                hasSelectedEpisode: viewModel.selectedEpisode != nil
-            )
-        )
     }
 
     private var watchStateRow: some View {
         let state = viewModel.currentWatchStatusState
         let actionTitle = state.isWatched ? "Mark Unwatched" : "Mark Watched"
 
-        return Button {
-            Task { await viewModel.toggleCurrentWatchState() }
-        } label: {
-            HStack(alignment: .center, spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: watchStatusIcon(for: state))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(watchStatusColor(for: state))
+        // Only the right-side capsule is the action; the left status (icon + label) is plain
+        // content so the indicator isn't conflated with the tap target.
+        return HStack(alignment: .center, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: watchStatusIcon(for: state))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(watchStatusColor(for: state))
 
-                    Text(state.label)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.92))
-                }
+                Text(state.label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .accessibilityElement(children: .combine)
 
-                Spacer()
+            Spacer()
 
+            // Right side is the action half of the status-vs-action split: a dense
+            // in-content control, so it targets the >=44 minimum (not the 60 primary floor).
+            Button {
+                Task { await viewModel.toggleCurrentWatchState() }
+            } label: {
                 HStack(spacing: 6) {
                     Image(systemName: state.isWatched ? "xmark" : "checkmark")
                         .font(.caption.weight(.semibold))
@@ -610,17 +647,17 @@ struct SeriesDetailLayout: View {
                         .font(.subheadline.weight(.semibold))
                 }
                 .foregroundStyle(.white.opacity(0.92))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
                 .background(Capsule().fill(.white.opacity(0.12)))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .buttonStyle(.plain)
+            .accessibilityLabel(actionTitle)
+            .accessibilityHint("Updates the watched state for this title.")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(actionTitle)
-        .accessibilityHint("Updates the watched state for this title.")
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: VPRadius.control, style: .continuous))
         .padding(.top, 4)
     }
     
@@ -780,15 +817,21 @@ struct SeriesDetailLayout: View {
                 await viewModel.loadSeason(season.seasonNumber, apiKey: tmdbApiKey)
             }
         } label: {
+            // Season tabs are a selection control (>=44 dense target), so identity reads
+            // through the brand accent — glass fill + thin accent ring + soft glow — not an
+            // opaque white slab (which is reserved for THE primary action). Unselected text
+            // sits at the textTertiary contrast floor.
             Text("\(season.seasonNumber)")
                 .font(.subheadline)
                 .fontWeight(isSelected ? .bold : .medium)
-                .foregroundStyle(isSelected ? .black : .white.opacity(0.85))
+                .foregroundStyle(isSelected ? VPColor.textPrimary : VPColor.textTertiary)
                 .frame(width: 44, height: 44)
-                .background(
-                    isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.ultraThinMaterial),
-                    in: Circle()
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(
+                    Circle()
+                        .strokeBorder(VPColor.accent, lineWidth: isSelected ? 1.5 : 0)
                 )
+                .shadow(color: isSelected ? VPColor.accent.opacity(0.35) : .clear, radius: 8)
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isLoading(.seasonEpisodes))

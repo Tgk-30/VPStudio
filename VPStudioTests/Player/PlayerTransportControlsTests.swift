@@ -480,7 +480,7 @@ struct PlayerPlayPauseControlPresentationTests {
 struct PlayerCinematicChromePolicyTests {
 
     @Test func primaryTransportButtonUsesDesignToken() {
-        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 56)
+        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 72)
     }
 
     @Test func controlsDockLayoutTokensStayStable() {
@@ -495,8 +495,8 @@ struct PlayerCinematicChromePolicyTests {
     }
 
     @Test func transportButtonAndProgressTokensStayStable() {
-        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 42)
-        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == 48)
+        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 50)
+        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == VPSpace.minTapTarget)
         #expect(PlayerCinematicChromePolicy.progressBarIdleHeight == 4)
         #expect(PlayerCinematicChromePolicy.progressBarScrubbingHeight == 8)
     }

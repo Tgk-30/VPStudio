@@ -308,7 +308,7 @@ struct SettingsView: View {
                     obsidianSection(
                         group.category.title,
                         icon: categoryIcon(group.category),
-                        badge: "\(configuredCountForCategory(group.category))/\(group.destinations.count)"
+                        badge: "\(configuredCountForCategory(group.category))/\(group.destinations.count) set up"
                     ) {
                         ForEach(Array(group.destinations.enumerated()), id: \.element.id) { index, destination in
                             obsidianDestinationLink(destination, isRecent: false)
@@ -423,7 +423,7 @@ struct SettingsView: View {
                 VPSectionHeader(title: title)
                 if let badge {
                     VPBadge(text: badge)
-                        .accessibilityLabel("\(badge) configured")
+                        .accessibilityLabel(badge)
                 }
             }
             VPCard(padding: VPSpace.tight) {

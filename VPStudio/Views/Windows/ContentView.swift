@@ -725,13 +725,13 @@ struct VPBottomTabBar: View {
     private var horizontalPadding: CGFloat { 14 * chromeScale }
     private var verticalPadding: CGFloat { 9 * chromeScale }
     private var iconLabelSpacing: CGFloat { 5 * chromeScale }
-    private var tabWidth: CGFloat { 68 * chromeScale }
-    private var tabHeight: CGFloat { 50 * chromeScale }
+    private var tabWidth: CGFloat { max(VPSpace.minTapTarget, 68 * chromeScale) }
+    private var tabHeight: CGFloat { max(VPSpace.minTapTarget, 50 * chromeScale) }
     private var separatorHeight: CGFloat { 30 * chromeScale }
     private var separatorPadding: CGFloat { 3 * chromeScale }
     private var iconSize: CGFloat { 17 * chromeScale }
     private var textSize: CGFloat { 10 * chromeScale }
-    private var badgeSize: CGFloat { 7 * chromeScale }
+    private var badgeSize: CGFloat { 8 * chromeScale }
     private var containerInset: CGFloat { 4 * chromeScale }
 
     var body: some View {
@@ -763,20 +763,7 @@ struct VPBottomTabBar: View {
         .padding(containerInset)
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, verticalPadding)
-        .background(.regularMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(0.30), .white.opacity(0.08)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.8
-                )
-        }
-        .shadow(color: .black.opacity(0.10), radius: 28, y: 6)
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 8)
+        .vpChromeSurface(.capsule)
     }
 
     private func tabButton(tab: SidebarTab, isSelected: Bool, action: @escaping () -> Void) -> some View {
@@ -802,26 +789,17 @@ struct VPBottomTabBar: View {
                 Text(tab.rawValue)
                     .font(.system(size: textSize, weight: .medium))
             }
-            .foregroundStyle(isSelected ? .white : .white.opacity(0.5))
+            .foregroundStyle(VPNavForeground.tint(isSelected: isSelected))
             .frame(width: tabWidth, height: tabHeight)
+            #if os(macOS)
             .background {
-                #if os(macOS)
-                if isSelected {
-                    Capsule()
-                        .fill(LinearGradient.vpAccent.opacity(0.8))
-                        .shadow(color: .vpRed.opacity(0.4), radius: 8, y: 2)
-                } else if hoveredTab == tab {
+                if !isSelected, hoveredTab == tab {
                     Capsule()
                         .fill(Color.white.opacity(0.12))
                 }
-                #else
-                if isSelected {
-                    Capsule()
-                        .fill(LinearGradient.vpAccent.opacity(0.8))
-                        .shadow(color: .vpRed.opacity(0.4), radius: 8, y: 2)
-                }
-                #endif
             }
+            #endif
+            .vpNavItemSelection(isSelected: isSelected)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

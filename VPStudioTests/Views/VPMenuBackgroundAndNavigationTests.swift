@@ -194,7 +194,7 @@ struct VPSidebarViewTests {
         #expect(SidebarLayoutPolicy.collapsedWidth == 52)
         #expect(SidebarLayoutPolicy.expandedWidth == 160)
         #expect(SidebarLayoutPolicy.cornerRadius == 26)
-        #expect(SidebarLayoutPolicy.iconFrame == 44)
+        #expect(SidebarLayoutPolicy.iconFrame == VPSpace.minTapTarget)
     }
 
     @Test("SidebarLayoutPolicy sidebarMainTabs contains expected tabs")

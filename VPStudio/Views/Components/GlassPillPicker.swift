@@ -3,8 +3,11 @@ import SwiftUI
 enum PillPickerAnimationPolicy {
     static let springResponse: Double = 0.35
     static let springDamping: Double = 0.82
-    static let pillHeight: CGFloat = 36
+    /// Dense in-content control — raised to the 44pt tap-target floor (was 36).
+    static let pillHeight: CGFloat = 44
     static let horizontalPadding: CGFloat = 16
+    /// Accent ring weight, matching the nav selection idiom (`VPNavSelectionBackground`).
+    static let selectionRingWidth: CGFloat = 1.5
 }
 
 /// A glass-morphism segmented picker with a sliding indicator.
@@ -15,6 +18,7 @@ struct GlassPillPicker<SelectionType: Hashable & CustomStringConvertible>: View 
     let options: [SelectionType]
     @Binding var selection: SelectionType
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Namespace private var pillNamespace
 
     var body: some View {
@@ -60,16 +64,42 @@ struct GlassPillPicker<SelectionType: Hashable & CustomStringConvertible>: View 
                 .padding(.horizontal, PillPickerAnimationPolicy.horizontalPadding)
                 .background {
                     if isSelected {
-                        Capsule()
-                            .fill(Color.vpRed)
+                        selectionIndicator
                             .matchedGeometryEffect(id: "pillIndicator", in: pillNamespace)
                     }
                 }
-                .foregroundStyle(isSelected ? .white : .primary)
+                .foregroundStyle(
+                    isSelected ? VPNavForeground.selected : VPNavForeground.unselected
+                )
         }
         .buttonStyle(.plain)
         #if os(visionOS)
         .hoverEffect(.highlight)
         #endif
+    }
+
+    /// The selected-segment affordance. Mirrors the canonical nav selection idiom
+    /// (`VPNavSelectionBackground`): a refined glass pill + a faint inner accent tint + a thin
+    /// `VPColor.accent` ring + a soft accent glow — NOT a solid red slab. Rendered inline (rather
+    /// than via `vpNavItemSelection`) so the `matchedGeometryEffect` slide is preserved.
+    private var selectionIndicator: some View {
+        ZStack {
+            // Subtle glass fill (not opaque) — keeps the substrate reading through.
+            if reduceTransparency {
+                Capsule().fill(VPColor.contentPlane)
+            } else {
+                Capsule().fill(.regularMaterial)
+                Capsule().fill(VPColor.glassTintRaised)
+            }
+            // Faint inner accent tint for brand identity without going solid red.
+            Capsule().fill(VPColor.accent.opacity(0.16))
+            // Thin accent ring.
+            Capsule().strokeBorder(
+                VPColor.accent,
+                lineWidth: PillPickerAnimationPolicy.selectionRingWidth
+            )
+        }
+        // Soft accent glow.
+        .shadow(color: VPColor.accent.opacity(0.35), radius: 8)
     }
 }

@@ -80,7 +80,7 @@ struct SearchShellCopyPolicyTests {
                 activeMoodCardTitle: nil,
                 selectedGenreName: nil,
                 submittedQuery: "alien"
-            ) == "Tighten the query, switch type, or add filters without losing the current poster wall."
+            ) == "Tighten the query, switch type, or add filters."
         )
 
         #expect(
@@ -88,7 +88,7 @@ struct SearchShellCopyPolicyTests {
                 activeMoodCardTitle: nil,
                 selectedGenreName: nil,
                 submittedQuery: ""
-            ) == "Start with a title, actor, or keyword, then drift into the browse rails below if you want a wider opening."
+            ) == "Search a title, actor, or keyword — or let AI pick for you."
         )
     }
 }
@@ -315,7 +315,7 @@ struct SearchResultsPresentationPolicyTests {
             selectedGenreName: nil,
             submittedQuery: "alien",
             selectedType: nil
-        ) == "Refine the query or switch type without losing the current poster wall.")
+        ) == "0 results for movies and TV shows.")
 
         #expect(SearchResultsPresentationPolicy.resultsContextSubtitle(
             activeMoodCardTitle: nil,

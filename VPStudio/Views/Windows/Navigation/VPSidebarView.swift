@@ -9,8 +9,9 @@ enum SidebarLayoutPolicy {
     static let expandedWidth: CGFloat = 160
     /// Corner radius for the sidebar pill shape.
     static let cornerRadius: CGFloat = 26
-    /// Icon frame size for each sidebar button.
-    static let iconFrame: CGFloat = 44
+    /// Icon frame size for each sidebar button. Pinned to the minimum tap target (60) so each
+    /// nav item meets the mandated primary-control hit area before `chromeScale` is applied.
+    static let iconFrame: CGFloat = VPSpace.minTapTarget
 
     /// The tabs shown in the main sidebar group (excludes environments, which is separate).
     static var sidebarMainTabs: [SidebarTab] {
@@ -27,6 +28,10 @@ struct VPSidebarView: View {
     let onTabSelection: (SidebarTab) -> Void
     var activeDownloadCount: Int = 0
     var settingsWarningCount: Int = 0
+
+    /// The tab whose name label is currently revealed (on hover / gaze). Keeps the rail compact by
+    /// default — the label floats to the right of the hovered icon without reflowing the pill.
+    @State private var hoveredTab: SidebarTab?
 
     #if os(visionOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -61,6 +66,11 @@ struct VPSidebarView: View {
     private var badgeOffsetX: CGFloat { -4 * chromeScale }
     private var badgeOffsetY: CGFloat { 4 * chromeScale }
     private var environmentIconSize: CGFloat { 18 * chromeScale }
+    /// Gap between an icon and its hover-revealed name label.
+    private var hoverLabelGap: CGFloat { VPSpace.tight * chromeScale }
+    /// Inset inside the floating hover-label capsule.
+    private var hoverLabelPaddingH: CGFloat { VPSpace.snug * chromeScale }
+    private var hoverLabelPaddingV: CGFloat { VPSpace.micro * chromeScale }
 
     var body: some View {
         VStack(spacing: 10 * chromeScale) {
@@ -75,7 +85,7 @@ struct VPSidebarView: View {
     // MARK: - Main Sidebar Pill
 
     private var mainSidebarPill: some View {
-        VStack(spacing: 4 * chromeScale) {
+        VStack(spacing: VPSpace.micro * chromeScale) {
             ForEach(SidebarLayoutPolicy.sidebarMainTabs, id: \.self) { tab in
                 sidebarIconButton(tab: tab, isSelected: selectedTab == tab) {
                     switch BottomTabRoutingPolicy.action(
@@ -104,20 +114,7 @@ struct VPSidebarView: View {
         .padding(.vertical, paddingVertical)
         .padding(.horizontal, paddingHorizontal)
         .frame(width: collapsedWidth)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(0.30), .white.opacity(0.08)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.8
-                )
-        }
-        .shadow(color: .black.opacity(0.10), radius: 28, y: 6)
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 8)
+        .vpChromeSurface(.roundedRect(cornerRadius: cornerRadius))
     }
 
     // MARK: - Icon Button
@@ -127,15 +124,9 @@ struct VPSidebarView: View {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: tab.icon)
                     .font(.system(size: iconSize, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
+                    .foregroundStyle(VPNavForeground.tint(isSelected: isSelected))
                     .frame(width: iconFrame, height: iconFrame)
-                    .background {
-                        if isSelected {
-                            Circle()
-                                .fill(LinearGradient.vpAccent.opacity(0.85))
-                                .shadow(color: .vpRed.opacity(0.4), radius: 8, y: 2)
-                        }
-                    }
+                    .vpNavItemSelection(isSelected: isSelected, shape: Circle())
 
                 // Badge dot
                 if TabBadgePolicy.shouldShowBadge(
@@ -150,13 +141,43 @@ struct VPSidebarView: View {
                 }
             }
             .contentShape(Circle())
+            .overlay(alignment: .leading) { hoverLabel(for: tab) }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(TabBarAccessibilityPolicy.accessibilityLabel(for: tab, isSelected: isSelected))
         .accessibilityHint(TabBarAccessibilityPolicy.accessibilityHint(for: tab))
+        .onHover { isHovered in
+            withAnimation(VPMotion.snappy) {
+                hoveredTab = isHovered ? tab : (hoveredTab == tab ? nil : hoveredTab)
+            }
+        }
         #if os(visionOS)
         .hoverEffect(.highlight)
         #endif
+    }
+
+    // MARK: - Hover-Reveal Label
+
+    /// A compact name label that fades in to the right of an icon on hover / gaze. Anchored to the
+    /// icon's leading edge and pushed fully outside the rail so the resting pill stays icon-only.
+    @ViewBuilder
+    private func hoverLabel(for tab: SidebarTab) -> some View {
+        if hoveredTab == tab {
+            Text(tab.rawValue)
+                .font(VPFont.label)
+                .foregroundStyle(VPColor.textPrimary)
+                .lineLimit(1)
+                .padding(.horizontal, hoverLabelPaddingH)
+                .padding(.vertical, hoverLabelPaddingV)
+                .vpChromeSurface(.capsule)
+                .fixedSize()
+                // Place the capsule just past the icon's trailing edge without widening the rail.
+                .alignmentGuide(.leading) { _ in -(iconFrame + hoverLabelGap) }
+                .allowsHitTesting(false)
+                .transition(.opacity.combined(with: .move(edge: .leading)))
+                .accessibilityHidden(true)
+                .zIndex(1)
+        }
     }
 
     // MARK: - Environments Button (separate circle, visionOS only)
@@ -174,35 +195,41 @@ struct VPSidebarView: View {
                 onTabSelection(tab)
             }
         } label: {
+            let isSelected = selectedTab == .environments
             Image(systemName: SidebarTab.environments.icon)
-                .font(.system(size: environmentIconSize, weight: selectedTab == .environments ? .semibold : .medium))
-                .foregroundStyle(selectedTab == .environments ? .white : .white.opacity(0.55))
+                .font(.system(size: environmentIconSize, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(VPNavForeground.tint(isSelected: isSelected))
                 .frame(width: iconFrame, height: iconFrame)
-                .background {
-                    if selectedTab == .environments {
-                        Circle()
-                            .fill(LinearGradient.vpAccent.opacity(0.85))
-                            .shadow(color: .vpRed.opacity(0.4), radius: 8, y: 2)
-                    }
-                }
-                .background(.regularMaterial, in: Circle())
-                .overlay {
-                    Circle()
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.white.opacity(0.28), .white.opacity(0.06)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.5
-                        )
-                }
+                // Standalone button: when selected use the shared glass + accent ring + glow
+                // selection; otherwise the resting raised Obsidian-Glass circle. Only ONE is
+                // applied so the chrome's clipShape never crops the selection's accent glow.
+                .modifier(EnvironmentSelectionBackground(isSelected: isSelected))
+                .overlay(alignment: .leading) { hoverLabel(for: .environments) }
         }
         .buttonStyle(.plain)
-        .shadow(color: .black.opacity(0.07), radius: 24, y: 0)
-        .shadow(color: .black.opacity(0.13), radius: 8, y: 4)
+        .onHover { isHovered in
+            withAnimation(VPMotion.snappy) {
+                hoveredTab = isHovered ? .environments : (hoveredTab == .environments ? nil : hoveredTab)
+            }
+        }
         .hoverEffect(.lift)
         .accessibilityLabel("Environments")
     }
     #endif
 }
+
+#if os(visionOS)
+/// Resolves the standalone Environments button's background without stacking the chrome surface
+/// and the selection background — stacking lets the chrome's clipShape crop the selection's accent
+/// glow. Selected → shared glass + accent ring + glow; otherwise the resting Obsidian-Glass circle.
+private struct EnvironmentSelectionBackground: ViewModifier {
+    let isSelected: Bool
+    func body(content: Content) -> some View {
+        if isSelected {
+            content.vpNavItemSelection(isSelected: true, shape: Circle())
+        } else {
+            content.vpChromeSurface(.capsule)
+        }
+    }
+}
+#endif

@@ -26,17 +26,17 @@ struct PlayerCinematicChromePolicyTestsViewsViewsplayercinematicchromepolicytest
 
     @Test("Top bar button size")
     func topBarButtonSize() {
-        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 42)
+        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 50)
     }
 
     @Test("Primary transport button size")
     func primaryTransportButtonSize() {
-        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 56)
+        #expect(PlayerCinematicChromePolicy.primaryTransportButtonSize == 72)
     }
 
     @Test("Secondary transport button size")
     func secondaryTransportButtonSize() {
-        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == 48)
+        #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == VPSpace.minTapTarget)
     }
 
     @Test("Controls dock max width")

@@ -2014,13 +2014,23 @@ struct PlayerView: View {
             } label: {
                 Image(systemName: playPausePresentation.symbolName)
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(.black)
+                    // WHITE primary action: near-black glyph on a white pill (the app-wide hero look).
+                    .foregroundStyle(VPColor.void)
                     .frame(
                         width: PlayerCinematicChromePolicy.primaryTransportButtonSize,
                         height: PlayerCinematicChromePolicy.primaryTransportButtonSize
                     )
                     .background(.white, in: Circle())
-                    .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
+                    .overlay {
+                        // Faint edge so the white pill reads on dark glass (matches VPButtonStyle .primary).
+                        Circle().strokeBorder(
+                            LinearGradient(colors: [.black.opacity(0.12), .clear],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            lineWidth: 1
+                        )
+                    }
+                    // Neutral lift shadow — the white primary never glows.
+                    .shadow(color: .black.opacity(0.32), radius: 10, y: 3)
             }
             .accessibilityLabel(playPausePresentation.label)
             .accessibilityValue(playPausePresentation.accessibilityValue)
@@ -2056,15 +2066,24 @@ struct PlayerView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(VPColor.textPrimary)
                 .frame(
                     width: PlayerCinematicChromePolicy.secondaryTransportButtonSize,
                     height: PlayerCinematicChromePolicy.secondaryTransportButtonSize
                 )
-                .background(.white.opacity(0.10), in: Circle())
+                // Secondary glass look on canonical tokens (matches VPButtonStyle .secondary / .icon).
+                .background {
+                    ZStack {
+                        Circle().fill(.regularMaterial)
+                        Circle().fill(VPColor.glassTintRaised)
+                    }
+                }
                 .overlay {
-                    Circle()
-                        .strokeBorder(.white.opacity(0.16), lineWidth: 0.8)
+                    Circle().strokeBorder(
+                        LinearGradient(colors: [VPColor.specularBright, VPColor.specularDim],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: 1
+                    )
                 }
         }
         .accessibilityLabel(accessibilityLabel)

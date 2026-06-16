@@ -212,7 +212,7 @@ enum LibraryActionRowPolicy {
 }
 
 enum LibraryFolderLabelPolicy {
-    static let topLevelTitle = "Top Level"
+    static let topLevelTitle = "Unsorted"
     private static let pathSeparator = " › "
 
     static func chipTitle(for folder: LibraryFolder, in allFolders: [LibraryFolder]) -> String {
@@ -727,7 +727,9 @@ struct LibraryView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(selectedList.displayName)
+                    // Stable title — the active list name already shows in the picker below,
+                    // so mirroring it here printed e.g. "Watchlist" twice.
+                    Text("My Library")
                         .font(.title3)
                         .fontWeight(.semibold)
                     GlassTag(text: "\(titleCount) titles", symbol: "film")
@@ -763,13 +765,56 @@ struct LibraryView: View {
     }
 
     private var actionRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(headerActions) { action in
-                    actionView(for: action)
-                }
+        HStack(spacing: 12) {
+            // Sort stays a first-class capsule; the infrequent maintenance
+            // actions (Export/Import/Refresh) collapse into a trailing overflow.
+            sortMenu
+            overflowMenu
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var overflowMenu: some View {
+        Menu {
+            ForEach(headerActions.filter { $0.kind != .sort }) { action in
+                overflowMenuItem(for: action)
             }
-            .padding(.vertical, 2)
+        } label: {
+            actionCapsuleLabel(
+                title: "More",
+                systemImage: "ellipsis",
+                tint: .secondary
+            )
+            .labelStyle(.iconOnly)
+            .accessibilityLabel("More Library Actions")
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func overflowMenuItem(for action: LibraryHeaderActionSpec) -> some View {
+        switch action.kind {
+        case .sort:
+            EmptyView()
+        case .export:
+            Button {
+                isShowingCSVExportSheet = true
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        case .import:
+            Button {
+                isShowingCSVImportSheet = true
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        case .refresh:
+            Button {
+                refreshTitleDuplicates()
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .disabled(!action.isEnabled)
         }
     }
 
@@ -847,49 +892,6 @@ struct LibraryView: View {
             )
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func actionView(for action: LibraryHeaderActionSpec) -> some View {
-        switch action.kind {
-        case .sort:
-            sortMenu
-        case .export:
-            Button {
-                isShowingCSVExportSheet = true
-            } label: {
-                actionCapsuleLabel(
-                    title: action.title,
-                    systemImage: action.systemImage,
-                    tint: .blue
-                )
-            }
-            .buttonStyle(.plain)
-        case .import:
-            Button {
-                isShowingCSVImportSheet = true
-            } label: {
-                actionCapsuleLabel(
-                    title: action.title,
-                    systemImage: action.systemImage,
-                    tint: .green
-                )
-            }
-            .buttonStyle(.plain)
-        case .refresh:
-            Button {
-                refreshTitleDuplicates()
-            } label: {
-                actionCapsuleLabel(
-                    title: action.title,
-                    systemImage: action.systemImage,
-                    tint: .orange
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(!action.isEnabled)
-            .opacity(action.isEnabled ? 1 : 0.5)
-        }
     }
 
     private func actionCapsuleLabel(title: String, systemImage: String, tint: Color) -> some View {

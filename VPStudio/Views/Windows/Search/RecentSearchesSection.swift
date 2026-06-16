@@ -68,6 +68,7 @@ private struct RecentSearchChip: View {
                         .font(VPFont.label)
                         .foregroundStyle(VPColor.textSecondary)
                         .lineLimit(1)
+                        .frame(minWidth: 64, alignment: .leading)
                         .padding(.leading, VPSpace.normal)
                         .frame(minHeight: VPSpace.minTapTarget)
                 }

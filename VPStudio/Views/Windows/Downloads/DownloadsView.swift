@@ -414,9 +414,11 @@ struct DownloadsView: View {
                             if let quality = group.tasks.first.flatMap({ downloadQuality(from: $0.fileName) }) {
                                 VPBadge(text: quality, tint: VPColor.info)
                             }
-                            Text("\(group.completedCount)/\(group.totalCount) downloaded")
-                                .font(VPFont.caption)
-                                .foregroundStyle(VPColor.textSecondary)
+                            if group.totalCount > 1 {
+                                Text("\(group.completedCount)/\(group.totalCount) downloaded")
+                                    .font(VPFont.caption)
+                                    .foregroundStyle(VPColor.textSecondary)
+                            }
                         }
                         if group.hasActiveDownloads && group.totalCount > 1 {
                             VPProgressBar(
@@ -457,7 +459,7 @@ struct DownloadsView: View {
                 Divider().overlay(VPColor.specularDim).padding(.horizontal, VPSpace.snug)
 
                 ForEach(group.tasks, id: \.id) { task in
-                    obsidianTaskRow(task, vm: vm, isSeries: group.mediaType == "series")
+                    obsidianTaskRow(task, vm: vm, isSeries: group.mediaType == "series", groupTitle: group.mediaTitle)
                     if task.id != group.tasks.last?.id {
                         Divider().overlay(VPColor.specularDim).padding(.leading, VPSpace.snug)
                     }
@@ -473,19 +475,24 @@ struct DownloadsView: View {
         }
     }
 
-    private func obsidianTaskRow(_ task: DownloadTask, vm: DownloadsViewModel, isSeries: Bool) -> some View {
+    private func obsidianTaskRow(_ task: DownloadTask, vm: DownloadsViewModel, isSeries: Bool, groupTitle: String) -> some View {
         HStack(spacing: VPSpace.snug) {
             VStack(alignment: .leading, spacing: VPSpace.micro) {
-                Text(task.displayTitle)
-                    .font(VPFont.bodyEmphasis)
-                    .foregroundStyle(VPColor.textPrimary)
-                    .lineLimit(1)
+                // Show a distinct title only when it adds information: not when it merely
+                // repeats the group title, and not when displayTitle has fallen back to the
+                // filename (which is already rendered on the line below — avoids a double row).
+                if task.displayTitle != groupTitle && task.displayTitle != task.fileName {
+                    Text(task.displayTitle)
+                        .font(VPFont.bodyEmphasis)
+                        .foregroundStyle(VPColor.textPrimary)
+                        .lineLimit(1)
+                }
                 Text(task.fileName)
                     .font(VPFont.micro)
                     .foregroundStyle(VPColor.textTertiary)
                     .lineLimit(1)
                 HStack(spacing: VPSpace.tight) {
-                    VPBadge(text: task.status.rawValue.capitalized, tint: statusColor(for: task.status))
+                    VPBadge(text: task.status.rawValue.capitalized, tint: badgeTint(for: task.status))
                     if task.status == .completed, let bytes = task.totalBytes, bytes > 0 {
                         Text(formatBytes(bytes))
                             .font(VPFont.caption)
@@ -493,7 +500,7 @@ struct DownloadsView: View {
                     }
                 }
                 if task.status == .downloading || task.status == .queued || task.status == .resolving {
-                    VPProgressBar(value: task.progress, height: 6, label: progressText(for: task), tint: statusColor(for: task.status))
+                    VPProgressBar(value: task.progress, height: 8, label: progressText(for: task), tint: statusColor(for: task.status))
                         .padding(.top, 2)
                 }
                 if let message = task.errorMessage, !message.isEmpty {
@@ -1013,6 +1020,12 @@ struct DownloadsView: View {
         case .resolving: return .purple
         case .queued: return .secondary
         }
+    }
+
+    /// Tint for the status badge. In-progress downloads use the brand "live" accent so the badge
+    /// reads as a distinct hue from the blue `VPColor.info` quality badge (e.g. "4K").
+    private func badgeTint(for status: DownloadStatus) -> Color {
+        status == .downloading ? VPColor.live : statusColor(for: status)
     }
 
     private func progressText(for task: DownloadTask) -> String {

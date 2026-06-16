@@ -93,7 +93,7 @@ struct LibraryCSVExportSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(.vpRed)
+            .tint(.white)
             .disabled(isExporting)
         }
     }

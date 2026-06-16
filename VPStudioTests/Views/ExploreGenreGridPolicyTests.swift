@@ -20,8 +20,8 @@ struct ExploreGenreGridPolicyTests {
         let columns = ExploreGenreTilePolicy.gridColumns()
 
         #expect(columns.count == ExploreGenreTilePolicy.columns)
-        #expect(ExploreGenreTilePolicy.columns == 7)
-        #expect(ExploreGenreTilePolicy.tileWidth == 128)
+        #expect(ExploreGenreTilePolicy.columns == 6)
+        #expect(ExploreGenreTilePolicy.tileWidth == 152)
         #expect(ExploreGenreTilePolicy.columnSpacing == 16)
         #expect(ExploreGenreTilePolicy.rowSpacing == 15)
     }

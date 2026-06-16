@@ -36,7 +36,7 @@ enum SearchShellCopyPolicy {
             return "Tighten the query, switch type, or add filters."
         }
 
-        return "Start with a title, actor, or keyword, then drift into the browse rails below if you want a wider opening."
+        return "Search a title, actor, or keyword — or let AI pick for you."
     }
 }
 
@@ -177,7 +177,9 @@ enum SearchResultsPresentationPolicy {
         activeMoodCardIsFutureReleases: Bool,
         selectedGenreName: String?,
         submittedQuery: String,
-        selectedType: MediaType?
+        selectedType: MediaType?,
+        resultCount: Int = 0,
+        sortName: String? = nil
     ) -> String {
         let descriptor = selectedContentDescriptor(selectedType: selectedType)
 
@@ -198,7 +200,11 @@ enum SearchResultsPresentationPolicy {
         }
 
         if !submittedQuery.isEmpty {
-            return "Refine the query or switch type without losing the current poster wall."
+            let countText = resultCount == 1 ? "1 result" : "\(resultCount) results"
+            if let sortName {
+                return "\(countText) for \(descriptor), sorted by \(sortName.lowercased())."
+            }
+            return "\(countText) for \(descriptor)."
         }
 
         return "Browse rails and direct search stay in the same place so you can pivot quickly."
@@ -440,7 +446,7 @@ struct SearchView: View {
                         viewModel: viewModel,
                         seedQuery: searchDraft,
                         suppressNextDraftDebounce: $suppressNextSearchDraftDebounce,
-                        placeholder: "Try: gritty sci-fi movies, cozy TV, or ask for AI picks",
+                        placeholder: "Search movies, shows, or ask AI…",
                         onSubmit: { text in submitSearch(queryText: text) },
                         onClear: {
                             searchDraft = ""
@@ -488,6 +494,7 @@ struct SearchView: View {
                 } else {
                     Image(systemName: "sparkles")
                         .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.purple)
                 }
 
                 Text(viewModel.isLoadingAI ? "Curating" : "Curate For Me")
@@ -504,8 +511,8 @@ struct SearchView: View {
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        .white.opacity(0.12),
-                                        Color.purple.opacity(0.10),
+                                        Color.purple.opacity(0.28),
+                                        Color.purple.opacity(0.16),
                                         .clear,
                                     ],
                                     startPoint: .leading,
@@ -806,15 +813,21 @@ struct SearchView: View {
         } label: {
             Text(title)
                 .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(isSelected ? Color.black.opacity(0.84) : .white.opacity(0.62))
+                .foregroundStyle(isSelected ? VPColor.textPrimary : .white.opacity(0.74))
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 .background {
                     if isSelected {
-                        Capsule()
-                            .fill(VPColor.accent)
-                            .shadow(color: VPColor.accent.opacity(0.42), radius: 5, y: 0)
+                        // Canonical nav-selection idiom: glass + faint accent tint +
+                        // thin accent ring + soft glow — never an opaque red slab.
+                        ZStack {
+                            Capsule().fill(.regularMaterial)
+                            Capsule().fill(VPColor.glassTintRaised)
+                            Capsule().fill(VPColor.accent.opacity(0.16))
+                            Capsule().strokeBorder(VPColor.accent, lineWidth: 1.5)
+                        }
+                        .shadow(color: VPColor.accent.opacity(0.35), radius: 8)
                     }
                 }
         }
@@ -915,7 +928,9 @@ struct SearchView: View {
             activeMoodCardIsFutureReleases: viewModel.activeMoodCard?.isFutureReleases == true,
             selectedGenreName: viewModel.selectedGenre?.name,
             submittedQuery: viewModel.submittedQuery,
-            selectedType: viewModel.selectedType
+            selectedType: viewModel.selectedType,
+            resultCount: viewModel.results.count,
+            sortName: viewModel.sortOption.displayName
         )
     }
 
@@ -1342,11 +1357,12 @@ private struct SearchQueryBar: View {
             onClear()
         } label: {
             Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.28))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: 14, height: 14)
         .accessibilityLabel("Clear search text")
         .accessibilityHint("Clears the current search query.")
         .transition(.scale.combined(with: .opacity))
