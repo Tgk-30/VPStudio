@@ -139,7 +139,7 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         case .trakt:
             return "Connect Trakt to sync watch history, ratings, and watchlist."
         case .simkl:
-            return "Simkl cleanup-only: authorization can be cleared here, but sync and scrobbling are unavailable in this build."
+            return "Disconnect your Simkl account."
         case .imdbImport:
             return "Import your IMDb watchlist, ratings, and watch history from CSV exports."
         case .player:

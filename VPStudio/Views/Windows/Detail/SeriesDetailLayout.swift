@@ -262,7 +262,9 @@ struct SeriesDetailLayout: View {
                     // Current episode info
                     currentEpisodeRow
 
-                    if mediaType == .series {
+                    // Only surface the press-and-hold hint when episodes are actually
+                    // shown below, so the tip sits near what it describes.
+                    if mediaType == .series, shouldShowEpisodesSection {
                         seriesTrackingRow
                     }
 
@@ -389,7 +391,7 @@ struct SeriesDetailLayout: View {
                 Spacer(minLength: 0)
                 HStack {
                     Text(title.uppercased())
-                        .font(.system(size: 40, weight: .heavy))
+                        .font(.system(size: 56, weight: .heavy))
                         .foregroundStyle(.white)
                         .lineLimit(2)
                         .minimumScaleFactor(0.6)
@@ -511,8 +513,10 @@ struct SeriesDetailLayout: View {
                 Task { await viewModel.toggleFavorites() }
             } label: {
                 Image(systemName: viewModel.mediaLibrary.isInFavorites ? "heart.fill" : "heart")
-                    .font(.system(size: 18))
+                    .font(.system(size: 16))
                     .foregroundStyle(viewModel.mediaLibrary.isInFavorites ? .red : .white.opacity(0.85))
+                    .frame(width: 32, height: 32)
+                    .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(viewModel.mediaLibrary.isInFavorites ? "Remove from Favorites" : "Add to Favorites")
@@ -592,22 +596,23 @@ struct SeriesDetailLayout: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(watchStatusColor(for: state))
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Watch Status")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.6))
-
-                        Text(state.label)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                    }
+                    Text(state.label)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.92))
                 }
 
                 Spacer()
 
-                Text(actionTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.92))
+                HStack(spacing: 6) {
+                    Image(systemName: state.isWatched ? "xmark" : "checkmark")
+                        .font(.caption.weight(.semibold))
+                    Text(actionTitle)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(.white.opacity(0.92))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(.white.opacity(0.12)))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1034,7 +1039,7 @@ struct SeriesDetailLayout: View {
                         .foregroundStyle(.white.opacity(0.88))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.12), in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 1))
                 }
             }
         }

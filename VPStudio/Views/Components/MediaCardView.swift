@@ -101,13 +101,13 @@ struct MediaCardView: View {
                     if let year = item.year {
                         Text(item.type.displayName)
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(.white.opacity(0.6))
                         Text("\u{2022}")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.3))
                         Text(String(year))
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(.white.opacity(0.6))
                     }
                     if let rating = item.imdbRating, rating > 0 {
                         Text("\u{2022}")
@@ -116,11 +116,11 @@ struct MediaCardView: View {
                         HStack(spacing: 2) {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 8))
-                                .foregroundStyle(.yellow)
+                                .foregroundStyle(.white.opacity(0.85))
                             Text(String(format: "%.1f", rating))
                                 .font(.caption2)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.white.opacity(0.5))
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white.opacity(0.9))
                         }
                     }
                     if let event = userRating, let value = event.feedbackValue {

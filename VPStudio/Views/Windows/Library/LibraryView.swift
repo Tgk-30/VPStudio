@@ -728,7 +728,8 @@ struct LibraryView: View {
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(selectedList.displayName)
-                        .font(.headline)
+                        .font(.title3)
+                        .fontWeight(.semibold)
                     GlassTag(text: "\(titleCount) titles", symbol: "film")
                 }
                 Spacer(minLength: 20)

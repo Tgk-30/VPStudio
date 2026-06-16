@@ -437,11 +437,8 @@ struct SettingsView: View {
             VPRow(destination.title, subtitle: destination.summary, systemImage: destination.icon, iconTint: destination.tintColor) {
                 HStack(spacing: VPSpace.tight) {
                     if isRecent { VPBadge(text: "Recent", tint: VPColor.accent) }
-                    if let status = destinationStatuses[destination] {
-                        Circle()
-                            .fill(statusColor(status.kind))
-                            .frame(width: 9, height: 9)
-                            .shadow(color: statusColor(status.kind).opacity(0.6), radius: 3)
+                    if let status = destinationStatuses[destination], !status.message.isEmpty {
+                        GlassTag(text: status.message, tintColor: statusColor(status.kind))
                             .accessibilityHidden(true) // status conveyed via the row's hint
                     }
                     Image(systemName: "chevron.right")

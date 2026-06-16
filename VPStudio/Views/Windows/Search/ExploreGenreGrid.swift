@@ -30,13 +30,13 @@ struct ExploreGenreGrid: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Browse by Genre & Mood")
+            Text("Browse Categories")
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
 
             LazyVGrid(
                 columns: ExploreGenreTilePolicy.gridColumns(),
-                alignment: .leading,
+                alignment: .center,
                 spacing: ExploreGenreTilePolicy.rowSpacing
             ) {
                 ForEach(cards) { card in

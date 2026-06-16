@@ -170,6 +170,11 @@ struct VPProgressBar: View {
                                                  startPoint: .leading, endPoint: .trailing))
                             .frame(width: max(height, geo.size.width * clamped))
                             .shadow(color: tint.opacity(0.5), radius: 6)
+                    } else {
+                        // Faint tinted stub so the bar still reads as "present" at 0%.
+                        Capsule()
+                            .fill(tint.opacity(0.25))
+                            .frame(width: height)
                     }
                 }
             }

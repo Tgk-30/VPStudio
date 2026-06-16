@@ -844,7 +844,7 @@ struct AICuratedHeroCard: View {
                             HStack(spacing: 3) {
                                 Image(systemName: "star.fill")
                                     .font(.system(size: 10))
-                                    .foregroundStyle(.yellow)
+                                    .foregroundStyle(.white.opacity(0.85))
                                 Text(String(format: "%.1f", rating))
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.white.opacity(0.82))
@@ -1030,7 +1030,7 @@ struct FeaturedHeroView: View {
                         HStack(spacing: 3) {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 10))
-                                .foregroundStyle(.yellow)
+                                .foregroundStyle(.white.opacity(0.85))
                             Text(String(format: "%.1f", rating))
                                 .font(.caption)
                                 .fontWeight(.semibold)
@@ -1039,7 +1039,7 @@ struct FeaturedHeroView: View {
                     }
 
                     // HDR badge
-                    GlassTag(text: "HDR", symbol: "sparkles", weight: .bold)
+                    GlassTag(text: "HDR", weight: .bold)
                 }
 
                 // Action buttons — Apple TV+ / Netflix language: solid light primary + glass secondary.

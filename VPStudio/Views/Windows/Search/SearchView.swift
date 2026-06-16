@@ -33,7 +33,7 @@ enum SearchShellCopyPolicy {
         }
 
         if !submittedQuery.isEmpty {
-            return "Tighten the query, switch type, or add filters without losing the current poster wall."
+            return "Tighten the query, switch type, or add filters."
         }
 
         return "Start with a title, actor, or keyword, then drift into the browse rails below if you want a wider opening."
@@ -431,7 +431,7 @@ struct SearchView: View {
 
                     Text(searchShellSubtitle)
                         .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.32))
+                        .foregroundStyle(.white.opacity(0.52))
                         .lineLimit(2)
                 }
 
@@ -505,7 +505,7 @@ struct SearchView: View {
                                 LinearGradient(
                                     colors: [
                                         .white.opacity(0.12),
-                                        Color(red: 0.48, green: 0.93, blue: 0.96).opacity(0.10),
+                                        Color.purple.opacity(0.10),
                                         .clear,
                                     ],
                                     startPoint: .leading,
@@ -813,8 +813,8 @@ struct SearchView: View {
                 .background {
                     if isSelected {
                         Capsule()
-                            .fill(Color(red: 0.46, green: 0.93, blue: 0.95))
-                            .shadow(color: Color(red: 0.46, green: 0.93, blue: 0.95).opacity(0.42), radius: 5, y: 0)
+                            .fill(VPColor.accent)
+                            .shadow(color: VPColor.accent.opacity(0.42), radius: 5, y: 0)
                     }
                 }
         }

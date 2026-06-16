@@ -418,7 +418,7 @@ struct DownloadsView: View {
                                 .font(VPFont.caption)
                                 .foregroundStyle(VPColor.textSecondary)
                         }
-                        if group.hasActiveDownloads {
+                        if group.hasActiveDownloads && group.totalCount > 1 {
                             VPProgressBar(
                                 value: group.overallProgress,
                                 height: 8,
@@ -431,23 +431,25 @@ struct DownloadsView: View {
 
                     Spacer(minLength: VPSpace.tight)
 
-                    obsidianIconButton("trash", label: "Delete all downloads", tint: VPColor.danger) {
-                        confirmDeleteMediaId = group.mediaId
-                    }
-                    .confirmationDialog(
-                        "Delete All Downloads?",
-                        isPresented: Binding(
-                            get: { confirmDeleteMediaId == group.mediaId },
-                            set: { if !$0 { confirmDeleteMediaId = nil } }
-                        ),
-                        titleVisibility: .visible
-                    ) {
-                        Button("Delete All", role: .destructive) {
-                            Task { await vm.removeAll(mediaId: group.mediaId) }
+                    if group.totalCount > 1 {
+                        obsidianIconButton("trash", label: "Delete all downloads", tint: VPColor.danger) {
+                            confirmDeleteMediaId = group.mediaId
                         }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("This will permanently delete all downloaded files for \"\(group.mediaTitle)\" from storage.")
+                        .confirmationDialog(
+                            "Delete All Downloads?",
+                            isPresented: Binding(
+                                get: { confirmDeleteMediaId == group.mediaId },
+                                set: { if !$0 { confirmDeleteMediaId = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete All", role: .destructive) {
+                                Task { await vm.removeAll(mediaId: group.mediaId) }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This will permanently delete all downloaded files for \"\(group.mediaTitle)\" from storage.")
+                        }
                     }
                 }
                 .padding(VPSpace.snug)
@@ -474,9 +476,13 @@ struct DownloadsView: View {
     private func obsidianTaskRow(_ task: DownloadTask, vm: DownloadsViewModel, isSeries: Bool) -> some View {
         HStack(spacing: VPSpace.snug) {
             VStack(alignment: .leading, spacing: VPSpace.micro) {
-                Text(isSeries ? task.displayTitle : task.fileName)
+                Text(task.displayTitle)
                     .font(VPFont.bodyEmphasis)
                     .foregroundStyle(VPColor.textPrimary)
+                    .lineLimit(1)
+                Text(task.fileName)
+                    .font(VPFont.micro)
+                    .foregroundStyle(VPColor.textTertiary)
                     .lineLimit(1)
                 HStack(spacing: VPSpace.tight) {
                     VPBadge(text: task.status.rawValue.capitalized, tint: statusColor(for: task.status))
