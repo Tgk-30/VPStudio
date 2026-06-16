@@ -191,7 +191,7 @@ struct LocalDownloadServiceTests {
         let service = LocalDownloadService(
             catalogStore: store,
             snapshotDownloader: downloader.downloader,
-            diskSpaceProvider: { _ in 1 }
+            diskSpaceProvider: { _ in .max } // ample free space so the race flow proceeds (each model needs ~700MB)
         )
 
         await service.downloadModel(id: first.id)
@@ -421,7 +421,13 @@ struct LocalDownloadServiceTests {
         let store = LocalModelCatalogStore(database: database)
         let downloader = ControlledSnapshotDownloader()
 
-        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+        // Deterministic 1-byte free space (far below the model's ~1TB requirement) so the
+        // disk-space preflight reliably fails without depending on the host's real disk.
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            diskSpaceProvider: { _ in 1 }
+        )
 
         await service.downloadModel(id: model.id)
 
