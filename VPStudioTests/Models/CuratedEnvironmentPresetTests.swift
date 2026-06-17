@@ -61,6 +61,37 @@ struct CuratedEnvironmentPresetModelUnitTests {
 
         #expect(preset.defaultHdriYawOffset == nil)
     }
+
+    @Test("defaultEnvironmentTag defaults to nil")
+    func environmentTagDefaultsToNil() {
+        let preset = CuratedEnvironmentPreset(
+            id: "preset-123",
+            name: "Test Preset",
+            description: "A test environment",
+            provider: .github,
+            downloadURL: URL(string: "https://example.com/preset.zip")!,
+            sourceAttributionURL: "https://example.com",
+            licenseName: "MIT"
+        )
+
+        #expect(preset.defaultEnvironmentTag == nil)
+    }
+
+    @Test("defaultEnvironmentTag is preserved on init")
+    func environmentTagPreserved() {
+        let preset = CuratedEnvironmentPreset(
+            id: "preset-123",
+            name: "Test Preset",
+            description: "A test environment",
+            provider: .polyHaven,
+            downloadURL: URL(string: "https://example.com/preset.hdr")!,
+            sourceAttributionURL: "https://example.com",
+            licenseName: "CC0",
+            defaultEnvironmentTag: "cinema"
+        )
+
+        #expect(preset.defaultEnvironmentTag == "cinema")
+    }
 }
 
 @Suite("CuratedEnvironmentPreset Equatable")

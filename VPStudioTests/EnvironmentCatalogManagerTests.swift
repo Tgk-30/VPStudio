@@ -273,8 +273,8 @@ struct CuratedEnvironmentPresetModelTests {
 @Suite(.serialized)
 struct EnvironmentCatalogManagerBehaviorTests {
 
-    @Test func bootstrapCuratedAssetsWithEmptyDefaultsLeavesDatabaseEmpty() async throws {
-        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-empty.sqlite")
+    @Test func bootstrapCuratedAssetsSeedsBundledSkyDomeOnFreshInstall() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-skydome.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
         let manager = EnvironmentCatalogManager(
@@ -284,7 +284,81 @@ struct EnvironmentCatalogManagerBehaviorTests {
         try await manager.bootstrapCuratedAssets()
 
         let assets = try await manager.fetchAssets()
-        #expect(assets.isEmpty)
+        let skyDome = assets.first { $0.id == EnvironmentCatalogManager.bundledSkyDomeID }
+        #expect(skyDome != nil)
+        #expect(skyDome?.sourceType == .bundled)
+        #expect(skyDome?.assetPath == EnvironmentCatalogManager.bundledSkyDomeAssetPath)
+        #expect(skyDome?.assetPath.hasPrefix("bundle://") == true)
+        // Bundled curated default must carry its mood tag so genre auto-match resolves it.
+        #expect(skyDome?.environmentTag == GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey)
+    }
+
+    @Test func bootstrapActivatesSkyDomeWhenNothingElseActive() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-active.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        try await manager.bootstrapCuratedAssets()
+
+        let active = try await manager.activeAsset()
+        #expect(active?.id == EnvironmentCatalogManager.bundledSkyDomeID)
+        #expect(active?.isActive == true)
+    }
+
+    @Test func bootstrapIsIdempotentForSkyDome() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-idempotent.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        try await manager.bootstrapCuratedAssets()
+        try await manager.bootstrapCuratedAssets()
+
+        let skyDomes = try await manager.fetchAssets().filter {
+            $0.id == EnvironmentCatalogManager.bundledSkyDomeID
+        }
+        #expect(skyDomes.count == 1)
+    }
+
+    @Test func skyDomeBundledAssetResolvesFromResourceBundle() async throws {
+        // Guards the resource path/subdirectory: a `bundle://` curated default must
+        // resolve to an on-disk URL via the resolver the same way the immersive view does.
+        // Skipped when the test bundle does not ship the SkyDome resource (e.g. SwiftPM
+        // CI bundle without the app Resources flattened in).
+        let (database, rootDir) = try await makeDatabase(named: "manager-skydome-resolve.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(database: database)
+        let asset = EnvironmentAsset(
+            id: EnvironmentCatalogManager.bundledSkyDomeID,
+            name: "Sky Dome",
+            sourceType: .bundled,
+            assetPath: EnvironmentCatalogManager.bundledSkyDomeAssetPath
+        )
+        let resolved = await manager.resolvedAssetURL(for: asset)
+        if let resolved {
+            #expect(FileManager.default.fileExists(atPath: resolved.path))
+            #expect(resolved.pathExtension.lowercased() == "usdz")
+        }
+    }
+
+    @Test func skyDomeBundledAssetRoutesToCustomEnvironmentSpace() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-skydome-space.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(database: database)
+        let asset = EnvironmentAsset(
+            id: EnvironmentCatalogManager.bundledSkyDomeID,
+            name: "Sky Dome",
+            sourceType: .bundled,
+            assetPath: EnvironmentCatalogManager.bundledSkyDomeAssetPath
+        )
+        #expect(await manager.immersiveSpaceID(for: asset) == "customEnvironment")
     }
 
     @Test func activeAssetReturnsNilWhenDatabaseIsEmpty() async throws {
@@ -645,6 +719,45 @@ struct EnvironmentCatalogManagerBehaviorTests {
         let assets = try await manager.fetchAssets()
         let stored = assets.first(where: { $0.id == imported.id })
         #expect(stored?.hdriYawOffset == -45.0)
+    }
+
+    @Test func curatedPresetEnvironmentTagPersistsThroughImportAndIsMatchable() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-tag-curated.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("preset-hdr".utf8), response)
+            }
+        )
+
+        let preset = CuratedEnvironmentPreset(
+            id: "curated-tagged",
+            name: "Curated Tagged",
+            description: "Test",
+            provider: .polyHaven,
+            downloadURL: URL(string: "https://example.com/curated-tagged.hdr")!,
+            sourceAttributionURL: "https://example.com",
+            licenseName: "CC0",
+            defaultEnvironmentTag: "cinema"
+        )
+
+        let imported = try await manager.importCuratedPreset(preset)
+        let stored = try await manager.fetchAssets().first { $0.id == imported.id }
+        #expect(stored?.environmentTag == "cinema")
+        // Genre auto-match must now resolve this installed preset (case-insensitive).
+        #expect(try await manager.asset(matchingTag: "CINEMA")?.id == imported.id)
+    }
+
+    @Test func curatedRemotePresetsCarryCinemaTag() {
+        // Online cinema presets must be tagged so installing one wires up genre auto-match.
+        for preset in EnvironmentCatalogManager.onlinePresets {
+            #expect(preset.defaultEnvironmentTag == GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey)
+        }
     }
 
     @Test func deleteAssetRemovesImportedFileAndDatabaseEntry() async throws {

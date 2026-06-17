@@ -20,7 +20,10 @@ struct EnvironmentPickerSheet: View {
     @State private var importError: String?
     @State private var environmentLoadTask: Task<Void, Never>?
     @State private var pendingDeletion: PendingDeletion?
+    @State private var installingPresetIDs: Set<String> = []
     private let disablesAutomaticTasks: Bool
+
+    private let onlinePresets = EnvironmentCatalogManager.onlinePresets
 
     private struct PendingDeletion: Identifiable {
         let id: String
@@ -66,6 +69,8 @@ struct EnvironmentPickerSheet: View {
                             exitButton
                         }
                     }
+
+                    onlinePresetsSection
 
                     if let error = importError {
                         importErrorBanner(error)
@@ -194,6 +199,77 @@ struct EnvironmentPickerSheet: View {
         .padding(.vertical, 24)
     }
 
+    @ViewBuilder
+    private var onlinePresetsSection: some View {
+        if !onlinePresets.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("More Environments")
+                        .font(.headline)
+                    Text("One-click import curated Poly Haven HDRI panoramas, then tap the card above to open them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(onlinePresets) { preset in
+                    onlinePresetRow(preset)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View {
+        let isInstalled = environments.contains(where: {
+            $0.sourceType == .imported
+                && $0.name == preset.name
+                && $0.sourceAttributionURL == preset.sourceAttributionURL
+        })
+        let isInstalling = installingPresetIDs.contains(preset.id)
+
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: preset.provider == .polyHaven ? "pano" : preset.provider == .official ? "apple.logo" : "shippingbox")
+                .font(.title3)
+                .frame(width: 24)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(preset.name)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text(preset.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(preset.provider.displayName) • \(preset.licenseName)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            if isInstalled {
+                Label("Added", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            } else {
+                Button {
+                    Task { await installPreset(preset) }
+                } label: {
+                    if isInstalling {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Add", systemImage: "arrow.down.circle")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isInstalling)
+            }
+        }
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
     private func importErrorBanner(_ message: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -259,6 +335,21 @@ struct EnvironmentPickerSheet: View {
             await coalescedLoadEnvironments()
         } catch {
             importError = "Failed to delete: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func installPreset(_ preset: CuratedEnvironmentPreset) async {
+        guard !installingPresetIDs.contains(preset.id) else { return }
+        importError = nil
+        installingPresetIDs.insert(preset.id)
+        defer { installingPresetIDs.remove(preset.id) }
+
+        do {
+            _ = try await appState.environmentCatalogManager.importCuratedPreset(preset)
+            await coalescedLoadEnvironments()
+        } catch {
+            importError = error.localizedDescription
         }
     }
 }

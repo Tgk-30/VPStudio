@@ -26,7 +26,10 @@ struct EnvironmentCatalogTests {
         #expect(FileManager.default.fileExists(atPath: imported.assetPath))
     }
 
-    @Test func bootstrapHasNoBundledDefaults() async throws {
+    @Test func bootstrapSeedsBundledSkyDomeDefault() async throws {
+        // Previously asserted there were NO bundled defaults (the empty-catalog state that
+        // left Environments broken out of the box). The bundled SkyDome is now seeded so a
+        // fresh install has at least one activatable immersive environment.
         let (database, rootDir) = try await makeDatabase(named: "environment-catalog-bootstrap.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -38,7 +41,7 @@ struct EnvironmentCatalogTests {
 
         let assets = try await manager.fetchAssets()
         let bundled = assets.filter { $0.sourceType == .bundled }
-        #expect(bundled.isEmpty, "No bundled defaults — void was removed")
+        #expect(bundled.contains { $0.id == EnvironmentCatalogManager.bundledSkyDomeID })
     }
 
     @Test func bootstrapRemovesStaleBundledAssetsButPreservesImported() async throws {

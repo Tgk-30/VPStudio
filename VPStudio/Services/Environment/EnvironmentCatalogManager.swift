@@ -45,7 +45,34 @@ actor EnvironmentCatalogManager {
 
     private static let hdriExtensions: Set<String> = EnvironmentImportValidationPolicy.hdriExtensions
 
-    private static let curatedDefaults: [EnvironmentAsset] = []
+    /// Stable id for the bundled SkyDome environment shipped in `Resources/Environments`.
+    /// Used by `bootstrapCuratedAssets()` so a fresh install has at least one activatable
+    /// immersive environment out of the box.
+    static let bundledSkyDomeID = "builtin-skydome"
+
+    /// `bundle://` path for the bundled SkyDome USDZ. `.process("Resources")` flattens
+    /// nested resource directories, so the asset lands at the bundle root (no subdirectory)
+    /// — matching how `urlInResourceBundle(relativePath:)` resolves it.
+    static let bundledSkyDomeAssetPath = "bundle://SkyDome.usdz"
+    static let bundledSkyDomePreviewPath = "bundle://SkyDomePreview.png"
+
+    private static let curatedDefaults: [EnvironmentAsset] = [
+        EnvironmentAsset(
+            id: bundledSkyDomeID,
+            name: "Sky Dome",
+            sourceType: .bundled,
+            assetPath: bundledSkyDomeAssetPath,
+            thumbnailPath: nil,
+            licenseName: "CC0 1.0 Universal",
+            sourceAttributionURL: nil,
+            previewImagePath: bundledSkyDomePreviewPath,
+            hdriYawOffset: nil,
+            // Resolves the neutral/cinema mood so genre auto-suggestion always has a
+            // concrete installed environment to fall back to on a fresh install.
+            environmentTag: GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey,
+            isActive: false
+        ),
+    ]
 
     /// Validated URL from a hardcoded string.
     private static func presetURL(_ string: String) -> URL? {
@@ -64,7 +91,8 @@ actor EnvironmentCatalogManager {
         downloadURLString: String,
         sourceAttributionURL: String,
         licenseName: String,
-        defaultHdriYawOffset: Float? = nil
+        defaultHdriYawOffset: Float? = nil,
+        defaultEnvironmentTag: String? = nil
     ) -> CuratedEnvironmentPreset? {
         guard let downloadURL = presetURL(downloadURLString) else { return nil }
         return CuratedEnvironmentPreset(
@@ -75,7 +103,8 @@ actor EnvironmentCatalogManager {
             downloadURL: downloadURL,
             sourceAttributionURL: sourceAttributionURL,
             licenseName: licenseName,
-            defaultHdriYawOffset: defaultHdriYawOffset
+            defaultHdriYawOffset: defaultHdriYawOffset,
+            defaultEnvironmentTag: defaultEnvironmentTag
         )
     }
 
@@ -87,7 +116,8 @@ actor EnvironmentCatalogManager {
             provider: .polyHaven,
             downloadURLString: "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/pretville_cinema_4k.hdr",
             sourceAttributionURL: "https://polyhaven.com/a/pretville_cinema",
-            licenseName: "CC0 1.0 Universal"
+            licenseName: "CC0 1.0 Universal",
+            defaultEnvironmentTag: GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey
         ),
         preset(
             id: "polyhaven-cinema-hall",
@@ -96,7 +126,8 @@ actor EnvironmentCatalogManager {
             provider: .polyHaven,
             downloadURLString: "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/cinema_hall_4k.hdr",
             sourceAttributionURL: "https://polyhaven.com/a/cinema_hall",
-            licenseName: "CC0 1.0 Universal"
+            licenseName: "CC0 1.0 Universal",
+            defaultEnvironmentTag: GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey
         ),
     ].compactMap { $0 }
 
@@ -164,13 +195,15 @@ actor EnvironmentCatalogManager {
                     || current.assetPath != curated.assetPath
                     || current.licenseName != curated.licenseName
                     || current.sourceAttributionURL != curated.sourceAttributionURL
-                    || current.previewImagePath != curated.previewImagePath {
+                    || current.previewImagePath != curated.previewImagePath
+                    || current.environmentTag != curated.environmentTag {
                     var updated = current
                     updated.sourceType = .bundled
                     updated.assetPath = curated.assetPath
                     updated.licenseName = curated.licenseName
                     updated.sourceAttributionURL = curated.sourceAttributionURL
                     updated.previewImagePath = curated.previewImagePath
+                    updated.environmentTag = curated.environmentTag
                     try await database.saveEnvironmentAsset(updated)
                 }
             } else {
@@ -267,7 +300,8 @@ actor EnvironmentCatalogManager {
             licenseName: preset.licenseName,
             sourceAttributionURL: preset.sourceAttributionURL,
             previewImagePath: nil,
-            hdriYawOffset: preset.defaultHdriYawOffset
+            hdriYawOffset: preset.defaultHdriYawOffset,
+            environmentTag: preset.defaultEnvironmentTag
         )
     }
 
@@ -277,7 +311,8 @@ actor EnvironmentCatalogManager {
         licenseName: String? = nil,
         sourceAttributionURL: String? = nil,
         previewImagePath: String? = nil,
-        hdriYawOffset: Float? = nil
+        hdriYawOffset: Float? = nil,
+        environmentTag: String? = nil
     ) async throws -> EnvironmentAsset {
         let originalExt = sourceURL.pathExtension
         let normalizedExt = originalExt.lowercased()
@@ -333,7 +368,8 @@ actor EnvironmentCatalogManager {
             licenseName: licenseName,
             sourceAttributionURL: sourceAttributionURL,
             previewImagePath: previewImagePath,
-            hdriYawOffset: hdriYawOffset
+            hdriYawOffset: hdriYawOffset,
+            environmentTag: environmentTag
         )
     }
 
@@ -345,7 +381,8 @@ actor EnvironmentCatalogManager {
         licenseName: String?,
         sourceAttributionURL: String?,
         previewImagePath: String?,
-        hdriYawOffset: Float? = nil
+        hdriYawOffset: Float? = nil,
+        environmentTag: String? = nil
     ) async throws -> EnvironmentAsset {
         try fileManager.createDirectory(at: environmentsDirectory, withIntermediateDirectories: true)
 
@@ -398,6 +435,7 @@ actor EnvironmentCatalogManager {
             sourceAttributionURL: sourceAttributionURL,
             previewImagePath: previewImagePath,
             hdriYawOffset: resolvedYawOffset,
+            environmentTag: environmentTag,
             createdAt: Date(),
             isActive: false
         )
