@@ -21,6 +21,10 @@ struct KSPlayerEngine: PlayerEngine {
 
     @MainActor
     func prepare(stream: StreamInfo) async throws -> PreparedPlaybackSession {
+        // Direct play only — no transcode/remux. KSPlayer decodes the original
+        // debrid stream bytes in-place (FFmpeg-backed) for containers/codecs
+        // AVPlayer can't open; it never rewrites or re-encodes the media. See
+        // DirectPlayPolicy for the contract.
         guard URL(string: stream.streamURL.absoluteString) != nil else {
             throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
         }

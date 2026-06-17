@@ -183,6 +183,20 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 }
 
+extension StreamInfo {
+    /// Direct-play contract (see `DirectPlayPolicy`): VPStudio always plays the
+    /// stream's bytes directly through a native engine — never transcodes or
+    /// remuxes. Computed, no stored property / schema change.
+    var playbackMode: PlaybackMode {
+        DirectPlayPolicy.playbackMode(for: self)
+    }
+
+    /// Convenience flag, backed by `DirectPlayPolicy`. Always true today.
+    var isDirectPlay: Bool {
+        DirectPlayPolicy.isDirectPlay(self)
+    }
+}
+
 extension StreamRecoveryContext {
     func enrichedForDownloadPersistence(
         fileName: String,

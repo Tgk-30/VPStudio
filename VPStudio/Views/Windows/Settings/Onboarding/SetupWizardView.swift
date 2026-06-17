@@ -17,6 +17,8 @@ struct SetupWizardView: View {
     @State private var selectedQuality: VideoQuality = .hd1080p
     @State private var selectedSubtitleLanguage: SubtitleLanguageOption = .none
     @State private var saveError: String?
+    @State private var isValidatingKey = false
+    @State private var seededIndexerSummary: String?
     @State private var appeared = false
     @State private var didRunQAAutoAdvance = false
 
@@ -571,7 +573,8 @@ struct SetupWizardView: View {
             tmdbApiKey: tmdbApiKey,
             selectedAIProvider: selectedAIProvider,
             selectedQuality: selectedQuality,
-            selectedSubtitleLanguage: selectedSubtitleLanguage
+            selectedSubtitleLanguage: selectedSubtitleLanguage,
+            seededIndexerSummary: seededIndexerSummary
         )
     }
 
@@ -602,7 +605,9 @@ struct SetupWizardView: View {
             if SetupWizardNavigationPolicy.showsContinueButton(currentStep: currentStep, totalSteps: totalSteps) {
                 WizardAccentButton(
                     title: continueButtonTitle,
-                    icon: continueButtonIcon
+                    icon: continueButtonIcon,
+                    isLoading: isValidatingKey,
+                    isDisabled: isValidatingKey
                 ) {
                     Task { await handleNextStep() }
                 }
@@ -641,29 +646,65 @@ struct SetupWizardView: View {
 
     private func handleNextStep() async {
         saveError = nil
-        let normalizedApiKey = debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedApiKey = DebridKeyValidationPolicy.normalize(debridApiKey)
 
-        if currentStep == 1, !normalizedApiKey.isEmpty {
-            let configId = UUID().uuidString
-            let secretKey = SecretKey.debridToken(service: selectedService, configId: configId)
-            let tokenRef = SecretReference.encode(key: secretKey)
+        if currentStep == 1 {
+            let formatResult = DebridKeyValidationPolicy.formatCheck(
+                for: selectedService,
+                key: normalizedApiKey
+            )
+            let decision = SetupWizardStepPolicy.debridStepOutcome(
+                formatResult: formatResult,
+                tokenIsEmpty: normalizedApiKey.isEmpty
+            )
 
-            do {
-                try await appState.secretStore.setSecret(normalizedApiKey, for: secretKey)
-                let config = DebridConfig(
-                    id: configId,
-                    serviceType: selectedService,
-                    apiTokenRef: tokenRef,
-                    isActive: true,
-                    priority: 0,
-                    createdAt: Date(),
-                    updatedAt: Date()
-                )
-                try await appState.database.saveDebridConfig(config)
-                try await appState.debridManager.initialize()
-            } catch {
-                saveError = error.localizedDescription
+            switch decision {
+            case .skip:
+                break // Allow continuing without a debrid service.
+            case .blockFormat(let message):
+                saveError = message
                 return
+            case .validate:
+                // Live-validate the key before persisting anything. This uses the
+                // SAME pattern as DebridSettingsView.validateConnection: build a
+                // transient service and call validateToken(). Only on success do
+                // we persist the secret + config and initialize the manager.
+                isValidatingKey = true
+                defer { isValidatingKey = false }
+
+                let service = makeDebridService(type: selectedService, token: normalizedApiKey)
+                do {
+                    let isValid = try await service.validateToken()
+                    guard isValid else {
+                        saveError = DebridSettingsPolicy.rejectedMessage(for: selectedService)
+                        return
+                    }
+                } catch {
+                    saveError = (error as? DebridError)?.localizedDescription ?? error.localizedDescription
+                    return
+                }
+
+                let configId = UUID().uuidString
+                let secretKey = SecretKey.debridToken(service: selectedService, configId: configId)
+                let tokenRef = SecretReference.encode(key: secretKey)
+
+                do {
+                    try await appState.secretStore.setSecret(normalizedApiKey, for: secretKey)
+                    let config = DebridConfig(
+                        id: configId,
+                        serviceType: selectedService,
+                        apiTokenRef: tokenRef,
+                        isActive: true,
+                        priority: 0,
+                        createdAt: Date(),
+                        updatedAt: Date()
+                    )
+                    try await appState.database.saveDebridConfig(config)
+                    try await appState.debridManager.initialize()
+                } catch {
+                    saveError = error.localizedDescription
+                    return
+                }
             }
         }
 
@@ -722,6 +763,7 @@ struct SetupWizardView: View {
                     plan.subtitleLanguageValue,
                     forKey: SettingsKeys.subtitleLanguage
                 )
+                await seedIndexerDefaultsIfNeeded()
             } catch {
                 saveError = error.localizedDescription
                 return
@@ -729,6 +771,29 @@ struct SetupWizardView: View {
         }
 
         advanceStep()
+    }
+
+    /// Seeds default search providers on the way to the completion step, but only
+    /// when the user has none yet. Failures are non-fatal — onboarding should not
+    /// be blocked by indexer seeding, so we just skip the summary row.
+    private func seedIndexerDefaultsIfNeeded() async {
+        do {
+            let existing = try await appState.database.fetchAllIndexerConfigs()
+            guard let seed = SetupWizardIndexerSeedingPolicy.seedPlan(existingConfigs: existing) else {
+                return
+            }
+            for config in seed {
+                try await appState.database.saveIndexerConfig(config)
+            }
+            seededIndexerSummary = SetupWizardIndexerSeedingPolicy.completionSummary(for: seed)
+        } catch {
+            // Non-fatal: leave the summary unset and continue onboarding.
+            seededIndexerSummary = nil
+        }
+    }
+
+    private func makeDebridService(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
+        DebridSettingsPolicy.makeDebridService(type: type, token: token)
     }
 
     private var continueButtonTitle: String {
@@ -1030,6 +1095,7 @@ private struct WizardCompletionContent: View {
     let selectedAIProvider: AIProviderOption
     let selectedQuality: VideoQuality
     let selectedSubtitleLanguage: SubtitleLanguageOption
+    let seededIndexerSummary: String?
 
     @State private var checkmarkScale: CGFloat = 0
     @State private var glowOpacity: Double = 0
@@ -1093,6 +1159,10 @@ private struct WizardCompletionContent: View {
                     id: \.text
                 ) { row in
                     WizardSummaryRow(icon: row.icon, text: row.text)
+                }
+
+                if let seededIndexerSummary {
+                    WizardSummaryRow(icon: "magnifyingglass", text: seededIndexerSummary)
                 }
             }
             .opacity(summaryOpacity)
@@ -1167,6 +1237,8 @@ private struct WizardSummaryRow: View {
 private struct WizardAccentButton: View {
     let title: String
     let icon: String
+    var isLoading: Bool = false
+    var isDisabled: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -1174,8 +1246,14 @@ private struct WizardAccentButton: View {
             HStack(spacing: 8) {
                 Text(title)
                     .fontWeight(.semibold)
-                Image(systemName: icon)
-                    .font(.subheadline.weight(.semibold))
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                } else {
+                    Image(systemName: icon)
+                        .font(.subheadline.weight(.semibold))
+                }
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 28)
@@ -1187,6 +1265,8 @@ private struct WizardAccentButton: View {
             .shadow(color: .vpRed.opacity(0.4), radius: 12, y: 4)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled || isLoading)
+        .opacity(isDisabled || isLoading ? 0.6 : 1)
         .accessibilityLabel(title)
         #if os(visionOS)
         .hoverEffect(.lift)
@@ -1447,7 +1527,74 @@ enum SetupWizardPersistencePolicy {
     }
 }
 
-// MARK: - AI Provider Option
+// MARK: - Setup Wizard Step Policy
+
+/// Pure decision for the debrid step of the setup wizard, extracted so the
+/// skip/validate/block branching is unit-testable without async or I/O.
+enum SetupWizardStepPolicy {
+    enum StepDecision: Equatable, Sendable {
+        /// Empty key — allow continuing without a debrid service.
+        case skip
+        /// Plausible key — proceed to a live `validateToken()` check.
+        case validate
+        /// Format check failed — surface `message` and do not advance.
+        case blockFormat(message: String)
+    }
+
+    /// Decides what the wizard should do on the debrid step given the offline
+    /// format-check result and whether the (normalized) token is empty.
+    ///
+    /// An empty token always means `.skip`, even if the format check would have
+    /// returned `.empty`, so the caller has a single unambiguous signal.
+    static func debridStepOutcome(
+        formatResult: DebridKeyValidationPolicy.FormatResult,
+        tokenIsEmpty: Bool
+    ) -> StepDecision {
+        if tokenIsEmpty {
+            return .skip
+        }
+
+        switch formatResult {
+        case .empty:
+            return .skip
+        case .malformed(let reason):
+            return .blockFormat(message: reason)
+        case .plausible:
+            return .validate
+        }
+    }
+}
+
+// MARK: - Setup Wizard Indexer Seeding Policy
+
+/// Pure decision for seeding default search providers (indexers) at the end of
+/// onboarding. Reuses `IndexerDefaultRanking` so the ranking/canonicalization
+/// stays in one place.
+enum SetupWizardIndexerSeedingPolicy {
+    /// Returns the configs that should be persisted when onboarding completes.
+    ///
+    /// - When no indexer configs exist yet, returns the full default set
+    ///   (`IndexerDefaultRanking.defaultConfigs()`).
+    /// - When configs already exist, returns `nil` (no-op) so we never disturb
+    ///   a user who has already customized their providers.
+    static func seedPlan(existingConfigs: [IndexerConfig]) -> [IndexerConfig]? {
+        guard existingConfigs.isEmpty else {
+            return nil
+        }
+        return IndexerDefaultRanking.addingMissingDefaults(to: [])
+    }
+
+    /// One-line completion summary of the seeded providers (active ones first),
+    /// e.g. "Search providers ready: Stremio Torrentio, YTS, APiBay".
+    static func completionSummary(for configs: [IndexerConfig]) -> String? {
+        let activeNames = configs
+            .filter(\.isActive)
+            .sorted { $0.priority < $1.priority }
+            .map(\.name)
+        guard !activeNames.isEmpty else { return nil }
+        return "Search providers ready: \(activeNames.joined(separator: ", "))"
+    }
+}
 
 // MARK: - AI Provider Option
 

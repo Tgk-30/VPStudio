@@ -10,6 +10,10 @@ struct AVPlayerEngine: PlayerEngine {
 
     @MainActor
     func prepare(stream: StreamInfo) async throws -> PreparedPlaybackSession {
+        // Direct play only — no transcode/remux. We hand the debrid stream URL
+        // straight to AVPlayer; container/codec compatibility is handled by
+        // engine selection (PlayerEngineSelector / DirectPlayPolicy), never by
+        // rewriting the media.
         guard URL(string: stream.streamURL.absoluteString) != nil else {
             throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
         }

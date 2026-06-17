@@ -1823,6 +1823,12 @@ struct PlayerView: View {
             // Quality badge pill
             featureChip(title: currentStream.quality.rawValue, symbol: nil)
 
+            // Direct Play badge — VPStudio always plays streams directly (no
+            // transcode/remux). See DirectPlayPolicy.
+            if currentStream.isDirectPlay {
+                featureChip(title: "Direct Play", symbol: "bolt.fill")
+            }
+
             // 3D badge if applicable
             if engine.is3DContent {
                 featureChip(title: "3D", symbol: "cube")
