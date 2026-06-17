@@ -17,19 +17,19 @@ struct DiscoverInitialLoadPolicyTests {
     }
 
     @Test
-    func discoverTaskMarksInitialLoadAfterReloadCompletes() throws {
+    func discoverTaskLatchesInitialLoadBeforeReload() throws {
         let source = try Self.discoverViewSource()
         guard let taskRange = source.range(of: ".task {\n            guard DiscoverInitialLoadPolicy.shouldStart"),
-              let reloadRange = source.range(of: "await reloadDiscoverForLatestTMDBKey()", range: taskRange.lowerBound..<source.endIndex),
-              let cancellationRange = source.range(of: "guard DiscoverInitialLoadPolicy.shouldMarkCompleted(isCancelled: Task.isCancelled) else { return }", range: reloadRange.upperBound..<source.endIndex),
-              let markRange = source.range(of: "viewModel.hasPerformedInitialLoad = true", range: cancellationRange.upperBound..<source.endIndex) else {
+              let markRange = source.range(of: "viewModel.hasPerformedInitialLoad = true", range: taskRange.upperBound..<source.endIndex),
+              let reloadRange = source.range(of: "await reloadDiscoverForLatestTMDBKey()", range: taskRange.upperBound..<source.endIndex) else {
             Issue.record("Discover initial load task no longer matches the cancellation-safe contract")
             return
         }
 
-        #expect(taskRange.lowerBound < reloadRange.lowerBound)
-        #expect(reloadRange.lowerBound < cancellationRange.lowerBound)
-        #expect(cancellationRange.lowerBound < markRange.lowerBound)
+        // The latch must be set BEFORE the await: leaving the Discover tab cancels this `.task`,
+        // and latching first means a mid-flight cancellation cannot undo it and re-fire the load.
+        #expect(taskRange.lowerBound < markRange.lowerBound)
+        #expect(markRange.lowerBound < reloadRange.lowerBound)
     }
 
     private static func discoverViewSource() throws -> String {
