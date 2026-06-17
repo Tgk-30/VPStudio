@@ -224,6 +224,23 @@ enum SearchResultsPresentationPolicy {
     }
 }
 
+/// Policy for the companion `searchDetailInitialAction` that rides alongside the
+/// Search tab's pushed detail selection. The action must be reset to `.none` the
+/// moment the selection clears (back-nav), otherwise a `.playBestCached` set for an
+/// AI Pick "Play" leaks into the NEXT plain row tap and auto-plays instead of opening
+/// Detail normally (regression from the one-tap-play work, f62f2e8).
+enum SearchDetailActionResetPolicy {
+    /// The action that should accompany a new selection value. A `nil` selection
+    /// (the binding clearing on back-nav) always resets to `.none`; a non-nil
+    /// selection preserves the caller-supplied `intendedAction`.
+    static func resolvedAction(
+        forNewSelection newSelection: MediaPreview?,
+        intendedAction: DetailInitialAction
+    ) -> DetailInitialAction {
+        newSelection == nil ? .none : intendedAction
+    }
+}
+
 enum SearchQueryBarPolicy {
     static func trimmedDraft(_ draft: String) -> String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -245,7 +262,20 @@ struct SearchView: View {
     /// Pushed detail for the Search tab, hoisted to AppState so it survives the player
     /// dismissing/re-opening the main window (see `AppState.searchDetailSelection`).
     private var searchSelection: Binding<MediaPreview?> {
-        Binding(get: { appState.searchDetailSelection }, set: { appState.searchDetailSelection = $0 })
+        Binding(
+            get: { appState.searchDetailSelection },
+            set: { newValue in
+                // When the selection clears (back-nav pops the pushed detail), reset the
+                // companion action too. Otherwise a stale `.playBestCached` from a prior
+                // AI Pick "Play" leaks into the NEXT plain row tap and auto-plays instead
+                // of opening Detail normally (regression from the one-tap-play work, f62f2e8).
+                appState.searchDetailInitialAction = SearchDetailActionResetPolicy.resolvedAction(
+                    forNewSelection: newValue,
+                    intendedAction: appState.searchDetailInitialAction
+                )
+                appState.searchDetailSelection = newValue
+            }
+        )
     }
     @State private var tmdbReloadTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
@@ -1160,7 +1190,10 @@ struct SearchView: View {
                             SearchResultsGrid(
                                 viewModel: viewModel,
                                 selectedItem: searchSelection,
-                                userRatings: userRatings
+                                userRatings: userRatings,
+                                // DEFENSE: a plain row tap must never inherit a prior AI Pick's
+                                // `.playBestCached`; open Detail with an explicit `.none` action.
+                                onSelect: { item in openDetail(for: item, action: .none) }
                             )
 
                             if viewModel.isLoadingMore {
@@ -1545,13 +1578,24 @@ private struct SearchResultsGrid: View {
     @Bindable var viewModel: SearchViewModel
     @Binding var selectedItem: MediaPreview?
     var userRatings: [String: TasteEvent] = [:]
+    /// Plain row selection. Routes through the parent so the companion
+    /// `searchDetailInitialAction` is explicitly cleared (defense against a stale
+    /// `.playBestCached` leaking from a prior AI Pick "Play"). Falls back to setting
+    /// the binding directly if no handler is supplied.
+    var onSelect: ((MediaPreview) -> Void)?
 
     private static let columns = [GridItem(.adaptive(minimum: 160), spacing: 14)]
 
     var body: some View {
         LazyVGrid(columns: Self.columns, spacing: 16) {
             ForEach(viewModel.results) { item in
-                Button { selectedItem = item } label: {
+                Button {
+                    if let onSelect {
+                        onSelect(item)
+                    } else {
+                        selectedItem = item
+                    }
+                } label: {
                     MediaCardView(item: item, userRating: userRatings[item.id])
                 }
                 .buttonStyle(.plain)
