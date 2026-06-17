@@ -7,9 +7,11 @@ struct EnvironmentSettingsView: View {
     @Environment(AppState.self) private var appState
     @State private var assets: [EnvironmentAsset] = []
     @State private var isImporting = false
+    @State private var isImportingSkybox = false
     @State private var environmentError: String?
     @State private var installingPresetIDs: Set<String> = []
     @State private var autoOpenEnvironment = true
+    @State private var autoSuggestEnvironmentByGenre = true
     @State private var assetLoadTask: Task<Void, Never>?
     @State private var pendingDeletion: PendingDeletion?
 
@@ -59,11 +61,23 @@ struct EnvironmentSettingsView: View {
                 Button("Import Environment (.hdr / .exr / .usdz / .reality)", systemImage: "square.and.arrow.down") {
                     isImporting = true
                 }
+
+                Button("Import 360 Skybox (HDR/EXR/PNG/JPG)", systemImage: "pano") {
+                    isImportingSkybox = true
+                }
+                Text("360 skyboxes wrap around your space. HDR/EXR give true high-dynamic-range lighting; PNG/JPG import as standard (LDR) panoramas.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Playback") {
                 Toggle("Auto-open environment on playback", isOn: $autoOpenEnvironment)
                 Text("When enabled, the active environment opens automatically when you start a video.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Suggest environment by genre", isOn: $autoSuggestEnvironmentByGenre)
+                Text("When enabled, playback switches to an installed environment tagged for the title's genre or mood (when one exists).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -80,12 +94,18 @@ struct EnvironmentSettingsView: View {
             autoOpenEnvironment = (try? await appState.settingsManager.getBool(
                 key: SettingsKeys.autoOpenEnvironment, default: true
             )) ?? true
+            autoSuggestEnvironmentByGenre = (try? await appState.settingsManager.getBool(
+                key: SettingsKeys.autoSuggestEnvironmentByGenre, default: true
+            )) ?? true
         }
         .refreshable {
             await coalescedLoadAssets()
         }
         .onChange(of: autoOpenEnvironment) { _, newValue in
             saveAutoOpenEnvironment(newValue)
+        }
+        .onChange(of: autoSuggestEnvironmentByGenre) { _, newValue in
+            saveAutoSuggestEnvironmentByGenre(newValue)
         }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
             scheduleAssetLoad()
@@ -97,6 +117,28 @@ struct EnvironmentSettingsView: View {
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: supportedEnvironmentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            Task {
+                do {
+                    let urls = try result.get()
+                    guard let url = urls.first else { return }
+                    let hasSecurityScope = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if hasSecurityScope {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+                    _ = try await appState.environmentCatalogManager.importEnvironment(from: url)
+                    await coalescedLoadAssets()
+                } catch {
+                    environmentError = error.localizedDescription
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $isImportingSkybox,
+            allowedContentTypes: supportedSkyboxTypes,
             allowsMultipleSelection: false
         ) { result in
             Task {
@@ -310,6 +352,17 @@ struct EnvironmentSettingsView: View {
         return types.isEmpty ? [.data] : types
     }
 
+    private var supportedSkyboxTypes: [UTType] {
+        let types = [
+            UTType(filenameExtension: "hdr"),
+            UTType(filenameExtension: "exr"),
+            UTType(filenameExtension: "png"),
+            UTType(filenameExtension: "jpg"),
+            UTType(filenameExtension: "jpeg"),
+        ].compactMap { $0 }
+        return types.isEmpty ? [.data] : types
+    }
+
     @MainActor
     private func installPreset(_ preset: CuratedEnvironmentPreset) async {
         guard !installingPresetIDs.contains(preset.id) else { return }
@@ -363,6 +416,21 @@ struct EnvironmentSettingsView: View {
         Task {
             do {
                 try await appState.settingsManager.setBool(key: SettingsKeys.autoOpenEnvironment, value: value)
+                await MainActor.run {
+                    environmentError = nil
+                }
+            } catch {
+                await MainActor.run {
+                    environmentError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func saveAutoSuggestEnvironmentByGenre(_ value: Bool) {
+        Task {
+            do {
+                try await appState.settingsManager.setBool(key: SettingsKeys.autoSuggestEnvironmentByGenre, value: value)
                 await MainActor.run {
                     environmentError = nil
                 }

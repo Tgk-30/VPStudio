@@ -601,6 +601,14 @@ actor DatabaseManager {
             }
         }
 
+        migrator.registerMigration("v17_environment_tag") { db in
+            let columns = try db.columns(in: "environment_assets")
+            let hasColumn = columns.contains { $0.name.caseInsensitiveCompare("environmentTag") == .orderedSame }
+            if !hasColumn {
+                try db.execute(sql: "ALTER TABLE \"environment_assets\" ADD COLUMN \"environmentTag\" TEXT")
+            }
+        }
+
         let writer = try dbPool
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             migrator.asyncMigrate(writer) { result in

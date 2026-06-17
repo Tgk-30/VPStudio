@@ -2893,10 +2893,34 @@ struct PlayerView: View {
             key: SettingsKeys.autoOpenEnvironment, default: true
         )) ?? true
         guard autoOpen else { return }
-        guard let asset = appState.selectedEnvironmentAsset else { return }
         guard !appState.isImmersiveSpaceOpen else { return }
         guard !appState.isImmersiveTransitionInFlight else { return }
+
+        // Genre/mood-based suggestion: if enabled and an installed asset is tagged
+        // for the playing title's genre, switch to it before opening.
+        let autoSuggest = (try? await appState.settingsManager.getBool(
+            key: SettingsKeys.autoSuggestEnvironmentByGenre, default: true
+        )) ?? true
+        if autoSuggest, let match = await suggestedEnvironmentAsset() {
+            if appState.selectedEnvironmentAsset?.id != match.id {
+                await appState.activateEnvironmentAsset(match)
+            }
+        }
+
+        guard let asset = appState.selectedEnvironmentAsset else { return }
         await openImmersiveSpaceIfPossible(for: asset)
+    }
+
+    /// Resolves the playing title's genres to an installed, tagged environment asset
+    /// via `GenreEnvironmentSuggestionPolicy`. Returns `nil` when there's no media,
+    /// no suggestion, or no installed asset carrying the suggested tag.
+    private func suggestedEnvironmentAsset() async -> EnvironmentAsset? {
+        guard let mediaId else { return nil }
+        guard let media = try? await appState.database.fetchMediaItem(id: mediaId) else { return nil }
+        guard let suggestion = GenreEnvironmentSuggestionPolicy.suggestion(forGenreNames: media.genres) else {
+            return nil
+        }
+        return try? await appState.environmentCatalogManager.asset(matchingTag: suggestion.matchKey)
     }
     #endif
 

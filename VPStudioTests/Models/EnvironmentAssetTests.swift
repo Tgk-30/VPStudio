@@ -313,6 +313,60 @@ struct EnvironmentAssetCodableTests {
     }
 }
 
+@Suite("EnvironmentAsset environmentTag")
+struct EnvironmentAssetEnvironmentTagTests {
+    @Test("environmentTag defaults to nil")
+    func defaultsToNil() {
+        let asset = EnvironmentAsset(
+            id: "tag-default",
+            name: "No Tag",
+            sourceType: .imported,
+            assetPath: "/a.hdr"
+        )
+        #expect(asset.environmentTag == nil)
+    }
+
+    @Test("environmentTag is preserved on init")
+    func preservedOnInit() {
+        let asset = EnvironmentAsset(
+            id: "tag-set",
+            name: "Tagged",
+            sourceType: .imported,
+            assetPath: "/a.hdr",
+            environmentTag: "horror"
+        )
+        #expect(asset.environmentTag == "horror")
+    }
+
+    @Test("environmentTag survives Codable round-trip")
+    func codableRoundTrip() throws {
+        let original = EnvironmentAsset(
+            id: "tag-codable",
+            name: "Tagged",
+            sourceType: .imported,
+            assetPath: "/a.hdr",
+            environmentTag: "scifi"
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(EnvironmentAsset.self, from: data)
+        #expect(decoded.environmentTag == "scifi")
+        #expect(decoded == original)
+    }
+
+    @Test("environmentTag participates in Equatable")
+    func equatableConsidersTag() {
+        // Pin createdAt so the only varying field is environmentTag (createdAt defaults to Date()).
+        let fixedDate = Date(timeIntervalSince1970: 123456789)
+        let base = EnvironmentAsset(id: "x", name: "X", sourceType: .imported, assetPath: "/a.hdr", environmentTag: "horror", createdAt: fixedDate)
+        let same = EnvironmentAsset(id: "x", name: "X", sourceType: .imported, assetPath: "/a.hdr", environmentTag: "horror", createdAt: fixedDate)
+        let differentTag = EnvironmentAsset(id: "x", name: "X", sourceType: .imported, assetPath: "/a.hdr", environmentTag: "scifi", createdAt: fixedDate)
+        let nilTag = EnvironmentAsset(id: "x", name: "X", sourceType: .imported, assetPath: "/a.hdr", createdAt: fixedDate)
+        #expect(base == same)
+        #expect(base != differentTag)
+        #expect(base != nilTag)
+    }
+}
+
 @Suite("EnvironmentAsset URL Construction")
 struct EnvironmentAssetURLTests {
     @Test("Asset path can be converted to URL")

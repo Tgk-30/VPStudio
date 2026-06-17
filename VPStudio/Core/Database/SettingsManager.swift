@@ -172,6 +172,7 @@ enum SettingsKeys {
     nonisolated static let personalizationEnabled = "personalization_enabled"
     nonisolated static let preferredEnvironment = "preferred_environment"
     nonisolated static let autoOpenEnvironment = "auto_open_environment"
+    nonisolated static let autoSuggestEnvironmentByGenre = "auto_suggest_environment_by_genre"
     nonisolated static let feedbackScaleMode = "feedback_scale_mode"
     nonisolated static let runtimeDiagnosticsEnabled = "runtime_diagnostics_enabled"
     nonisolated static let recentSearches = "recent_searches"

@@ -41,9 +41,9 @@ actor EnvironmentCatalogManager {
     private let assetValidator: @Sendable (URL) async -> Bool
     private let remoteDataFetcher: RemoteDataFetcher
 
-    private static let supportedExtensions: Set<String> = ["usdz", "reality", "hdr", "exr"]
+    private static let supportedExtensions: Set<String> = EnvironmentImportValidationPolicy.supportedExtensions
 
-    private static let hdriExtensions: Set<String> = ["hdr", "exr"]
+    private static let hdriExtensions: Set<String> = EnvironmentImportValidationPolicy.hdriExtensions
 
     private static let curatedDefaults: [EnvironmentAsset] = []
 
@@ -211,6 +211,18 @@ actor EnvironmentCatalogManager {
         try await database.fetchActiveEnvironmentAsset()
     }
 
+    /// Returns the first installed asset whose `environmentTag` matches `tag`
+    /// (case-insensitive), or `nil` if none is tagged. Used by genre-based
+    /// auto-suggestion to resolve a mood to a concrete environment.
+    func asset(matchingTag tag: String) async throws -> EnvironmentAsset? {
+        let normalized = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        let assets = try await database.fetchEnvironmentAssets()
+        return assets.first {
+            ($0.environmentTag?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) == normalized
+        }
+    }
+
     func activateAsset(id: String) async throws {
         try await database.setActiveEnvironmentAsset(id: id)
         notifyEnvironmentsChanged()
@@ -224,6 +236,7 @@ actor EnvironmentCatalogManager {
         let originalExt = sourceURL.pathExtension
         let normalizedExt = originalExt.lowercased()
         try Self.validateExtension(normalizedExt)
+        try Self.validateFileSize(at: sourceURL)
 
         guard await assetValidator(sourceURL) else {
             throw EnvironmentCatalogError.invalidAsset
@@ -285,6 +298,10 @@ actor EnvironmentCatalogManager {
 
         guard !data.isEmpty else {
             throw EnvironmentCatalogError.downloadFailed("No data returned")
+        }
+
+        guard EnvironmentImportValidationPolicy.isWithinSizeLimit(data.count) else {
+            throw EnvironmentCatalogError.unsupportedFileType
         }
 
         try fileManager.createDirectory(at: environmentsDirectory, withIntermediateDirectories: true)
@@ -416,8 +433,8 @@ actor EnvironmentCatalogManager {
             return asset.assetPath
         }
 
-        let ext = URL(fileURLWithPath: asset.assetPath).pathExtension.lowercased()
-        if Self.hdriExtensions.contains(ext) {
+        let ext = URL(fileURLWithPath: asset.assetPath).pathExtension
+        if EnvironmentImportValidationPolicy.routesToHDRISkybox(extension: ext) {
             return "hdriSkybox"
         }
 
@@ -459,7 +476,8 @@ actor EnvironmentCatalogManager {
 
     private static func defaultAssetValidator(url: URL) async -> Bool {
         let ext = url.pathExtension.lowercased()
-        guard supportedExtensions.contains(ext) else { return false }
+        let classification = EnvironmentImportValidationPolicy.classify(extension: ext)
+        guard classification != .unsupported else { return false }
 
         guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
 
@@ -470,9 +488,10 @@ actor EnvironmentCatalogManager {
         let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey])
         let fileSize = resourceValues?.fileSize ?? 0
         guard fileSize > 0 else { return false }
+        guard EnvironmentImportValidationPolicy.isWithinSizeLimit(fileSize) else { return false }
 
-        // HDRI files are validated by checking the image source
-        if hdriExtensions.contains(ext) {
+        // HDRI / panorama files (HDR, EXR, PNG, JPG) are validated via the image source.
+        if case .hdri = classification {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
             return CGImageSourceGetCount(source) > 0
         }
@@ -494,7 +513,17 @@ actor EnvironmentCatalogManager {
     }
 
     private static func validateExtension(_ ext: String) throws {
-        guard supportedExtensions.contains(ext.lowercased()) else {
+        guard EnvironmentImportValidationPolicy.isSupportedExtension(ext) else {
+            throw EnvironmentCatalogError.unsupportedFileType
+        }
+    }
+
+    /// Rejects files that exceed the import size cap. Unknown sizes (e.g. unreadable
+    /// attributes) are allowed through and validated downstream by the asset validator.
+    private static func validateFileSize(at url: URL) throws {
+        let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey])
+        let fileSize = resourceValues?.fileSize ?? 0
+        guard EnvironmentImportValidationPolicy.isWithinSizeLimit(fileSize) else {
             throw EnvironmentCatalogError.unsupportedFileType
         }
     }

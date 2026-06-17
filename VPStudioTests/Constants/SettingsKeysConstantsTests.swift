@@ -78,6 +78,7 @@ struct SettingsKeysConstantsTests {
         #expect(!SettingsKeys.personalizationEnabled.isEmpty)
         #expect(!SettingsKeys.preferredEnvironment.isEmpty)
         #expect(!SettingsKeys.autoOpenEnvironment.isEmpty)
+        #expect(!SettingsKeys.autoSuggestEnvironmentByGenre.isEmpty)
         #expect(!SettingsKeys.feedbackScaleMode.isEmpty)
         #expect(!SettingsKeys.runtimeDiagnosticsEnabled.isEmpty)
         #expect(!SettingsKeys.recentSearches.isEmpty)

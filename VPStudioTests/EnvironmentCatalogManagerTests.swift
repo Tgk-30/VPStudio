@@ -766,6 +766,93 @@ struct EnvironmentCatalogManagerBehaviorTests {
         #expect(EnvironmentCatalogManager.resolveHdriYawOffset(from: 33.3) == 33.3)
     }
 
+    // MARK: - Validation refactor behavior preservation + broadened skybox routing
+
+    @Test func immersiveSpaceIDForImportedPNGRoutesToHDRISkybox() async throws {
+        let (database, _) = try await makeDatabase(named: "manager-space-png.sqlite")
+        let manager = EnvironmentCatalogManager(database: database)
+        let asset = EnvironmentAsset(id: "p1", name: "P1", sourceType: .imported, assetPath: "/tmp/sky.png")
+        let spaceID = await manager.immersiveSpaceID(for: asset)
+        #expect(spaceID == "hdriSkybox")
+    }
+
+    @Test func immersiveSpaceIDForImportedJPGRoutesToHDRISkybox() async throws {
+        let (database, _) = try await makeDatabase(named: "manager-space-jpg.sqlite")
+        let manager = EnvironmentCatalogManager(database: database)
+        let asset = EnvironmentAsset(id: "j1", name: "J1", sourceType: .imported, assetPath: "/tmp/sky.jpg")
+        let spaceID = await manager.immersiveSpaceID(for: asset)
+        #expect(spaceID == "hdriSkybox")
+    }
+
+    @Test func importEnvironmentAcceptsPNGSkybox() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-import-png.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true }
+        )
+        let source = rootDir.appendingPathComponent("pano.png")
+        try Data("fake-png".utf8).write(to: source)
+        let imported = try await manager.importEnvironment(from: source)
+        #expect(imported.assetPath.hasSuffix(".png"))
+    }
+
+    @Test func importEnvironmentStillRejectsTXTAfterRefactor() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-import-txt-refactor.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        let source = rootDir.appendingPathComponent("bad.txt")
+        try Data("text".utf8).write(to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected unsupported file type")
+        } catch EnvironmentCatalogError.unsupportedFileType {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func environmentTagPersistsThroughDatabaseRoundTrip() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-tag-roundtrip.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let asset = EnvironmentAsset(
+            id: "tagged-asset",
+            name: "Tagged",
+            sourceType: .imported,
+            assetPath: "/tmp/tagged.hdr",
+            environmentTag: "scifi"
+        )
+        try await database.saveEnvironmentAsset(asset)
+        let fetched = try await database.fetchEnvironmentAssets()
+        #expect(fetched.first?.environmentTag == "scifi")
+    }
+
+    @Test func assetMatchingTagFindsTaggedAssetAndRejectsBlank() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-tag-match.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(database: database)
+        try await database.saveEnvironmentAsset(
+            EnvironmentAsset(id: "t1", name: "Horror Env", sourceType: .imported, assetPath: "/tmp/h.hdr", environmentTag: "horror")
+        )
+        try await database.saveEnvironmentAsset(
+            EnvironmentAsset(id: "t2", name: "Untagged", sourceType: .imported, assetPath: "/tmp/u.hdr")
+        )
+
+        #expect(try await manager.asset(matchingTag: "HORROR")?.id == "t1")
+        #expect(try await manager.asset(matchingTag: "scifi") == nil)
+        #expect(try await manager.asset(matchingTag: "") == nil)
+    }
+
     @MainActor
     @Test func activateAssetPostsEnvironmentsDidChangeNotification() async throws {
         let (database, rootDir) = try await makeDatabase(named: "manager-notification.sqlite")
