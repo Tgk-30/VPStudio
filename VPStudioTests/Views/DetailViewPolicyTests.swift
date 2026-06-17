@@ -270,3 +270,33 @@ struct DetailPresentationPolicyTests {
         #expect(result.contains("Media Title"))
     }
 }
+
+// MARK: - SeriesRateControlPolicy Tests
+
+@Suite("SeriesRateControlPolicy Tests")
+struct SeriesRateControlPolicyTests {
+    @Test("visibleLabel reads 'Rate' when there is no current rating")
+    func visibleLabelUnratedShowsRate() {
+        #expect(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: nil) == "Rate")
+    }
+
+    @Test("visibleLabel treats an empty summary as unrated")
+    func visibleLabelEmptySummaryShowsRate() {
+        #expect(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: "") == "Rate")
+    }
+
+    @Test("visibleLabel surfaces the existing score so the control reads as editable")
+    func visibleLabelRatedShowsScore() {
+        // Mirrors FeedbackScaleMode.format output across scale modes.
+        #expect(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: "8/10") == "8/10")
+        #expect(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: "87/100") == "87/100")
+        #expect(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: "Liked") == "Liked")
+        #expect(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: "Disliked") == "Disliked")
+    }
+
+    @Test("glyphName is a hollow star until a rating exists, then fills")
+    func glyphNameTracksRatingPresence() {
+        #expect(SeriesRateControlPolicy.glyphName(hasRating: false) == "star")
+        #expect(SeriesRateControlPolicy.glyphName(hasRating: true) == "star.fill")
+    }
+}

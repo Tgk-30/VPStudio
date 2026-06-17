@@ -177,6 +177,27 @@ enum SeriesDetailPresentationPolicy {
     }
 }
 
+/// Copy + glyph for the user-facing RATE action (the control that opens the rating sheet).
+///
+/// This is the *interactive* rating affordance — distinct from the read-only IMDb display mark
+/// rendered elsewhere in the metadata row. It carries a visible "Rate" / current-score text label
+/// so it no longer reads as one of N identical monochrome chrome glyphs.
+enum SeriesRateControlPolicy {
+    /// Visible label beside the star glyph. When the user has not rated yet, prompt with "Rate".
+    /// Once a rating exists, surface the formatted summary as-is (e.g. "8/10", "Liked") so the
+    /// control reads as both the current value and the way to edit it — across every scale mode
+    /// (like/dislike, 1-10, 1-100), where a hard-coded "Rated N" prefix would read awkwardly.
+    static func visibleLabel(currentFeedbackSummary: String?) -> String {
+        guard let summary = currentFeedbackSummary, !summary.isEmpty else { return "Rate" }
+        return summary
+    }
+
+    /// SF Symbol for the rate control: a filled star once a rating exists, an outline otherwise.
+    static func glyphName(hasRating: Bool) -> String {
+        hasRating ? "star.fill" : "star"
+    }
+}
+
 /// A series‑detail layout matching the reference screenshot exactly:
 /// – Back arrow top-left, share/list/cast icons top-right
 /// – Hero image with gradient overlay
@@ -447,13 +468,11 @@ struct SeriesDetailLayout: View {
                     .accessibilityLabel("Cast")
                     .accessibilityHint("Opens playback destination options.")
 
-                    Button(action: onShowRatingSheet) {
-                        utilityGlyph(name: viewModel.currentFeedbackValue != nil ? "star.fill" : "star")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(viewModel.currentFeedbackValue != nil ? "Edit rating" : "Rate title")
-                    .accessibilityHint("Opens rating controls for this title.")
-                    
+                    // NOTE: the RATE action no longer lives in this chrome cluster. It was an
+                    // unlabeled monochrome star here — indistinguishable from the share/cast/AI
+                    // glyphs and easily confused with the read-only gold IMDb mark below. It now
+                    // renders as a clearly-labeled "Rate" pill in the metadata row (see rateControl).
+
                     // AI button — glass to match the utility cluster, purple glyph keeps the AI brand
                     Button {
                         Task { await viewModel.fetchAIAnalysis() }
@@ -503,6 +522,9 @@ struct SeriesDetailLayout: View {
             }
 
             if let ratingText = SeriesDetailPresentationPolicy.imdbRatingText(viewModel.mediaItem?.imdbRating) {
+                // Read-only IMDb score DISPLAY (not the rate control). Combined into a single
+                // static accessibility element labeled as a rating so VoiceOver users don't
+                // mistake the gold star for the interactive "Rate" action (see rateControl).
                 HStack(spacing: 4) {
                     // Small gold accent, not a loud badge — shrink to caption2 so it reads
                     // as a subtle mark beside the weighted rating value.
@@ -513,11 +535,18 @@ struct SeriesDetailLayout: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("IMDb rating \(ratingText)")
             }
 
             // Separate the favorite affordance from the rating group so the heart no longer
             // visually attaches to the IMDb mark.
             Spacer(minLength: 0)
+
+            // Rate control — the interactive rating action, with a visible "Rate" / current-score
+            // text label so it reads as the way to rate this title (not a bare chrome glyph,
+            // and not the read-only gold IMDb mark on the leading edge of this row).
+            rateControl
 
             // Favorite button
             Button {
@@ -533,6 +562,32 @@ struct SeriesDetailLayout: View {
             .accessibilityLabel(viewModel.mediaLibrary.isInFavorites ? "Remove from Favorites" : "Add to Favorites")
             .accessibilityHint("Toggles this title in your Favorites list.")
         }
+    }
+
+    /// The interactive RATE affordance: a labeled pill (star glyph + "Rate" / current-score text)
+    /// that opens the rating sheet. Distinct treatment + visible copy keep it from being mistaken
+    /// for the read-only IMDb display mark or for one of the monochrome top-bar chrome glyphs.
+    private var rateControl: some View {
+        let hasRating = viewModel.currentFeedbackValue != nil
+        return Button(action: onShowRatingSheet) {
+            HStack(spacing: 6) {
+                Image(systemName: SeriesRateControlPolicy.glyphName(hasRating: hasRating))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(hasRating ? VPColor.accent : .white.opacity(0.9))
+                Text(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: viewModel.currentFeedbackSummary))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(VPColor.accent.opacity(hasRating ? 0.55 : 0.30), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.currentFeedbackValue != nil ? "Edit rating" : "Rate title")
+        .accessibilityHint("Opens rating controls for this title.")
     }
     
     private var playButtonRow: some View {
