@@ -445,6 +445,13 @@ struct IndexerSettingsView: View {
     /// Persists a manifest-derived name onto a Stremio addon config after a
     /// successful Test Connection so the row reflects the addon's own name.
     private func applyDiscoveredName(_ discoveredName: String, to config: IndexerConfig) async {
+        // Built-in addons are canonicalized back to their hardcoded name on the next
+        // indexerManager.initialize(), so persisting a manifest-derived rename is futile and a
+        // "Name updated" toast would lie. Just confirm the connection for built-ins.
+        guard !config.id.hasPrefix("builtin-") else {
+            notice = .success("\(config.name): connection succeeded.")
+            return
+        }
         guard let index = configs.firstIndex(where: { $0.id == config.id }) else {
             notice = .success("\(config.name): connection succeeded.")
             return

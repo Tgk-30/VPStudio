@@ -48,8 +48,10 @@ actor SettingsManager {
         do {
             try await database.setSetting(key: key, value: SecretReference.encode(key: migratedKey))
         } catch {
-            // Roll back keychain entry — plaintext value remains in DB, migration will retry next read.
-            try await secretStore.deleteSecret(for: migratedKey)
+            // Roll back keychain entry — plaintext value remains in DB, migration will retry next
+            // read. Best-effort (try?): a transient keychain delete failure must NOT throw away the
+            // successful read we already have, contradicting the graceful-degradation intent.
+            try? await secretStore.deleteSecret(for: migratedKey)
             return stored
         }
         return stored

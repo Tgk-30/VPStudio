@@ -759,10 +759,15 @@ struct SetupWizardView: View {
                     plan.preferredQualityRawValue,
                     forKey: SettingsKeys.preferredQuality
                 )
-                try await appState.settingsManager.setValue(
-                    plan.subtitleLanguageValue,
-                    forKey: SettingsKeys.subtitleLanguage
-                )
+                // Only persist an actual subtitle selection. Writing nil for "None" runs a
+                // DELETE, which (because the wizard is re-runnable and its picker defaults to
+                // "None") would silently wipe a previously-configured subtitle language.
+                if let subtitleValue = plan.subtitleLanguageValue {
+                    try await appState.settingsManager.setValue(
+                        subtitleValue,
+                        forKey: SettingsKeys.subtitleLanguage
+                    )
+                }
                 await seedIndexerDefaultsIfNeeded()
             } catch {
                 saveError = error.localizedDescription

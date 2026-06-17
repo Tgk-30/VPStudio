@@ -371,15 +371,15 @@ enum IndexerURLSecurityPolicy {
             return true
         }
 
-        if normalized == "::1"
-            || normalized.hasPrefix("fe80:")
-            || normalized.hasPrefix("fc")
-            || normalized.hasPrefix("fd") {
+        if normalized == "::1" || normalized.hasPrefix("fe80:") {
             return true
         }
 
         if normalized.contains(":") {
-            return false
+            // IPv6 literal — only ULA (fc00::/7, i.e. an fc/fd prefix) is private. Checking
+            // fc/fd against arbitrary hosts wrongly matched DNS names like "fcbarcelona.com"
+            // or "fd-cdn.example.com" and permitted cleartext HTTP that could leak API keys.
+            return normalized.hasPrefix("fc") || normalized.hasPrefix("fd")
         }
 
         if normalized.hasSuffix(".local") || !normalized.contains(".") {

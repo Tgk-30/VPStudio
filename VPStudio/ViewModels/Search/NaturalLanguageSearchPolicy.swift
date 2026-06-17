@@ -109,7 +109,11 @@ enum NaturalLanguageSearchPolicy {
         if let match = firstMatch(in: lowercased, pattern: "'?(\\d0)'?s\\b"),
            match.count == 2,
            let value = Int(match[1]) {
-            let century = value <= 10 ? "20" : "19"
+            // Derive the 1900s/2000s boundary from the current decade so "20s" means 2020s in
+            // the 2020s (not 1920s). Decades at or before the current one are 2000s; later ones
+            // are 1900s. (Hardcoding "<= 10 -> 2000s" drifted as the decade advanced.)
+            let currentDecade = Calendar.current.component(.year, from: Date()) % 100 / 10 * 10
+            let century = value <= currentDecade ? "20" : "19"
             return "\(century)\(match[1])s"
         }
 

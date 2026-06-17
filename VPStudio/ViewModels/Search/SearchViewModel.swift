@@ -1458,6 +1458,14 @@ final class SearchViewModel {
     func fetchNaturalLanguageRecommendations(query: String, aiManager: AIAssistantManager) {
         let phrase = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Typing a sentence already kicked off a debounced plain-title search. Cancel that
+        // pending search so it can't fire after this and wipe the AI recs (it calls
+        // clearAIRecommendations), and clear the stale literal-title results so they don't
+        // render underneath the AI Picks rail.
+        debounceTask?.cancel()
+        debounceTask = nil
+        results = []
+
         aiTask?.cancel()
         isLoadingAI = true
         aiError = nil
