@@ -686,6 +686,7 @@ struct PlayerView: View {
     @State private var subtitleDownloadTask: Task<Void, Never>?
     @State private var environmentAssetsTask: Task<Void, Never>?
     @State private var scenePhaseTask: Task<Void, Never>?
+    @State private var previousScenePhase: ScenePhase = .active
     @State private var memoryPressureTask: Task<Void, Never>?
     @State private var avMediaOptionRefreshTask: Task<Void, Never>?
     @State private var audioTrackRefreshTask: Task<Void, Never>?
@@ -4033,10 +4034,44 @@ struct PlayerView: View {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) async {
+        let previous = previousScenePhase
+        previousScenePhase = phase
+
+        // Persist watch progress on the way down (doff/don, sleep/wake,
+        // backgrounding) BEFORE we tear the immersive space down, so the resume
+        // point survives even if the engine is reset while suspended. The close
+        // path (closePlayer/onDisappear) already persists, so respect its guard
+        // to avoid a redundant double-write.
+        if !didInitiateClose {
+            switch PlayerLifecyclePersistencePolicy.persistenceAction(for: phase) {
+            case .persistAndStopTimer:
+                persistCurrentWatchProgress()
+                stopProgressPersistence()
+            case .persistProgress:
+                persistCurrentWatchProgress()
+            case .none, .reanchorResume:
+                break
+            }
+        }
+
         switch phase {
         case .background:
             await dismissImmersiveIfNeeded(reason: .suspension)
         case .active:
+            // Re-anchor the resume point when coming back from a suspended or
+            // inactive phase: the engine may have been reset to 0, so re-fetch
+            // the persisted target and seek only if it has actually drifted.
+            if PlayerLifecyclePersistencePolicy.reanchorAction(previous: previous, current: phase) == .reanchorResume,
+               !didInitiateClose {
+                let target = await loadResumeTarget()
+                if WatchProgressResumePolicy.shouldReseek(
+                    persistedResume: target,
+                    engineCurrentTime: engine.currentTime
+                ), let target {
+                    seek(to: target)
+                }
+            }
+
             let selectedAsset = appState.selectedEnvironmentAsset
             let plan = PlayerImmersiveTransitionPolicy.activeRestorePlan(
                 hasRestoreRequest: appState.consumeSuspendedImmersiveRestoreRequest(),
