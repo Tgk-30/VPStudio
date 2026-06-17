@@ -168,7 +168,7 @@ struct PlayerResourceTeardownContractTests {
             in: visionOSBranch
         )
         let immersiveDismissScheduleRange = try requiredRange(
-            of: "scheduleImmersiveDismiss(reason: .playerClosed)",
+            of: "scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)",
             in: visionOSBranch
         )
 
@@ -658,19 +658,18 @@ struct PlayerResourceTeardownContractTests {
             in: source
         )
 
-        #expect(containsIgnoringWhitespace(
-            prepareBody,
-            """
-            hasPlayedOnce = false
-            guard Self.preparePlaybackShouldRun(
-                requestedPreparationID: preparationID,
-                activePreparationID: activePreparePlaybackID
-            ), !Task.isCancelled else {
-                return
-            }
-            cleanupPlayback(clearSession: false)
-            """
-        ))
+        // Invariant (robust to interleaved state resets): prepare re-checks cancellation
+        // (the !Task.isCancelled guard) BEFORE it tears down playback without clearing the
+        // session (cleanupPlayback(clearSession: false)). Asserted by relative ordering so
+        // unrelated state-reset lines added between them don't break this contract.
+        let hasPlayedReset = try requiredRange(of: "hasPlayedOnce = false", in: prepareBody)
+        let cancellationGuard = try requiredRange(of: "!Task.isCancelled else {", in: prepareBody)
+        let cleanupWithoutClearingSession = try requiredRange(
+            of: "cleanupPlayback(clearSession: false)",
+            in: prepareBody
+        )
+        #expect(hasPlayedReset.lowerBound < cancellationGuard.lowerBound)
+        #expect(cancellationGuard.lowerBound < cleanupWithoutClearingSession.lowerBound)
     }
 
     @Test

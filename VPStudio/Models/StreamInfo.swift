@@ -163,6 +163,40 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         return normalizedString.isEmpty ? streamURL.absoluteString : normalizedString
     }
 
+    // `requestHeaders` is a runtime-only field: it is intentionally excluded from
+    // `CodingKeys`, so it never survives a Codable round-trip (always decodes to
+    // `nil`). The synthesized Equatable/Hashable would still include it, which made
+    // equality depend on a field that the encoded form drops — a `StreamInfo`
+    // carrying headers would compare unequal to its own round-tripped copy. That
+    // inconsistency propagated up through `PlayerSessionRequest` and broke
+    // `dismissWindow(id:value:)` window matching. Custom conformance keeps equality
+    // and hashing consistent with the Codable contract by excluding `requestHeaders`.
+    static func == (lhs: StreamInfo, rhs: StreamInfo) -> Bool {
+        lhs.streamURL == rhs.streamURL
+            && lhs.quality == rhs.quality
+            && lhs.codec == rhs.codec
+            && lhs.audio == rhs.audio
+            && lhs.source == rhs.source
+            && lhs.hdr == rhs.hdr
+            && lhs.fileName == rhs.fileName
+            && lhs.sizeBytes == rhs.sizeBytes
+            && lhs.debridService == rhs.debridService
+            && lhs.recoveryContext == rhs.recoveryContext
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(streamURL)
+        hasher.combine(quality)
+        hasher.combine(codec)
+        hasher.combine(audio)
+        hasher.combine(source)
+        hasher.combine(hdr)
+        hasher.combine(fileName)
+        hasher.combine(sizeBytes)
+        hasher.combine(debridService)
+        hasher.combine(recoveryContext)
+    }
+
     var sizeString: String {
         guard let bytes = sizeBytes else { return "" }
         let gb = Double(bytes) / 1_073_741_824

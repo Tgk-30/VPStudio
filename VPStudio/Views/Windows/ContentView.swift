@@ -119,6 +119,15 @@ struct ContentView: View {
     @State private var downloadBadgeRefreshTask: Task<Void, Never>?
     @State private var settingsBadgeRefreshTask: Task<Void, Never>?
     @State private var rootBadgeRefreshTask: Task<Void, Never>?
+    #if os(macOS) || os(visionOS)
+    /// Last player session we observed as active. Retained so the main-window
+    /// reappearance fallback can issue a precise value-keyed `dismissWindow` even
+    /// if `appState.activePlayerSession` was already niled by the time the main
+    /// window comes back (e.g. `closePlayer` cleared the session before the
+    /// dismiss landed). Without this, the player window could survive as a dead
+    /// window on KSPlayer-path streams.
+    @State private var pendingPlayerWindowDismiss: PlayerSessionRequest?
+    #endif
     private let disablesAutomaticTasks: Bool
 
     #if os(visionOS)
@@ -227,6 +236,13 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 600)
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: isShowingQuickStartPrompt)
         #if os(macOS) || os(visionOS)
+        .onChange(of: appState.activePlayerSession) { _, session in
+            // Remember the active session while it exists so the reappearance
+            // fallback can still target it for dismissal after it's cleared.
+            if let session {
+                pendingPlayerWindowDismiss = session
+            }
+        }
         .modifier(MainWindowPlayerTerminationModifier(
             scenePhase: scenePhase,
             terminate: { terminatePlayerIfMainWindowOpened() }
@@ -398,11 +414,17 @@ struct ContentView: View {
     private func terminatePlayerIfMainWindowOpened() {
         guard appState.activePlayerSession != nil || appState.isMainWindowSuppressedForPlayer else { return }
 
-        if let activeSession = appState.activePlayerSession {
+        // Prefer the live session, then fall back to the retained pending-dismiss
+        // target so the value-keyed dismiss can still match the window even if
+        // `activePlayerSession` was niled before the main window reappeared
+        // (which would otherwise leave a dead player window open on the
+        // KSPlayer-path streams).
+        if let activeSession = appState.activePlayerSession ?? pendingPlayerWindowDismiss {
             dismissWindow(id: "player", value: activeSession)
         }
         dismissWindow(id: "player")
         appState.terminateActivePlayerSession()
+        pendingPlayerWindowDismiss = nil
     }
     #endif
 

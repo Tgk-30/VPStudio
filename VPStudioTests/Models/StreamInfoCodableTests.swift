@@ -143,6 +143,65 @@ struct StreamInfoCodableTests {
         #expect(!encodedString.contains("User-Agent"))
         #expect(decoded.requestHeaders == nil)
     }
+
+    // MARK: - BUG 1: equality/hashing consistent with Codable (excludes requestHeaders)
+
+    @Test("Equality ignores runtime-only requestHeaders")
+    func equalityExcludesRequestHeaders() {
+        let base = StreamInfo(
+            streamURL: URL(string: "https://example.com/stream.mp4")!,
+            quality: .hd1080p,
+            codec: .h264,
+            audio: .aac,
+            source: .webDL,
+            hdr: .sdr,
+            fileName: "movie.mp4",
+            sizeBytes: 1_000_000,
+            debridService: "realDebrid"
+        )
+        let withHeaders = base.withRequestHeaders(["User-Agent": "Stremio"])
+        let withoutHeaders = base.withRequestHeaders(nil)
+
+        #expect(withHeaders == withoutHeaders)
+        #expect(withHeaders.hashValue == withoutHeaders.hashValue)
+    }
+
+    @Test("A header-carrying stream equals its own Codable round-trip")
+    func equalsRoundTripDespiteHeaders() throws {
+        let original = StreamInfo(
+            streamURL: URL(string: "https://example.com/stream.mp4")!,
+            quality: .hd1080p,
+            codec: .h264,
+            audio: .aac,
+            source: .webDL,
+            hdr: .sdr,
+            fileName: "movie.mp4",
+            sizeBytes: 1_000_000,
+            debridService: "realDebrid",
+            requestHeaders: ["User-Agent": "Stremio"]
+        )
+
+        let decoded = try JSONDecoder().decode(StreamInfo.self, from: JSONEncoder().encode(original))
+        #expect(original.requestHeaders != nil)
+        #expect(decoded.requestHeaders == nil)
+        #expect(original == decoded)
+        #expect(original.hashValue == decoded.hashValue)
+    }
+
+    @Test("Differing encoded fields still compare unequal")
+    func unequalWhenEncodedFieldDiffers() {
+        let a = StreamInfo(
+            streamURL: URL(string: "https://example.com/a.mp4")!,
+            quality: .hd1080p, codec: .h264, audio: .aac, source: .webDL, hdr: .sdr,
+            fileName: "a.mp4", sizeBytes: 1, debridService: "realDebrid"
+        )
+        let b = StreamInfo(
+            streamURL: URL(string: "https://example.com/b.mp4")!,
+            quality: .hd1080p, codec: .h264, audio: .aac, source: .webDL, hdr: .sdr,
+            fileName: "a.mp4", sizeBytes: 1, debridService: "realDebrid"
+        )
+        #expect(a != b)
+    }
 }
 
 @Suite("StreamRecoveryContext Codable Round-Trip")

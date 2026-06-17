@@ -1,7 +1,109 @@
 import Foundation
 import Testing
 import AVFoundation
+import CoreGraphics
 @testable import VPStudio
+
+// MARK: - videoStartSucceeded (BUG 3: audio-only / black-screen failover)
+
+@Suite("AVPlayerEngine - videoStartSucceeded")
+struct AVPlayerEngineVideoStartSucceededTests {
+
+    @Test("Succeeds only when playing AND has video tracks AND non-zero presentation size")
+    func succeedsWhenPlayingWithVideoAndSize() {
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: true,
+            presentationSize: CGSize(width: 1920, height: 1080),
+            isPlaying: true
+        ))
+    }
+
+    @Test("Fails when playing but no video tracks (audio-only black screen)")
+    func failsWhenAudioOnly() {
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: false,
+            presentationSize: CGSize(width: 1920, height: 1080),
+            isPlaying: true
+        ) == false)
+    }
+
+    @Test("Fails when playing with video track but zero presentation size (no frame yet)")
+    func failsWhenZeroPresentationSize() {
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: true,
+            presentationSize: .zero,
+            isPlaying: true
+        ) == false)
+    }
+
+    @Test("Fails when a single presentation dimension is zero")
+    func failsWhenOnePresentationDimensionZero() {
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: true,
+            presentationSize: CGSize(width: 1920, height: 0),
+            isPlaying: true
+        ) == false)
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: true,
+            presentationSize: CGSize(width: 0, height: 1080),
+            isPlaying: true
+        ) == false)
+    }
+
+    @Test("Fails when not playing regardless of video presence")
+    func failsWhenNotPlaying() {
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: true,
+            presentationSize: CGSize(width: 1920, height: 1080),
+            isPlaying: false
+        ) == false)
+    }
+
+    @Test("Fails when nothing is true (degenerate)")
+    func failsWhenAllFalse() {
+        #expect(AVPlayerEngine.videoStartSucceeded(
+            hasVideoTracks: false,
+            presentationSize: .zero,
+            isPlaying: false
+        ) == false)
+    }
+}
+
+// MARK: - Engine order (BUG 3: KSPlayer must come after AVPlayer on visionOS)
+
+@Suite("AVPlayerEngine - failover engine order")
+struct AVPlayerEngineFailoverOrderTests {
+
+    @Test("On visionOS, AVPlayer is tried before KSPlayer in every strategy")
+    func ksPlayerComesAfterAVPlayerOnVisionOS() throws {
+        #if os(visionOS)
+        let selector = PlayerEngineSelector()
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mp4",
+            codec: .h264,
+            fileName: "movie.mp4"
+        )
+        for strategy in PlayerEngineStrategy.allCases {
+            let order = selector.engineOrder(for: stream, strategy: strategy)
+            let avIndex = try #require(order.firstIndex(of: .avPlayer))
+            let ksIndex = try #require(order.firstIndex(of: .ksPlayer))
+            #expect(avIndex < ksIndex)
+        }
+        #endif
+    }
+
+    @Test("Performance strategy always tries AVPlayer before KSPlayer")
+    func performanceStrategyAVPlayerFirst() {
+        let selector = PlayerEngineSelector()
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mp4",
+            codec: .h264,
+            fileName: "movie.mp4"
+        )
+        let order = selector.engineOrder(for: stream, strategy: .performance)
+        #expect(order == [.avPlayer, .ksPlayer])
+    }
+}
 
 // MARK: - failureDescription
 

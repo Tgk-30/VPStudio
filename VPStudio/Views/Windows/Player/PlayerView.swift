@@ -742,6 +742,11 @@ struct PlayerView: View {
     @State private var isAPMPActive = false
     @State private var playerWindowScene: UIWindowScene?
     @State private var visionGeometryTask: Task<Void, Never>?
+    /// Bounded retry that polls KSPlayer's `naturalSize` until a usable video
+    /// ratio is available, then applies window geometry. KSPlayer's state
+    /// callbacks can fire with a zero `naturalSize` for slow/torrent streams, so
+    /// the one-shot detection in `onStateChanged` is not enough on its own.
+    @State private var ksGeometryRetryTask: Task<Void, Never>?
     @State private var environmentMenuActionTask: Task<Void, Never>?
     @State private var immersiveDismissTask: Task<Void, Never>?
     #endif
@@ -2642,8 +2647,13 @@ struct PlayerView: View {
         // player. The heavy cleanupPlayback() (KSPlayer/AVPlayer release) is deferred to
         // the next main-actor tick so it can never block the Back transition; onDisappear
         // also runs cleanupPlayback() as a safety net and it is idempotent + sessionID-guarded.
+        // Dismiss the dedicated player window *before* the main window is
+        // reactivated. The main-window restore is deferred into
+        // scheduleImmersiveDismiss(restoresMainWindow:) below (it runs after the
+        // immersive teardown), so the player-window dismiss is issued first and is
+        // never neutralized by main reactivating ahead of it — which previously
+        // left a dead player window open on KSPlayer-path streams.
         if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
-            scheduleMainWindowRestoreIfNeeded()
             dismissDedicatedPlayerWindow()
         }
         if PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack {
@@ -3324,28 +3334,18 @@ struct PlayerView: View {
                     engine.isPlaying = false
                     refreshKSAudioTracks(from: coordinator)
                     refreshKSSubtitleTracks(from: coordinator)
-                    // Detect video ratio from KSPlayer once ready
-                    if detectedVideoRatio == nil {
-                        let size = playerLayer.player.naturalSize
-                        if let ratio = PlayerAspectRatioPolicy.ratio(from: size) {
-                            detectedVideoRatio = ratio
-                            engine.videoSize = size
-                        }
-                    }
+                    // Detect video ratio from KSPlayer once ready, then apply
+                    // window geometry as soon as we have a ratio and a scene
+                    // (mirrors AVPlayer's periodic-observer-driven geometry).
+                    captureKSVideoRatioAndApplyGeometry(from: coordinator)
                 case .bufferFinished:
                     playbackState = .playing
                     engine.isBuffering = false
                     engine.isPlaying = true
                     refreshKSAudioTracks(from: coordinator)
                     refreshKSSubtitleTracks(from: coordinator)
-                    // Fallback: detect if not yet captured at readyToPlay
-                    if detectedVideoRatio == nil {
-                        let size = playerLayer.player.naturalSize
-                        if let ratio = PlayerAspectRatioPolicy.ratio(from: size) {
-                            detectedVideoRatio = ratio
-                            engine.videoSize = size
-                        }
-                    }
+                    // Fallback: detect if not yet captured at readyToPlay.
+                    captureKSVideoRatioAndApplyGeometry(from: coordinator)
                 case .paused:
                     engine.isPlaying = false
                     engine.isBuffering = false
@@ -3394,6 +3394,75 @@ struct PlayerView: View {
             }
         }
     }
+
+    /// Reads KSPlayer's `naturalSize`, records the detected video ratio when it is
+    /// usable, and immediately applies window geometry on visionOS. When the ratio
+    /// is not yet available (zero/missing `naturalSize` on slow/torrent streams) a
+    /// bounded retry is scheduled so the window still adopts the content ratio once
+    /// the decoder exposes the dimensions — matching AVPlayer's behavior.
+    @MainActor
+    private func captureKSVideoRatioAndApplyGeometry(from coordinator: KSVideoPlayer.Coordinator) {
+        guard isCurrentKSPlayerCoordinator(coordinator) else { return }
+
+        if detectedVideoRatio == nil {
+            let size = coordinator.playerLayer?.player.naturalSize ?? .zero
+            if let ratio = PlayerAspectRatioPolicy.ratio(from: size) {
+                detectedVideoRatio = ratio
+                engine.videoSize = size
+                // `onChange(of: detectedVideoRatio)` applies geometry on visionOS,
+                // but apply directly too so geometry is requested even if the scene
+                // is already captured and the ratio hasn't otherwise changed.
+                #if os(visionOS)
+                applyVisionOSWindowGeometry()
+                #endif
+                return
+            }
+        } else {
+            // Ratio already known — make sure the window has actually adopted it
+            // (the scene may have been captured after the ratio was detected).
+            #if os(visionOS)
+            applyVisionOSWindowGeometry()
+            #endif
+            return
+        }
+
+        #if os(visionOS)
+        scheduleKSWindowGeometryRetry(for: coordinator)
+        #endif
+    }
+
+    #if os(visionOS)
+    /// Polls KSPlayer's `naturalSize` a bounded number of times until a usable
+    /// ratio appears, then records it and applies window geometry. Cancels itself
+    /// as soon as the ratio is detected or the coordinator is no longer current.
+    @MainActor
+    private func scheduleKSWindowGeometryRetry(for coordinator: KSVideoPlayer.Coordinator) {
+        guard !disablesAutomaticTasks else { return }
+        ksGeometryRetryTask?.cancel()
+        ksGeometryRetryTask = Task { @MainActor in
+            defer {
+                if self.isCurrentKSPlayerCoordinator(coordinator) {
+                    ksGeometryRetryTask = nil
+                }
+            }
+            // ~3s total budget: enough for slow torrent streams to expose
+            // dimensions without leaving a stale task running.
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled,
+                      isCurrentKSPlayerCoordinator(coordinator) else { return }
+                guard detectedVideoRatio == nil else { return }
+                let size = coordinator.playerLayer?.player.naturalSize ?? .zero
+                if let ratio = PlayerAspectRatioPolicy.ratio(from: size) {
+                    detectedVideoRatio = ratio
+                    engine.videoSize = size
+                    applyVisionOSWindowGeometry()
+                    return
+                }
+            }
+        }
+    }
+    #endif
 
     private func startObservingAVPlayer(_ player: AVPlayer) {
         removeAVTimeObserverIfNeeded()
@@ -3667,6 +3736,10 @@ struct PlayerView: View {
         videoRatioDetectionTask = nil
         hdrMetadataExtractionTask?.cancel()
         hdrMetadataExtractionTask = nil
+        #if os(visionOS)
+        ksGeometryRetryTask?.cancel()
+        ksGeometryRetryTask = nil
+        #endif
         didAttemptVideoRatioDetection = false
         didAttemptHDRMetadataExtraction = false
 
@@ -5010,6 +5083,8 @@ struct PlayerView: View {
         environmentMenuActionTask = nil
         immersiveDismissTask?.cancel()
         immersiveDismissTask = nil
+        ksGeometryRetryTask?.cancel()
+        ksGeometryRetryTask = nil
         #endif
     }
 

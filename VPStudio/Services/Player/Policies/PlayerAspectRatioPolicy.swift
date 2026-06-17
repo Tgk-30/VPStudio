@@ -137,4 +137,28 @@ enum PlayerAspectRatioPolicy {
         let width = ratio * height
         return (width: width, height: height)
     }
+
+    /// Whether a window-geometry update should be requested *now* for an engine's
+    /// callback path (notably KSPlayer, whose state callbacks are weaker than
+    /// AVPlayer's periodic observer).
+    ///
+    /// A geometry request needs two things to be useful: a usable, finite,
+    /// positive detected ratio, and a live window scene to apply it to. When
+    /// either is missing the caller should defer (and schedule a bounded retry)
+    /// rather than fire a request that would be ignored or resize to a degenerate
+    /// shape.
+    ///
+    /// - Parameters:
+    ///   - detectedRatio: The native video ratio (width / height) detected so
+    ///     far, or `nil` if not yet known.
+    ///   - sceneAvailable: Whether a window scene has been captured and can
+    ///     receive a geometry update.
+    static func shouldRequestGeometry(
+        detectedRatio: CGFloat?,
+        sceneAvailable: Bool
+    ) -> Bool {
+        guard sceneAvailable else { return false }
+        guard let detectedRatio, detectedRatio.isFinite, detectedRatio > 0 else { return false }
+        return true
+    }
 }

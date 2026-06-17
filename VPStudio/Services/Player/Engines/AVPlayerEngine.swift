@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreGraphics
 
 struct AVPlayerEngine: PlayerEngine {
     let kind: PlayerEngineKind = .avPlayer
@@ -56,6 +57,40 @@ struct AVPlayerEngine: PlayerEngine {
         return ["AVURLAssetHTTPHeaderFieldsKey": headers]
     }
 
+    /// Pure decision for whether AVPlayer playback has actually started *rendering
+    /// video* — as opposed to an audio-only / black-screen start that AVPlayer
+    /// happily reports as `rate > 0`.
+    ///
+    /// A start only "succeeded" when the player is playing AND there is at least
+    /// one video track AND the item has a non-zero presentation size (the decoder
+    /// has produced a frame the layer can present). When playback is rolling but
+    /// no video is present, the caller should treat it as a failure and fail over
+    /// to the next engine (KSPlayer) rather than leaving the user on a black
+    /// screen with only sound.
+    ///
+    /// - Parameters:
+    ///   - hasVideoTracks: Whether the current item exposes any video tracks.
+    ///   - presentationSize: The item's `presentationSize` (the size of the
+    ///     presented video frame; `.zero` until a frame is available / when none).
+    ///   - isPlaying: Whether the player is actively playing (rate > 0 or
+    ///     `timeControlStatus == .playing`).
+    static func videoStartSucceeded(
+        hasVideoTracks: Bool,
+        presentationSize: CGSize,
+        isPlaying: Bool
+    ) -> Bool {
+        guard isPlaying else { return false }
+        guard hasVideoTracks else { return false }
+        return presentationSize.width > 0 && presentationSize.height > 0
+    }
+
+    @MainActor
+    static func itemHasVideoTracks(_ item: AVPlayerItem) -> Bool {
+        item.tracks.contains { track in
+            track.assetTrack?.mediaType == .video
+        }
+    }
+
     @MainActor
     static func waitUntilReady(
         player: AVPlayer,
@@ -72,6 +107,10 @@ struct AVPlayerEngine: PlayerEngine {
         }
 
         let deadline = Date().addingTimeInterval(timeout)
+        // Tracks whether we ever observed AVPlayer rolling (rate > 0) without video.
+        // If the deadline is reached in that state we throw an audio-only error so
+        // the failover loop advances to KSPlayer, instead of a generic timeout.
+        var sawAudioOnlyPlayback = false
 
         while Date() < deadline {
             if item.error != nil {
@@ -83,12 +122,30 @@ struct AVPlayerEngine: PlayerEngine {
                 throw PlayerEngineError.initializationFailed(.avPlayer, failureDescription(for: item))
 
             case .readyToPlay:
-                if player.rate > 0 || player.timeControlStatus == .playing {
+                let isPlaying = player.rate > 0 || player.timeControlStatus == .playing
+                let hasVideoTracks = itemHasVideoTracks(item)
+
+                if videoStartSucceeded(
+                    hasVideoTracks: hasVideoTracks,
+                    presentationSize: item.presentationSize,
+                    isPlaying: isPlaying
+                ) {
                     onState?(.playing, "AVPlayer is rendering.")
                     return
                 }
 
-                if player.timeControlStatus == .waitingToPlayAtSpecifiedRate || item.isPlaybackBufferEmpty {
+                if isPlaying {
+                    // Playing but no video frame yet. If the item has no video
+                    // tracks at all, this is a true audio-only/black-screen start:
+                    // remember it so we can fail over once the deadline lapses
+                    // (we keep polling briefly in case tracks/size arrive late).
+                    if !hasVideoTracks {
+                        sawAudioOnlyPlayback = true
+                        onState?(.buffering, "Waiting for video — may fall back to compatibility engine.")
+                    } else {
+                        onState?(.buffering, "AVPlayer is rendering audio; waiting for first video frame.")
+                    }
+                } else if player.timeControlStatus == .waitingToPlayAtSpecifiedRate || item.isPlaybackBufferEmpty {
                     onState?(.buffering, "AVPlayer is buffering.")
                 } else {
                     onState?(.buffering, "AVPlayer is ready; waiting for first frame.")
@@ -102,6 +159,16 @@ struct AVPlayerEngine: PlayerEngine {
             }
 
             try await Task.sleep(for: pollInterval)
+        }
+
+        // Deadline reached. Distinguish an audio-only/black-screen start (AVPlayer
+        // is playing sound but never produced video) from a plain startup timeout
+        // so the caller fails over to KSPlayer in both cases.
+        if sawAudioOnlyPlayback {
+            throw PlayerEngineError.initializationFailed(
+                .avPlayer,
+                "Stream started as audio-only (no video track); falling back to compatibility engine."
+            )
         }
 
         throw PlayerEngineError.startupTimeout(.avPlayer)

@@ -278,6 +278,73 @@ struct PlayerSessionRequestModelStreamPoolTests {
     }
 }
 
+// MARK: - BUG 1: window-dismiss identity keyed only on `id`
+
+@Suite("PlayerSessionRequest Identity Contract")
+struct PlayerSessionRequestIdentityTests {
+    private func stream(headers: [String: String]? = nil) -> StreamInfo {
+        StreamInfo(
+            streamURL: URL(string: "https://example.com/stream.mp4")!,
+            quality: .hd1080p,
+            codec: .h264,
+            audio: .aac,
+            source: .webDL,
+            hdr: .sdr,
+            fileName: "stream.mp4",
+            sizeBytes: 1024,
+            debridService: "debrid-id",
+            requestHeaders: headers
+        )
+    }
+
+    @Test("Equality is keyed only on id, ignoring runtime-only request headers")
+    func equalityIgnoresRequestHeaders() {
+        let id = UUID()
+        let withHeaders = PlayerSessionRequest(
+            id: id,
+            stream: stream(headers: ["User-Agent": "Stremio"]),
+            mediaTitle: "Movie",
+            mediaId: "media-1"
+        )
+        let withoutHeaders = PlayerSessionRequest(
+            id: id,
+            stream: stream(headers: nil),
+            mediaTitle: "Movie",
+            mediaId: "media-1"
+        )
+
+        #expect(withHeaders == withoutHeaders)
+        #expect(withHeaders.hashValue == withoutHeaders.hashValue)
+    }
+
+    @Test("Different ids are never equal even with identical streams")
+    func differentIdsAreUnequal() {
+        let a = PlayerSessionRequest(id: UUID(), stream: stream(), mediaTitle: "M", mediaId: "1")
+        let b = PlayerSessionRequest(id: UUID(), stream: stream(), mediaTitle: "M", mediaId: "1")
+        #expect(a != b)
+    }
+
+    @Test("Round-tripped value matches in-memory request (dismissWindow regression)")
+    func codableRoundTripPreservesEquality() throws {
+        // The in-memory request carries Stremio/direct request headers (KSPlayer
+        // path). The window value is serialized and decoded back with headers
+        // dropped. They must still compare equal so dismissWindow(value:) matches.
+        let original = PlayerSessionRequest(
+            id: UUID(),
+            stream: stream(headers: ["User-Agent": "Stremio", "Referer": "https://app.strem.io/"]),
+            mediaTitle: "Movie",
+            mediaId: "media-1"
+        )
+        let data = try JSONEncoder().encode(original)
+        let roundTripped = try JSONDecoder().decode(PlayerSessionRequest.self, from: data)
+
+        #expect(roundTripped.stream.requestHeaders == nil)
+        #expect(original.stream.requestHeaders != nil)
+        #expect(original == roundTripped)
+        #expect(original.hashValue == roundTripped.hashValue)
+    }
+}
+
 @Suite("PlayerSessionRequest Codable Round-Trip")
 struct PlayerSessionRequestModelCodableTests {
     @Test("PlayerSessionRequest encodes and decodes correctly")

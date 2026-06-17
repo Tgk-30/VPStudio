@@ -90,4 +90,38 @@ struct PlayerAspectRatioPolicyTests {
         #expect(size?.height == 9)
         #expect(size?.width == 18)
     }
+
+    // MARK: - shouldRequestGeometry (BUG 4: KSPlayer window aspect ratio)
+
+    @Test
+    func shouldRequestGeometryRequiresBothRatioAndScene() {
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(
+            detectedRatio: 16.0 / 9.0,
+            sceneAvailable: true
+        ))
+    }
+
+    @Test
+    func shouldRequestGeometryDefersWhenSceneUnavailable() {
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(
+            detectedRatio: 16.0 / 9.0,
+            sceneAvailable: false
+        ) == false)
+    }
+
+    @Test
+    func shouldRequestGeometryDefersWhenRatioMissing() {
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(
+            detectedRatio: nil,
+            sceneAvailable: true
+        ) == false)
+    }
+
+    @Test
+    func shouldRequestGeometryRejectsDegenerateRatios() {
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(detectedRatio: 0, sceneAvailable: true) == false)
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(detectedRatio: -1.5, sceneAvailable: true) == false)
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(detectedRatio: .infinity, sceneAvailable: true) == false)
+        #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(detectedRatio: .nan, sceneAvailable: true) == false)
+    }
 }

@@ -48,4 +48,22 @@ struct PlayerSessionRequest: Codable, Sendable, Identifiable, Hashable {
         self.episodeId = episodeId
         self.nextEpisode = nextEpisode
     }
+
+    // Identity is keyed solely on the stable `id` (a UUID assigned once when the
+    // session is opened and carried through `CodingKeys`). SwiftUI's
+    // `WindowGroup(id:"player", for:)` serializes the value into the scene and
+    // hands a *round-tripped* copy back to `dismissWindow(id:value:)`. Synthesized
+    // Equatable/Hashable would compare every field — including `StreamInfo`'s
+    // runtime-only `requestHeaders`, which is excluded from `CodingKeys` and so
+    // comes back `nil` after the round-trip. That mismatch made `dismissWindow`
+    // fail to find the window for KSPlayer-path streams (Stremio/direct), leaving a
+    // dead player window open. Comparing only `id` makes the round-tripped value
+    // match the in-memory request regardless of any non-encoded fields.
+    static func == (lhs: PlayerSessionRequest, rhs: PlayerSessionRequest) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
