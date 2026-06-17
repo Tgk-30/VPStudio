@@ -128,8 +128,14 @@ struct TorrentResultRow: View {
                     .lineLimit(2)
 
                 FlowLayout(spacing: 6) {
-                    if torrent.isCached {
-                        GlassTag(text: "Cached", tintColor: .green, symbol: "bolt.fill", weight: .semibold)
+                    if let badgeLabel = descriptor.cacheBadge.label,
+                       let badgeSymbol = descriptor.cacheBadge.symbol {
+                        GlassTag(
+                            text: badgeLabel,
+                            tintColor: cacheBadgeColor(for: descriptor.cacheBadge),
+                            symbol: badgeSymbol,
+                            weight: .semibold
+                        )
                     }
                     if torrent.quality != .unknown {
                         GlassTag(text: torrent.quality.rawValue, tintColor: qualityColor, weight: .bold)
@@ -146,17 +152,28 @@ struct TorrentResultRow: View {
                     if torrent.source != .unknown {
                         GlassTag(text: torrent.source.rawValue)
                     }
+                    if let releaseGroup = descriptor.releaseGroup {
+                        GlassTag(text: releaseGroup, symbol: "person.2.fill")
+                    }
                 }
 
                 HStack(spacing: 8) {
-                    if torrent.seeders > 0 {
-                        Label("\(torrent.seeders)", systemImage: "arrow.up")
+                    if let seedersString = descriptor.seedersString {
+                        Label(seedersString, systemImage: "arrow.up")
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
-                    Text(torrent.indexerName)
+                    Label(descriptor.sizeString, systemImage: "internaldrive")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(descriptor.providerLabel)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    if descriptor.providerLabel != torrent.indexerName {
+                        Text(torrent.indexerName)
+                            .font(.caption2)
+                            .foregroundStyle(.quaternary)
+                    }
                 }
             }
 
@@ -271,6 +288,21 @@ struct TorrentResultRow: View {
                 .accessibilityLabel("Retry download for \(torrent.title)")
                 .accessibilityHint("Attempts this download again.")
             }
+        }
+    }
+
+    private var descriptor: SourceRowPolicy.Descriptor {
+        SourceRowPolicy.descriptor(for: torrent)
+    }
+
+    private func cacheBadgeColor(for badge: SourceRowPolicy.CacheBadge) -> Color {
+        switch badge.tint {
+        case .green:
+            return .green
+        case .orange:
+            return .orange
+        case nil:
+            return .secondary
         }
     }
 

@@ -66,10 +66,23 @@ final class TorrentSearchState {
         let visibleCount = visibleResults.count
         for i in allResults.indices {
             let hash = allResults[i].infoHash
-            if let (status, serviceType) = cacheResults[hash], case .cached = status, !allResults[i].isCached {
-                allResults[i].isCached = true
+            guard let (status, serviceType) = cacheResults[hash] else { continue }
+
+            switch status {
+            case .cached:
+                // Only the cached transition records the resolving service.
+                guard allResults[i].cacheAvailability != .cached else { continue }
+                allResults[i].cacheAvailability = .cached
                 allResults[i].cachedOnService = serviceType.rawValue
                 if i < visibleCount { visibleChanged = true }
+            case .notCached:
+                // Confirmed-uncached: distinguish must-download from not-yet-checked.
+                // Never downgrade a previously-confirmed cached hit.
+                guard allResults[i].cacheAvailability == .unknown else { continue }
+                allResults[i].cacheAvailability = .notCached
+                if i < visibleCount { visibleChanged = true }
+            case .unknown:
+                continue
             }
         }
         guard visibleChanged else { return }
