@@ -895,6 +895,79 @@ struct StremioIndexerSearchEdgeCasesTests {
         #expect(results.isEmpty)
     }
 
+    @Test func searchByQueryDegradesToEmptyForStreamOnlyAddonWithEmptyCatalogs() async throws {
+        final class RequestState: @unchecked Sendable {
+            var paths: [String] = []
+        }
+        let state = RequestState()
+
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try #require(request.url)
+            let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+            state.paths.append(path)
+
+            if path == "/manifest.json" {
+                // Stream-only addon: declares the `stream` resource but exposes
+                // no catalogs. A free-text (non-IMDb) query must degrade to []
+                // rather than throwing.
+                let body = #"{"name":"Stream Only","resources":["stream"],"catalogs":[]}"#
+                return (
+                    HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(body.utf8)
+                )
+            }
+
+            throw URLError(.unsupportedURL)
+        }
+
+        let indexer = StremioIndexer(
+            name: "Stremio",
+            baseURL: "https://addon.example",
+            endpointPath: "/manifest.json",
+            session: session
+        )
+
+        let results = try await indexer.searchByQuery(query: "The Matrix", type: .movie)
+
+        #expect(results.isEmpty)
+        #expect(state.paths == ["/manifest.json"])
+    }
+
+    @Test func searchByQueryDegradesToEmptyForStreamOnlyAddonWithDetailedResources() async throws {
+        final class RequestState: @unchecked Sendable {
+            var paths: [String] = []
+        }
+        let state = RequestState()
+
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try #require(request.url)
+            let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+            state.paths.append(path)
+
+            if path == "/manifest.json" {
+                let body = #"{"name":"Stream Only","resources":[{"name":"stream","types":["movie"],"idPrefixes":["tt"]}],"idPrefixes":["tt"]}"#
+                return (
+                    HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(body.utf8)
+                )
+            }
+
+            throw URLError(.unsupportedURL)
+        }
+
+        let indexer = StremioIndexer(
+            name: "Stremio",
+            baseURL: "https://addon.example",
+            endpointPath: "/manifest.json",
+            session: session
+        )
+
+        let results = try await indexer.searchByQuery(query: "The Matrix", type: .movie)
+
+        #expect(results.isEmpty)
+        #expect(state.paths == ["/manifest.json"])
+    }
+
     @Test func searchByQueryReturnsEmptyWhenManifestHasNoSearchableCatalogsForType() async throws {
         final class RequestState: @unchecked Sendable {
             var paths: [String] = []

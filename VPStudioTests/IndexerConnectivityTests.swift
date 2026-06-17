@@ -798,6 +798,119 @@ struct IndexerConnectivityTests {
         }
     }
 
+    @Test func stremioConnectionAcceptsStreamOnlyAddonWithEmptyCatalogs() async throws {
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            // Stream-only addon: declares the `stream` resource (shorthand form)
+            // with no catalogs. Must validate as compatible.
+            let body = #"{"name":"Torrentio","resources":["stream"],"catalogs":[]}"#
+            return (response, Data(body.utf8))
+        }
+
+        let config = IndexerConfig(
+            id: "stremio-stream-only",
+            name: "Stremio Stream Only",
+            indexerType: .stremio,
+            baseURL: "https://stremio-addon.example",
+            apiKey: nil,
+            isActive: true,
+            priority: 0,
+            providerSubtype: .stremioAddon,
+            endpointPath: "/manifest.json",
+            categoryFilter: nil,
+            apiKeyTransport: .query
+        )
+
+        let result = try await IndexerConnectivityTester.testConnection(for: config, session: session)
+        #expect(result.discoveredName == "Torrentio")
+    }
+
+    @Test func stremioConnectionAcceptsStreamResourceInDetailedObjectForm() async throws {
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = #"{"name":"Detailed Addon","resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tt"]}],"idPrefixes":["tt"]}"#
+            return (response, Data(body.utf8))
+        }
+
+        let config = IndexerConfig(
+            id: "stremio-stream-detailed",
+            name: "Stremio Detailed",
+            indexerType: .stremio,
+            baseURL: "https://stremio-addon.example",
+            apiKey: nil,
+            isActive: true,
+            priority: 0,
+            providerSubtype: .stremioAddon,
+            endpointPath: "/manifest.json",
+            categoryFilter: nil,
+            apiKeyTransport: .query
+        )
+
+        let result = try await IndexerConnectivityTester.testConnection(for: config, session: session)
+        #expect(result.discoveredName == "Detailed Addon")
+    }
+
+    @Test func stremioConnectionRejectsAddonWithoutStreamResourceOrSearchCatalogs() async {
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            // Catalog-only addon with no search extra and no stream resource.
+            let body = #"{"name":"No Stream","resources":["catalog","meta"],"catalogs":[{"id":"top","type":"movie","extra":[{"name":"genre"}]}]}"#
+            return (response, Data(body.utf8))
+        }
+
+        let config = IndexerConfig(
+            id: "stremio-no-stream",
+            name: "Stremio No Stream",
+            indexerType: .stremio,
+            baseURL: "https://stremio-addon.example",
+            apiKey: nil,
+            isActive: true,
+            priority: 0,
+            providerSubtype: .stremioAddon,
+            endpointPath: "/manifest.json",
+            categoryFilter: nil,
+            apiKeyTransport: .query
+        )
+
+        do {
+            try await IndexerConnectivityTester.testConnection(for: config, session: session)
+            Issue.record("Expected IndexerConnectivityError.incompatibleManifest")
+        } catch IndexerConnectivityError.incompatibleManifest {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func stremioConnectionDiscoversManifestNameForSearchableCatalogAddon() async throws {
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = #"{"name":"Cinemeta","catalogs":[{"id":"top","type":"movie","extra":[{"name":"search"}]}]}"#
+            return (response, Data(body.utf8))
+        }
+
+        let config = IndexerConfig(
+            id: "stremio-named-catalog",
+            name: "Old Name",
+            indexerType: .stremio,
+            baseURL: "https://stremio-addon.example",
+            apiKey: nil,
+            isActive: true,
+            priority: 0,
+            providerSubtype: .stremioAddon,
+            endpointPath: "/manifest.json",
+            categoryFilter: nil,
+            apiKeyTransport: .query
+        )
+
+        let result = try await IndexerConnectivityTester.testConnection(for: config, session: session)
+        #expect(result.discoveredName == "Cinemeta")
+    }
+
     @Test func ytsConnectionUsesReachableFallbackHost() throws {
         let config = IndexerConfig(
             id: "yts-1",

@@ -426,12 +426,43 @@ struct IndexerSettingsView: View {
         defer { testingConfigID = nil }
 
         do {
-            try await IndexerConnectivityTester.testConnection(for: config)
-            notice = .success("\(config.name): connection succeeded.")
+            let result = try await IndexerConnectivityTester.testConnection(for: config)
             surfaceError = nil
+
+            if config.indexerType == .stremio,
+               let discoveredName = result.discoveredName,
+               discoveredName != config.name {
+                await applyDiscoveredName(discoveredName, to: config)
+            } else {
+                notice = .success("\(config.name): connection succeeded.")
+            }
         } catch {
             notice = nil
             surfaceError = AppError(error)
+        }
+    }
+
+    /// Persists a manifest-derived name onto a Stremio addon config after a
+    /// successful Test Connection so the row reflects the addon's own name.
+    private func applyDiscoveredName(_ discoveredName: String, to config: IndexerConfig) async {
+        guard let index = configs.firstIndex(where: { $0.id == config.id }) else {
+            notice = .success("\(config.name): connection succeeded.")
+            return
+        }
+        var updated = configs
+        updated[index].name = discoveredName
+        do {
+            try await saveConfigs(updated)
+            let fetched = try await appState.database.fetchAllIndexerConfigs()
+            configs = try await hydrateConfigsForDisplay(fetched)
+                .sorted { $0.priority < $1.priority }
+            try await appState.indexerManager.initialize()
+            notice = .success("\(discoveredName): connection succeeded. Name updated from addon manifest.")
+            surfaceError = nil
+        } catch {
+            // The connection itself succeeded; surface that even if the rename
+            // could not be persisted.
+            notice = .success("\(config.name): connection succeeded.")
         }
     }
 

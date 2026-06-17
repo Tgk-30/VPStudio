@@ -139,6 +139,18 @@ struct StremioIndexer: TorrentIndexer {
 
     private struct ManifestResponse: Decodable {
         let catalogs: [CatalogDefinition]?
+        let resources: [StremioManifestResource]?
+        let idPrefixes: [String]?
+
+        var capability: StremioManifestCapability {
+            StremioManifestCapability(
+                resources: resources ?? [],
+                catalogs: (catalogs ?? []).map {
+                    StremioManifestCapability.Catalog(type: $0.type, supportsSearch: $0.supportsSearch)
+                },
+                idPrefixes: idPrefixes ?? []
+            )
+        }
     }
 
     private struct CatalogDefinition: Decodable {
@@ -233,10 +245,18 @@ struct StremioIndexer: TorrentIndexer {
 
     private func validatedCatalogs(from manifest: ManifestResponse, type: MediaType) throws -> [CatalogDefinition] {
         let catalogs = manifest.catalogs ?? []
+        // A stream-only addon (declares the `stream` resource) without any
+        // searchable catalogs cannot service free-text catalog lookups, but it
+        // is still a valid, compatible addon. Degrade gracefully to no catalog
+        // matches rather than surfacing it as a hard error.
+        let supportsStream = StremioManifestCapabilityPolicy.supportsStreamResource(manifest.capability)
+
         guard !catalogs.isEmpty else {
             throw IndexerParseError.invalidPayload(
                 indexer: name,
-                reason: "manifest did not include any catalogs"
+                reason: supportsStream
+                    ? "manifest did not include any searchable catalogs (stream resource only)"
+                    : "manifest did not include any catalogs"
             )
         }
 

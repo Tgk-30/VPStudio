@@ -34,8 +34,17 @@ enum IndexerRequestError: LocalizedError {
     }
 }
 
+/// Outcome of a successful connectivity test, carrying any metadata that the
+/// caller can use to enrich the stored indexer configuration.
+struct IndexerConnectivityResult: Equatable {
+    /// The human-readable addon name discovered from a Stremio manifest, when
+    /// present. `nil` for indexer types that do not expose a name.
+    var discoveredName: String?
+}
+
 enum IndexerConnectivityTester {
-    static func testConnection(for config: IndexerConfig, session: URLSession = .shared) async throws {
+    @discardableResult
+    static func testConnection(for config: IndexerConfig, session: URLSession = .shared) async throws -> IndexerConnectivityResult {
         let request = try makeRequest(for: config)
         let limiter = IndexerRequestLimiter()
         let (data, response) = try await limiter.data(for: request, session: session)
@@ -45,7 +54,7 @@ enum IndexerConnectivityTester {
         guard (200...299).contains(http.statusCode) else {
             throw IndexerConnectivityError.badStatusCode(http.statusCode)
         }
-        try validatePayload(data, for: config)
+        return try validatePayload(data, for: config)
     }
 
     static func makeRequest(for config: IndexerConfig) throws -> URLRequest {
@@ -176,25 +185,35 @@ enum IndexerConnectivityTester {
         return url
     }
 
-    private static func validatePayload(_ data: Data, for config: IndexerConfig) throws {
+    @discardableResult
+    private static func validatePayload(_ data: Data, for config: IndexerConfig) throws -> IndexerConnectivityResult {
         switch config.indexerType {
         case .stremio:
             let manifest = try JSONDecoder().decode(StremioManifestResponse.self, from: data)
-            guard let catalogs = manifest.catalogs, !catalogs.isEmpty else {
+            // An addon is compatible if it can serve streams directly (declares
+            // the `stream` resource) OR exposes searchable movie/series
+            // catalogs. A stream-only addon with empty catalogs still passes.
+            let capability = manifest.capability
+            let isCompatible = StremioManifestCapabilityPolicy.supportsStreamResource(capability)
+                || StremioManifestCapabilityPolicy.hasSearchableCatalogs(capability)
+            guard isCompatible else {
                 throw IndexerConnectivityError.incompatibleManifest
             }
-            guard catalogs.contains(where: { $0.isCompatible }) else {
-                throw IndexerConnectivityError.incompatibleManifest
-            }
+            let discoveredName = manifest.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return IndexerConnectivityResult(
+                discoveredName: (discoveredName?.isEmpty == false) ? discoveredName : nil
+            )
 
         case .jackett, .torznab:
             try validateTorznabCapsPayload(data)
+            return IndexerConnectivityResult()
 
         case .prowlarr, .apiBay, .yts, .eztv, .zilean:
             guard let object = try? JSONSerialization.jsonObject(with: data),
                   object is [String: Any] || object is [[String: Any]] || object is [Any] else {
                 throw IndexerConnectivityError.invalidResponse
             }
+            return IndexerConnectivityResult()
         }
     }
 
@@ -387,7 +406,20 @@ private enum IndexerRetryHeaderDateParser {
 }
 
 private struct StremioManifestResponse: Decodable {
+    let name: String?
     let catalogs: [StremioManifestCatalog]?
+    let resources: [StremioManifestResource]?
+    let idPrefixes: [String]?
+
+    var capability: StremioManifestCapability {
+        StremioManifestCapability(
+            resources: resources ?? [],
+            catalogs: (catalogs ?? []).map {
+                StremioManifestCapability.Catalog(type: $0.type, supportsSearch: $0.isCompatible)
+            },
+            idPrefixes: idPrefixes ?? []
+        )
+    }
 }
 
 private struct StremioManifestCatalog: Decodable {
