@@ -25,6 +25,7 @@ struct CinemaSettingsTests {
             "CinemaEnvironment.immersionStyle",
             "CinemaEnvironment.useSurroundingsEffect",
             "CinemaEnvironment.videoAspectRatio",
+            SettingsKeys.cinemaAutoDimOnPlay,
         ]
         for key in keys {
             defs.removeObject(forKey: key)
@@ -45,6 +46,7 @@ struct CinemaSettingsTests {
         #expect(settings.ambientLighting == 0.1)
         #expect(settings.immersionStyleRaw == CinemaImmersionStyle.full.rawValue)
         #expect(settings.useSurroundingsEffect == true)
+        #expect(settings.autoDimOnPlay == true)
         #expect(settings.videoAspectRatio == 16.0 / 9.0)
     }
 
@@ -560,6 +562,45 @@ struct CinemaSettingsTests {
         #expect(settings.videoAspectRatio == 4.0 / 3.0)
 
         clearCinemaDefaults()
+    }
+
+    // MARK: - Auto-Dim on Play
+
+    @Test("autoDimOnPlay defaults to true")
+    func autoDimOnPlayDefault() async throws {
+        let settings = CinemaSettings(loadPersisted: false)
+        #expect(settings.autoDimOnPlay == true)
+    }
+
+    @Test("autoDimOnPlay custom init value is honored")
+    func autoDimOnPlayCustomInit() async throws {
+        let settings = CinemaSettings(autoDimOnPlay: false, loadPersisted: false)
+        #expect(settings.autoDimOnPlay == false)
+    }
+
+    @Test("autoDimOnPlay save/load round-trips through UserDefaults")
+    func autoDimOnPlayRoundTrip() async throws {
+        clearCinemaDefaults()
+        defer { clearCinemaDefaults() }
+
+        let settings = CinemaSettings(autoDimOnPlay: false, loadPersisted: false)
+        settings.save()
+
+        let defs = UserDefaults.standard
+        #expect(defs.bool(forKey: SettingsKeys.cinemaAutoDimOnPlay) == false)
+
+        let reloaded = CinemaSettings(loadPersisted: true)
+        #expect(reloaded.autoDimOnPlay == false)
+    }
+
+    @Test("autoDimOnPlay load preserves default when UserDefaults has no value")
+    func autoDimOnPlayLoadPreservesDefault() async throws {
+        clearCinemaDefaults()
+        defer { clearCinemaDefaults() }
+
+        let settings = CinemaSettings(loadPersisted: false)
+        settings.load()
+        #expect(settings.autoDimOnPlay == true)
     }
 
     @Test("load preserves defaults when UserDefaults has no values")

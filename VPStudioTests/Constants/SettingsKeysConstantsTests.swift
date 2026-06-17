@@ -86,6 +86,7 @@ struct SettingsKeysConstantsTests {
         #expect(!SettingsKeys.aiAutoGenerate.isEmpty)
         #expect(!SettingsKeys.aiCachedRecommendations.isEmpty)
         #expect(!SettingsKeys.playerDimPassthrough.isEmpty)
+        #expect(!SettingsKeys.cinemaAutoDimOnPlay.isEmpty)
     }
 
     @Test("All keys are unique")
@@ -108,7 +109,7 @@ struct SettingsKeysConstantsTests {
             SettingsKeys.traktAccessToken, SettingsKeys.traktRefreshToken,
             SettingsKeys.simklClientId, SettingsKeys.simklAccessToken,
             SettingsKeys.lastSelectedTab, SettingsKeys.navigationLayout,
-            SettingsKeys.playerDimPassthrough
+            SettingsKeys.playerDimPassthrough, SettingsKeys.cinemaAutoDimOnPlay
         ]
         let uniqueKeys = Set(allKeys)
         #expect(uniqueKeys.count == allKeys.count)

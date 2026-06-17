@@ -48,6 +48,12 @@ public final class CinemaSettings {
     public var immersionStyleRaw: String    { didSet { persistIfNeeded() } }  // CinemaImmersionStyle.rawValue
     public var useSurroundingsEffect: Bool  { didSet { persistIfNeeded() } }
 
+    // MARK: Playback
+    /// When enabled, the cinema environment dims further automatically while
+    /// video playback is active. Applied to the live scene only — does not
+    /// change the configured ``environmentDarkness``. See `SpatialControlPolicy`.
+    public var autoDimOnPlay: Bool          { didSet { persistIfNeeded() } }
+
     // MARK: Content
     public var videoAspectRatio: Double     { didSet { persistIfNeeded() } }
 
@@ -131,6 +137,7 @@ public final class CinemaSettings {
         static let immersionStyle = prefix + "immersionStyle"
         static let useSurroundingsEffect = prefix + "useSurroundingsEffect"
         static let videoAspectRatio = prefix + "videoAspectRatio"
+        static let autoDimOnPlay = SettingsKeys.cinemaAutoDimOnPlay
     }
 
     // MARK: Init
@@ -144,6 +151,7 @@ public final class CinemaSettings {
         ambientLighting: Double = 0.1,
         immersionStyle: CinemaImmersionStyle = .full,
         useSurroundingsEffect: Bool = true,
+        autoDimOnPlay: Bool = true,
         videoAspectRatio: Double = 16.0 / 9.0,
         loadPersisted: Bool = true
     ) {
@@ -156,6 +164,7 @@ public final class CinemaSettings {
         self.ambientLighting = ambientLighting
         self.immersionStyleRaw = immersionStyle.rawValue
         self.useSurroundingsEffect = useSurroundingsEffect
+        self.autoDimOnPlay = autoDimOnPlay
         self.videoAspectRatio = videoAspectRatio
         if loadPersisted {
             withPersistenceDisabled {
@@ -187,6 +196,7 @@ public final class CinemaSettings {
         ambientLighting = defs.object(forKey: Key.ambientLighting) as? Double ?? ambientLighting
         immersionStyleRaw = defs.string(forKey: Key.immersionStyle) ?? immersionStyleRaw
         useSurroundingsEffect = defs.object(forKey: Key.useSurroundingsEffect) as? Bool ?? useSurroundingsEffect
+        autoDimOnPlay = defs.object(forKey: Key.autoDimOnPlay) as? Bool ?? autoDimOnPlay
         videoAspectRatio = defs.object(forKey: Key.videoAspectRatio) as? Double ?? videoAspectRatio
     }
 
@@ -203,6 +213,7 @@ public final class CinemaSettings {
         defs.set(ambientLighting, forKey: Key.ambientLighting)
         defs.set(immersionStyleRaw, forKey: Key.immersionStyle)
         defs.set(useSurroundingsEffect, forKey: Key.useSurroundingsEffect)
+        defs.set(autoDimOnPlay, forKey: Key.autoDimOnPlay)
         defs.set(videoAspectRatio, forKey: Key.videoAspectRatio)
     }
 

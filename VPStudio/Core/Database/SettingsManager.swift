@@ -181,4 +181,5 @@ enum SettingsKeys {
     nonisolated static let aiCachedRecommendations = "ai_cached_recommendations"
 
     nonisolated static let playerDimPassthrough = "player_dim_passthrough"
+    nonisolated static let cinemaAutoDimOnPlay = "cinema_auto_dim_on_play"
 }

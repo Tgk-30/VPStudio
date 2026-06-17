@@ -76,7 +76,10 @@ public struct CinemaSettingsPanel: View {
                 }
             }
 
-            Slider(value: $settings.screenWidth, in: 1...10) {
+            Slider(
+                value: screenWidthBinding,
+                in: SpatialControlPolicy.screenWidthRange
+            ) {
                 Text("Width")
             } minimumValueLabel: {
                 Text("1 m")
@@ -84,7 +87,10 @@ public struct CinemaSettingsPanel: View {
                 Text("10 m")
             }
 
-            Slider(value: $settings.screenDistance, in: 1.5...15) {
+            Slider(
+                value: screenDistanceBinding,
+                in: SpatialControlPolicy.screenDistanceRange
+            ) {
                 Text("Distance")
             } minimumValueLabel: {
                 Text("1.5 m")
@@ -92,7 +98,10 @@ public struct CinemaSettingsPanel: View {
                 Text("15 m")
             }
 
-            Slider(value: $settings.screenHeight, in: -2...4) {
+            Slider(
+                value: screenHeightBinding,
+                in: SpatialControlPolicy.screenHeightRange
+            ) {
                 Text("Height")
             } minimumValueLabel: {
                 Text("-2 m")
@@ -100,7 +109,10 @@ public struct CinemaSettingsPanel: View {
                 Text("4 m")
             }
 
-            Slider(value: $settings.screenTilt, in: -15...15) {
+            Slider(
+                value: screenTiltBinding,
+                in: SpatialControlPolicy.screenTiltRange
+            ) {
                 Text("Tilt")
             } minimumValueLabel: {
                 Text("-15°")
@@ -159,6 +171,8 @@ public struct CinemaSettingsPanel: View {
             .pickerStyle(.segmented)
 
             Toggle("Use Surroundings Effect", isOn: $settings.useSurroundingsEffect)
+
+            Toggle("Auto-Dim on Playback", isOn: $settings.autoDimOnPlay)
         }
     }
 
@@ -204,29 +218,63 @@ public struct CinemaSettingsPanel: View {
         Stepper(
             "\(axis): \(value.wrappedValue, specifier: "%.1f") m",
             value: value,
-            in: -2...2,
-            step: 0.1
+            in: SpatialControlPolicy.seatOffsetRange,
+            step: SpatialControlPolicy.seatOffsetStep
         )
     }
 
     private var seatXBinding: Binding<Double> {
         Binding(
             get: { settings.seatOffset.x },
-            set: { settings.seatOffset.x = $0 }
+            set: { settings.seatOffset.x = SpatialControlPolicy.clampedSeatOffset($0) }
         )
     }
 
     private var seatYBinding: Binding<Double> {
         Binding(
             get: { settings.seatOffset.y },
-            set: { settings.seatOffset.y = $0 }
+            set: { settings.seatOffset.y = SpatialControlPolicy.clampedSeatOffset($0) }
         )
     }
 
     private var seatZBinding: Binding<Double> {
         Binding(
             get: { settings.seatOffset.z },
-            set: { settings.seatOffset.z = $0 }
+            set: { settings.seatOffset.z = SpatialControlPolicy.clampedSeatOffset($0) }
+        )
+    }
+
+    // MARK: - Clamped Geometry Bindings
+    //
+    // Route the screen-geometry sliders through `SpatialControlPolicy` so every
+    // write is clamped to the canonical range, keeping the live scene safe even
+    // if a value arrives out of bounds (e.g. programmatic or preset-driven).
+
+    private var screenWidthBinding: Binding<Double> {
+        Binding(
+            get: { settings.screenWidth },
+            set: { settings.screenWidth = SpatialControlPolicy.clampedScreenWidth($0) }
+        )
+    }
+
+    private var screenDistanceBinding: Binding<Double> {
+        Binding(
+            get: { settings.screenDistance },
+            set: { settings.screenDistance = SpatialControlPolicy.clampedScreenDistance($0) }
+        )
+    }
+
+    private var screenHeightBinding: Binding<Double> {
+        Binding(
+            get: { settings.screenHeight },
+            set: { settings.screenHeight = SpatialControlPolicy.clampedScreenHeight($0) }
+        )
+    }
+
+    private var screenTiltBinding: Binding<Double> {
+        Binding(
+            get: { settings.screenTilt },
+            set: { settings.screenTilt = SpatialControlPolicy.clampedScreenTilt($0) }
         )
     }
 }

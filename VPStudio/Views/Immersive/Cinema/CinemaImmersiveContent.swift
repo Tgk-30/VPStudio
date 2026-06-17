@@ -389,20 +389,29 @@ public struct CinemaImmersiveContent: View {
     }
 
     private func updateSphere() {
+        // Effective darkness applied to the live scene. When auto-dim-on-play is
+        // enabled and video is playing, the environment dims further than the
+        // configured base — without mutating the persisted `environmentDarkness`.
+        let effectiveDarkness = SpatialControlPolicy.targetDarkness(
+            isPlaying: engine.isPlaying,
+            base: settings.environmentDarkness,
+            enabled: settings.autoDimOnPlay
+        )
+
         let shouldShow = CinemaImmersivePlacementPolicy.shouldShowBackdrop(
             immersionStyleRaw: settings.immersionStyleRaw,
-            environmentDarkness: settings.environmentDarkness
+            environmentDarkness: effectiveDarkness
         )
 
         if let backdrop = scene.backdropEntity {
             backdrop.isEnabled = shouldShow
             if shouldShow {
                 backdrop.components[OpacityComponent.self] = OpacityComponent(
-                    opacity: CinemaImmersivePlacementPolicy.backdropOpacity(for: settings.environmentDarkness)
+                    opacity: CinemaImmersivePlacementPolicy.backdropOpacity(for: effectiveDarkness)
                 )
             }
         }
-        scene.lastEnvironmentDarkness = settings.environmentDarkness
+        scene.lastEnvironmentDarkness = effectiveDarkness
 
         let center = scene.screenEntity?.position ?? SIMD3<Float>(0, CinemaImmersivePlacementPolicy.fallbackEyeHeight, -Float(settings.screenDistance))
         scene.backdropEntity?.position = SIMD3<Float>(
