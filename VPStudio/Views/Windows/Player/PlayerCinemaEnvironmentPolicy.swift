@@ -10,6 +10,7 @@ enum PlayerCinemaEnvironmentPolicy {
 
     static func iconName(forAssetPath assetPath: String) -> String {
         let ext = URL(fileURLWithPath: assetPath).pathExtension.lowercased()
-        return ["hdr", "exr"].contains(ext) ? "pano" : "cube.transparent"
+        // hdr/exr + equirectangular png/jpg are all skyboxes (match the broadened import).
+        return ["hdr", "exr", "png", "jpg", "jpeg"].contains(ext) ? "pano" : "cube.transparent"
     }
 }

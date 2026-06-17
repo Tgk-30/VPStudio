@@ -392,7 +392,13 @@ final class DiscoverViewModel {
                 await cacheRecommendations(filtered, settingsManager: settingsManager)
             }
         } catch {
-            // Non-critical — don't surface errors for AI row
+            // A real (non-cancellation) first-fetch failure — no network, rate limit, parse miss —
+            // must NOT permanently latch the row empty for the whole launch. Reset the latch so the
+            // next Discover appearance retries. Cancellation (tab-leave teardown) keeps the latch
+            // sticky so we don't re-fire the expensive LLM on every tab switch (the original bug).
+            if !Task.isCancelled {
+                aiRecommendationsLoaded = false
+            }
         }
         isLoadingAIRecommendations = false
     }

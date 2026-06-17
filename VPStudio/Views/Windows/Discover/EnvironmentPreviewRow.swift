@@ -663,7 +663,9 @@ struct EnvironmentPreviewCard: View {
 enum EnvironmentPreviewRowPolicy {
     static func isHDRIAsset(assetPath: String) -> Bool {
         let ext = URL(fileURLWithPath: assetPath).pathExtension.lowercased()
-        return ["hdr", "exr"].contains(ext)
+        // Must match the broadened skybox import (hdr/exr + equirectangular png/jpg) so 360
+        // skyboxes aren't mislabeled "3D Scene" with a cube icon and no thumbnail.
+        return ["hdr", "exr", "png", "jpg", "jpeg"].contains(ext)
     }
 
     static func assetTypeIconName(forAssetPath assetPath: String) -> String {

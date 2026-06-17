@@ -231,6 +231,7 @@ struct DiscoverView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityVoiceOverEnabled) private var accessibilityVoiceOverEnabled
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openURL) private var openURL
     @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @Bindable var viewModel: DiscoverViewModel
     /// When the first-run Quick Start prompt is on screen, suppress Discover's own setup panel so
@@ -760,6 +761,16 @@ struct DiscoverView: View {
                 guard appState.activePlayerSession == nil else {
                     appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
                     return
+                }
+                // Honor the user's external-player preference before opening the embedded
+                // player — same as Detail.openPlayer. Falls back to embedded if the external
+                // app declines/isn't installed.
+                let preference = await ExternalPlayerSettings.loadPreference(from: appState.settingsManager)
+                if let launchURL = ExternalPlayerRouting.launchURL(for: request.stream.streamURL, preference: preference) {
+                    let accepted = await withCheckedContinuation { continuation in
+                        openURL(launchURL) { continuation.resume(returning: $0) }
+                    }
+                    if accepted { return }
                 }
                 appState.activePlayerSession = request
                 openWindow(id: "player", value: request)

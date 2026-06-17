@@ -96,6 +96,15 @@ enum ReleaseNameParser {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "&"))
         guard candidate.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }
 
+        // Reject the trailing half of common hyphenated source/codec/container tokens
+        // (WEB-DL, BLU-RAY, HEVC-DV, etc.) — these are not release groups, and lastIndex(of:"-")
+        // would otherwise surface bogus "DL"/"RAY"/"DV" group badges on no-group releases.
+        let sourceCodecStopList: Set<String> = [
+            "DL", "RAY", "DV", "HD", "RIP", "DTS", "HEVC", "AVC", "DDP", "DD", "EAC3", "AC3",
+            "TV", "CAM", "TS", "HDR", "SDR", "REMUX", "WEBRIP", "WEB", "BDRIP", "DVDRIP"
+        ]
+        guard !sourceCodecStopList.contains(candidate.uppercased()) else { return false }
+
         return true
     }
 }
