@@ -276,6 +276,15 @@ final class DiscoverViewModel {
 
     func loadAIRecommendationsIfNeeded(aiManager: AIAssistantManager, settingsManager: SettingsManager) async {
         guard !aiRecommendationsLoaded else { return }
+        // Latch synchronously, BEFORE any await. The owning DiscoverView's `.task` is torn down
+        // and its task cancelled whenever the user leaves the Discover tab (ContentView hosts tabs
+        // via a `switch`, recreating the view on return). If we only set the latch after the slow
+        // `await aiManager.getRecommendations(...)`, a tab-leave mid-flight would leave the latch
+        // `false`, re-firing the expensive LLM request on every tab switch. Setting it here — on the
+        // view model that persists as ContentView `@State` — makes the cache sticky for the app
+        // launch. A real config change (reloadAIRecommendationSettings) or an explicit user action
+        // (refresh/regenerate) resets the latch deliberately to force a fresh fetch.
+        aiRecommendationsLoaded = true
         let enabled = (try? await settingsManager.getBool(key: SettingsKeys.discoverAIRecommendationsEnabled)) ?? false
         aiRecommendationsEnabled = enabled
         guard enabled else { return }

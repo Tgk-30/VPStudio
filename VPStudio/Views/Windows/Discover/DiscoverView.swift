@@ -5,6 +5,13 @@ enum DiscoverInitialLoadPolicy {
         !hasPerformedInitialLoad
     }
 
+    /// Retained for completeness, but the initial-load latch is now set STICKY — synchronously,
+    /// before the awaited TMDB/AI fetch — so this is no longer consulted after the await. (See the
+    /// `.task` in `DiscoverView`.) ContentView hosts tabs via a `switch`, so leaving Discover tears
+    /// the view down and cancels its `.task`; latching before the await means a mid-flight tab leave
+    /// cannot undo it, and the view model — held as ContentView `@State` — keeps the cache across the
+    /// teardown/recreation round trip. A cancellation-gated mark (the old behavior) re-fired the slow
+    /// TMDB + AI load on every tab switch, which was BUG 5.
     static func shouldMarkCompleted(isCancelled: Bool) -> Bool {
         !isCancelled
     }
@@ -393,9 +400,12 @@ struct DiscoverView: View {
             guard DiscoverInitialLoadPolicy.shouldStart(
                 hasPerformedInitialLoad: viewModel.hasPerformedInitialLoad
             ) else { return }
-            await reloadDiscoverForLatestTMDBKey()
-            guard DiscoverInitialLoadPolicy.shouldMarkCompleted(isCancelled: Task.isCancelled) else { return }
+            // Latch BEFORE the await so leaving the Discover tab (which cancels this `.task`)
+            // mid-fetch cannot undo it and re-fire the slow TMDB + AI load on the next tab switch.
+            // The view model lives on ContentView as `@State`, so the latch — and the cache it
+            // guards — persists across the view teardown/recreation.
             viewModel.hasPerformedInitialLoad = true
+            await reloadDiscoverForLatestTMDBKey()
         }
         .task(id: accessibilityVoiceOverEnabled) {
             guard !accessibilityVoiceOverEnabled else { return }
