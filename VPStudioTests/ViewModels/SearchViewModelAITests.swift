@@ -2308,4 +2308,102 @@ struct SearchViewModelAITests {
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.isSearching == false)
     }
+
+    // MARK: - Natural-language search
+
+    @Test
+    @MainActor
+    func fetchNaturalLanguageRecommendationsPopulatesAIRecommendations() async throws {
+        let aiManager = try await Self.makeAIManager()
+        let stubProvider = Self.makeStubProvider()
+        await aiManager.registerProvider(kind: .anthropic, provider: stubProvider)
+
+        let viewModel = SearchViewModel()
+        viewModel.fetchNaturalLanguageRecommendations(
+            query: "something cozy for a rainy night",
+            aiManager: aiManager
+        )
+
+        #expect(viewModel.isLoadingAI == true)
+        try await Self.waitUntil { !viewModel.aiRecommendations.isEmpty }
+        #expect(viewModel.aiRecommendations.count == 1)
+        #expect(viewModel.aiRecommendations[0].title == "AI Pick")
+        #expect(viewModel.isLoadingAI == false)
+        #expect(viewModel.aiError == nil)
+    }
+
+    @Test
+    @MainActor
+    func fetchNaturalLanguageRecommendationsSendsLiteralPhraseToProvider() async throws {
+        let aiManager = try await Self.makeAIManager()
+        let response = AIProviderResponse(
+            provider: .openAI,
+            content: """
+            [{"title":"NL Pick","year":2024,"type":"movie","reason":"Fits","tmdbId":12}]
+            """,
+            model: "test",
+            inputTokens: 0,
+            outputTokens: 0
+        )
+        let provider = MessageCapturingAIProvider(response: response)
+        await aiManager.registerProvider(kind: .openAI, provider: provider)
+
+        let phrase = "gritty 90s korean revenge thrillers"
+        let viewModel = SearchViewModel()
+        viewModel.fetchNaturalLanguageRecommendations(query: phrase, aiManager: aiManager)
+
+        for _ in 0..<50 {
+            if await provider.messageCount() == 1 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await provider.messageCount() == 1)
+        let message = await provider.lastMessage()
+        #expect(message.contains(phrase))
+        #expect(viewModel.aiRecommendations.first?.title == "NL Pick")
+    }
+
+    @Test
+    @MainActor
+    func fetchNaturalLanguageRecommendationsWithNoProviderSetsAIError() async throws {
+        let aiManager = try await Self.makeAIManager()
+
+        let viewModel = SearchViewModel()
+        viewModel.fetchNaturalLanguageRecommendations(query: "anything at all here", aiManager: aiManager)
+
+        try await Self.waitUntil { viewModel.aiError != nil }
+        #expect(viewModel.aiError == "No AI provider configured. Set one up in Settings \u{2192} AI Assistant.")
+        #expect(viewModel.aiRecommendations.isEmpty)
+        #expect(viewModel.isLoadingAI == false)
+    }
+
+    @Test
+    @MainActor
+    func fetchPersonalizedRecommendationsPopulatesAIRecommendations() async throws {
+        let aiManager = try await Self.makeAIManager()
+        let stubProvider = Self.makeStubProvider()
+        await aiManager.registerProvider(kind: .anthropic, provider: stubProvider)
+
+        let viewModel = SearchViewModel()
+        viewModel.fetchPersonalizedRecommendations(aiManager: aiManager)
+
+        #expect(viewModel.isLoadingAI == true)
+        try await Self.waitUntil { !viewModel.aiRecommendations.isEmpty }
+        #expect(viewModel.aiRecommendations.first?.title == "AI Pick")
+        #expect(viewModel.isLoadingAI == false)
+        #expect(viewModel.aiError == nil)
+    }
+
+    @Test
+    @MainActor
+    func fetchPersonalizedRecommendationsWithNoProviderSetsAIError() async throws {
+        let aiManager = try await Self.makeAIManager()
+
+        let viewModel = SearchViewModel()
+        viewModel.fetchPersonalizedRecommendations(aiManager: aiManager)
+
+        try await Self.waitUntil { viewModel.aiError != nil }
+        #expect(viewModel.aiError == "No AI provider configured. Set one up in Settings \u{2192} AI Assistant.")
+        #expect(viewModel.aiRecommendations.isEmpty)
+        #expect(viewModel.isLoadingAI == false)
+    }
 }

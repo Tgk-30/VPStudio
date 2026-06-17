@@ -36,6 +36,11 @@ final class TorrentSearchState {
     var allHashes: [String] {
         allResults.compactMap { $0.requiresDebridResolution ? $0.infoHash : nil }
     }
+
+    /// The full ranked result set including those beyond the visible batch. Used
+    /// for best-cached selection so a confirmed-cached source ranked outside the
+    /// initial visible window is still eligible for one-tap play.
+    var allResultsSnapshot: [TorrentResult] { allResults }
     var remainingResultCount: Int { max(allResults.count - visibleResults.count, 0) }
     var canLoadMoreResults: Bool { remainingResultCount > 0 }
 

@@ -119,6 +119,12 @@ final class AppState {
     var libraryDetailSelection: MediaPreview?
     var discoverDetailRoute: DiscoverDetailRoute?
     var searchDetailSelection: MediaPreview?
+    /// Companion to `searchDetailSelection`: the action the pushed Search detail
+    /// should attempt on open (e.g. `.playBestCached` for one-tap play from an
+    /// AI Pick). Kept as a sibling property rather than folding into
+    /// `searchDetailSelection`'s type so existing `MediaPreview?` call-sites and
+    /// QA seeding stay unchanged. Reset whenever the selection clears.
+    var searchDetailInitialAction: DetailInitialAction = .none
 
     // MARK: - Warnings
     var environmentBootstrapWarning: String?
@@ -1015,6 +1021,7 @@ final class AppState {
             libraryDetailSelection = nil
             discoverDetailRoute = nil
             searchDetailSelection = nil
+            searchDetailInitialAction = .none
             runtimeDiagnosticsEnabled = false
             activePlayerSession = nil
             activeAVPlayer = nil

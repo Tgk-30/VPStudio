@@ -1451,6 +1451,92 @@ final class SearchViewModel {
         }
     }
 
+    /// First-class natural-language search: route a free-form phrase through the
+    /// AI recommendation engine (which still injects DB + Trakt history) and
+    /// render the results into the shared AI Picks rail. Parallels
+    /// `fetchAIRecommendations` for loading/error/generation handling.
+    func fetchNaturalLanguageRecommendations(query: String, aiManager: AIAssistantManager) {
+        let phrase = query.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        aiTask?.cancel()
+        isLoadingAI = true
+        aiError = nil
+        aiGeneration += 1
+        let generation = aiGeneration
+
+        aiTask = Task { @MainActor [weak self] in
+            do {
+                let recommendations = try await aiManager.getRecommendations(forNaturalLanguageQuery: phrase)
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = recommendations
+                self.isLoadingAI = false
+            } catch AIError.noProviderConfigured {
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = []
+                self.aiError = "No AI provider configured. Set one up in Settings \u{2192} AI Assistant."
+                self.isLoadingAI = false
+            } catch {
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = []
+                self.aiError = error.localizedDescription
+                self.isLoadingAI = false
+            }
+        }
+    }
+
+    /// Trakt-personalized "For You": ask the engine for picks that lean on the
+    /// user's recently-watched history. Parallels `fetchAIRecommendations`.
+    func fetchPersonalizedRecommendations(aiManager: AIAssistantManager) {
+        aiTask?.cancel()
+        isLoadingAI = true
+        aiError = nil
+        aiGeneration += 1
+        let generation = aiGeneration
+
+        aiTask = Task { @MainActor [weak self] in
+            do {
+                let recommendations = try await aiManager.getPersonalizedRecommendations()
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = recommendations
+                self.isLoadingAI = false
+            } catch AIError.noProviderConfigured {
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = []
+                self.aiError = "No AI provider configured. Set one up in Settings \u{2192} AI Assistant."
+                self.isLoadingAI = false
+            } catch {
+                guard
+                    !Task.isCancelled,
+                    let self,
+                    self.aiGeneration == generation
+                else { return }
+                self.aiRecommendations = []
+                self.aiError = error.localizedDescription
+                self.isLoadingAI = false
+            }
+        }
+    }
+
     func clearAIRecommendations() {
         aiTask?.cancel()
         aiTask = nil

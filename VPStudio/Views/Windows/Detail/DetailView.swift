@@ -4,6 +4,11 @@ import SwiftUI
 enum DetailInitialAction: String, Hashable, Sendable {
     case none
     case resumePlayback
+    /// One-tap play from a recommendation: on open, search sources and play the
+    /// best *confirmed-cached* result. If none is cached (cache enrichment is
+    /// async), this lands on Detail best-effort rather than force-playing an
+    /// uncached source. See `DetailPlaybackSelectionPolicy.bestCachedResult`.
+    case playBestCached
 }
 
 enum DetailAutoSearchPolicy {
@@ -44,20 +49,31 @@ enum DetailInitialActionPolicy {
         case missingEpisode
         case activeSession
         case searchAndPlay
+        /// Search sources then play the best confirmed-cached result; landing on
+        /// Detail (no force-play) when none is cached.
+        case searchAndPlayBestCached
+    }
+
+    /// Both `.resumePlayback` and `.playBestCached` are "play on open" actions
+    /// that share the same gating (defer until media loads, surface an active
+    /// session, require a selected episode for series). They differ only in
+    /// which source is chosen at the final play step.
+    static func isPlayOnOpen(_ action: DetailInitialAction) -> Bool {
+        action == .resumePlayback || action == .playBestCached
     }
 
     static func shouldDeferUntilMediaLoads(
         action: DetailInitialAction,
         hasMediaItem: Bool
     ) -> Bool {
-        action == .resumePlayback && !hasMediaItem
+        isPlayOnOpen(action) && !hasMediaItem
     }
 
     static func shouldAttemptResumePlayback(
         action: DetailInitialAction,
         hasMediaItem: Bool
     ) -> Bool {
-        action == .resumePlayback && hasMediaItem
+        isPlayOnOpen(action) && hasMediaItem
     }
 
     static func resumePlaybackOutcome(
@@ -83,7 +99,7 @@ enum DetailInitialActionPolicy {
             return .missingEpisode
         }
 
-        return .searchAndPlay
+        return action == .playBestCached ? .searchAndPlayBestCached : .searchAndPlay
     }
 }
 
@@ -94,6 +110,9 @@ enum DetailInitialActionHandlingPolicy {
         case showMissingEpisodeError
         case showActiveSessionToast
         case beginPlayback
+        /// Search sources then play the best confirmed-cached result; best-effort
+        /// (land on Detail when none is cached).
+        case beginBestCachedPlayback
     }
 
     static func handling(for outcome: DetailInitialActionPolicy.ResumePlaybackOutcome) -> Handling {
@@ -108,6 +127,8 @@ enum DetailInitialActionHandlingPolicy {
             return .showActiveSessionToast
         case .searchAndPlay:
             return .beginPlayback
+        case .searchAndPlayBestCached:
+            return .beginBestCachedPlayback
         }
     }
 }
@@ -771,9 +792,15 @@ private extension DetailView {
             showActiveSessionToast(for: appState.activePlayerSession)
             return
         case .beginPlayback:
-            break
+            await beginInitialPlayback(vm)
+        case .beginBestCachedPlayback:
+            await beginBestCachedPlayback(vm)
         }
+    }
 
+    /// Resume-style playback: play the highest-ranked source (cached or not).
+    @MainActor
+    private func beginInitialPlayback(_ vm: DetailViewModel) async {
         isPlayerOpening = true
         playerOpeningError = nil
         defer { isPlayerOpening = false }
@@ -792,6 +819,34 @@ private extension DetailView {
         } else {
             playerOpeningError = DetailPlaybackCopyPolicy.streamResolutionFailedMessage(for: .resumePlayback)
         }
+    }
+
+    /// One-tap play from a recommendation: search sources, wait (bounded) for
+    /// cache enrichment, and play the best *confirmed-cached* source. Best-effort
+    /// — if nothing is cached we simply land on Detail with no error and never
+    /// force-play an uncached source (which would download/hang).
+    @MainActor
+    private func beginBestCachedPlayback(_ vm: DetailViewModel) async {
+        isPlayerOpening = true
+        playerOpeningError = nil
+        defer { isPlayerOpening = false }
+
+        if vm.torrentSearch.results.isEmpty {
+            await vm.searchTorrents()
+        }
+
+        // Bounded wait so a stalled debrid check can't hang the open; on timeout
+        // we fall through to "land on Detail" rather than force-playing.
+        guard let torrent = await vm.bestCachedTorrent(timeout: .seconds(12)) else {
+            // No confirmed-cached source — land on Detail, no force-play.
+            return
+        }
+
+        if let stream = await vm.resolveStream(torrent: torrent) {
+            await openPlayer(for: stream, vm: vm)
+        }
+        // Stream resolution failure here is non-fatal: stay on Detail so the user
+        // can pick a source manually rather than surfacing a blocking error.
     }
 
     @MainActor

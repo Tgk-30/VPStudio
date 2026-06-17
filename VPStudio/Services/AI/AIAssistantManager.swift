@@ -206,6 +206,57 @@ actor AIAssistantManager {
         return try parseRecommendations(from: response.content)
     }
 
+    /// Get recommendations for a free-form natural-language query (first-class
+    /// NL search). The user prompt is built by `NaturalLanguageSearchPolicy` so
+    /// the literal phrase is embedded verbatim, then flows through the existing
+    /// `ask(...)` pipeline — so the user's DB taste profile and Trakt-synced
+    /// watch history still inject via `contextualizedContext`, and the JSON
+    /// response is parsed by the shared `parseRecommendations`.
+    func getRecommendations(
+        forNaturalLanguageQuery query: String,
+        provider: AIProviderKind? = nil,
+        excludingTitles: [String] = []
+    ) async throws -> [AIMovieRecommendation] {
+        let prompt = NaturalLanguageSearchPolicy.recommendationPrompt(
+            from: query,
+            excluding: excludingTitles
+        )
+        let response = try await ask(prompt: prompt, provider: provider, context: AssistantContext())
+        return try parseRecommendations(from: response.content)
+    }
+
+    /// Get personalized "For You" recommendations that explicitly weight the
+    /// user's recently-watched Trakt history. Reuses the shared context pipeline
+    /// (`contextualizedContext` autoloads watch history, ratings, watchlist, …)
+    /// and the JSON parser; the prompt just tells the model to lean on the most
+    /// recent history when ranking.
+    func getPersonalizedRecommendations(
+        provider: AIProviderKind? = nil,
+        excludingTitles: [String] = []
+    ) async throws -> [AIMovieRecommendation] {
+        var promptParts = [
+            "Recommend 10 movies or TV shows tailored to me personally.",
+            "Weight my most recently watched titles most heavily — lean into the patterns in my recent viewing history while still respecting my longer-term favorites and ratings.",
+            "Focus on titles I haven't seen yet.",
+            "For each, provide: title, year, type (movie/series), and a brief reason connecting it to what I've recently watched.",
+            "Format as JSON array with keys: title, year, type, reason, tmdbId.",
+            "Only include tmdbId when you are highly confident it is correct. Otherwise use null.",
+        ]
+        let exclusions = excludingTitles
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(12)
+            .joined(separator: ", ")
+        if !exclusions.isEmpty {
+            promptParts.append("Do not recommend any of these titles again: \(exclusions).")
+            promptParts.append("Return a meaningfully different list from those excluded titles.")
+        }
+        let prompt = promptParts.joined(separator: " ")
+
+        let response = try await ask(prompt: prompt, provider: provider, context: AssistantContext())
+        return try parseRecommendations(from: response.content)
+    }
+
     /// Personalized analysis of a specific movie/show for the user
     func getPersonalizedAnalysis(
         title: String,

@@ -125,5 +125,65 @@ struct DetailInitialActionPolicyTests {
             DetailInitialActionHandlingPolicy.handling(for: .searchAndPlay)
                 == .beginPlayback
         )
+        #expect(
+            DetailInitialActionHandlingPolicy.handling(for: .searchAndPlayBestCached)
+                == .beginBestCachedPlayback
+        )
+    }
+
+    // MARK: - playBestCached (one-tap play)
+
+    @Test func playBestCachedIsTreatedAsPlayOnOpen() {
+        #expect(DetailInitialActionPolicy.isPlayOnOpen(.playBestCached))
+        #expect(DetailInitialActionPolicy.isPlayOnOpen(.resumePlayback))
+        #expect(!DetailInitialActionPolicy.isPlayOnOpen(.none))
+    }
+
+    @Test func playBestCachedDefersUntilMediaLoads() {
+        #expect(DetailInitialActionPolicy.resumePlaybackOutcome(
+            action: .playBestCached,
+            hasMediaItem: false,
+            previewType: .movie,
+            hasSelectedEpisode: false,
+            hasActivePlayerSession: false
+        ) == .deferUntilMediaLoads)
+    }
+
+    @Test func playBestCachedSurfacesActiveSessionBeforeSearching() {
+        #expect(DetailInitialActionPolicy.resumePlaybackOutcome(
+            action: .playBestCached,
+            hasMediaItem: true,
+            previewType: .movie,
+            hasSelectedEpisode: false,
+            hasActivePlayerSession: true
+        ) == .activeSession)
+    }
+
+    @Test func playBestCachedRequiresSelectedEpisodeForSeries() {
+        #expect(DetailInitialActionPolicy.resumePlaybackOutcome(
+            action: .playBestCached,
+            hasMediaItem: true,
+            previewType: .series,
+            hasSelectedEpisode: false,
+            hasActivePlayerSession: false
+        ) == .missingEpisode)
+    }
+
+    @Test func playBestCachedSearchesAndPlaysBestCachedWhenReady() {
+        #expect(DetailInitialActionPolicy.resumePlaybackOutcome(
+            action: .playBestCached,
+            hasMediaItem: true,
+            previewType: .movie,
+            hasSelectedEpisode: false,
+            hasActivePlayerSession: false
+        ) == .searchAndPlayBestCached)
+
+        #expect(DetailInitialActionPolicy.resumePlaybackOutcome(
+            action: .playBestCached,
+            hasMediaItem: true,
+            previewType: .series,
+            hasSelectedEpisode: true,
+            hasActivePlayerSession: false
+        ) == .searchAndPlayBestCached)
     }
 }

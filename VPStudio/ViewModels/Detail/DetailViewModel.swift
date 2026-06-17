@@ -628,6 +628,26 @@ final class DetailViewModel {
         }
     }
 
+    /// Awaits the in-flight cache-enrichment pass (best-effort, bounded by
+    /// `timeout`) then returns the highest-priority confirmed-cached source, or
+    /// `nil` when none are cached. Used by one-tap play (`.playBestCached`) so it
+    /// never force-plays an uncached source. Cache status arrives asynchronously
+    /// after `searchTorrents()`; awaiting the enrichment task lets a fresh result
+    /// set settle before selection, while `timeout` guards against a stalled
+    /// debrid check (on timeout we select from whatever has been confirmed so
+    /// far, which may be `nil`).
+    func bestCachedTorrent(timeout: Duration = .seconds(12)) async -> TorrentResult? {
+        if let enrichment = cacheEnrichmentTask {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await enrichment.value }
+                group.addTask { try? await Task.sleep(for: timeout) }
+                _ = await group.next()
+                group.cancelAll()
+            }
+        }
+        return DetailPlaybackSelectionPolicy.bestCachedResult(from: torrentSearch.allResultsSnapshot)
+    }
+
     func resolveStream(torrent: TorrentResult) async -> StreamInfo? {
         beginLoading(.streamResolution)
         defer { finishLoadingIfNeeded(for: .streamResolution) }

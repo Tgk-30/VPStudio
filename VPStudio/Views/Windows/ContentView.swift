@@ -448,7 +448,9 @@ struct ContentView: View {
         switch tab {
         case .library: state.libraryDetailSelection = nil
         case .discover: state.discoverDetailRoute = nil
-        case .search: state.searchDetailSelection = nil
+        case .search:
+            state.searchDetailSelection = nil
+            state.searchDetailInitialAction = .none
         case .downloads, .environments, .settings: break
         }
     }

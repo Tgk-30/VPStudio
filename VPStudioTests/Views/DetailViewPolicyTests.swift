@@ -36,10 +36,16 @@ struct DetailInitialActionTests {
         #expect(DetailInitialAction.resumePlayback.rawValue == "resumePlayback")
     }
 
+    @Test("rawValue for playBestCached")
+    func playBestCachedRawValue() {
+        #expect(DetailInitialAction.playBestCached.rawValue == "playBestCached")
+    }
+
     @Test("cases are hashable")
     func casesAreHashable() {
         let _ = DetailInitialAction.none.hashValue
         let _ = DetailInitialAction.resumePlayback.hashValue
+        let _ = DetailInitialAction.playBestCached.hashValue
     }
 }
 

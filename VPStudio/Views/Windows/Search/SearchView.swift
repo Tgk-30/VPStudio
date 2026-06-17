@@ -263,6 +263,10 @@ struct SearchView: View {
     @State private var hasAutoOpenedQAResult = false
     @State private var suppressNextSearchDraftDebounce = false
     @State private var searchDraft = ""
+    /// Trakt gating for the "For You" affordance, loaded async in `.task`
+    /// (SettingsManager reads are async) and evaluated via `PersonalizedRecsGatePolicy`.
+    @State private var hasTraktToken = false
+    @State private var traktHistorySyncEnabled = false
     private let contentMaxWidth: CGFloat = 1080
     private let disablesAutomaticTasks: Bool
 
@@ -328,7 +332,7 @@ struct SearchView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .navigationDestination(item: searchSelection) { item in
-            DetailView(preview: item)
+            DetailView(preview: item, initialAction: appState.searchDetailInitialAction)
         }
         .task {
             guard !disablesAutomaticTasks else { return }
@@ -337,6 +341,7 @@ struct SearchView: View {
             }
             await hydrateRecentSearchesIfNeeded()
             await reloadTMDBConfigurationAndSearch()
+            await reloadPersonalizedRecsGate()
             applySearchQARuntimeIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tasteProfileDidChange)) { _ in
@@ -457,7 +462,15 @@ struct SearchView: View {
 
                     askAIButton
 
+                    if personalizedRecsEnabled {
+                        forYouButton
+                    }
+
                     filterUtilityButton
+                }
+
+                if shouldShowAskAIPhraseChip {
+                    askAIPhraseChip
                 }
             }
         }
@@ -536,6 +549,91 @@ struct SearchView: View {
         .hoverEffect(.highlight)
         #endif
     }
+
+    /// Trakt-personalized "For You" — gated on a connected Trakt account with
+    /// history sync (see `PersonalizedRecsGatePolicy`). Renders into the same
+    /// AI Picks rail as Curate For Me.
+    private var forYouButton: some View {
+        Button {
+            guard aiButtonEnabled else { return }
+            viewModel.fetchPersonalizedRecommendations(aiManager: appState.aiAssistantManager)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "person.fill.viewfinder")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.purple)
+                Text("For You")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(.white.opacity(0.94))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background {
+                Capsule()
+                    .fill(Color.white.opacity(0.10))
+                    .overlay {
+                        Capsule()
+                            .stroke(.white.opacity(0.14), lineWidth: 0.8)
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+        .opacity(aiButtonEnabled ? 1.0 : 0.5)
+        .allowsHitTesting(aiButtonEnabled)
+        .accessibilityLabel("Personalized recommendations")
+        .accessibilityHint("Uses your recently watched Trakt history to assemble a personalized short list.")
+        #if os(visionOS)
+        .hoverEffect(.highlight)
+        #endif
+    }
+
+    /// First-class natural-language search: show a prominent submit chip when the
+    /// current draft reads like a phrase/request rather than a short keyword
+    /// title lookup (`NaturalLanguageSearchPolicy.looksLikePhrase`).
+    private var shouldShowAskAIPhraseChip: Bool {
+        aiButtonEnabled && NaturalLanguageSearchPolicy.looksLikePhrase(searchDraft)
+    }
+
+    private var askAIPhraseChip: some View {
+        let trimmed = searchDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Button {
+            guard aiButtonEnabled else { return }
+            viewModel.fetchNaturalLanguageRecommendations(
+                query: trimmed,
+                aiManager: appState.aiAssistantManager
+            )
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.purple)
+                Text("Ask AI: \u{201C}\(trimmed)\u{201D}")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .foregroundStyle(.white.opacity(0.94))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background {
+                Capsule()
+                    .fill(Color.purple.opacity(0.18))
+                    .overlay {
+                        Capsule()
+                            .stroke(.white.opacity(0.16), lineWidth: 0.8)
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+        .accessibilityLabel("Ask AI about your search")
+        .accessibilityHint("Sends your phrase to the AI recommendation engine instead of a plain title search.")
+        #if os(visionOS)
+        .hoverEffect(.highlight)
+        #endif
+    }
+
     private var filterUtilityButton: some View {
         Button {
             isShowingFilters = true
@@ -1148,9 +1246,11 @@ struct SearchView: View {
                     HStack(spacing: 12) {
                         ForEach(viewModel.aiRecommendations) { rec in
                             Button {
-                                appState.searchDetailSelection = rec.toMediaPreview()
+                                openDetail(for: rec.toMediaPreview(), action: .none)
                             } label: {
-                                AIRecommendationCard(recommendation: rec)
+                                AIRecommendationCard(recommendation: rec) {
+                                    openDetail(for: rec.toMediaPreview(), action: .playBestCached)
+                                }
                             }
                             .buttonStyle(.plain)
                             #if os(visionOS)
@@ -1257,6 +1357,32 @@ struct SearchView: View {
         if shouldRequery {
             viewModel.requery()
         }
+    }
+
+    @MainActor
+    private func reloadPersonalizedRecsGate() async {
+        let token = (try? await appState.settingsManager.getString(key: SettingsKeys.traktAccessToken)) ?? ""
+        hasTraktToken = !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        traktHistorySyncEnabled = (try? await appState.settingsManager.getBool(
+            key: SettingsKeys.traktSyncHistory,
+            default: true
+        )) ?? true
+    }
+
+    private var personalizedRecsEnabled: Bool {
+        PersonalizedRecsGatePolicy.isEnabled(
+            hasTraktToken: hasTraktToken,
+            historySyncEnabled: traktHistorySyncEnabled
+        )
+    }
+
+    /// Pushes the Search detail for a recommendation, optionally requesting an
+    /// initial action (one-tap play of the best cached source). Sets the action
+    /// before the selection so the destination reads the right value on push.
+    @MainActor
+    private func openDetail(for preview: MediaPreview, action: DetailInitialAction) {
+        appState.searchDetailInitialAction = action
+        appState.searchDetailSelection = preview
     }
 }
 
