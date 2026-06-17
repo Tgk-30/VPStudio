@@ -452,15 +452,8 @@ struct SeriesDetailLayout: View {
                     .accessibilityLabel("Share title")
                     .accessibilityHint("Opens the share sheet for this title.")
 
-                    Button {
-                        Task { await viewModel.toggleWatchlist() }
-                    } label: {
-                        utilityGlyph(name: viewModel.isInWatchlist ? "bookmark.fill" : "bookmark")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(viewModel.isInWatchlist ? "Remove from Watchlist" : "Add to Watchlist")
-                    .accessibilityHint("Toggles this title in your watchlist.")
-
+                    // (Watchlist toggle intentionally lives only on the labeled play-row
+                    // "Watchlist" button below — the duplicate top-bar bookmark was removed.)
                     Button(action: onCast) {
                         utilityGlyph(name: "airplayvideo")
                     }

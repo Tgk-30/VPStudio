@@ -23,7 +23,11 @@ enum DetailPlaybackSelectionPolicy {
         hdrPreference: HDRPreference = .auto
     ) -> TorrentResult? {
         results
-            .filter { $0.cacheAvailability == .cached }
+            // Instant-playable = confirmed-cached on a debrid service OR a directly-playable
+            // source (Stremio direct URL needs no debrid resolution). Direct streams never get
+            // a .cached status, so filtering on .cached alone wrongly excluded the most instant
+            // source from one-tap play.
+            .filter { $0.cacheAvailability == .cached || $0.directStreamURL != nil }
             .max { lhs, rhs in
                 let lhsScore = TorrentRanking.score(
                     lhs,

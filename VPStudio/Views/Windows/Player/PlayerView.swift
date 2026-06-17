@@ -148,7 +148,12 @@ enum PlayerViewPolicy {
     }
 
     static func clampedSeekTarget(time: TimeInterval, duration: TimeInterval) -> TimeInterval {
-        guard time.isFinite, duration.isFinite, duration >= 0 else { return 0 }
+        guard time.isFinite else { return 0 }
+        // Duration <= 0 means "unknown / not yet loaded" (e.g. the engine was reset to 0 on a
+        // long suspend, or we're seeking before the item's metadata loads). Do NOT clamp the
+        // target to a bogus 0 upper bound — that would wipe a resume to 0. Honor the requested
+        // time; once duration is known, normal seeks clamp against it.
+        guard duration.isFinite, duration > 0 else { return max(0, time) }
         return max(0, min(duration, time))
     }
 
