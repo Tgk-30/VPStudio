@@ -74,16 +74,27 @@ struct VPStudioApp: App {
 
         WindowGroup(id: "player", for: PlayerSessionRequest.self) { $request in
             if let request {
+                // The scene value round-trips through Codable, which drops the runtime-only
+                // StreamInfo.requestHeaders (Stremio proxy headers). Prefer the in-memory
+                // session (headers intact) whenever it matches this window's id; fall back to
+                // the decoded value only on a cold scene restore. Without this, header-gated
+                // direct-play streams 403 because the player loses their proxy headers.
+                let resolved: PlayerSessionRequest = {
+                    if let active = appState.activePlayerSession, active.id == request.id {
+                        return active
+                    }
+                    return request
+                }()
                 PlayerView(
-                    stream: request.stream,
-                    availableStreams: request.availableStreams,
-                    mediaTitle: request.mediaTitle,
-                    mediaId: request.mediaId,
-                    tmdbId: request.tmdbId,
-                    episodeId: request.episodeId,
-                    nextEpisode: request.nextEpisode,
-                    sessionID: request.id,
-                    sessionRequest: request
+                    stream: resolved.stream,
+                    availableStreams: resolved.availableStreams,
+                    mediaTitle: resolved.mediaTitle,
+                    mediaId: resolved.mediaId,
+                    tmdbId: resolved.tmdbId,
+                    episodeId: resolved.episodeId,
+                    nextEpisode: resolved.nextEpisode,
+                    sessionID: resolved.id,
+                    sessionRequest: resolved
                 )
                     .environment(appState)
                     .environment(sharedEngine)

@@ -27,9 +27,9 @@ struct VPSidebarViewTestsViewsVpsidebarviewtests {
             #expect(SidebarLayoutPolicy.cornerRadius == 26)
         }
 
-        @Test("iconFrame is 44")
-        func iconFrameIs44() {
-            #expect(SidebarLayoutPolicy.iconFrame == 44)
+        @Test("iconFrame matches the minimum tap target")
+        func iconFrameMatchesMinTapTarget() {
+            #expect(SidebarLayoutPolicy.iconFrame == VPSpace.minTapTarget)
         }
 
         @Test("sidebarMainTabs contains expected tabs")

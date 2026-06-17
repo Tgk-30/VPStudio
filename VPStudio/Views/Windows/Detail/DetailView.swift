@@ -492,6 +492,22 @@ struct DetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.35), value: shouldShowDetailContent)
+        // Surface play-open failures that have no torrent row to render them (missing episode,
+        // or a no-streams/resolution failure when results are empty) — otherwise the user taps
+        // Play and nothing visibly happens. Gated on no rows so it never double-shows with the
+        // per-row error renderer in DetailTorrentsSection.
+        .alert(
+            "Can’t Play",
+            isPresented: Binding(
+                get: { playerOpeningError != nil && (viewModel?.torrentSearch.results.isEmpty ?? true) },
+                set: { presented in if !presented { playerOpeningError = nil } }
+            ),
+            presenting: playerOpeningError
+        ) { _ in
+            Button("OK", role: .cancel) { playerOpeningError = nil }
+        } message: { message in
+            Text(message)
+        }
         .task(id: previewTaskIdentity) {
             guard !disablesAutomaticLoading else { return }
             isPreparingInitialPresentation = true
@@ -768,6 +784,16 @@ private extension DetailView {
     @MainActor
     func runInitialActionIfNeeded(_ vm: DetailViewModel) async {
         guard !hasHandledInitialAction else { return }
+        // One-tap Play on a TV recommendation carries no episode id and usually no watch
+        // history, so resolveInitialEpisode leaves selectedEpisode nil and the action would
+        // dead-end on a "missing episode" error. For a play-on-open intent, default to the
+        // first available episode so one-tap play works for series, not just movies.
+        if DetailInitialActionPolicy.isPlayOnOpen(initialAction),
+           preview.type == .series,
+           vm.selectedEpisode == nil,
+           let defaultEpisode = vm.episodes.first {
+            vm.selectEpisode(defaultEpisode)
+        }
         let outcome = DetailInitialActionPolicy.resumePlaybackOutcome(
             action: initialAction,
             hasMediaItem: vm.mediaItem != nil,
