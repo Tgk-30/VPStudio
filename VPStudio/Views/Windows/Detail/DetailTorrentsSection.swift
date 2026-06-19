@@ -233,6 +233,10 @@ struct TorrentResultRow: View {
                             .font(.title3)
                     }
                     .buttonStyle(.borderedProminent)
+                    // Disable while any play is launching so non-active rows can't start a
+                    // second concurrent resolution (matches the download button and the prior
+                    // all-rows-disabled behaviour, now that per-row scoping keeps these visible).
+                    .disabled(isPlayerOpening)
                     .help("Play")
                     .accessibilityLabel("Play \(torrent.title)")
                     .accessibilityHint("Opens this stream in the player.")
