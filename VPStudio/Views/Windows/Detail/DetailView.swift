@@ -440,6 +440,11 @@ struct DetailView: View {
     @State private var isPlayerOpening = false
     /// Error message to show when player fails to open.
     @State private var playerOpeningError: String?
+    /// Identifies which torrent row triggered the in-progress (or failed) play, so the inline
+    /// "Opening player…"/error feedback is scoped to that one row instead of broadcasting to
+    /// every row. `nil` for non-row plays (cast, resume) whose feedback lives on the primary
+    /// button / screen alert rather than a row.
+    @State private var openingTorrentID: TorrentResult.ID?
     @State private var isPreparingInitialPresentation = true
     @State private var hasHandledInitialAction = false
     private let streamResultsAnchor = "detail-stream-results-anchor"
@@ -622,6 +627,7 @@ struct DetailView: View {
             shareItem: detailShareItem(vm),
             isPlayerOpening: $isPlayerOpening,
             playerOpeningError: $playerOpeningError,
+            openingTorrentID: openingTorrentID,
             onPlayTorrent: { torrent in
                 playTorrent(torrent, vm: vm)
             },
@@ -728,6 +734,8 @@ struct DetailView: View {
 
         isPlayerOpening = true
         playerOpeningError = nil
+        // Casting is not tied to a specific row; its feedback lives on the primary button / alert.
+        openingTorrentID = nil
 
         streamResolutionTask?.cancel()
         streamResolutionTask = Task {
@@ -756,9 +764,11 @@ struct DetailView: View {
             return
         }
 
-        // Immediately disable all play buttons and clear any previous error
+        // Immediately disable all play buttons and clear any previous error. Scope the inline
+        // feedback to this specific row so only it shows the spinner / error.
         isPlayerOpening = true
         playerOpeningError = nil
+        openingTorrentID = torrent.id
 
         streamResolutionTask?.cancel()
         streamResolutionTask = Task {
@@ -766,7 +776,8 @@ struct DetailView: View {
             if let stream = await vm.resolveStream(torrent: torrent) {
                 await openPlayer(for: stream, vm: vm)
             } else {
-                // Stream resolution returned nil — show error in the row
+                // Stream resolution returned nil — show error in this row (openingTorrentID
+                // stays set so the failed row keeps its error + Try Again).
                 playerOpeningError = DetailPlaybackCopyPolicy.streamResolutionFailedMessage(for: .playTorrent)
             }
         }
@@ -829,6 +840,9 @@ private extension DetailView {
     private func beginInitialPlayback(_ vm: DetailViewModel) async {
         isPlayerOpening = true
         playerOpeningError = nil
+        // Not an explicit row tap — clear row scoping so feedback falls back to the broadcast
+        // behaviour (and any error stays visible even though no single row is highlighted).
+        openingTorrentID = nil
         defer { isPlayerOpening = false }
 
         if vm.torrentSearch.results.isEmpty {
@@ -855,6 +869,8 @@ private extension DetailView {
     private func beginBestCachedPlayback(_ vm: DetailViewModel) async {
         isPlayerOpening = true
         playerOpeningError = nil
+        // Not an explicit row tap — clear row scoping (see beginInitialPlayback).
+        openingTorrentID = nil
         defer { isPlayerOpening = false }
 
         if vm.torrentSearch.results.isEmpty {

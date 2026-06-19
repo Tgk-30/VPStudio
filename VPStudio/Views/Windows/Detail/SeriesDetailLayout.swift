@@ -217,6 +217,9 @@ struct SeriesDetailLayout: View {
     let shareItem: String
     @Binding var isPlayerOpening: Bool
     @Binding var playerOpeningError: String?
+    /// Which torrent row triggered the in-progress play, so its inline feedback is scoped to that
+    /// row. `nil` (the default / non-row plays) falls back to the shared broadcast behaviour.
+    var openingTorrentID: TorrentResult.ID?
     let onPlayTorrent: (TorrentResult) -> Void
     let onCast: () -> Void
     let onShowRatingSheet: () -> Void
@@ -755,17 +758,11 @@ struct SeriesDetailLayout: View {
 
     private var seriesTrackingRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            if viewModel.selectedEpisode != nil {
-                Label("Press and hold an episode for watch options.", systemImage: "hand.point.up.left.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-            } else {
-                // Avoid repeating "Select an episode" — currentEpisodeRow already prompts that
-                // right above; keep only the press-and-hold tip here.
-                Label("Press and hold an episode for watch options.", systemImage: "hand.point.up.left.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-            }
+            // currentEpisodeRow already prompts "Select an episode" right above, so show only the
+            // press-and-hold tip here regardless of whether an episode is currently selected.
+            Label("Press and hold an episode for watch options.", systemImage: "hand.point.up.left.fill")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.72))
 
             Spacer()
 
@@ -1143,6 +1140,7 @@ struct SeriesDetailLayout: View {
             streamResultsAnchor: streamResultsAnchor,
             isPlayerOpening: $isPlayerOpening,
             playerOpeningError: $playerOpeningError,
+            openingTorrentID: openingTorrentID,
             onPlayTorrent: onPlayTorrent
         )
         .padding(.top, 32)

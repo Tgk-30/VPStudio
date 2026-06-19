@@ -6,6 +6,9 @@ struct DetailTorrentsSection: View {
     let streamResultsAnchor: String
     @Binding var isPlayerOpening: Bool
     @Binding var playerOpeningError: String?
+    /// Which row triggered the in-progress play. When set, only that row shows the inline
+    /// "Opening player…"/error feedback; `nil` falls back to the shared broadcast behaviour.
+    var openingTorrentID: TorrentResult.ID?
     let onPlayTorrent: (TorrentResult) -> Void
 
     var body: some View {
@@ -64,6 +67,7 @@ struct DetailTorrentsSection: View {
                             torrent: torrent,
                             isPlayerOpening: $isPlayerOpening,
                             playerOpeningError: $playerOpeningError,
+                            isActivePlay: openingTorrentID == nil || openingTorrentID == torrent.id,
                             onPlay: {
                                 onPlayTorrent(torrent)
                             },
@@ -116,6 +120,10 @@ struct TorrentResultRow: View {
     let torrent: TorrentResult
     @Binding var isPlayerOpening: Bool
     @Binding var playerOpeningError: String?
+    /// Whether this row should surface the shared opening/error feedback. The section sets this
+    /// to `true` only for the row that triggered the play (or for every row when the play wasn't
+    /// row-scoped), so a single failed play no longer hides every other row's buttons.
+    var isActivePlay: Bool = true
     let onPlay: () -> Void
     let onDownload: (() -> Void)?
     var downloadState: DownloadButtonState = .idle
@@ -180,7 +188,7 @@ struct TorrentResultRow: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 8) {
-                if isPlayerOpening || playerOpeningError != nil {
+                if isActivePlay && (isPlayerOpening || playerOpeningError != nil) {
                     // Row-level feedback: player is launching
                     VStack(alignment: .leading, spacing: 4) {
                         if let error = playerOpeningError {
