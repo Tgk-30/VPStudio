@@ -80,10 +80,20 @@ enum NaturalLanguageSearchPolicy {
     /// Extracts a decade and/or language hint from a free-form phrase. Never
     /// mutates intent — these are advisory hints layered on top of the literal
     /// phrase, which is preserved (whitespace-normalized) in `normalizedQuery`.
+    /// A natural-language search request is a short phrase; anything beyond this is
+    /// almost certainly a paste accident. Capping it keeps a pathological blob from
+    /// ballooning prompt tokens (real cost on the user's own key) before it reaches
+    /// the model. Whitespace is already collapsed below, so there is no multi-line
+    /// breakout vector — this is a cost/robustness guard, not a security boundary.
+    static let maxQueryLength = 400
+
     static func extractedHints(from query: String) -> Hints {
-        let normalizedQuery = query
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let normalizedQuery = String(
+            query
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .prefix(maxQueryLength)
+        )
         let lowercased = normalizedQuery.lowercased()
 
         return Hints(

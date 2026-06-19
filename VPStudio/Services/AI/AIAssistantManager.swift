@@ -327,7 +327,7 @@ actor AIAssistantManager {
         case .mistral:
             return AIModelCatalog.mistralSmallLatest.id
         case .minimax:
-            return AIModelCatalog.minimaxM2.id
+            return AIModelCatalog.minimaxM27.id
         case .local:
             return AIModelCatalog.localSmolLM2.id
         }

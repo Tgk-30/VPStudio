@@ -18,6 +18,7 @@ struct SetupWizardView: View {
     @State private var selectedSubtitleLanguage: SubtitleLanguageOption = .none
     @State private var saveError: String?
     @State private var isValidatingKey = false
+    @State private var isProcessingStep = false
     @State private var seededIndexerSummary: String?
     @State private var appeared = false
     @State private var didRunQAAutoAdvance = false
@@ -645,6 +646,12 @@ struct SetupWizardView: View {
     }
 
     private func handleNextStep() async {
+        // Reentrancy guard: the Continue button is only disabled during step-1 key validation,
+        // so a rapid double-tap on later steps could otherwise interleave concurrent persistence
+        // tasks. One step advance at a time.
+        guard !isProcessingStep else { return }
+        isProcessingStep = true
+        defer { isProcessingStep = false }
         saveError = nil
         let normalizedApiKey = DebridKeyValidationPolicy.normalize(debridApiKey)
 

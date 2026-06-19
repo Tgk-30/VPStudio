@@ -2018,9 +2018,13 @@ actor DatabaseManager {
     func updateLocalModelProgress(id: String, progress: Double, downloadedBytes: Int64, totalBytes: Int64) async throws {
         try await dbPool.write { db in
             try db.execute(
+                // MAX(...) keeps progress monotonic: download ticks fire from unordered detached
+                // Tasks, so an out-of-order write must not regress the displayed percentage.
+                // A genuine restart resets progress to 0 via updateStatus(.downloading), a
+                // separate statement, so this never blocks a real reset.
                 sql: """
                     UPDATE local_models
-                    SET downloadProgress = ?, downloadedBytes = ?, totalBytes = ?, lastProgressAt = ?, updatedAt = ?
+                    SET downloadProgress = MAX(downloadProgress, ?), downloadedBytes = MAX(downloadedBytes, ?), totalBytes = ?, lastProgressAt = ?, updatedAt = ?
                     WHERE id = ?
                     """,
                 arguments: [progress, downloadedBytes, totalBytes, Date(), Date(), id]
