@@ -361,17 +361,20 @@ final class DetailViewModel {
             mediaLibrary.watchHistory = try? await appState.database.fetchWatchHistory(mediaId: item.id)
 
             // Load seasons for TV shows
+            var prefetchAfterSeason: (tmdbId: Int, season: Int)?
             if preview.type == .series, let tmdbId = item.tmdbId {
                 let loadedSeasons = try await service.getSeasons(tmdbId: tmdbId)
                 guard isCurrentDetailLoad(detailGeneration) else { return }
                 seasons = loadedSeasons
                 if let initialSeason = resolveInitialSeason(preview: preview) {
                     selectedSeason = initialSeason
+                    nextSeasonFirstEpisode = nil
                     let loadedEpisodes = try await service.getEpisodes(tmdbId: tmdbId, season: initialSeason)
                     guard isCurrentDetailLoad(detailGeneration) else { return }
                     episodes = loadedEpisodes
                     selectedEpisode = resolveInitialEpisode(in: episodes, preview: preview)
                     // episodeWatchStates loaded via reloadLibraryState() -> refreshWatchHistoryState() below
+                    prefetchAfterSeason = (tmdbId, initialSeason)
                 }
             }
 
@@ -380,6 +383,23 @@ final class DetailViewModel {
             _ = await (libraryState, feedbackState)
             guard isCurrentDetailLoad(detailGeneration) else { return }
             markLoaded()
+
+            // Prefetch the next season's first episode AFTER the detail page is shown so the
+            // opening flow (which loads the initial season here, not via loadSeason) can still
+            // cross the season boundary at a finale. Best-effort and guarded by the detail-load
+            // generation; runs only when the initial season is still the selected one.
+            if let prefetchAfterSeason {
+                await prefetchNextSeasonFirstEpisode(
+                    afterSeason: prefetchAfterSeason.season,
+                    tmdbId: prefetchAfterSeason.tmdbId,
+                    service: service,
+                    isStillCurrent: { [weak self] in
+                        guard let self else { return false }
+                        return self.isCurrentDetailLoad(detailGeneration)
+                            && self.selectedSeason == prefetchAfterSeason.season
+                    }
+                )
+            }
         } catch {
             guard isCurrentDetailLoad(detailGeneration) else { return }
             setError(error, fallback: .network(.transport(error.localizedDescription)))
@@ -497,7 +517,9 @@ final class DetailViewModel {
                 afterSeason: seasonNumber,
                 tmdbId: tmdbId,
                 service: service,
-                generation: seasonGeneration
+                isStillCurrent: { [weak self] in
+                    self?.isCurrentSeasonLoad(seasonGeneration, seasonNumber: seasonNumber) ?? false
+                }
             )
         } catch {
             guard isCurrentSeasonLoad(seasonGeneration, seasonNumber: seasonNumber) else { return }
@@ -507,13 +529,15 @@ final class DetailViewModel {
 
     /// Best-effort prefetch of the next season's first episode so autoplay can cross the season
     /// boundary at a finale. Runs only after the visible season has already loaded, never throws
-    /// into the load flow, and is guarded by the season-load generation so a stale fetch cannot
-    /// overwrite state after the user has switched seasons.
+    /// into the load flow, and re-checks `isStillCurrent` after the fetch so a stale result cannot
+    /// overwrite state after the user has navigated away. Both the initial `loadDetail` path and a
+    /// later `loadSeason` tab switch call this, each passing the guard appropriate to its own
+    /// load generation.
     private func prefetchNextSeasonFirstEpisode(
         afterSeason loadedSeason: Int,
         tmdbId: Int,
         service: any DetailMetadataProviding,
-        generation: Int
+        isStillCurrent: @escaping () -> Bool
     ) async {
         guard let nextSeason = DetailNextEpisodePolicy.prefetchSeasonNumber(
             after: loadedSeason,
@@ -524,7 +548,7 @@ final class DetailViewModel {
         guard let nextSeasonEpisodes = try? await service.getEpisodes(tmdbId: tmdbId, season: nextSeason) else {
             return
         }
-        guard isCurrentSeasonLoad(generation, seasonNumber: loadedSeason) else { return }
+        guard isStillCurrent() else { return }
         nextSeasonFirstEpisode = DetailNextEpisodePolicy.firstEpisode(of: nextSeasonEpisodes)
     }
 
