@@ -117,8 +117,10 @@ enum DebridMagnetInput {
                         continue
                     }
 
-                    let candidateHash = String(value.dropFirst("urn:btih:".count)).lowercased()
-                    if candidateHash == normalizedHash {
+                    let rawCandidateHash = String(value.dropFirst("urn:btih:".count))
+                    // Normalize both sides (handles hex/base32 mismatch) so a magnet
+                    // whose btih is base32 still matches and keeps its tracker list.
+                    if DebridHashValidator.normalizedInfoHash(rawCandidateHash) == normalizedHash {
                         return candidate
                     }
                 }
@@ -147,6 +149,16 @@ enum DebridHashValidator {
 
     static func normalizedInfoHash(_ hash: String) -> String? {
         let trimmed = hash.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // BitTorrent v1 info-hashes are sometimes published in 32-character RFC 4648
+        // base32 form (some Torznab/indexer feeds emit `urn:btih:` this way). Decode
+        // to the canonical 40-char hex so these torrents aren't rejected as invalid —
+        // and so a supplied magnet that uses a base32 btih still matches the requested
+        // hash and keeps its tracker list instead of being rebuilt as a bare magnet.
+        if trimmed.count == 32, let hex = hexFromBase32(trimmed) {
+            return hex
+        }
+
         guard trimmed.count == 40 || trimmed.count == 64 else {
             return nil
         }
@@ -156,6 +168,41 @@ enum DebridHashValidator {
         }
 
         return trimmed.lowercased()
+    }
+
+    /// Decodes a 32-character RFC 4648 base32 string (the canonical encoding of a
+    /// 20-byte BitTorrent v1 info-hash) to its 40-character lowercase hex form.
+    /// Returns nil if the input is not exactly 32 valid base32 characters.
+    private static func hexFromBase32(_ input: String) -> String? {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(20)
+        var accumulator = 0
+        var bitsPending = 0
+
+        for scalar in input.unicodeScalars {
+            guard let value = base32Value(scalar) else { return nil }
+            accumulator = (accumulator << 5) | value
+            bitsPending += 5
+            if bitsPending >= 8 {
+                bitsPending -= 8
+                bytes.append(UInt8((accumulator >> bitsPending) & 0xFF))
+                accumulator &= (1 << bitsPending) - 1
+            }
+        }
+
+        // A valid info-hash is exactly 20 bytes; the 32-char input leaves no
+        // partial-byte remainder (32 × 5 = 160 bits = 20 bytes).
+        guard bytes.count == 20 else { return nil }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func base32Value(_ scalar: Unicode.Scalar) -> Int? {
+        switch scalar {
+        case "A"..."Z": return Int(scalar.value - Unicode.Scalar("A").value)
+        case "a"..."z": return Int(scalar.value - Unicode.Scalar("a").value)
+        case "2"..."7": return Int(scalar.value - Unicode.Scalar("2").value) + 26
+        default: return nil
+        }
     }
 
     static func validatedInfoHash(_ hash: String) throws -> String {

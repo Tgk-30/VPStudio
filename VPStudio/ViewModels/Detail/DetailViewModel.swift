@@ -117,6 +117,9 @@ final class DetailViewModel {
     var episodes: [Episode] = []
     var selectedSeason: Int = 1
     var selectedEpisode: Episode?
+    /// First episode of the season immediately following `selectedSeason`, prefetched after a
+    /// season loads so autoplay can continue across the season boundary (see `loadSeason`).
+    private var nextSeasonFirstEpisode: Episode?
     let torrentSearch = TorrentSearchState()
     let debridResolver = DebridResolverState()
     let mediaLibrary = MediaLibraryState()
@@ -477,6 +480,7 @@ final class DetailViewModel {
         selectedSeason = seasonNumber
         episodes = []
         selectedEpisode = nil
+        nextSeasonFirstEpisode = nil
         invalidateSearchResultsForEpisodeChange()
         beginLoading(.seasonEpisodes)
 
@@ -489,10 +493,39 @@ final class DetailViewModel {
             await loadEpisodeWatchStates()
             guard isCurrentSeasonLoad(seasonGeneration, seasonNumber: seasonNumber) else { return }
             markLoaded()
+            await prefetchNextSeasonFirstEpisode(
+                afterSeason: seasonNumber,
+                tmdbId: tmdbId,
+                service: service,
+                generation: seasonGeneration
+            )
         } catch {
             guard isCurrentSeasonLoad(seasonGeneration, seasonNumber: seasonNumber) else { return }
             setError(error, fallback: .network(.transport(error.localizedDescription)))
         }
+    }
+
+    /// Best-effort prefetch of the next season's first episode so autoplay can cross the season
+    /// boundary at a finale. Runs only after the visible season has already loaded, never throws
+    /// into the load flow, and is guarded by the season-load generation so a stale fetch cannot
+    /// overwrite state after the user has switched seasons.
+    private func prefetchNextSeasonFirstEpisode(
+        afterSeason loadedSeason: Int,
+        tmdbId: Int,
+        service: any DetailMetadataProviding,
+        generation: Int
+    ) async {
+        guard let nextSeason = DetailNextEpisodePolicy.prefetchSeasonNumber(
+            after: loadedSeason,
+            seasons: seasons
+        ) else {
+            return
+        }
+        guard let nextSeasonEpisodes = try? await service.getEpisodes(tmdbId: tmdbId, season: nextSeason) else {
+            return
+        }
+        guard isCurrentSeasonLoad(generation, seasonNumber: loadedSeason) else { return }
+        nextSeasonFirstEpisode = DetailNextEpisodePolicy.firstEpisode(of: nextSeasonEpisodes)
     }
 
     func retryLastFailedOperation(apiKey: String) async {
@@ -1157,22 +1190,10 @@ final class DetailViewModel {
 
     private func nextEpisodeCandidate() -> PlayerSessionRequest.NextEpisodeCandidate? {
         guard mediaItem?.type == .series, let selectedEpisode else { return nil }
-        let sortedEpisodes = episodes.sorted {
-            if $0.seasonNumber != $1.seasonNumber {
-                return $0.seasonNumber < $1.seasonNumber
-            }
-            return $0.episodeNumber < $1.episodeNumber
-        }
-        guard let currentIndex = sortedEpisodes.firstIndex(where: { $0.id == selectedEpisode.id }),
-              sortedEpisodes.indices.contains(currentIndex + 1) else {
-            return nil
-        }
-        let next = sortedEpisodes[currentIndex + 1]
-        return PlayerSessionRequest.NextEpisodeCandidate(
-            episodeId: next.id,
-            seasonNumber: next.seasonNumber,
-            episodeNumber: next.episodeNumber,
-            title: next.displayTitle
+        return DetailNextEpisodePolicy.nextCandidate(
+            selectedEpisode: selectedEpisode,
+            currentEpisodes: episodes,
+            nextSeasonFirstEpisode: nextSeasonFirstEpisode
         )
     }
 
