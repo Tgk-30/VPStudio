@@ -14,6 +14,14 @@ public enum CinemaImmersionStyle: String, Codable, Hashable, CaseIterable, Senda
 /// Preset configurations for the cinema environment.
 public enum CinemaPreset: String, CaseIterable, Identifiable, Codable, Sendable {
     case `default`, frontRow, backRow, imax, custom
+
+    public static let selectablePresets: [CinemaPreset] = [
+        .default,
+        .frontRow,
+        .backRow,
+        .imax
+    ]
+
     public var id: String { rawValue }
     public var title: String {
         switch self {
@@ -103,8 +111,7 @@ public final class CinemaSettings {
     }
     public var activePreset: CinemaPreset {
         get {
-            let presets: [CinemaPreset] = [.default, .frontRow, .backRow, .imax]
-            for p in presets {
+            for p in CinemaPreset.selectablePresets {
                 let s = CinemaSettings(preset: p, baseAspectRatio: videoAspectRatio)
                 let match = abs(s.screenWidth - screenWidth) < 0.15
                     && abs(s.screenDistance - screenDistance) < 0.15

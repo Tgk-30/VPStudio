@@ -11,11 +11,13 @@ struct SetupWizardView: View {
     @State private var currentStep = 0
     @State private var debridApiKey = ""
     @State private var selectedService: DebridServiceType = .realDebrid
-    @State private var tmdbApiKey = ""
+    @State private var omdbApiKey = ""
     @State private var selectedAIProvider: AIProviderOption = .none
     @State private var aiApiKey = ""
     @State private var selectedQuality: VideoQuality = .hd1080p
     @State private var selectedSubtitleLanguage: SubtitleLanguageOption = .none
+    @State private var selectedSourceFilterPreset: SourceFilterPreset = .balanced
+    @State private var guestModeEnabled = false
     @State private var saveError: String?
     @State private var isValidatingKey = false
     @State private var isProcessingStep = false
@@ -29,11 +31,13 @@ struct SetupWizardView: View {
         initialStep: Int = 0,
         initialDebridApiKey: String = "",
         initialSelectedService: DebridServiceType = .realDebrid,
-        initialTMDBApiKey: String = "",
+        initialOMDbApiKey: String = "",
         initialSelectedAIProvider: AIProviderOption = .none,
         initialAIAPIKey: String = "",
         initialSelectedQuality: VideoQuality = .hd1080p,
-        initialSelectedSubtitleLanguage: SubtitleLanguageOption = .none
+        initialSelectedSubtitleLanguage: SubtitleLanguageOption = .none,
+        initialSourceFilterPreset: SourceFilterPreset = .balanced,
+        initialGuestModeEnabled: Bool = false
     ) {
         _currentStep = State(initialValue: SetupWizardNavigationPolicy.clampedStep(
             initialStep,
@@ -41,11 +45,13 @@ struct SetupWizardView: View {
         ))
         _debridApiKey = State(initialValue: initialDebridApiKey)
         _selectedService = State(initialValue: initialSelectedService)
-        _tmdbApiKey = State(initialValue: initialTMDBApiKey)
+        _omdbApiKey = State(initialValue: initialOMDbApiKey)
         _selectedAIProvider = State(initialValue: initialSelectedAIProvider)
         _aiApiKey = State(initialValue: initialAIAPIKey)
         _selectedQuality = State(initialValue: initialSelectedQuality)
         _selectedSubtitleLanguage = State(initialValue: initialSelectedSubtitleLanguage)
+        _selectedSourceFilterPreset = State(initialValue: initialSourceFilterPreset)
+        _guestModeEnabled = State(initialValue: initialGuestModeEnabled)
     }
 
     private var stepTransition: AnyTransition {
@@ -57,6 +63,21 @@ struct SetupWizardView: View {
             )
     }
 
+    private var sourceFilterOnboardingSummary: String {
+        switch selectedSourceFilterPreset {
+        case .balanced:
+            "Clean list, plenty of good choices."
+        case .instant:
+            "Ready-to-play options first."
+        case .cinema:
+            "Polished 1080p+ picks."
+        case .compact:
+            "A shorter list of strong matches."
+        case .custom:
+            "Your saved source-filter preferences."
+        }
+    }
+
     var body: some View {
         ZStack {
             // ── Cinematic background gradient ────────────────────────────────
@@ -66,7 +87,7 @@ struct SetupWizardView: View {
                 // ── Step indicator dots ──────────────────────────────────────
                 WizardStepIndicator(currentStep: currentStep, totalSteps: totalSteps)
                     .padding(.top, 28)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 18)
 
                 // ── Step content ─────────────────────────────────────────────
                 ZStack {
@@ -96,8 +117,8 @@ struct SetupWizardView: View {
 
                 // ── Navigation buttons ───────────────────────────────────────
                 wizardNavigation
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 28)
+                    .padding(.horizontal, 56)
+                    .padding(.bottom, 48)
             }
         }
         .frame(minWidth: 640, minHeight: 560)
@@ -117,14 +138,14 @@ struct SetupWizardView: View {
             didRunQAAutoAdvance = true
 
             let defaults = SetupWizardQAAutoAdvancePolicy.appliedDefaults(
-                tmdbApiKey: tmdbApiKey,
+                omdbApiKey: omdbApiKey,
                 selectedQuality: selectedQuality,
                 selectedSubtitleLanguage: selectedSubtitleLanguage,
-                overrideTMDBApiKey: QARuntimeOptions.setupTMDBApiKey,
+                overrideOMDbApiKey: QARuntimeOptions.setupOMDbApiKey,
                 overridePreferredQuality: QARuntimeOptions.setupPreferredQuality,
                 overrideSubtitleLanguage: QARuntimeOptions.setupSubtitleLanguage
             )
-            tmdbApiKey = defaults.tmdbApiKey
+            omdbApiKey = defaults.omdbApiKey
             selectedQuality = defaults.selectedQuality
             selectedSubtitleLanguage = defaults.selectedSubtitleLanguage
 
@@ -342,17 +363,17 @@ struct SetupWizardView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            // ── TMDB API Key Section ─────────────────────────────────────
+            // ── OMDb API Key Section ─────────────────────────────────────
             VStack(spacing: 10) {
                 Image(systemName: "film")
                     .font(.system(size: 40))
                     .foregroundStyle(LinearGradient.vpAccent)
 
-                Text("TMDB API Key")
+                Text("OMDb API Key")
                     .font(.title2)
                     .fontWeight(.bold)
 
-                Text("Required for movie and TV show metadata, artwork, and recommendations. Get a free key at themoviedb.org")
+                Text("Required for movie and TV show metadata, artwork, and recommendations. Get a free key at omdbapi.com.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -361,11 +382,11 @@ struct SetupWizardView: View {
 
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
-                    SecureField("TMDB API Key", text: $tmdbApiKey)
+                    SecureField("OMDb API Key", text: $omdbApiKey)
                         .textFieldStyle(.plain)
-                    PasteFieldButton { tmdbApiKey = $0 }
-                        .accessibilityLabel("Paste TMDB API key from clipboard")
-                        .accessibilityHint("Pastes the TMDB API key into the setup field.")
+                    PasteFieldButton { omdbApiKey = $0 }
+                        .accessibilityLabel("Paste OMDb API key from clipboard")
+                        .accessibilityHint("Pastes the OMDb API key into the setup field.")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -383,7 +404,7 @@ struct SetupWizardView: View {
                     }
 
                 Button {
-                    if let url = URL(string: "https://www.themoviedb.org/settings/api") {
+                    if let url = URL(string: "https://www.omdbapi.com/apikey.aspx") {
                         openURL(url)
                     }
                 } label: {
@@ -504,65 +525,91 @@ struct SetupWizardView: View {
     // MARK: - Step 3: Preferences
 
     private var preferencesStep: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        ScrollView {
+            VStack(spacing: 18) {
+                // Header
+                VStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 40, weight: .bold))
+                        .foregroundStyle(LinearGradient.vpAccent)
 
-            // Header
-            VStack(spacing: 10) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 40))
-                    .foregroundStyle(LinearGradient.vpAccent)
+                    Text("Quick Defaults")
+                        .font(.title2)
+                        .fontWeight(.bold)
 
-                Text("Set Your Preferences")
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Text("Quick defaults to get you started. You can customize more in Settings later.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-            }
-
-            // Preference rows
-            VStack(spacing: 14) {
-                // Quality picker
-                WizardPreferenceRow(
-                    icon: "4k.tv",
-                    title: "Preferred Quality"
-                ) {
-                    Picker("", selection: $selectedQuality) {
-                        Text("720p").tag(VideoQuality.hd720p)
-                        Text("1080p").tag(VideoQuality.hd1080p)
-                        Text("4K").tag(VideoQuality.uhd4k)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
-                    .accessibilityLabel("Preferred quality")
-                    .accessibilityHint("Choose the default streaming quality.")
+                    Text("Quick defaults to get you started. You can customize more in Settings later.")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
                 }
 
-                // Subtitle language picker
-                WizardPreferenceRow(
-                    icon: "captions.bubble",
-                    title: "Subtitle Language"
-                ) {
-                    Picker("", selection: $selectedSubtitleLanguage) {
-                        ForEach(SubtitleLanguageOption.allCases) { lang in
-                            Text(lang.displayName).tag(lang)
+                // Preference rows
+                VStack(spacing: 14) {
+                    // Quality picker
+                    WizardPreferenceRow(
+                        icon: "tv",
+                        title: "Preferred Quality"
+                    ) {
+                        WizardQualitySegmentedControl(selection: $selectedQuality)
+                    }
+
+                    // Source filter picker
+                    WizardPreferenceRow(
+                        icon: "line.3.horizontal.decrease",
+                        title: "Source Filters",
+                        subtitle: sourceFilterOnboardingSummary
+                    ) {
+                        Picker("", selection: $selectedSourceFilterPreset) {
+                            ForEach(SourceFilterPreset.allCases) { preset in
+                                Text(preset.displayName).tag(preset)
+                            }
                         }
+                        .pickerStyle(.menu)
+                        .controlSize(.large)
+                        .tint(.white)
+                        .frame(width: 156, height: 44, alignment: .center)
+                        .accessibilityLabel("Source filter preset")
+                        .accessibilityHint("Choose how aggressively VPStudio filters stream sources.")
                     }
-                    .pickerStyle(.menu)
-                    .tint(.white)
-                    .accessibilityLabel("Subtitle language")
-                    .accessibilityHint("Choose the default subtitle language.")
-                }
-            }
-            .frame(maxWidth: 420)
 
-            Spacer()
+                    // Subtitle language picker
+                    WizardPreferenceRow(
+                        icon: "captions.bubble",
+                        title: "Subtitle Language"
+                    ) {
+                        Picker("", selection: $selectedSubtitleLanguage) {
+                            ForEach(SubtitleLanguageOption.allCases) { lang in
+                                Text(lang.displayName).tag(lang)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.large)
+                        .tint(.white)
+                        .frame(minWidth: 132, minHeight: 44, alignment: .center)
+                        .accessibilityLabel("Subtitle language")
+                        .accessibilityHint("Choose the default subtitle language.")
+                    }
+
+                    // Guest mode toggle
+                    WizardPreferenceRow(
+                        icon: "person.crop.circle",
+                        title: "Guest Mode"
+                    ) {
+                        Toggle("", isOn: $guestModeEnabled)
+                            .controlSize(.large)
+                            .tint(Color.vpRed)
+                            .labelsHidden()
+                            .accessibilityLabel("Guest Mode")
+                            .accessibilityHint("Prevents this session from saving watch progress or scrobbling playback.")
+                    }
+                }
+                .frame(maxWidth: 560)
+            }
+            .padding(.horizontal, 32)
+            .padding(.vertical, 12)
         }
-        .padding(.horizontal, 32)
+        .scrollIndicators(.hidden)
     }
 
     // MARK: - Step 4: Completion
@@ -571,10 +618,12 @@ struct SetupWizardView: View {
         WizardCompletionContent(
             selectedService: selectedService,
             debridApiKey: debridApiKey,
-            tmdbApiKey: tmdbApiKey,
+            omdbApiKey: omdbApiKey,
             selectedAIProvider: selectedAIProvider,
             selectedQuality: selectedQuality,
             selectedSubtitleLanguage: selectedSubtitleLanguage,
+            selectedSourceFilterPreset: selectedSourceFilterPreset,
+            guestModeEnabled: guestModeEnabled,
             seededIndexerSummary: seededIndexerSummary
         )
     }
@@ -593,11 +642,20 @@ struct SetupWizardView: View {
                         Text("Back")
                     }
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white.opacity(0.94))
+                    .frame(minWidth: 74, minHeight: 44, alignment: .center)
+                    .padding(.horizontal, 18)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(.white.opacity(0.16), lineWidth: 0.8)
+                    }
                 }
                 .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
                 .accessibilityHint("Returns to the previous setup step.")
             }
 
@@ -717,7 +775,7 @@ struct SetupWizardView: View {
 
         if currentStep == 2 {
             let plan = SetupWizardPersistencePolicy.metadataSavePlan(
-                tmdbApiKey: tmdbApiKey,
+                omdbApiKey: omdbApiKey,
                 selectedAIProvider: selectedAIProvider,
                 aiApiKey: aiApiKey
             )
@@ -730,10 +788,10 @@ struct SetupWizardView: View {
 
             do {
                 try await appState.settingsManager.setValue(
-                    metadata.tmdbApiKey,
-                    forKey: SettingsKeys.tmdbApiKey
+                    metadata.omdbApiKey,
+                    forKey: SettingsKeys.omdbApiKey
                 )
-                NotificationCenter.default.post(name: .tmdbApiKeyDidChange, object: nil)
+                NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)
 
                 // Save AI provider selection
                 try await appState.settingsManager.setValue(
@@ -759,12 +817,22 @@ struct SetupWizardView: View {
         if currentStep == 3 {
             let plan = SetupWizardPersistencePolicy.preferencesSavePlan(
                 selectedQuality: selectedQuality,
-                selectedSubtitleLanguage: selectedSubtitleLanguage
+                selectedSubtitleLanguage: selectedSubtitleLanguage,
+                selectedSourceFilterPreset: selectedSourceFilterPreset,
+                guestModeEnabled: guestModeEnabled
             )
             do {
                 try await appState.settingsManager.setValue(
                     plan.preferredQualityRawValue,
                     forKey: SettingsKeys.preferredQuality
+                )
+                try await appState.settingsManager.setValue(
+                    plan.sourceFilterPresetRawValue,
+                    forKey: SettingsKeys.sourceFilterPreset
+                )
+                try await appState.settingsManager.setBool(
+                    key: SettingsKeys.guestModeEnabled,
+                    value: plan.guestModeEnabled
                 )
                 // Only persist an actual subtitle selection. Writing nil for "None" runs a
                 // DELETE, which (because the wizard is re-runnable and its picker defaults to
@@ -832,7 +900,14 @@ private struct WizardBackgroundView: View {
 
     var body: some View {
         ZStack {
+            #if os(visionOS)
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea()
+                .overlay(Color.black.opacity(0.78).ignoresSafeArea())
+            #else
             Color.black.ignoresSafeArea()
+            #endif
 
             // Animated ambient gradient
             Canvas { context, size in
@@ -915,6 +990,7 @@ private struct WizardStepIndicator: View {
                         ? AnyShapeStyle(LinearGradient.vpAccent)
                         : AnyShapeStyle(Color.white.opacity(0.2)))
                     .frame(width: index == currentStep ? 28 : 8, height: 8)
+                    .frame(width: 28, height: 8)
                     .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8), value: currentStep)
             }
         }
@@ -1046,9 +1122,62 @@ private struct FeatureHighlightCard: View {
 
 // MARK: - Wizard Preference Row
 
+private struct WizardQualitySegmentedControl: View {
+    @Binding var selection: VideoQuality
+
+    private let options: [VideoQuality] = [.hd720p, .hd1080p, .uhd4k]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.self) { quality in
+                Button {
+                    selection = quality
+                } label: {
+                    Text(quality.rawValue)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                        .frame(width: segmentWidth(for: quality), height: 44)
+                        .background {
+                            Capsule()
+                                .fill(selection == quality ? Color.vpRed.opacity(0.48) : Color.white.opacity(0.14))
+                                .overlay {
+                                    Capsule()
+                                        .strokeBorder(
+                                            selection == quality ? .white.opacity(0.28) : .white.opacity(0.18),
+                                            lineWidth: 0.8
+                                        )
+                                }
+                        }
+                }
+                .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
+                .accessibilityLabel("\(quality.rawValue) preferred quality")
+                .accessibilityValue(selection == quality ? "Selected" : "Not selected")
+            }
+        }
+        .padding(4)
+        .background(Color.black.opacity(0.38), in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(.white.opacity(0.1), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Preferred quality")
+        .accessibilityHint("Choose the default streaming quality.")
+    }
+
+    private func segmentWidth(for quality: VideoQuality) -> CGFloat {
+        quality == .hd1080p ? 96 : 80
+    }
+}
+
 private struct WizardPreferenceRow<Control: View>: View {
     let icon: String
     let title: String
+    var subtitle: String? = nil
     @ViewBuilder let control: () -> Control
 
     var body: some View {
@@ -1070,16 +1199,29 @@ private struct WizardPreferenceRow<Control: View>: View {
                         )
                 }
 
-            Text(title)
-                .font(.subheadline)
-                .fontWeight(.medium)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(width: 200, alignment: .leading)
 
             Spacer()
 
             control()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.vertical, 16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
@@ -1103,10 +1245,12 @@ private struct WizardCompletionContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let selectedService: DebridServiceType
     let debridApiKey: String
-    let tmdbApiKey: String
+    let omdbApiKey: String
     let selectedAIProvider: AIProviderOption
     let selectedQuality: VideoQuality
     let selectedSubtitleLanguage: SubtitleLanguageOption
+    let selectedSourceFilterPreset: SourceFilterPreset
+    let guestModeEnabled: Bool
     let seededIndexerSummary: String?
 
     @State private var checkmarkScale: CGFloat = 0
@@ -1163,10 +1307,12 @@ private struct WizardCompletionContent: View {
                     SetupWizardValidationPolicy.completionSummaryRows(
                         selectedService: selectedService,
                         debridApiKey: debridApiKey,
-                        tmdbApiKey: tmdbApiKey,
+                        omdbApiKey: omdbApiKey,
                         selectedAIProvider: selectedAIProvider,
                         selectedQuality: selectedQuality,
-                        selectedSubtitleLanguage: selectedSubtitleLanguage
+                        selectedSubtitleLanguage: selectedSubtitleLanguage,
+                        selectedSourceFilterPreset: selectedSourceFilterPreset,
+                        guestModeEnabled: guestModeEnabled
                     ),
                     id: \.text
                 ) { row in
@@ -1255,7 +1401,7 @@ private struct WizardAccentButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Text(title)
                     .fontWeight(.semibold)
                 if isLoading {
@@ -1268,13 +1414,13 @@ private struct WizardAccentButton: View {
                 }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 15)
             .background(
                 LinearGradient.vpAccent,
                 in: Capsule()
             )
-            .shadow(color: .vpRed.opacity(0.4), radius: 12, y: 4)
+            .shadow(color: .vpRed.opacity(0.28), radius: 10, y: 3)
         }
         .buttonStyle(.plain)
         .disabled(isDisabled || isLoading)
@@ -1320,10 +1466,10 @@ enum SetupWizardValidationPolicy {
         let text: String
     }
 
-    static let requiredTMDBMessage = "TMDB API key is required to continue."
+    static let requiredOMDbMessage = "OMDb API key is required to continue."
 
-    static func canContinueFromMetadataStep(tmdbApiKey: String) -> Bool {
-        !tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    static func canContinueFromMetadataStep(omdbApiKey: String) -> Bool {
+        !omdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     static func trimmedValue(_ value: String) -> String {
@@ -1359,24 +1505,30 @@ enum SetupWizardValidationPolicy {
     static func completionSummaryRows(
         selectedService: DebridServiceType,
         debridApiKey: String,
-        tmdbApiKey: String,
+        omdbApiKey: String,
         selectedAIProvider: AIProviderOption,
         selectedQuality: VideoQuality,
-        selectedSubtitleLanguage: SubtitleLanguageOption
+        selectedSubtitleLanguage: SubtitleLanguageOption,
+        selectedSourceFilterPreset: SourceFilterPreset = .balanced,
+        guestModeEnabled: Bool = false
     ) -> [SummaryRow] {
         var rows: [SummaryRow] = []
         if !trimmedValue(debridApiKey).isEmpty {
             rows.append(SummaryRow(icon: "link", text: "\(selectedService.displayName) connected"))
         }
-        if !trimmedValue(tmdbApiKey).isEmpty {
-            rows.append(SummaryRow(icon: "film", text: "TMDB metadata configured"))
+        if !trimmedValue(omdbApiKey).isEmpty {
+            rows.append(SummaryRow(icon: "film", text: "OMDb metadata configured"))
         }
         if selectedAIProvider != .none {
             rows.append(SummaryRow(icon: "brain", text: "\(selectedAIProvider.displayName) AI enabled"))
         }
         rows.append(SummaryRow(icon: "4k.tv", text: "Quality set to \(selectedQuality.rawValue)"))
+        rows.append(SummaryRow(icon: "line.3.horizontal.decrease.circle", text: "\(selectedSourceFilterPreset.displayName) source filters"))
         if selectedSubtitleLanguage != .none {
             rows.append(SummaryRow(icon: "captions.bubble", text: "\(selectedSubtitleLanguage.displayName) subtitles"))
+        }
+        if guestModeEnabled {
+            rows.append(SummaryRow(icon: "person.crop.circle.badge.clock", text: "Guest Mode enabled"))
         }
         return rows
     }
@@ -1445,7 +1597,7 @@ enum SetupWizardTransitionPolicy {
 
 enum SetupWizardQAAutoAdvancePolicy {
     struct Defaults: Equatable, Sendable {
-        let tmdbApiKey: String
+        let omdbApiKey: String
         let selectedQuality: VideoQuality
         let selectedSubtitleLanguage: SubtitleLanguageOption
     }
@@ -1463,15 +1615,15 @@ enum SetupWizardQAAutoAdvancePolicy {
     }
 
     static func appliedDefaults(
-        tmdbApiKey: String,
+        omdbApiKey: String,
         selectedQuality: VideoQuality,
         selectedSubtitleLanguage: SubtitleLanguageOption,
-        overrideTMDBApiKey: String?,
+        overrideOMDbApiKey: String?,
         overridePreferredQuality: VideoQuality?,
         overrideSubtitleLanguage: SubtitleLanguageOption?
     ) -> Defaults {
         Defaults(
-            tmdbApiKey: overrideTMDBApiKey ?? tmdbApiKey,
+            omdbApiKey: overrideOMDbApiKey ?? omdbApiKey,
             selectedQuality: overridePreferredQuality ?? selectedQuality,
             selectedSubtitleLanguage: overrideSubtitleLanguage ?? selectedSubtitleLanguage
         )
@@ -1485,7 +1637,7 @@ enum SetupWizardPersistencePolicy {
     }
 
     struct MetadataSavePlan: Equatable, Sendable {
-        let tmdbApiKey: String
+        let omdbApiKey: String
         let defaultAIProviderRawValue: String?
         let aiKeyWrite: AIKeyWrite?
     }
@@ -1498,16 +1650,18 @@ enum SetupWizardPersistencePolicy {
     struct PreferencesSavePlan: Equatable, Sendable {
         let preferredQualityRawValue: String
         let subtitleLanguageValue: String?
+        let sourceFilterPresetRawValue: String
+        let guestModeEnabled: Bool
     }
 
     static func metadataSavePlan(
-        tmdbApiKey: String,
+        omdbApiKey: String,
         selectedAIProvider: AIProviderOption,
         aiApiKey: String
     ) -> MetadataDecision {
-        let normalizedTMDBKey = SetupWizardValidationPolicy.trimmedValue(tmdbApiKey)
-        guard SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: normalizedTMDBKey) else {
-            return .invalid(message: SetupWizardValidationPolicy.requiredTMDBMessage)
+        let normalizedOMDbKey = SetupWizardValidationPolicy.trimmedValue(omdbApiKey)
+        guard SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: normalizedOMDbKey) else {
+            return .invalid(message: SetupWizardValidationPolicy.requiredOMDbMessage)
         }
 
         let normalizedAIKey = SetupWizardValidationPolicy.trimmedValue(aiApiKey)
@@ -1521,7 +1675,7 @@ enum SetupWizardPersistencePolicy {
 
         return .save(
             MetadataSavePlan(
-                tmdbApiKey: normalizedTMDBKey,
+                omdbApiKey: normalizedOMDbKey,
                 defaultAIProviderRawValue: selectedAIProvider == .none ? nil : selectedAIProvider.rawValue,
                 aiKeyWrite: aiKeyWrite
             )
@@ -1530,11 +1684,15 @@ enum SetupWizardPersistencePolicy {
 
     static func preferencesSavePlan(
         selectedQuality: VideoQuality,
-        selectedSubtitleLanguage: SubtitleLanguageOption
+        selectedSubtitleLanguage: SubtitleLanguageOption,
+        selectedSourceFilterPreset: SourceFilterPreset = .balanced,
+        guestModeEnabled: Bool = false
     ) -> PreferencesSavePlan {
         PreferencesSavePlan(
             preferredQualityRawValue: selectedQuality.rawValue,
-            subtitleLanguageValue: SetupWizardValidationPolicy.storedSubtitleLanguageValue(selectedSubtitleLanguage)
+            subtitleLanguageValue: SetupWizardValidationPolicy.storedSubtitleLanguageValue(selectedSubtitleLanguage),
+            sourceFilterPresetRawValue: selectedSourceFilterPreset.rawValue,
+            guestModeEnabled: guestModeEnabled
         )
     }
 }

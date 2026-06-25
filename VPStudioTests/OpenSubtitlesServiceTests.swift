@@ -89,6 +89,26 @@ struct OpenSubtitlesSearchTests {
         #expect(urlString.contains("imdb_id=1234567"))
     }
 
+    @Test func searchWithEmbeddedIMDBIdNormalizesParam() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedIMDbID: String?
+        }
+        let state = CapturedState()
+
+        let session = makeSubtitleStubSession { request in
+            let url = try #require(request.url)
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            state.capturedIMDbID = components?.queryItems?.first(where: { $0.name == "imdb_id" })?.value
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"data":[]}"#.utf8))
+        }
+
+        let service = OpenSubtitlesService(apiKey: "test-key", session: session)
+        let _ = try await service.search(imdbId: "https://www.imdb.com/title/TT1160419/")
+
+        #expect(state.capturedIMDbID == "1160419")
+    }
+
     @Test func searchWithTMDBIdIncludesParam() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedURL: URL?

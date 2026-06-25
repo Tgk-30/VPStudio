@@ -32,7 +32,7 @@ struct SearchStateRenderCoverageTests {
                 model.selectedGenre = genre
             }),
             ("setup error", makeSearchViewModel { model in
-                model.error = .tmdbSetupRequired(feature: "Search")
+                model.error = .metadataSetupRequired(feature: "Search")
             }),
         ]
 
@@ -53,30 +53,39 @@ struct SearchStateRenderCoverageTests {
     }
 
     @Test
-    func searchViewRendersResultsFiltersAndAIChromeWithoutAutomaticTasks() {
+    func searchViewRendersResultsFiltersAndAIChromeWithoutAutomaticTasks() async throws {
         let appState = AppState(testHooks: .init())
-        let viewModel = makeSearchViewModel { model in
-            model.results = [
-                Fixtures.mediaPreview(id: "search-arrival", type: .movie, title: "Arrival", year: 2016, tmdbId: 329865),
-                Fixtures.mediaPreview(id: "search-severance", type: .series, title: "Severance", year: 2022, tmdbId: 95396),
-            ]
-            model.selectedType = .movie
-            model.selectedGenre = Genre(id: 878, name: "Science Fiction")
-            model.genres = [
-                Genre(id: 878, name: "Science Fiction"),
-                Genre(id: 18, name: "Drama"),
-            ]
-            model.sortOption = .ratingDesc
-            model.yearFilter = 2016
-            model.yearRangePreset = .tens
-            model.languageFilters = ["en-US", "fr-FR"]
-            model.isLoadingAI = true
-            model.aiError = "AI provider unavailable in render coverage."
-            model.aiRecommendations = [
-                makeRecommendation(title: "Moon", year: 2009, type: .movie, tmdbId: 17431, score: 0.91),
-                makeRecommendation(title: "Devs", year: 2020, type: .series, tmdbId: 81349, score: nil),
-            ]
-        }
+        let metadataProvider = StubMetadataProvider()
+        let seededResults = [
+            Fixtures.mediaPreview(id: "search-arrival", type: .movie, title: "Arrival", year: 2016, tmdbId: 329865),
+            Fixtures.mediaPreview(id: "search-severance", type: .series, title: "Severance", year: 2022, tmdbId: 95396),
+        ]
+        await metadataProvider.setSearchResult(MetadataSearchResult(
+            items: seededResults,
+            page: 1,
+            totalPages: 1,
+            totalResults: seededResults.count
+        ))
+        let viewModel = SearchViewModel(metadataService: metadataProvider)
+        viewModel.results = seededResults
+        viewModel.selectedType = .movie
+        viewModel.selectedGenre = Genre(id: 878, name: "Science Fiction")
+        viewModel.genres = [
+            Genre(id: 878, name: "Science Fiction"),
+            Genre(id: 18, name: "Drama"),
+        ]
+        viewModel.sortOption = .ratingDesc
+        viewModel.yearFilter = 2016
+        viewModel.yearRangePreset = .tens
+        viewModel.languageFilters = ["en-US", "fr-FR"]
+        viewModel.isLoadingAI = true
+        viewModel.aiError = "AI provider unavailable in render coverage."
+        viewModel.aiRecommendations = [
+            makeRecommendation(title: "Moon", year: 2009, type: .movie, tmdbId: 17431, score: 0.91),
+            makeRecommendation(title: "Devs", year: 2020, type: .series, tmdbId: 81349, score: nil),
+        ]
+
+        try await Task.sleep(nanoseconds: 120_000_000)
 
         let view = NavigationStack {
             SearchView(

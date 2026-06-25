@@ -3,8 +3,8 @@ import Foundation
 /// Realistic mock content for visual QA of the **real** Library surface (`LibraryView`).
 ///
 /// Builds a populated watchlist — entries plus their cached `MediaItem`s, keyed for the grid —
-/// from the shared TMDB-seeded previews, so the production library grid renders real artwork
-/// without credentials or database access. Wired into Test Mode via
+/// from the shared IMDb-keyed previews, so the production library grid renders real artwork
+/// without credentials or database access while exercising OMDb-style identities. Wired into Test Mode via
 /// `LibraryView(initialEntries:initialMediaItems:initialFolders:initialIsLoadingSelection: false,
 /// disablesAutomaticTasks: true)`, mirroring [`DiscoverPreviewSeed`] / [`DetailPreviewSeed`].
 enum LibraryPreviewSeed {
@@ -39,8 +39,8 @@ enum LibraryPreviewSeed {
         let folderID = LibraryFolder.systemFolderID(for: listType)
         return entriesSeed.enumerated().map { index, entry in
             UserLibraryEntry(
-                id: "seed-entry-\(entry.tmdbId)",
-                mediaId: "seed-\(entry.tmdbId)",
+                id: "seed-entry-\(entry.imdbId)",
+                mediaId: entry.imdbId,
                 folderId: folderID,
                 listType: listType,
                 addedAt: Date(timeIntervalSince1970: 1_700_000_000 - Double(index) * 86_400)
@@ -51,7 +51,7 @@ enum LibraryPreviewSeed {
     static var mediaItems: [String: MediaItem] {
         var items: [String: MediaItem] = [:]
         for entry in entriesSeed {
-            let id = "seed-\(entry.tmdbId)"
+            let id = entry.imdbId
             items[id] = MediaItem(
                 id: id,
                 type: entry.type,
@@ -60,7 +60,7 @@ enum LibraryPreviewSeed {
                 posterPath: entry.poster,
                 backdropPath: entry.backdrop,
                 imdbRating: entry.rating,
-                tmdbId: entry.tmdbId
+                tmdbId: nil
             )
         }
         return items

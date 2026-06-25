@@ -14,7 +14,7 @@ struct SettingsDestinationStatus: Equatable, Sendable {
 struct SettingsStatusSnapshot: Equatable, Sendable {
     var activeDebridCount = 0
     var activeIndexerCount = 0
-    var hasTMDBKey = false
+    var hasMetadataKey = false
     var hasOpenSubtitlesKey = false
     var environmentAssetCount = 0
     var aiProvider: AIProviderKind = .anthropic
@@ -48,6 +48,12 @@ enum SettingsStatusFormatter {
             }
             return SettingsDestinationStatus(message: "Not configured", kind: .warning)
 
+        case .debridCloud:
+            if snapshot.activeDebridCount > 0 {
+                return SettingsDestinationStatus(message: "Ready to refresh", kind: .neutral)
+            }
+            return SettingsDestinationStatus(message: "No providers", kind: .neutral)
+
         case .indexers:
             if snapshot.activeIndexerCount > 0 {
                 let suffix = snapshot.activeIndexerCount == 1 ? "indexer" : "indexers"
@@ -59,10 +65,10 @@ enum SettingsStatusFormatter {
             return SettingsDestinationStatus(message: "No active indexers", kind: .warning)
 
         case .metadata:
-            if snapshot.hasTMDBKey {
-                return SettingsDestinationStatus(message: "API key configured", kind: .positive)
+            if snapshot.hasMetadataKey {
+                return SettingsDestinationStatus(message: "OMDb key configured", kind: .positive)
             }
-            return SettingsDestinationStatus(message: "API key required", kind: .warning)
+            return SettingsDestinationStatus(message: "OMDb key required", kind: .warning)
 
         case .ai:
             let availableProviders = availableAIProviders(for: snapshot)

@@ -74,7 +74,7 @@ actor KeychainSecretStore: SecretStore {
     /// permanently downgrade to the in-memory store. Transient failures (device locked,
     /// `errSecAuthFailed`, `errSecInteractionNotAllowed`, etc.) must NOT flip the store:
     /// `inMemoryValues` is never seeded from the keychain, so flipping on a transient
-    /// error would erase every stored secret — including the TMDB API key — for the rest
+    /// error would erase every stored secret — including the metadata API key — for the rest
     /// of the session (the cause of keys "disappearing" after a search or some idle time).
     /// Those transient cases instead surface as a thrown `SecretStoreError.unexpectedStatus`
     /// for that single operation, leaving the persisted keychain value intact.

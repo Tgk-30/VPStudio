@@ -210,8 +210,8 @@ struct DownloadsView: View {
                         }
                     }
                     .padding(.horizontal, VPSpace.roomy)
-                    .padding(.top, VPSpace.hero)
-                    .padding(.bottom, VPSpace.section)
+                    .padding(.top, VPSpace.section)
+                    .padding(.bottom, 112)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .refreshable { await vm.load() }
@@ -593,7 +593,7 @@ struct DownloadsView: View {
                             }
                         }
                         .padding(.horizontal, 24)
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 104)
                     }
                     .refreshable {
                         await vm.load()
@@ -974,6 +974,7 @@ struct DownloadsView: View {
             stream: stream,
             mediaTitle: task.displayTitle,
             mediaId: task.mediaId,
+            posterPath: task.posterPath,
             episodeId: task.episodeId
         )
         appState.activePlayerSession = request

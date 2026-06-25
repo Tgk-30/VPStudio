@@ -106,20 +106,104 @@ struct PlayerViewStatePolicyTests {
         #expect(
             PlayerViewStatePolicy.controlsToggleAction(
                 isControlModalPresented: true,
-                isShowingControls: false
+                isShowingControls: false,
+                playbackState: .playing,
+                isPlaying: true,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
             ) == .keepVisibleForPresentedModal
         )
         #expect(
             PlayerViewStatePolicy.controlsToggleAction(
                 isControlModalPresented: false,
-                isShowingControls: false
+                isShowingControls: false,
+                playbackState: .playing,
+                isPlaying: false,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
             ) == .showAndScheduleHide
         )
         #expect(
             PlayerViewStatePolicy.controlsToggleAction(
                 isControlModalPresented: false,
-                isShowingControls: true
+                isShowingControls: true,
+                playbackState: .playing,
+                isPlaying: true,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
             ) == .hideAndCancelScheduledHide
+        )
+    }
+
+    @Test
+    func controlsToggleKeepsVisibleWhenPlaybackCannotSafelyHideChrome() {
+        #expect(
+            PlayerViewStatePolicy.controlsToggleAction(
+                isControlModalPresented: false,
+                isShowingControls: true,
+                playbackState: .playing,
+                isPlaying: false,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .keepVisibleAndCancelScheduledHide
+        )
+        #expect(
+            PlayerViewStatePolicy.controlsToggleAction(
+                isControlModalPresented: false,
+                isShowingControls: true,
+                playbackState: .buffering,
+                isPlaying: true,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .keepVisibleAndCancelScheduledHide
+        )
+        #expect(
+            PlayerViewStatePolicy.controlsToggleAction(
+                isControlModalPresented: false,
+                isShowingControls: true,
+                playbackState: .failed,
+                isPlaying: false,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .keepVisibleAndCancelScheduledHide
+        )
+        #expect(
+            PlayerViewStatePolicy.controlsToggleAction(
+                isControlModalPresented: false,
+                isShowingControls: true,
+                playbackState: .playing,
+                isPlaying: true,
+                isScrubbing: false,
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isControlsLocked: true,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .keepVisibleAndCancelScheduledHide
         )
     }
 
@@ -129,6 +213,131 @@ struct PlayerViewStatePolicyTests {
         #expect(PlayerViewStatePolicy.controlModalVisibilityAction(isPresented: false) == .scheduleHide)
         #expect(PlayerViewStatePolicy.shouldShowControlsForModalPresentation(isShowingControls: false))
         #expect(!PlayerViewStatePolicy.shouldShowControlsForModalPresentation(isShowingControls: true))
+    }
+
+    @Test
+    func elevatedPlayerStageFallbackStaysAboveOpaqueSurfacesUntilPlaybackHasRendered() {
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .preparing,
+                hasPlayedOnce: false
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .buffering,
+                hasPlayedOnce: false
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .playing,
+                hasPlayedOnce: false
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .failed,
+                hasPlayedOnce: true
+            )
+        )
+        #expect(
+            !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .playing,
+                hasPlayedOnce: true
+            )
+        )
+        #expect(
+            !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .buffering,
+                hasPlayedOnce: true
+            )
+        )
+    }
+
+    @Test
+    func transportDockHidesDuringInitialLoadingStates() {
+        #expect(!PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .preparing, hasPlayedOnce: false))
+        #expect(!PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .buffering, hasPlayedOnce: false))
+        #expect(PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .playing, hasPlayedOnce: false))
+        #expect(PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .buffering, hasPlayedOnce: true))
+        #expect(PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .failed, hasPlayedOnce: true))
+    }
+
+    @Test
+    func avPlayerObservationClearsRebufferStateWhenPausedAfterFirstFrame() {
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .buffering,
+                isPlaying: true,
+                isBuffering: false,
+                hasPlayedOnce: true
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .playing,
+                isPlaying: false,
+                isBuffering: true,
+                hasPlayedOnce: true
+            ) == .buffering
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .buffering,
+                isPlaying: false,
+                isBuffering: false,
+                hasPlayedOnce: true
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .buffering,
+                isPlaying: false,
+                isBuffering: false,
+                hasPlayedOnce: false
+            ) == .buffering
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .failed,
+                isPlaying: false,
+                isBuffering: false,
+                hasPlayedOnce: true
+            ) == .failed
+        )
+    }
+
+    @Test
+    func observedRebufferingClearsStalePreparationSuccessMessageOnlyAfterPlaybackStarted() {
+        #expect(
+            PlayerViewStatePolicy.playbackMessageAfterObservedState(
+                currentMessage: "Playing with KSPlayer.",
+                observedPlaybackState: .buffering,
+                hasPlayedOnce: true
+            ) == nil
+        )
+        #expect(
+            PlayerViewStatePolicy.playbackMessageAfterObservedState(
+                currentMessage: "Resumed with AVPlayer.",
+                observedPlaybackState: .buffering,
+                hasPlayedOnce: true
+            ) == nil
+        )
+        #expect(
+            PlayerViewStatePolicy.playbackMessageAfterObservedState(
+                currentMessage: "Trying AVPlayer...",
+                observedPlaybackState: .buffering,
+                hasPlayedOnce: false
+            ) == "Trying AVPlayer..."
+        )
+        #expect(
+            PlayerViewStatePolicy.playbackMessageAfterObservedState(
+                currentMessage: "This stream failed during playback.",
+                observedPlaybackState: .failed,
+                hasPlayedOnce: true
+            ) == "This stream failed during playback."
+        )
     }
 
     @Test
@@ -403,6 +612,35 @@ struct PlayerViewStatePolicyTests {
         )
         #expect(PlayerViewStatePolicy.autoplayResolutionFinishOutcome(hasQueuedNextEpisode: false) == .succeeded)
         #expect(PlayerViewStatePolicy.autoplayResolutionFinishOutcome(hasQueuedNextEpisode: true) == .unavailable)
+    }
+
+    @Test
+    func userVisiblePlaybackErrorsRedactSignedURLsAndTokens() {
+        let nextEpisode = PlayerSessionRequest.NextEpisodeCandidate(
+            episodeId: "show-s01e02",
+            seasonNumber: 1,
+            episodeNumber: 2,
+            title: "The Next Signal"
+        )
+
+        #expect(
+            PlayerViewStatePolicy.preparationFailureLine(
+                kind: .avPlayer,
+                errorDescription: "Invalid stream URL: https://cdn.example.com/movie.mkv?token=secret&sig=abc"
+            ) == "AVPlayer: Invalid stream URL: [redacted URL]"
+        )
+        #expect(
+            PlayerViewStatePolicy.userVisibleErrorDescription(
+                "Request failed: token=abc123 access_token=def456 Bearer sk_test_secret"
+            ) == "Request failed: token=[redacted] access_token=[redacted] Bearer [redacted]"
+        )
+        #expect(
+            PlayerViewStatePolicy.autoplayNextFailureMessage(
+                for: nextEpisode,
+                errorDescription: "Refresh failed for https://cdn.example.com/next.mkv?signature=abc"
+            ) == "Could not auto-play The Next Signal. Refresh failed for [redacted URL]"
+        )
+        #expect(PlayerViewStatePolicy.userVisibleErrorDescription("   ") == "Playback failed.")
     }
 
     @Test

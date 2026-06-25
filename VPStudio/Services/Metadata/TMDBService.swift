@@ -1,6 +1,8 @@
 import Foundation
 
 actor TMDBService: MetadataProvider {
+    nonisolated var supportsPersonCreditSearch: Bool { true }
+
     private static let maximumRateLimitAttempts = 3
     private static let initialBackoffNanoseconds: UInt64 = 500_000_000
     private static let maximumBackoffNanoseconds: UInt64 = 4_000_000_000
@@ -114,6 +116,60 @@ actor TMDBService: MetadataProvider {
         return MetadataSearchResult(
             items: response.results.compactMap { $0.toMediaPreview() },
             page: response.page, totalPages: response.totalPages, totalResults: response.totalResults
+        )
+    }
+
+    func searchPersonCredits(query: String, type: MediaType?, page: Int = 1) async throws -> MetadataSearchResult {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            return MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+        }
+
+        let personResponse: TMDBPagedResponse<TMDBPersonSearchResult> = try await request(
+            path: "/search/person",
+            params: [
+                "query": trimmedQuery,
+                "page": String(max(1, page)),
+                "include_adult": "false",
+                "language": "en-US",
+            ]
+        )
+
+        var credits: [TMDBPersonCredit] = []
+        let people = personResponse.results.prefix(page == 1 ? 3 : 1)
+        for person in people {
+            do {
+                let response: TMDBPersonCombinedCreditsResponse = try await request(
+                    path: "/person/\(person.id)/combined_credits",
+                    params: ["language": "en-US"]
+                )
+                credits.append(contentsOf: response.cast)
+                credits.append(contentsOf: response.crew.filter(\.isDirectorLikeCredit))
+            } catch {
+                credits.append(contentsOf: person.knownFor ?? [])
+            }
+        }
+
+        var seenIDs: Set<String> = []
+        let items = credits
+            .compactMap { $0.toMediaPreview() }
+            .filter { preview in
+                guard type == nil || preview.type == type else { return false }
+                return seenIDs.insert(preview.id).inserted
+            }
+            .sorted { lhs, rhs in
+                if (lhs.year ?? 0) != (rhs.year ?? 0) {
+                    return (lhs.year ?? 0) > (rhs.year ?? 0)
+                }
+                return (lhs.imdbRating ?? 0) > (rhs.imdbRating ?? 0)
+            }
+
+        let limitedItems = Array(items.prefix(24))
+        return MetadataSearchResult(
+            items: limitedItems,
+            page: 1,
+            totalPages: 1,
+            totalResults: limitedItems.count
         )
     }
 
@@ -376,13 +432,80 @@ extension TMDBEpisode: Decodable {}
 struct TMDBFindResponse: Sendable { let movieResults: [TMDBSearchResult]; let tvResults: [TMDBSearchResult] }
 extension TMDBFindResponse: Decodable {}
 
+struct TMDBPersonSearchResult: Sendable {
+    let id: Int
+    let name: String
+    let knownFor: [TMDBPersonCredit]?
+}
+extension TMDBPersonSearchResult: Decodable {}
+
+struct TMDBPersonCombinedCreditsResponse: Sendable {
+    let cast: [TMDBPersonCredit]
+    let crew: [TMDBPersonCredit]
+}
+extension TMDBPersonCombinedCreditsResponse: Decodable {}
+
+struct TMDBPersonCredit: Sendable {
+    let id: Int
+    let title: String?
+    let name: String?
+    let mediaType: String?
+    let overview: String?
+    let posterPath: String?
+    let backdropPath: String?
+    let releaseDate: String?
+    let firstAirDate: String?
+    let voteAverage: Double?
+    let department: String?
+    let job: String?
+
+    var isDirectorLikeCredit: Bool {
+        let normalizedDepartment = department?.lowercased() ?? ""
+        let normalizedJob = job?.lowercased() ?? ""
+        return normalizedDepartment == "directing"
+            || normalizedJob.contains("director")
+            || normalizedJob.contains("creator")
+            || normalizedJob.contains("showrunner")
+    }
+
+    func toMediaPreview() -> MediaPreview? {
+        let displayTitle = title ?? name ?? ""
+        guard !displayTitle.isEmpty else { return nil }
+        let type: MediaType
+        switch mediaType {
+        case "movie":
+            type = .movie
+        case "tv":
+            type = .series
+        default:
+            type = title != nil ? .movie : .series
+        }
+
+        let year = (releaseDate ?? firstAirDate).flatMap { value in
+            value.count >= 4 ? Int(value.prefix(4)) : nil
+        }
+
+        return MediaPreview(
+            id: "\(type.rawValue)-tmdb-\(id)",
+            type: type,
+            title: displayTitle,
+            year: year,
+            posterPath: posterPath,
+            backdropPath: backdropPath,
+            imdbRating: voteAverage,
+            tmdbId: id
+        )
+    }
+}
+extension TMDBPersonCredit: Decodable {}
+
 enum TMDBError: LocalizedError, Equatable {
     case invalidURL(String), invalidResponse, unauthorized, notFound(String), rateLimited, httpError(Int, String)
     var errorDescription: String? {
         switch self {
         case .invalidURL(let p): return "Invalid TMDB URL: \(p)"
         case .invalidResponse: return "Invalid response"
-        case .unauthorized: return "Invalid TMDB API key"
+        case .unauthorized: return "Invalid metadata API key"
         case .notFound(let id): return "Not found: \(id)"
         case .rateLimited: return "Rate limited"
         case .httpError(let c, let m): return "HTTP \(c): \(m)"

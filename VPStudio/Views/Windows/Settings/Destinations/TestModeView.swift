@@ -128,8 +128,12 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
     case detailSeries
     case library
     case downloads
+    case environmentsTab
+    case environmentPicker
+    case environmentSettings
     case player
     case settings
+    case setupPreferences
 
     var id: String { rawValue }
 
@@ -142,8 +146,12 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .detailSeries: return "Series Detail"
         case .library: return "Library"
         case .downloads: return "Downloads"
+        case .environmentsTab: return "Environments Tab"
+        case .environmentPicker: return "Environment Picker"
+        case .environmentSettings: return "Environment Settings"
         case .player: return "Player"
         case .settings: return "Settings"
+        case .setupPreferences: return "Setup Preferences"
         }
     }
 
@@ -156,8 +164,12 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .detailSeries: return "Episodes grid"
         case .library: return "Populated library"
         case .downloads: return "Active downloads"
+        case .environmentsTab: return "Cards + clear state"
+        case .environmentPicker: return "Sheet + imports"
+        case .environmentSettings: return "Presets + playback"
         case .player: return "Controls + overlays"
         case .settings: return "All categories"
+        case .setupPreferences: return "Wizard source filters"
         }
     }
 
@@ -170,8 +182,12 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .detailSeries: return "film.stack"
         case .library: return "books.vertical"
         case .downloads: return "arrow.down.circle"
+        case .environmentsTab: return "mountain.2"
+        case .environmentPicker: return "rectangle.grid.2x2"
+        case .environmentSettings: return "pano"
         case .player: return "play.circle"
         case .settings: return "gearshape"
+        case .setupPreferences: return "wand.and.stars"
         }
     }
 
@@ -184,8 +200,12 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .detailSeries: return .pink
         case .library: return .green
         case .downloads: return .mint
+        case .environmentsTab: return .teal
+        case .environmentPicker: return .cyan
+        case .environmentSettings: return .mint
         case .player: return .red
         case .settings: return .gray
+        case .setupPreferences: return .indigo
         }
     }
 }
@@ -216,22 +236,30 @@ struct TestScreenSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        if screen.usesNativeNavigationContainer {
             screenContent
-                .navigationTitle(screen.title)
-                #if !os(macOS)
-                .navigationBarTitleDisplayMode(.inline)
-                #endif
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { dismiss() }
+        } else {
+            NavigationStack {
+                screenContent
+                    .navigationTitle(screen.title)
+                    #if !os(macOS)
+                    .navigationBarTitleDisplayMode(.inline)
+                    #endif
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { dismiss() }
+                        }
                     }
-                }
+            }
         }
     }
 
-    @ViewBuilder
     private var screenContent: some View {
+        content(for: screen)
+    }
+
+    @ViewBuilder
+    private func content(for screen: TestScreen) -> some View {
         switch screen {
         case .discover:
             SeededDiscoverPreview()
@@ -247,17 +275,65 @@ struct TestScreenSheet: View {
             SeededLibraryPreview()
         case .downloads:
             SeededDownloadsPreview()
+        case .environmentsTab:
+            SeededEnvironmentsTabPreview()
+        case .environmentPicker:
+            SeededEnvironmentPickerPreview()
+        case .environmentSettings:
+            SeededEnvironmentSettingsPreview()
         case .player:
             SeededPlayerPreview()
         case .settings:
             SeededSettingsPreview()
+        case .setupPreferences:
+            SetupWizardView(
+                initialStep: 3,
+                initialOMDbApiKey: "preview-omdb-key",
+                initialSelectedQuality: .uhd4k,
+                initialSelectedSubtitleLanguage: .english,
+                initialSourceFilterPreset: .cinema,
+                initialGuestModeEnabled: true
+            )
         }
     }
 }
 
+private extension TestScreen {
+    var usesNativeNavigationContainer: Bool {
+        switch self {
+        case .environmentPicker:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+private enum EnvironmentVisualQASeed {
+    static let assets = [
+        EnvironmentAsset(
+            id: "qa-starlight-cinema",
+            name: "Starlight Cinema",
+            sourceType: .bundled,
+            assetPath: "bundle://starlight-cinema.reality",
+            licenseName: "Built-in",
+            environmentTag: "cinema",
+            isActive: true
+        ),
+        EnvironmentAsset(
+            id: "qa-aurora-terrace",
+            name: "Aurora Terrace",
+            sourceType: .imported,
+            assetPath: "/Users/Shared/VPStudio/AuroraTerrace.usdz",
+            sourceAttributionURL: "https://example.com/aurora-terrace",
+            environmentTag: "sci-fi"
+        ),
+    ]
+}
+
 // MARK: - Discover (real surface, seeded)
 
-/// Renders the **production** `DiscoverView` populated with real TMDB artwork so the actual
+/// Renders the **production** `DiscoverView` populated with seeded metadata artwork so the actual
 /// hero carousel, rows, and tiles can be visually QA'd without API keys. `AppState` is inherited
 /// from the surrounding app environment.
 private struct SeededDiscoverPreview: View {
@@ -273,7 +349,7 @@ private struct SeededDiscoverPreview: View {
 /// Renders the **production** `DetailView` (→ `SeriesDetailLayout`) populated with seeded content so
 /// the actual hero, metadata, genre chips, season picker, and stream sections can be visually QA'd
 /// without API keys or network calls. `AppState` is inherited from the surrounding app environment;
-/// `disablesAutomaticLoading` keeps the seeded view model from being overwritten by a TMDB refresh.
+/// `disablesAutomaticLoading` keeps the seeded view model from being overwritten by metadata refresh.
 private struct SeededDetailPreview: View {
     @Environment(AppState.self) private var appState
     let mediaType: MediaType
@@ -304,7 +380,7 @@ private struct SeededDetailPreview: View {
 /// Renders the **production** `SearchView` seeded for visual QA. `showsResults == false` shows the
 /// idle Explore grid (genres + recent searches); `true` shows a populated results grid with an
 /// active query and media-type filter. `disablesAutomaticTasks` keeps the seeded view model from
-/// being cleared by the TMDB configuration pass that runs without an API key.
+/// being cleared by the metadata configuration pass that runs without an API key.
 private struct SeededSearchPreview: View {
     let showsResults: Bool
     @State private var viewModel: SearchViewModel?
@@ -369,6 +445,56 @@ private struct SeededDownloadsPreview: View {
                 viewModel = model
             }
         }
+    }
+}
+
+// MARK: - Environments (real surfaces, seeded)
+
+/// Renders the production Environments tab with a small deterministic asset list so the
+/// Standard Room clear state and environment cards can be visually QA'd without imports.
+private struct SeededEnvironmentsTabPreview: View {
+    var body: some View {
+        #if os(visionOS)
+        EnvironmentsTabView(
+            initialEnvironments: EnvironmentVisualQASeed.assets,
+            initialIsLoading: false,
+            disablesAutomaticTasks: true
+        )
+        #else
+        EnvironmentsTabView()
+        #endif
+    }
+}
+
+/// Renders the production environment picker sheet with seeded imported/bundled cards.
+private struct SeededEnvironmentPickerPreview: View {
+    var body: some View {
+        #if os(visionOS)
+        EnvironmentPickerSheet(
+            onSelect: { _ in },
+            onDismiss: {},
+            onSelectCinema: {},
+            onClear: {},
+            initialEnvironments: EnvironmentVisualQASeed.assets,
+            disablesAutomaticTasks: true
+        )
+        #else
+        ContentUnavailableView(
+            "Environment Picker",
+            systemImage: "mountain.2",
+            description: Text("Environment picker is available on Vision Pro.")
+        )
+        #endif
+    }
+}
+
+/// Renders the production Environment Settings destination with deterministic assets.
+private struct SeededEnvironmentSettingsPreview: View {
+    var body: some View {
+        EnvironmentSettingsView(
+            initialAssets: EnvironmentVisualQASeed.assets,
+            disablesAutomaticTasks: true
+        )
     }
 }
 

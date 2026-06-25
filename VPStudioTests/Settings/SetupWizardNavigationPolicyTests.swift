@@ -151,15 +151,15 @@ struct SetupWizardQAAutoAdvancePolicyTests {
     @Test
     func appliedDefaultsUsesOnlyProvidedQAOverrides() {
         let defaults = SetupWizardQAAutoAdvancePolicy.appliedDefaults(
-            tmdbApiKey: "existing-tmdb",
+            omdbApiKey: "existing-omdb",
             selectedQuality: .hd1080p,
             selectedSubtitleLanguage: .none,
-            overrideTMDBApiKey: "qa-tmdb",
+            overrideOMDbApiKey: "qa-omdb",
             overridePreferredQuality: nil,
             overrideSubtitleLanguage: .english
         )
 
-        #expect(defaults.tmdbApiKey == "qa-tmdb")
+        #expect(defaults.omdbApiKey == "qa-omdb")
         #expect(defaults.selectedQuality == .hd1080p)
         #expect(defaults.selectedSubtitleLanguage == .english)
     }

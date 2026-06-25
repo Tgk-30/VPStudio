@@ -1,6 +1,9 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 import Synchronization
 import Testing
+import UniformTypeIdentifiers
 @testable import VPStudio
 
 @Suite("EnvironmentCatalogManager Validation Tests", .serialized)
@@ -12,6 +15,38 @@ struct EnvironmentCatalogManagerValidationTests {
         let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
+    }
+
+    private func writeSolidPNG(width: Int, height: Int, to url: URL) throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "EnvironmentCatalogManagerValidationTests", code: 1)
+        }
+
+        context.setFillColor(CGColor(red: 0.2, green: 0.3, blue: 0.4, alpha: 1.0))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage(),
+              let destination = CGImageDestinationCreateWithURL(
+                  url as CFURL,
+                  UTType.png.identifier as CFString,
+                  1,
+                  nil
+              ) else {
+            throw NSError(domain: "EnvironmentCatalogManagerValidationTests", code: 2)
+        }
+
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw NSError(domain: "EnvironmentCatalogManagerValidationTests", code: 3)
+        }
     }
 
     @Test
@@ -37,7 +72,16 @@ struct EnvironmentCatalogManagerValidationTests {
     }
 
     @Test
-    func importRejectsExtensionCaseInsensitive() async throws {
+    func unsupportedFileTypeErrorListsAllAcceptedEnvironmentFormats() {
+        let message = EnvironmentCatalogError.unsupportedFileType.errorDescription ?? ""
+
+        for ext in EnvironmentImportValidationPolicy.supportedExtensions {
+            #expect(message.contains(".\(ext)"))
+        }
+    }
+
+    @Test
+    func importAcceptsExtensionCaseInsensitiveAndStoresNormalizedExtension() async throws {
         let (database, rootDir) = try await makeDatabase(named: "validation-case-insensitive.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -50,7 +94,7 @@ struct EnvironmentCatalogManagerValidationTests {
         try Data("hdr".utf8).write(to: source)
 
         let imported = try await manager.importEnvironment(from: source)
-        #expect(imported.assetPath.hasSuffix(".HDR"))
+        #expect(imported.assetPath.hasSuffix(".hdr"))
     }
 
     @Test
@@ -63,7 +107,7 @@ struct EnvironmentCatalogManagerValidationTests {
             environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
         )
 
-        let unsupportedExtensions = ["mp4", "mov", "jpg", "png", "pdf", "txt"]
+        let unsupportedExtensions = ["mp4", "mov", "pdf", "txt"]
 
         for ext in unsupportedExtensions {
             let source = rootDir.appendingPathComponent("file.\(ext)")
@@ -102,6 +146,36 @@ struct EnvironmentCatalogManagerValidationTests {
     }
 
     @Test
+    func importRejectsNonFileURLEvenWhenPathExistsLocally() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-non-file-url.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let validationCalls = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validationCalls.withLock { $0 += 1 }
+                return true
+            }
+        )
+        let source = rootDir.appendingPathComponent("local.hdr")
+        try Data("hdr".utf8).write(to: source)
+        let nonFileURL = try #require(URL(string: "https://example.com\(source.path)"))
+
+        do {
+            _ = try await manager.importEnvironment(from: nonFileURL)
+            Issue.record("Expected missing file error")
+        } catch EnvironmentCatalogError.missingFile {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(validationCalls.withLock { $0 } == 0)
+    }
+
+    @Test
     func importAcceptsAllSupportedExtensions() async throws {
         let (database, rootDir) = try await makeDatabase(named: "validation-supported-multi.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -112,7 +186,7 @@ struct EnvironmentCatalogManagerValidationTests {
             assetValidator: { _ in true }
         )
 
-        let supportedExtensions = ["hdr", "exr", "usdz", "reality"]
+        let supportedExtensions = EnvironmentImportValidationPolicy.supportedExtensions.sorted()
 
         for ext in supportedExtensions {
             let source = rootDir.appendingPathComponent("file.\(ext)")
@@ -120,6 +194,93 @@ struct EnvironmentCatalogManagerValidationTests {
 
             let imported = try await manager.importEnvironment(from: source)
             #expect(imported.assetPath.hasSuffix(".\(ext)"))
+        }
+    }
+
+    @Test
+    func defaultValidatorAcceptsEquirectangularPNGEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-panorama-png.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        let source = rootDir.appendingPathComponent("panorama.png")
+        try writeSolidPNG(width: 20, height: 10, to: source)
+
+        let imported = try await manager.importEnvironment(from: source)
+
+        #expect(imported.assetPath.hasSuffix(".png"))
+        #expect(imported.sourceType == .imported)
+    }
+
+    @Test
+    func defaultValidatorRejectsEmptyRealityEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-empty-reality.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        let source = rootDir.appendingPathComponent("empty.reality")
+        try Data().write(to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset error")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func defaultValidatorRejectsRegularPhotoPNGEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-square-png.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        let source = rootDir.appendingPathComponent("square.png")
+        try writeSolidPNG(width: 12, height: 12, to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset error")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func defaultValidatorRejectsTruncatedPanoramaPNGEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-truncated-png.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        let source = rootDir.appendingPathComponent("truncated.png")
+        let complete = rootDir.appendingPathComponent("complete.png")
+        try writeSolidPNG(width: 20, height: 10, to: complete)
+        let completeData = try Data(contentsOf: complete)
+        try completeData.prefix(max(1, completeData.count / 2)).write(to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset error")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 
@@ -214,17 +375,31 @@ struct EnvironmentCatalogManagerFetchActivateTests {
     }
 
     @Test
-    func activateAssetWithInvalidIDDoesNotThrow() async throws {
+    func activateAssetWithInvalidIDDoesNotClearActiveAssetOrPersistPreference() async throws {
         let (database, rootDir) = try await makeDatabase(named: "fetch-activate-invalid.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
         let manager = EnvironmentCatalogManager(
             database: database,
-            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true }
         )
 
+        let source = rootDir.appendingPathComponent("active.hdr")
+        try Data("hdr".utf8).write(to: source)
+        let imported = try await manager.importEnvironment(from: source)
+        try await manager.activateAsset(id: imported.id)
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: nil)
+
         try await manager.activateAsset(id: "nonexistent-id")
-        #expect(Bool(true))
+
+        let active = try await manager.activeAsset()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+
+        #expect(active?.id == imported.id)
+        #expect(preferred == imported.id)
+        #expect(cleared == nil)
     }
 
     @Test
@@ -317,7 +492,7 @@ struct EnvironmentCatalogManagerFetchActivateTests {
     }
 
     @Test
-    func deleteLastActiveAssetSetsNewActiveAsset() async throws {
+    func deleteLastActiveAssetClearsActiveSelection() async throws {
         let (database, rootDir) = try await makeDatabase(named: "fetch-delete-last-active.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -339,7 +514,8 @@ struct EnvironmentCatalogManagerFetchActivateTests {
         try await manager.deleteAsset(id: second.id)
 
         let activeAfter = try await manager.activeAsset()
-        #expect(activeAfter?.id == first.id)
+        #expect(activeAfter == nil)
+        #expect(try await manager.fetchAssets().contains { $0.id == first.id })
     }
 }
 

@@ -77,3 +77,41 @@ struct ImmersiveControlsPolicySmoothedPositionTests {
         #expect(abs(result.x - (1.0 * smoothing)) < 0.001)
     }
 }
+
+@Suite("ImmersiveControlsPolicy - Scrubber Geometry")
+struct ImmersiveControlsPolicyScrubberGeometryTests {
+    @Test
+    func scrubberThumbSizesAndHitTargetMeetVisionInteractionMinimums() {
+        #expect(ImmersiveControlsPolicy.scrubberIdleThumbSize == 12)
+        #expect(ImmersiveControlsPolicy.scrubberDraggingThumbSize == 20)
+        // The thumb must visibly grow while dragging for gaze confirmation.
+        #expect(ImmersiveControlsPolicy.scrubberDraggingThumbSize > ImmersiveControlsPolicy.scrubberIdleThumbSize)
+        // visionOS gaze+pinch needs a comfortably large hit region (>= 44pt).
+        #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= 44)
+    }
+
+    @Test
+    func scrubberMarkerXStaysInsideTrackEdges() {
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: 0, barWidth: 100, markerWidth: 10) == 5)
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: 0.5, barWidth: 100, markerWidth: 10) == 50)
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: 1, barWidth: 100, markerWidth: 10) == 95)
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: 1.5, barWidth: 100, markerWidth: 10) == 95)
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: -0.5, barWidth: 100, markerWidth: 10) == 5)
+    }
+
+    @Test
+    func scrubberMarkerXHandlesInvalidAndNarrowTracks() {
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: .nan, barWidth: 100, markerWidth: 10) == 0)
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: 0.5, barWidth: .nan, markerWidth: 10) == 0)
+        #expect(ImmersiveControlsPolicy.scrubberMarkerX(percent: 0.5, barWidth: 8, markerWidth: 10) == 4)
+    }
+
+    @Test
+    func scrubberDragPercentClampsToValidPlaybackRange() {
+        #expect(ImmersiveControlsPolicy.scrubberDragPercent(locationX: -10, barWidth: 100) == 0)
+        #expect(ImmersiveControlsPolicy.scrubberDragPercent(locationX: 40, barWidth: 100) == 0.4)
+        #expect(ImmersiveControlsPolicy.scrubberDragPercent(locationX: 120, barWidth: 100) == 1)
+        #expect(ImmersiveControlsPolicy.scrubberDragPercent(locationX: 20, barWidth: .nan) == 0)
+        #expect(ImmersiveControlsPolicy.scrubberDragPercent(locationX: 0.5, barWidth: 0) == 0)
+    }
+}

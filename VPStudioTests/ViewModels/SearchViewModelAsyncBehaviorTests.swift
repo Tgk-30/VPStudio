@@ -95,7 +95,12 @@ struct SearchViewModelAsyncBehaviorTests {
 
             return try await withCheckedThrowingContinuation { continuation in
                 Task.detached {
-                    try await Task.sleep(for: delay)
+                    do {
+                        try await Task.sleep(for: delay)
+                    } catch {
+                        continuation.resume(throwing: error)
+                        return
+                    }
                     if shouldFail {
                         continuation.resume(throwing: SearchFailure())
                     } else {
@@ -703,7 +708,12 @@ struct SearchViewModelAsyncBehaviorTests {
 
             return try await withCheckedThrowingContinuation { continuation in
                 Task.detached {
-                    try await Task.sleep(for: delay)
+                    do {
+                        try await Task.sleep(for: delay)
+                    } catch {
+                        continuation.resume(throwing: error)
+                        return
+                    }
                     continuation.resume(returning: genres)
                 }
             }
@@ -820,7 +830,7 @@ struct SearchViewModelAsyncBehaviorTests {
         let viewModel = SearchViewModel()
         viewModel.debouncedSearch(queryText: "no key")
 
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(!viewModel.isSearching)
         #expect(viewModel.results.isEmpty)
     }
@@ -1183,8 +1193,7 @@ struct SearchViewModelAsyncBehaviorTests {
                 totalPages: 2,
                 totalResults: 2
             ),
-            for: 1,
-            genreId: 28
+            for: 1
         )
         await stub.setDiscoverResult(
             MetadataSearchResult(
@@ -1193,8 +1202,7 @@ struct SearchViewModelAsyncBehaviorTests {
                 totalPages: 2,
                 totalResults: 2
             ),
-            for: 2,
-            genreId: 28
+            for: 2
         )
 
         let newReleasesCard = ExploreGenreCatalog.cards.first(where: { $0.id == "new" })!
@@ -1678,7 +1686,11 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.queryDraft = ""
         try await Self.waitUntil {
-            viewModel.query.isEmpty && viewModel.results.map(\.id) == ["genre-page-1"]
+            await stub.getDiscoverCallCount() == 2
+                && !viewModel.isSearching
+                && viewModel.query.isEmpty
+                && viewModel.totalPages == 2
+                && viewModel.results.map(\.id) == ["genre-page-1"]
         }
 
         viewModel.loadMore()
@@ -1792,8 +1804,9 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.loadMore()
         viewModel.loadMore()
 
-        try await Task.sleep(for: .milliseconds(40))
-        #expect(await stub.getSearchCallCount(for: 2) == 1)
+        try await Self.waitUntil {
+            await stub.getSearchCallCount(for: 2) == 1
+        }
 
         try await Self.waitUntil {
             viewModel.currentPage == 2
@@ -3183,7 +3196,7 @@ struct SearchViewModelAsyncBehaviorTests {
 
     @Test
     @MainActor
-    func selectedTypeChangeFromRegularMoodCardWithCachedGenresRemapsById() async throws {
+    func selectedTypeChangeFromRegularMoodCardWithCachedGenresRunsTextSearchWhenDraftPresent() async throws {
         let stub = GenreBrowseMetadataStub()
         await stub.setGenres(
             [
@@ -3238,19 +3251,19 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.handleSelectedTypeChange()
         try await Self.waitUntil {
-            await stub.getDiscoverCallCount() == 2
+            await stub.getSearchCallCount() == 1
+                && viewModel.results.map(\.id) == ["text-page-1"]
         }
 
-        let discoverCalls = await stub.getDiscoverCalls()
-        #expect(discoverCalls.last?.genreId == 10759)
-        #expect(viewModel.selectedGenre?.id == 10759)
-        #expect(await stub.getSearchCallCount(for: 1) == 0)
-        #expect(await stub.getSearchCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(viewModel.selectedGenre == nil)
+        #expect(viewModel.activeMoodCard == nil)
+        #expect(await stub.getSearchCallCount(for: 1) == 1)
     }
 
     @Test
     @MainActor
-    func selectedTypeChangeFromRegularMoodCardWithoutCachedGenresFallsBackToGenreBrowse() async throws {
+    func selectedTypeChangeFromRegularMoodCardWithoutCachedGenresRunsTextSearchWhenDraftPresent() async throws {
         let stub = GenreBrowseMetadataStub()
         await stub.setDiscoverResult(
             MetadataSearchResult(
@@ -3260,6 +3273,16 @@ struct SearchViewModelAsyncBehaviorTests {
                 totalResults: 1
             ),
             for: 1
+        )
+        await stub.setSearchResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "text-page-1")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            ),
+            for: "apollo",
+            page: 1
         )
         await stub.setGenreDelay(.milliseconds(220), for: .series)
 
@@ -3278,14 +3301,13 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.handleSelectedTypeChange()
 
         try await Self.waitUntil {
-            await stub.getDiscoverCallCount() == 2
+            await stub.getSearchCallCount() == 1
+                && viewModel.results.map(\.id) == ["text-page-1"]
         }
 
-        let discoverCalls = await stub.getDiscoverCalls()
-        #expect(discoverCalls.last?.genreId == 10759)
-        #expect(viewModel.selectedGenre?.id == 10759)
-        #expect(await stub.getSearchCallCount() == 0)
-        #expect(viewModel.activeMoodCard?.id == "action")
+        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(viewModel.selectedGenre == nil)
+        #expect(viewModel.activeMoodCard == nil)
     }
 
     @Test
@@ -3650,8 +3672,7 @@ struct SearchViewModelAsyncBehaviorTests {
 
         let viewModel = SearchViewModel(
             metadataServiceFactory: { key in
-                if key == "new-key" { newService }
-                return oldService
+                key == "new-key" ? newService : oldService
             }
         )
 
@@ -3699,7 +3720,8 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.loadGenres()
 
         try await Self.waitUntil {
-            await stub.getGenresCallCount(for: .series) == 1 && viewModel.genres.map(\.id) == [14]
+            let genreCallCount = await stub.getGenresCallCount(for: .series)
+            return genreCallCount == 1 && viewModel.genres.map(\.id) == [14]
         }
 
         try await Task.sleep(for: .milliseconds(240))
@@ -3931,8 +3953,7 @@ struct SearchViewModelAsyncBehaviorTests {
 
         let viewModel = SearchViewModel(
             metadataServiceFactory: { key in
-                if key == "new-key" { newService }
-                return oldService
+                key == "new-key" ? newService : oldService
             }
         )
 
@@ -4063,7 +4084,8 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.loadGenres()
 
         try await Self.waitUntil {
-            await newService.getGenresCallCount(for: .movie) == 1 && viewModel.genres.map(\.id) == [2]
+            let genreCallCount = await newService.getGenresCallCount(for: .movie)
+            return genreCallCount == 1 && viewModel.genres.map(\.id) == [2]
         }
 
         try await Task.sleep(for: .milliseconds(260))
@@ -4262,8 +4284,9 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.search()
 
         viewModel.loadMore()
-        try await Task.sleep(for: .milliseconds(40))
-        #expect(await stub.getSearchCallCount(for: 1) == 1)
+        try await Self.waitUntil {
+            await stub.getSearchCallCount(for: 1) == 1
+        }
         #expect(await stub.getSearchCallCount(for: 2) == 0)
 
         try await Self.waitUntil {
@@ -4488,7 +4511,8 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.retry()
         try await Self.waitUntil {
-            viewModel.results.map(\.id) == ["page-1"]
+            await stub.getSearchCallCount(for: 1) == 2
+                && viewModel.results.map(\.id) == ["page-1"]
         }
 
         #expect(viewModel.error == nil)
@@ -4528,7 +4552,8 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.retry()
         try await Self.waitUntil {
-            viewModel.results.map(\.id) == ["genre-page-1"]
+            await stub.getDiscoverCallCount(for: 1) == 2
+                && viewModel.results.map(\.id) == ["genre-page-1"]
         }
 
         #expect(viewModel.error == nil)
@@ -4568,7 +4593,8 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.retry()
         try await Self.waitUntil {
-            viewModel.results.map(\.id) == ["mood-page-1"]
+            await stub.getDiscoverCallCount(for: 1) == 2
+                && viewModel.results.map(\.id) == ["mood-page-1"]
         }
 
         #expect(viewModel.error == nil)
@@ -4595,6 +4621,7 @@ struct SearchViewModelAsyncBehaviorTests {
 
         try await Self.waitUntil {
             await stub.getGenresCallCount(for: .movie) == 1
+                && viewModel.genres.map(\.id) == [28, 35]
         }
 
         #expect(await stub.getGenresCallCount(for: .movie) == 1)
@@ -4608,7 +4635,7 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.loadGenres()
 
-        try await Task.yield()
+        await Task.yield()
         #expect(viewModel.genres.isEmpty)
     }
 
@@ -4622,7 +4649,7 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.totalPages = 2
 
         viewModel.search()
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.submittedQuery == "apollo")
         #expect(viewModel.query == "apollo")
         #expect(viewModel.queryDraft == "apollo")
@@ -4640,7 +4667,7 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.loadMore()
 
-        try await Task.yield()
+        await Task.yield()
         #expect(viewModel.currentPage == 1)
         #expect(viewModel.totalPages == 2)
         #expect(viewModel.results.map(\.id) == ["existing-page-1"])
@@ -4724,8 +4751,9 @@ struct SearchViewModelAsyncBehaviorTests {
         #expect(await service.getSearchCallCount(for: 1) == 0)
 
         viewModel.search(queryText: "apollo")
-        try await Task.sleep(for: .milliseconds(20))
-        #expect(await service.getSearchCallCount(for: 1) == 1)
+        try await Self.waitUntil {
+            await service.getSearchCallCount(for: 1) == 1
+        }
 
         viewModel.configure(apiKey: "old-key")
         #expect(await service.getSearchCallCount(for: 1) == 1)
@@ -4825,11 +4853,16 @@ struct SearchViewModelAsyncBehaviorTests {
         )
         await stub.setSearchDelay(.milliseconds(220), for: "apollo", page: 1)
 
-        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(120))
+        let viewModel = SearchViewModel(
+            metadataServiceFactory: { _ in stub },
+            debounceInterval: .milliseconds(120)
+        )
         viewModel.configure(apiKey: "old-key")
         viewModel.search(queryText: "apollo")
 
-        try await Task.sleep(for: .milliseconds(20))
+        try await Self.waitUntil {
+            await stub.getSearchCallCount(for: 1) == 1
+        }
         viewModel.configure(apiKey: "   ")
 
         #expect(viewModel.results.isEmpty)
@@ -4859,7 +4892,10 @@ struct SearchViewModelAsyncBehaviorTests {
             page: 1
         )
 
-        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(120))
+        let viewModel = SearchViewModel(
+            metadataServiceFactory: { _ in stub },
+            debounceInterval: .milliseconds(120)
+        )
         viewModel.configure(apiKey: "old-key")
         viewModel.debouncedSearch(queryText: "apollo")
         try await Task.sleep(for: .milliseconds(40))
@@ -5226,8 +5262,7 @@ struct SearchViewModelAsyncBehaviorTests {
         )
 
         let viewModel = SearchViewModel(metadataService: stub)
-        viewModel.selectedGenre = Genre(id: 28, name: "Action")
-        viewModel.browseGenre(viewModel.selectedGenre!)
+        viewModel.selectGenre(Genre(id: 28, name: "Action"))
 
         try await Task.sleep(for: .milliseconds(20))
         viewModel.applyYearFilter(2024)
@@ -5556,8 +5591,7 @@ struct SearchViewModelAsyncBehaviorTests {
         )
 
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
-        viewModel.selectedGenre = Genre(id: 28, name: "Action")
-        viewModel.selectGenre(viewModel.selectedGenre)
+        viewModel.selectGenre(Genre(id: 28, name: "Action"))
 
         try await Self.waitUntil {
             await stub.getDiscoverCallCount() == 1
@@ -5798,7 +5832,7 @@ struct SearchViewModelAsyncBehaviorTests {
         await stub.setSearchDelay(.milliseconds(220), forCall: 1)
         await stub.setSearchResult(
             MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "fresh-year-range-result")],
+                items: [Fixtures.mediaPreview(id: "fresh-year-range-result", year: 2020)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -5988,8 +6022,7 @@ struct SearchViewModelAsyncBehaviorTests {
         )
 
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
-        viewModel.selectedGenre = Genre(id: 28, name: "Action")
-        viewModel.selectGenre(viewModel.selectedGenre)
+        viewModel.selectGenre(Genre(id: 28, name: "Action"))
 
         try await Task.sleep(for: .milliseconds(20))
         viewModel.applyYearRangePreset(.twenties)
@@ -6351,7 +6384,7 @@ struct SearchViewModelAsyncBehaviorTests {
         await stub.setSearchDelay(.milliseconds(220), forCall: 1)
         await stub.setSearchResult(
             MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "fresh-mood-year-preset-result")],
+                items: [Fixtures.mediaPreview(id: "fresh-mood-year-preset-result", year: 2020)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -6688,7 +6721,8 @@ struct SearchViewModelAsyncBehaviorTests {
         viewModel.retry()
 
         try await Self.waitUntil {
-            viewModel.results.map(\.id) == ["text-page-1"]
+            await stub.getSearchCallCount(for: "apollo") == 2
+                && viewModel.results.map(\.id) == ["text-page-1"]
         }
 
         #expect(viewModel.error == nil)
@@ -6754,7 +6788,8 @@ struct SearchViewModelAsyncBehaviorTests {
 
         viewModel.retry()
         try await Self.waitUntil {
-            viewModel.results.map(\.id) == ["text-page-1"]
+            await stub.getSearchCallCount(for: "apollo") == 3
+                && viewModel.results.map(\.id) == ["text-page-1"]
         }
 
         #expect(viewModel.currentPage == 1)

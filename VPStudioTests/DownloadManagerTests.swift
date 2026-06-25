@@ -23,6 +23,25 @@ private func waitForFile(at url: URL, timeoutSeconds: TimeInterval = 10) async t
     throw DownloadManagerTestError.timeout
 }
 
+private func replaceDirectoryWithBlockingFile(at url: URL) async throws {
+    let fileManager = FileManager.default
+    let fileURL = URL(fileURLWithPath: url.path)
+
+    for _ in 0..<50 {
+        if fileManager.fileExists(atPath: url.path) {
+            try? fileManager.removeItem(at: url)
+        }
+
+        if fileManager.createFile(atPath: fileURL.path, contents: Data([0x00])) {
+            return
+        }
+
+        try await Task.sleep(for: .milliseconds(20))
+    }
+
+    try Data([0x00]).write(to: fileURL)
+}
+
 private actor AttemptCounter {
     private var count = 0
 
@@ -933,6 +952,7 @@ struct DownloadManagerTests {
         let failed = try await waitForStatus(database: database, id: task.id, expected: .failed)
         #expect(failed.status == .failed)
         #expect(await attemptCounter.snapshot() == 0)
+        withExtendedLifetime(manager) {}
     }
 
     @Test func zeroByteDownloadCannotCreateDownloadsDirectory() async throws {
@@ -996,8 +1016,7 @@ struct DownloadManagerTests {
         )
 
         _ = try await waitForStatus(database: database, id: task.id, expected: .downloading, timeoutSeconds: 10)
-        try FileManager.default.removeItem(at: downloadsDir)
-        try Data([0x00]).write(to: downloadsDir)
+        try await replaceDirectoryWithBlockingFile(at: downloadsDir)
         await gate.resume()
 
         let failed = try await waitForStatus(database: database, id: task.id, expected: .failed, timeoutSeconds: 10)
@@ -1257,7 +1276,7 @@ struct DownloadManagerTests {
         let performer: DownloadManager.DownloadPerformer = { _, _, cancellationController in
             let attempt = await attemptCounter.next()
             if attempt == 1 {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     cancellationController.register {
                         Task { await recorder.markFirstAttemptCancelled() }
                         continuation.resume(throwing: CancellationError())
@@ -2170,7 +2189,7 @@ struct DownloadManagerTests {
             downloadsDirectory: downloadsDir,
             performer: performer,
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             }
         )
@@ -2448,7 +2467,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 throw StartupRefresherError.expired
             },
             linkRefresher: { _ in
@@ -2561,7 +2580,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                 let data = Data(repeating: 0x23, count: 1)
                 try data.write(to: tempURL)
@@ -2720,7 +2739,7 @@ struct DownloadManagerTests {
             downloadsDirectory: downloadsDir,
             performer: performer,
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             }
         )
@@ -2776,11 +2795,11 @@ struct DownloadManagerTests {
             downloadsDirectory: downloadsDir,
             performer: { request, _, _ in
                 await requestRecorder.record(request: request)
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 throw DownloadTransferError.badHTTPStatus(500)
             },
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return URL(string: "https://cdn.example.com/retry-refresh-on-server-error.mkv")!
             },
             resumePersistedDownloadsOnInit: false
@@ -2826,11 +2845,11 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 throw NSError(domain: "com.vpstudio.unit-test", code: 1001, userInfo: nil)
             },
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return URL(string: "https://cdn.example.com/retry-generic-fresh.mkv")!
             },
             resumePersistedDownloadsOnInit: false
@@ -2987,7 +3006,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                 let data = Data(repeating: 0x11, count: 1)
                 try data.write(to: tempURL)
@@ -3152,7 +3171,7 @@ struct DownloadManagerTests {
         let freshURL = URL(string: "https://cdn.example.com/retry-refresh-fresh.mkv?token=fresh")!
 
         let performer: DownloadManager.DownloadPerformer = { request, _, _ in
-            await requestCounter.next()
+            _ = await requestCounter.next()
             await recorder.record(request: request)
             let attempt = await attemptCounter.next()
             if attempt == 1 {
@@ -3177,7 +3196,7 @@ struct DownloadManagerTests {
             downloadsDirectory: downloadsDir,
             performer: performer,
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             },
             minimumFreeSpaceBufferBytes: 0,
@@ -3207,7 +3226,6 @@ struct DownloadManagerTests {
         let downloadsDir = rootDir.appendingPathComponent("downloads", isDirectory: true)
         let requestRecorder = TransferRequestRecorder()
         let attemptCounter = AttemptCounter()
-        let refreshCounter = AttemptCounter()
         let recoveryContext = StreamRecoveryContext(
             infoHash: "recovery-cache-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             preferredService: .realDebrid
@@ -3290,7 +3308,7 @@ struct DownloadManagerTests {
 
         let performer: DownloadManager.DownloadPerformer = { request, _, _ in
             await requestRecorder.record(request: request)
-            await attemptCounter.next()
+            _ = await attemptCounter.next()
 
             throw DownloadManagerTestError.timeout
         }
@@ -3510,7 +3528,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                 try Data(repeating: 0x55, count: 1).write(to: tempURL)
                 let response = URLResponse(
@@ -3574,7 +3592,7 @@ struct DownloadManagerTests {
                 return (tempURL, response)
             },
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             },
             minimumFreeSpaceBufferBytes: 0,
@@ -3689,7 +3707,7 @@ struct DownloadManagerTests {
                 return (tempURL, response)
             },
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             },
             resumePersistedDownloadsOnInit: false
@@ -3984,7 +4002,7 @@ struct DownloadManagerTests {
         try staleBytes.write(to: stalePath)
 
         let performer: DownloadManager.DownloadPerformer = { request, _, _ in
-            await requestCounter.next()
+            _ = await requestCounter.next()
             await gate.wait()
 
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -4036,6 +4054,7 @@ struct DownloadManagerTests {
         #expect(FileManager.default.fileExists(atPath: stalePath.path))
         let staleContents = try Data(contentsOf: stalePath)
         #expect(!staleContents.isEmpty)
+        withExtendedLifetime(manager) {}
     }
 
     @Test func startupResolvingTaskWithMismatchedDestinationSizeTriggersRedownload() async throws {
@@ -4051,7 +4070,7 @@ struct DownloadManagerTests {
         try staleBytes.write(to: stalePath)
 
         let performer: DownloadManager.DownloadPerformer = { request, _, _ in
-            await requestCounter.next()
+            _ = await requestCounter.next()
             await gate.wait()
 
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -4101,6 +4120,7 @@ struct DownloadManagerTests {
         #expect(await requestCounter.snapshot() == 1)
         #expect(finalURL.path != stalePath.path)
         #expect(finalURL.lastPathComponent.hasSuffix("(1).mkv"))
+        withExtendedLifetime(manager) {}
     }
 
     @Test func inFlightDownloadWithDestinationAndNoExpectedSizeRepairsOnStartup() async throws {
@@ -4132,7 +4152,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 return (URL(fileURLWithPath: "/tmp/unused.bin"), URLResponse())
             }
         )
@@ -4173,7 +4193,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 return (URL(fileURLWithPath: "/tmp/unused.bin"), URLResponse())
             }
         )
@@ -4263,7 +4283,7 @@ struct DownloadManagerTests {
             .init(usedResumeData: false, url: "\(baseURL)C.mkv"),
         ])
 
-        try? _ = manager
+        withExtendedLifetime(manager) {}
     }
 
     @Test func persistedInFlightDownloadResumesAfterManagerRecreate() async throws {
@@ -4646,7 +4666,7 @@ struct DownloadManagerTests {
             downloadsDirectory: downloadsDir,
             performer: performer,
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             },
             resumePersistedDownloadsOnInit: false
@@ -4835,7 +4855,7 @@ struct DownloadManagerTests {
             downloadsDirectory: downloadsDir,
             performer: performer,
             linkRefresher: { _ in
-                await refreshCounter.next()
+                _ = await refreshCounter.next()
                 return freshURL
             },
             maxConcurrentTransfers: 1,
@@ -5058,7 +5078,7 @@ struct DownloadManagerTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, cancellationController in
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+                return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
                     cancellationController.register {
                         continuation.resume(throwing: CancellationError())
                     }
@@ -5233,7 +5253,7 @@ struct DownloadManagerTests {
         let downloadsDir = rootDir.appendingPathComponent("downloads", isDirectory: true)
         let attemptCounter = AttemptCounter()
         let performer: DownloadManager.DownloadPerformer = { _, progressHandler, cancellationController in
-            await attemptCounter.next()
+            _ = await attemptCounter.next()
             // Report partial progress before blocking so the test can observe it
             progressHandler(512, 512, 10_000)
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
@@ -5336,7 +5356,7 @@ struct DownloadManagerTests {
         )
 
         let performer: DownloadManager.DownloadPerformer = { _, _, cancellationController in
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
                 cancellationController.register {
                     continuation.resume(throwing: CancellationError())
                 }
@@ -5441,7 +5461,7 @@ struct DownloadManagerTests {
         let performer: DownloadManager.DownloadPerformer = { _, _, cancellationController in
             let attempt = await attemptCounter.next()
             if attempt == 1 {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+                _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
                     cancellationController.register {
                         continuation.resume(throwing: CancellationError())
                     }

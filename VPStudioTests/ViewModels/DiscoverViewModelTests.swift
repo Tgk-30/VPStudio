@@ -144,7 +144,7 @@ struct DiscoverViewModelTests {
 
         await viewModel.load(apiKey: "   ")
         #expect(viewModel.isLoading == false)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Discover"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Discover"))
         #expect(viewModel.trendingMovies.isEmpty)
 
         await viewModel.load(apiKey: "valid-key")

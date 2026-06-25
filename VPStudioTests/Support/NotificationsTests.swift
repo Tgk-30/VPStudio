@@ -40,8 +40,9 @@ struct NotificationsTests {
         #expect(Notification.Name.indexersDidChange.rawValue == "VPStudio.IndexersDidChange")
     }
 
-    @Test func tmdbApiKeyDidChangeHasCorrectName() {
-        #expect(Notification.Name.tmdbApiKeyDidChange.rawValue == "VPStudio.TMDBApiKeyDidChange")
+    @Test func metadataApiKeyDidChangeHasCorrectName() {
+        #expect(Notification.Name.metadataApiKeyDidChange.rawValue == "VPStudio.MetadataApiKeyDidChange")
+        #expect(Notification.Name.metadataProviderDidChange == .metadataApiKeyDidChange)
     }
 
     @Test func appDidResetAllDataHasCorrectName() {

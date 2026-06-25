@@ -65,6 +65,49 @@ struct DiscoverContinueWatchingTests {
         #expect(vm.continueWatching.first?.preview.title == "Test Movie")
     }
 
+    @Test func continueWatchingResolvesOMDbHistoryIDToIMDbCachedItem() async throws {
+        let db = try await makeDB()
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "tt0133093",
+                type: .movie,
+                title: "The Matrix",
+                year: 1999,
+                posterPath: "/matrix.jpg",
+                backdropPath: nil,
+                overview: nil,
+                genres: [],
+                imdbRating: 8.7,
+                runtime: 136,
+                status: nil,
+                tmdbId: nil,
+                lastFetched: Date()
+            )
+        )
+        try await db.saveWatchHistory(
+            WatchHistory(
+                id: "matrix-omdb-history",
+                mediaId: "movie-omdb-tt0133093",
+                episodeId: nil,
+                title: "The Matrix",
+                progress: 3600,
+                duration: 7200,
+                quality: nil,
+                debridService: nil,
+                streamURL: nil,
+                watchedAt: Date(),
+                isCompleted: false
+            )
+        )
+
+        let vm = DiscoverViewModel(database: db)
+        await vm.loadContinueWatching()
+
+        #expect(vm.continueWatching.count == 1)
+        #expect(vm.continueWatching.first?.preview.id == "tt0133093")
+        #expect(vm.continueWatching.first?.preview.title == "The Matrix")
+    }
+
     @Test func continueWatchingCarriesEpisodeContextIntoPreview() async throws {
         let db = try await makeDB()
         let item = MediaItem(

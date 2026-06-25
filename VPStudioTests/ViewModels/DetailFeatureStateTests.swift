@@ -450,6 +450,50 @@ struct TorrentSearchStateTests {
         #expect(state.results[3].cachedOnService == DebridServiceType.premiumize.rawValue)
     }
 
+    @Test @MainActor
+    func sourceFilterHidesConfirmedDownloadsButKeepsRawHashesForCacheChecks() {
+        let state = TorrentSearchState()
+        state.setSourceFilterOptions(SourceFilterPreset.instant.defaultOptions)
+        state.setSearchResults(makeTorrentResults(count: 3), initialBatchSize: 3)
+
+        state.updateCacheStatus([
+            "hash-0": (.notCached, .premiumize),
+            "hash-1": (.cached(fileId: "file-1", fileName: "Cached.mkv", fileSize: nil), .realDebrid),
+        ])
+
+        #expect(state.allHashes == ["hash-0", "hash-1", "hash-2"])
+        #expect(state.results.map(\.infoHash) == ["hash-1", "hash-2"])
+        #expect(state.results[0].isCached)
+        #expect(state.results[0].cachedOnService == DebridServiceType.realDebrid.rawValue)
+    }
+
+    @Test @MainActor
+    func changingSourceFilterPreservesVisibleWindowCount() {
+        let state = TorrentSearchState()
+        let results = [
+            Fixtures.torrent(hash: "hash-0", title: "Result.0.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-1", title: "Result.1.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-2", title: "Result.2.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-3", title: "Result.3.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-4", title: "Result.4.720p", quality: .hd720p),
+            Fixtures.torrent(hash: "hash-5", title: "Result.5.720p", quality: .hd720p),
+        ]
+        state.setSearchResults(results, initialBatchSize: 3)
+        #expect(state.results.count == 3)
+
+        state.setSourceFilterOptions(SourceFilterOptions(
+            preset: .custom,
+            hideConfirmedDownloads: false,
+            hideCamSources: true,
+            minimumSeeders: 0,
+            maximumSizeGB: nil,
+            minimumQuality: .uhd4k
+        ))
+
+        #expect(state.results.count == 3)
+        #expect(state.results.allSatisfy { $0.quality == .uhd4k })
+    }
+
     private func makeTorrentResults(count: Int) -> [TorrentResult] {
         (0..<count).map { index in
             Fixtures.torrent(

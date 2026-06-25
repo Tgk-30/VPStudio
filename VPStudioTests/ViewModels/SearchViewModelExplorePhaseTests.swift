@@ -10,7 +10,16 @@ struct SearchViewModelExplorePhaseTests {
     // MARK: - Test Stubs
 
     private actor PhaseTestMetadataStub: MetadataProvider {
+        struct SearchCall: Sendable, Equatable {
+            let query: String
+            let type: MediaType?
+            let page: Int
+            let year: Int?
+            let language: String?
+        }
+
         var searchQueries: [String] = []
+        var searchCalls: [SearchCall] = []
         var searchResultByPage: [Int: MetadataSearchResult] = [:]
         var discoverResultByPage: [Int: MetadataSearchResult] = [:]
         var genresByType: [MediaType: [Genre]] = [:]
@@ -31,8 +40,25 @@ struct SearchViewModelExplorePhaseTests {
             searchQueries
         }
 
+        func getSearchCalls() -> [SearchCall] {
+            searchCalls
+        }
+
         func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
             searchQueries.append(query)
+            searchCalls.append(SearchCall(query: query, type: type, page: page, year: nil, language: nil))
+            return searchResultByPage[page] ?? MetadataSearchResult(items: [], page: page, totalPages: page, totalResults: 0)
+        }
+
+        func search(
+            query: String,
+            type: MediaType?,
+            page: Int,
+            year: Int?,
+            language: String?
+        ) async throws -> MetadataSearchResult {
+            searchQueries.append(query)
+            searchCalls.append(SearchCall(query: query, type: type, page: page, year: year, language: language))
             return searchResultByPage[page] ?? MetadataSearchResult(items: [], page: page, totalPages: page, totalResults: 0)
         }
 
@@ -398,7 +424,7 @@ struct SearchViewModelExplorePhaseTests {
 
         #expect(viewModel.hasAttemptedTextSearch == true)
         #expect(viewModel.submittedQuery == "no key query")
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.explorePhase == .error)
     }
 
@@ -1059,7 +1085,7 @@ struct SearchViewModelExplorePhaseTests {
     @Test func applyLanguageFiltersToEmptySet() {
         let viewModel = SearchViewModel(metadataService: PhaseTestMetadataStub())
         viewModel.applyLanguageFilters([])
-        #expect(viewModel.languageFilters.isEmpty)
+        #expect(viewModel.languageFilters == ["en-US"])
         #expect(viewModel.primaryLanguage == nil)
     }
 
@@ -1112,7 +1138,7 @@ struct SearchViewModelExplorePhaseTests {
         #expect(viewModel.results.map(\.id) == ["match"])
     }
 
-    @Test func applyYearRangePresetMapsToStartYearAndRequeries() async throws {
+    @Test func applyYearRangePresetUsesStartYearHintAndLocallyFiltersRange() async throws {
         let stub = PhaseTestMetadataStub()
         await stub.setSearchResults([
             1: MetadataSearchResult(
@@ -1134,9 +1160,11 @@ struct SearchViewModelExplorePhaseTests {
 
         viewModel.applyYearRangePreset(.classic)
         try await Self.waitUntil { (await stub.getSearchQueries()).count == callsBefore + 1 }
+        let searchCalls = await stub.getSearchCalls()
         #expect(viewModel.yearRangePreset == .classic)
         #expect(viewModel.yearFilter == 1900)
-        #expect(viewModel.results.isEmpty)
+        #expect(searchCalls.last?.year == 1900)
+        #expect(viewModel.results.map(\.id) == ["nineties"])
     }
 
     @Test func toggleLanguageCodeSwitchesDefaultAndPreservesNonDefaultSelection() {

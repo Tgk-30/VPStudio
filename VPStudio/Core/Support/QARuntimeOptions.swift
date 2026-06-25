@@ -151,6 +151,32 @@ enum QARuntimeOptions {
         snapshot.string("VPSTUDIO_QA_TEST_SCREEN")
     }
 
+    static func selectedTab(from snapshot: EnvironmentSnapshot) -> SidebarTab? {
+        guard let rawValue = snapshot.string("VPSTUDIO_QA_SELECTED_TAB") else { return nil }
+        switch normalizedNavigationValue(rawValue) {
+        case "discover": return .discover
+        case "search", "explore": return .search
+        case "library": return .library
+        case "downloads": return .downloads
+        case "environments", "environment": return .environments
+        case "settings": return .settings
+        default:
+            return SidebarTab.allCases.first { normalizedNavigationValue($0.rawValue) == normalizedNavigationValue(rawValue) }
+        }
+    }
+
+    static func navigationLayout(from snapshot: EnvironmentSnapshot) -> NavigationLayout? {
+        guard let rawValue = snapshot.string("VPSTUDIO_QA_NAVIGATION_LAYOUT") else { return nil }
+        switch normalizedNavigationValue(rawValue) {
+        case "bottom", "bottomtab", "bottomtabs", "bottomtabbar", "tabbar", "tabs":
+            return .bottomTabBar
+        case "sidebar", "leftsidebar", "side":
+            return .leftSidebar
+        default:
+            return NavigationLayout(rawValue: rawValue)
+        }
+    }
+
     static func suppressQuickStartPrompt(from snapshot: EnvironmentSnapshot) -> Bool {
         snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START")
             || snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START_PROMPT")
@@ -206,14 +232,22 @@ enum QARuntimeOptions {
     /// Seeds the main-window Discover tab with realistic TMDB artwork (no API key) for visual QA.
     static let seedDiscoverPreview = bool("VPSTUDIO_QA_SEED_DISCOVER")
     static let testScreenRawValue = testScreenRawValue(from: environment)
+    static let selectedTab = selectedTab(from: environment)
+    static let navigationLayout = navigationLayout(from: environment)
     static let suppressQuickStartPrompt = suppressQuickStartPrompt(from: environment)
 
     static let setupAutoAdvance = bool("VPSTUDIO_QA_SETUP_AUTO_ADVANCE")
-    static let setupTMDBApiKey = env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")
+    static let setupOMDbApiKey = env("VPSTUDIO_QA_SETUP_OMDB_API_KEY") ?? env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")
     static let setupPreferredQuality = env("VPSTUDIO_QA_SETUP_PREFERRED_QUALITY").flatMap(VideoQuality.init(rawValue:))
     static let setupSubtitleLanguage = env("VPSTUDIO_QA_SETUP_SUBTITLE_LANGUAGE").flatMap(SubtitleLanguageOption.init(rawValue:))
 
     static func sleepNanoseconds(for seconds: Double) -> UInt64 {
         UInt64(max(0, seconds) * 1_000_000_000)
+    }
+
+    private static func normalizedNavigationValue(_ value: String) -> String {
+        value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
     }
 }

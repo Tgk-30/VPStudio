@@ -34,9 +34,13 @@ enum PlayerScrubPolicy {
         for chapter in chapters where chapter.startTime > 0 {
             let distance = abs(scrubTime - chapter.startTime)
             guard distance <= threshold else { continue }
-            if bestMatch == nil
-            || distance < bestMatch!.distance
-            || (distance == bestMatch!.distance && chapter.startTime < bestMatch!.chapter.startTime) {
+            if let currentBest = bestMatch {
+                guard distance < currentBest.distance
+                    || (distance == currentBest.distance && chapter.startTime < currentBest.chapter.startTime) else {
+                    continue
+                }
+            }
+            if distance.isFinite {
                 bestMatch = (chapter, distance)
             }
         }

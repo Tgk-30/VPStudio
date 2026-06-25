@@ -4,6 +4,8 @@ enum LibraryGridPolicy {
     static let cardMinWidth: CGFloat = 180
     static let gridSpacing: CGFloat = 16
     static let horizontalPadding: CGFloat = 20
+    static let topContentPadding: CGFloat = 8
+    static let bottomContentPadding: CGFloat = 132
 
     static func columns(containerWidth: CGFloat) -> Int {
         guard containerWidth > 0 else { return 1 }

@@ -22,19 +22,25 @@ struct PlayerEnvironmentMenuRuntimePolicyTests {
     func assetIconPolicyFallsBackPredictably() {
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: true,
+                assetID: "selected",
+                selectedAssetID: "selected",
+                activeEnvironment: .customEnvironment,
                 sourceType: .bundled
             ) == "checkmark"
         )
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: false,
+                assetID: "bundled",
+                selectedAssetID: "other",
+                activeEnvironment: .customEnvironment,
                 sourceType: .bundled
             ) == "circle.fill"
         )
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: false,
+                assetID: "imported",
+                selectedAssetID: nil,
+                activeEnvironment: nil,
                 sourceType: .imported
             ) == "pano"
         )
@@ -64,10 +70,10 @@ struct PlayerEnvironmentMenuViewCoverageTests {
     }
 
     @Test
-    func standardMenuAssetSpecPreservesBundledImportedAndActiveIcons() {
-        let activeAsset = makeAsset(
-            id: "active",
-            name: "Active",
+    func standardMenuAssetSpecUsesLiveSelectionInsteadOfPersistedAssetFlags() {
+        let selectedAsset = makeAsset(
+            id: "selected",
+            name: "Selected",
             sourceType: .bundled,
             assetPath: "room.usdz",
             isActive: true
@@ -85,13 +91,40 @@ struct PlayerEnvironmentMenuViewCoverageTests {
             assetPath: "room.hdr"
         )
 
-        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(activeAsset).leadingSystemImage == "checkmark")
-        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(bundledAsset).leadingSystemImage == "circle.fill")
-        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(importedAsset).leadingSystemImage == "pano")
+        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(
+            selectedAsset,
+            selectedAssetID: "selected",
+            activeEnvironment: .customEnvironment,
+            isImmersiveSpaceOpen: true
+        ).leadingSystemImage == "checkmark")
+        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(
+            bundledAsset,
+            selectedAssetID: "selected",
+            activeEnvironment: .customEnvironment,
+            isImmersiveSpaceOpen: true
+        ).leadingSystemImage == "circle.fill")
+        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(
+            importedAsset,
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ).leadingSystemImage == "pano")
+        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(
+            selectedAsset,
+            selectedAssetID: "selected",
+            activeEnvironment: .cinemaEnvironment,
+            isImmersiveSpaceOpen: true
+        ).leadingSystemImage == "circle.fill")
+        #expect(PlayerEnvironmentMenuLabelSpec.menuAsset(
+            selectedAsset,
+            selectedAssetID: "selected",
+            activeEnvironment: .customEnvironment,
+            isImmersiveSpaceOpen: true
+        ).subtitle == "Active now")
     }
 
     @Test
-    func compactMenuAssetSpecOnlyShowsSelectionCheckmarkForMatchingOpenAsset() {
+    func compactMenuAssetSpecShowsSelectionCheckmarkForMatchingSelectedAsset() {
         let selectedAsset = makeAsset(
             id: "selected",
             name: "Northern Sky",
@@ -101,23 +134,36 @@ struct PlayerEnvironmentMenuViewCoverageTests {
         let selectedSpec = PlayerEnvironmentMenuLabelSpec.compactAsset(
             selectedAsset,
             selectedAssetID: "selected",
+            activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: true
         )
         let closedSpec = PlayerEnvironmentMenuLabelSpec.compactAsset(
             selectedAsset,
             selectedAssetID: "selected",
+            activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: false
         )
         let otherSpec = PlayerEnvironmentMenuLabelSpec.compactAsset(
             selectedAsset,
             selectedAssetID: "other",
+            activeEnvironment: .customEnvironment,
+            isImmersiveSpaceOpen: true
+        )
+        let cinemaSpec = PlayerEnvironmentMenuLabelSpec.compactAsset(
+            selectedAsset,
+            selectedAssetID: "selected",
+            activeEnvironment: .cinemaEnvironment,
             isImmersiveSpaceOpen: true
         )
 
         #expect(selectedSpec.leadingSystemImage == "pano")
         #expect(selectedSpec.trailingSystemImage == "checkmark")
-        #expect(closedSpec.trailingSystemImage == nil)
+        #expect(closedSpec.trailingSystemImage == "checkmark")
         #expect(otherSpec.trailingSystemImage == nil)
+        // The trailing checkmark tracks the persistent selection, so it stays for
+        // the selected asset even while Cinema is the active environment (see
+        // playerEnvironmentMenuKeepsAssetSelectionVisibleWhileCinemaIsActive).
+        #expect(cinemaSpec.trailingSystemImage == "checkmark")
     }
 
     @Test
@@ -133,6 +179,7 @@ struct PlayerEnvironmentMenuViewCoverageTests {
             PlayerEnvironmentMenuLabelSpec.compactAsset(
                 asset,
                 selectedAssetID: nil,
+                activeEnvironment: nil,
                 isImmersiveSpaceOpen: false
             ).leadingSystemImage == "cube.transparent"
         )
@@ -142,11 +189,13 @@ struct PlayerEnvironmentMenuViewCoverageTests {
     func rowLabelBodiesRenderExpectedSymbolNames() {
         let plainSpec = PlayerEnvironmentMenuLabelSpec(
             title: "Cinema Environment",
+            subtitle: nil,
             leadingSystemImage: "theatermasks",
             trailingSystemImage: nil
         )
         let trailingSpec = PlayerEnvironmentMenuLabelSpec(
             title: "Northern Sky",
+            subtitle: "Active now",
             leadingSystemImage: "pano",
             trailingSystemImage: "checkmark"
         )
@@ -170,6 +219,7 @@ struct PlayerEnvironmentMenuViewCoverageTests {
         )
         var selectedCinema = false
         var selectedAssetID: String?
+        var clearedStandardRoom = false
         var dismissedCount = 0
 
         PlayerEnvironmentCinemaRow(
@@ -177,14 +227,27 @@ struct PlayerEnvironmentMenuViewCoverageTests {
             action: { selectedCinema = true }
         ).performAction()
 
+        PlayerEnvironmentStandardRow(
+            spec: .standardRoom(
+                selectedAssetID: selectedAssetID,
+                activeEnvironment: nil,
+                isImmersiveSpaceOpen: false
+            ),
+            action: { clearedStandardRoom = true }
+        ).performAction()
+
         PlayerEnvironmentMenuAssetRow(
             asset: asset,
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
             action: { selectedAssetID = $0.id }
         ).performAction()
 
         PlayerEnvironmentCompactAssetRow(
             asset: asset,
             selectedAssetID: asset.id,
+            activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: true,
             action: { selectedAssetID = $0.id }
         ).performAction()
@@ -194,6 +257,7 @@ struct PlayerEnvironmentMenuViewCoverageTests {
         }.performAction()
 
         #expect(selectedCinema)
+        #expect(clearedStandardRoom)
         #expect(selectedAssetID == asset.id)
         #expect(dismissedCount == 1)
     }
@@ -211,10 +275,25 @@ struct PlayerEnvironmentMenuViewCoverageTests {
             spec: .cinema(activeEnvironment: .cinemaEnvironment, isImmersiveSpaceOpen: true),
             action: {}
         ))
-        SwiftUIViewDiagnosticHost.render(PlayerEnvironmentMenuAssetRow(asset: asset, action: { _ in }))
+        SwiftUIViewDiagnosticHost.render(PlayerEnvironmentStandardRow(
+            spec: .standardRoom(
+                selectedAssetID: nil,
+                activeEnvironment: nil,
+                isImmersiveSpaceOpen: false
+            ),
+            action: {}
+        ))
+        SwiftUIViewDiagnosticHost.render(PlayerEnvironmentMenuAssetRow(
+            asset: asset,
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            action: { _ in }
+        ))
         SwiftUIViewDiagnosticHost.render(PlayerEnvironmentCompactAssetRow(
             asset: asset,
             selectedAssetID: asset.id,
+            activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: true,
             action: { _ in }
         ))
@@ -249,14 +328,22 @@ struct PlayerEnvironmentMenuSourceContractTests {
         let source = try Self.playerEnvironmentMenuSource()
 
         #expect(source.contains(#"title: "Cinema Environment""#))
+        #expect(source.contains(#"title: "Standard Room""#))
+        #expect(source.contains("leadingSystemImage: PlayerEnvironmentMenuPolicy.standardRoomIconName("))
         #expect(source.contains("leadingSystemImage: PlayerEnvironmentMenuPolicy.cinemaIconName("))
+        #expect(source.contains("canOpenCinema: canOpenCinema"))
+        #expect(source.contains("PlayerCinemaEnvironmentPolicy.unavailableMessage"))
         #expect(source.contains(#"leadingSystemImage: PlayerEnvironmentMenuPolicy.menuAssetIconName("#))
+        #expect(source.contains("asset.isActive") == false)
+        #expect(source.contains("let selectedAssetID = effectiveSelectedAssetID"))
+        #expect(source.contains("private var effectiveSelectedAssetID"))
+        #expect(source.contains("activeEnvironment: appState.activeEnvironment"))
         #expect(source.contains(#"Label("Exit Environment", systemImage: "xmark.circle")"#))
         #expect(containsIgnoringWhitespace(source, #"Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))"#))
     }
 
     @Test
-    func emptyStateCopyIsOnlyUsedByTheCompactButtonMenu() throws {
+    func emptyImportedStateKeepsBundledEnvironmentRowsVisible() throws {
         let source = try Self.playerEnvironmentMenuSource()
         let menuBody = try section(
             from: "struct PlayerEnvironmentMenu: View {",
@@ -270,10 +357,10 @@ struct PlayerEnvironmentMenuSourceContractTests {
         )
 
         #expect(!menuBody.contains("No environments available"))
-        #expect(buttonBody.contains("No environments available"))
-        #expect(buttonBody.contains("if PlayerEnvironmentMenuPolicy.showsEmptyAssetMessage(assetCount: assets.count) {"))
-        #expect(buttonBody.contains("Text(\"No environments available\")"))
-        #expect(buttonBody.contains("} else {"))
+        #expect(buttonBody.contains("No imported environments"))
+        #expect(buttonBody.contains("if PlayerEnvironmentMenuPolicy.showsEmptyImportedAssetMessage(assets: assets) {"))
+        #expect(buttonBody.contains("Text(\"No imported environments\")"))
+        #expect(buttonBody.contains("ForEach(assets, id: \\.id)"))
     }
 
     @Test
@@ -312,14 +399,25 @@ struct PlayerEnvironmentMenuSourceContractTests {
             static func compactAsset(
                 _ asset: EnvironmentAsset,
                 selectedAssetID: String?,
+                activeEnvironment: EnvironmentType?,
                 isImmersiveSpaceOpen: Bool
             ) -> Self {
                 Self(
                     title: asset.name,
+                    subtitle: PlayerEnvironmentMenuPolicy.assetStateText(
+                        assetID: asset.id,
+                        selectedAssetID: selectedAssetID,
+                        activeEnvironment: activeEnvironment,
+                        isImmersiveSpaceOpen: isImmersiveSpaceOpen
+                    ),
                     leadingSystemImage: PlayerEnvironmentMenuPolicy.compactAssetIconName(
                         forAssetPath: asset.assetPath
                     ),
-                    trailingSystemImage: selectedAssetID == asset.id && isImmersiveSpaceOpen ? "checkmark" : nil
+                    trailingSystemImage: PlayerEnvironmentMenuPolicy.compactAssetTrailingIconName(
+                        assetID: asset.id,
+                        selectedAssetID: selectedAssetID,
+                        activeEnvironment: activeEnvironment
+                    )
                 )
             }
             """
@@ -342,9 +440,14 @@ struct PlayerEnvironmentMenuSourceContractTests {
 
         #expect(menuBody.contains("Divider()"))
         #expect(menuBody.contains("ForEach(assets, id: \\.id) { asset in"))
+        #expect(menuBody.contains("PlayerEnvironmentStandardRow("))
         #expect(menuBody.contains("PlayerEnvironmentCinemaRow("))
-        #expect(menuBody.contains("PlayerEnvironmentMenuAssetRow(asset: asset, action: onSelect)"))
+        #expect(menuBody.contains("PlayerEnvironmentMenuAssetRow("))
+        #expect(menuBody.contains("let selectedAssetID = effectiveSelectedAssetID"))
+        #expect(menuBody.contains("activeEnvironment: appState.activeEnvironment"))
+        #expect(menuBody.contains("isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen"))
         #expect(menuBody.contains("PlayerEnvironmentExitRow(role: nil, action: onDismiss)"))
+        #expect(buttonBody.contains("PlayerEnvironmentStandardRow("))
         #expect(buttonBody.contains("PlayerEnvironmentCompactAssetRow("))
         #expect(buttonBody.contains("PlayerEnvironmentExitRow(role: .destructive, action: onDismiss)"))
         #expect(menuBody.contains("Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))"))

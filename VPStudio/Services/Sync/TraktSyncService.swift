@@ -220,27 +220,30 @@ actor TraktSyncService {
     // MARK: - Add/Remove
 
     func addToWatchlist(imdbId: String, type: MediaType) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let body: [String: Any] = [
             type == .movie ? "movies" : "shows": [
-                ["ids": ["imdb": imdbId]]
+                ["ids": ["imdb": normalizedIMDbID]]
             ]
         ]
         let _: TraktSyncResponse = try await post(path: "/sync/watchlist", body: body, auth: true)
     }
 
     func removeFromWatchlist(imdbId: String, type: MediaType) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let body: [String: Any] = [
             type == .movie ? "movies" : "shows": [
-                ["ids": ["imdb": imdbId]]
+                ["ids": ["imdb": normalizedIMDbID]]
             ]
         ]
         let _: TraktSyncResponse = try await post(path: "/sync/watchlist/remove", body: body, auth: true)
     }
 
     func addRating(imdbId: String, rating: Int, type: MediaType) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let body: [String: Any] = [
             type == .movie ? "movies" : "shows": [
-                ["ids": ["imdb": imdbId], "rating": rating]
+                ["ids": ["imdb": normalizedIMDbID], "rating": rating]
             ]
         ]
         let _: TraktSyncResponse = try await post(path: "/sync/ratings", body: body, auth: true)
@@ -254,40 +257,44 @@ actor TraktSyncService {
     ) async throws {
         let formatter = ISO8601DateFormatter()
         let watchedAtString = formatter.string(from: watchedAt)
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
 
         let body: [String: Any]
         if type == .series,
            let episodeId,
-           episodeId.hasPrefix("tt") {
-            body = [
-                "episodes": [
-                    ["ids": ["imdb": episodeId], "watched_at": watchedAtString]
-                ]
-            ]
-        } else if type == .series,
-                  let episodeContext = Self.episodeContext(from: episodeId) {
-            body = [
-                "shows": [
-                    [
-                        "ids": ["imdb": imdbId],
-                        "seasons": [
-                            [
-                                "number": episodeContext.season,
-                                "episodes": [
-                                    [
-                                        "number": episodeContext.episode,
-                                        "watched_at": watchedAtString,
-                                    ]
-                                ],
-                            ]
-                        ],
+           !episodeId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let normalizedEpisodeID = IMDbIdentifierPolicy.normalizedID(from: episodeId) {
+                body = [
+                    "episodes": [
+                        ["ids": ["imdb": normalizedEpisodeID], "watched_at": watchedAtString]
                     ]
                 ]
-            ]
+            } else if let episodeContext = TraktEpisodeIdentifierPolicy.seasonEpisode(from: episodeId) {
+                body = [
+                    "shows": [
+                        [
+                            "ids": ["imdb": normalizedIMDbID],
+                            "seasons": [
+                                [
+                                    "number": episodeContext.season,
+                                    "episodes": [
+                                        [
+                                            "number": episodeContext.episode,
+                                            "watched_at": watchedAtString,
+                                        ]
+                                    ],
+                                ]
+                            ],
+                        ]
+                    ]
+                ]
+            } else {
+                throw TraktError.invalidIdentifier("Invalid Trakt episode ID.")
+            }
         } else {
             body = [
                 type == .movie ? "movies" : "shows": [
-                    ["ids": ["imdb": imdbId], "watched_at": watchedAtString]
+                    ["ids": ["imdb": normalizedIMDbID], "watched_at": watchedAtString]
                 ]
             ]
         }
@@ -295,7 +302,30 @@ actor TraktSyncService {
         let _: TraktSyncResponse = try await post(path: "/sync/history", body: body, auth: true)
     }
 
-    private static func episodeContext(from episodeId: String?) -> (season: Int, episode: Int)? {
+    private static func validIMDbID(_ imdbId: String) throws -> String {
+        guard let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) else {
+            throw TraktError.invalidIdentifier("Invalid IMDb ID.")
+        }
+        return normalizedIMDbID
+    }
+}
+
+enum TraktEpisodeIdentifierPolicy {
+    static func canonicalID(from episodeId: String?) -> String? {
+        guard let episodeId = episodeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !episodeId.isEmpty else {
+            return nil
+        }
+        if let imdbID = IMDbIdentifierPolicy.normalizedID(from: episodeId) {
+            return imdbID
+        }
+        if let context = seasonEpisode(from: episodeId) {
+            return String(format: "s%02de%02d", context.season, context.episode)
+        }
+        return nil
+    }
+
+    static func seasonEpisode(from episodeId: String?) -> (season: Int, episode: Int)? {
         guard let episodeId else { return nil }
         guard let match = episodeId.range(
             of: #"s(\d{1,2})e(\d{1,3})"#,
@@ -318,6 +348,16 @@ actor TraktSyncService {
         return (season, episode)
     }
 
+    static func canSyncEpisodeID(_ episodeId: String?) -> Bool {
+        guard let episodeId = episodeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !episodeId.isEmpty else {
+            return true
+        }
+        return canonicalID(from: episodeId) != nil
+    }
+}
+
+extension TraktSyncService {
     // MARK: - Custom Lists
 
     func getCustomLists() async throws -> [TraktCustomList] {
@@ -338,7 +378,8 @@ actor TraktSyncService {
         var movies: [[String: Any]] = []
         var shows: [[String: Any]] = []
         for item in imdbIds {
-            let entry: [String: Any] = ["ids": ["imdb": item.id]]
+            let normalizedIMDbID = try Self.validIMDbID(item.id)
+            let entry: [String: Any] = ["ids": ["imdb": normalizedIMDbID]]
             if item.type == .movie { movies.append(entry) } else { shows.append(entry) }
         }
         var body: [String: Any] = [:]
@@ -351,7 +392,8 @@ actor TraktSyncService {
         var movies: [[String: Any]] = []
         var shows: [[String: Any]] = []
         for item in imdbIds {
-            let entry: [String: Any] = ["ids": ["imdb": item.id]]
+            let normalizedIMDbID = try Self.validIMDbID(item.id)
+            let entry: [String: Any] = ["ids": ["imdb": normalizedIMDbID]]
             if item.type == .movie { movies.append(entry) } else { shows.append(entry) }
         }
         var body: [String: Any] = [:]
@@ -367,24 +409,27 @@ actor TraktSyncService {
     // MARK: - Scrobbling
 
     func startScrobble(imdbId: String, type: MediaType, progress: Double) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let body: [String: Any] = [
-            type == .movie ? "movie" : "show": ["ids": ["imdb": imdbId]],
+            type == .movie ? "movie" : "show": ["ids": ["imdb": normalizedIMDbID]],
             "progress": progress,
         ]
         let _: ScrobbleResponse = try await post(path: "/scrobble/start", body: body, auth: true)
     }
 
     func pauseScrobble(imdbId: String, type: MediaType, progress: Double) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let body: [String: Any] = [
-            type == .movie ? "movie" : "show": ["ids": ["imdb": imdbId]],
+            type == .movie ? "movie" : "show": ["ids": ["imdb": normalizedIMDbID]],
             "progress": progress,
         ]
         let _: ScrobbleResponse = try await post(path: "/scrobble/pause", body: body, auth: true)
     }
 
     func stopScrobble(imdbId: String, type: MediaType, progress: Double) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let body: [String: Any] = [
-            type == .movie ? "movie" : "show": ["ids": ["imdb": imdbId]],
+            type == .movie ? "movie" : "show": ["ids": ["imdb": normalizedIMDbID]],
             "progress": progress,
         ]
         let _: ScrobbleResponse = try await post(path: "/scrobble/stop", body: body, auth: true)
@@ -837,6 +882,7 @@ enum TraktError: LocalizedError {
     case httpError(Int)
     case unauthorized
     case notConnected
+    case invalidIdentifier(String)
     case authorizationSessionMissing
     case authorizationSessionExpired
     case authorizationStateMismatch
@@ -851,6 +897,7 @@ enum TraktError: LocalizedError {
         case .httpError(let code): return "Trakt API error: HTTP \(code)"
         case .unauthorized: return "Trakt authorization expired"
         case .notConnected: return "Not connected to Trakt"
+        case .invalidIdentifier(let message): return message
         case .authorizationSessionMissing: return "Start Trakt authorization again before entering the code."
         case .authorizationSessionExpired: return "The Trakt authorization session expired. Start the login flow again."
         case .authorizationStateMismatch: return "The Trakt authorization response did not match the active login session."

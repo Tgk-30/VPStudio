@@ -14,7 +14,7 @@ enum EnvironmentCatalogError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedFileType:
-            return "Unsupported environment file type. Use .usdz, .reality, .hdr, or .exr files."
+            return "Unsupported environment file type. Use \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList) files."
         case .missingFile:
             return "Selected environment file could not be read."
         case .invalidAsset:
@@ -37,13 +37,15 @@ actor EnvironmentCatalogManager {
 
     private let database: DatabaseManager
     private let fileManager: FileManager
-    private let environmentsDirectory: URL
+    private nonisolated let environmentsDirectory: URL
     private let assetValidator: @Sendable (URL) async -> Bool
     private let remoteDataFetcher: RemoteDataFetcher
 
     private static let supportedExtensions: Set<String> = EnvironmentImportValidationPolicy.supportedExtensions
 
     private static let hdriExtensions: Set<String> = EnvironmentImportValidationPolicy.hdriExtensions
+    private static let maximumEnvironmentDisplayNameLength = 80
+    private static let fallbackImportedEnvironmentName = "Imported Environment"
 
     /// Stable id for the bundled SkyDome environment shipped in `Resources/Environments`.
     /// Used by `bootstrapCuratedAssets()` so a fresh install has at least one activatable
@@ -76,7 +78,7 @@ actor EnvironmentCatalogManager {
 
     /// Validated URL from a hardcoded string.
     private static func presetURL(_ string: String) -> URL? {
-        guard let url = URL(string: string) else {
+        guard let url = EnvironmentURLPolicy.webURL(from: string, requiresHTTPS: true) else {
             logger.error("Invalid hardcoded preset URL: \(string, privacy: .public)")
             return nil
         }
@@ -137,8 +139,26 @@ actor EnvironmentCatalogManager {
         curatedRemotePresets
     }
 
+    nonisolated var managedImportedAssetsDirectory: URL {
+        environmentsDirectory
+    }
+
     private static func defaultRemoteDataFetcher(url: URL) async throws -> (Data, URLResponse) {
-        try await defaultRemoteSession.data(from: url)
+        let (bytes, response) = try await defaultRemoteSession.bytes(from: url)
+        try rejectOversizeRemoteResponse(response)
+
+        var data = Data()
+        if response.expectedContentLength > 0,
+           response.expectedContentLength <= Int64(Int.max) {
+            data.reserveCapacity(Int(response.expectedContentLength))
+        }
+        for try await byte in bytes {
+            data.append(byte)
+            guard EnvironmentImportValidationPolicy.isWithinSizeLimit(data.count) else {
+                throw EnvironmentCatalogError.unsupportedFileType
+            }
+        }
+        return (data, response)
     }
 
     init(
@@ -170,7 +190,7 @@ actor EnvironmentCatalogManager {
 
         // Remove bundled assets that are no longer in the curated catalog.
         for staleBundled in existing where staleBundled.sourceType == .bundled && !curatedIDs.contains(staleBundled.id) {
-            try await database.deleteEnvironmentAsset(id: staleBundled.id)
+            try await deleteAsset(id: staleBundled.id)
         }
 
         // Remove imported assets whose backing files have been deleted —
@@ -180,9 +200,12 @@ actor EnvironmentCatalogManager {
         existing = try await database.fetchEnvironmentAssets()
         for asset in existing where asset.sourceType == .imported {
             guard !asset.assetPath.hasPrefix("bundle://") else { continue }
-            let fileURL = URL(fileURLWithPath: asset.assetPath)
+            guard let fileURL = managedImportedAssetURL(for: asset) else {
+                try await deleteAsset(id: asset.id)
+                continue
+            }
             if !fileManager.fileExists(atPath: fileURL.path) {
-                try await database.deleteEnvironmentAsset(id: asset.id)
+                try await deleteAsset(id: asset.id)
             }
         }
 
@@ -212,9 +235,12 @@ actor EnvironmentCatalogManager {
         }
 
         existing = try await database.fetchEnvironmentAssets()
-        if !existing.contains(where: { $0.isActive }),
-           let defaultAssetID = Self.curatedDefaults.first?.id ?? existing.first?.id {
-            try await database.setActiveEnvironmentAsset(id: defaultAssetID)
+        let preferredEnvironmentID = try await database.getSetting(key: SettingsKeys.preferredEnvironment)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasPreferredEnvironment = preferredEnvironmentID?.isEmpty == false
+        if !hasPreferredEnvironment,
+           existing.contains(where: { $0.id == Self.bundledSkyDomeID && $0.isActive }) {
+            try await database.clearActiveEnvironmentAsset()
         }
 
         // Backfill yaw offsets for any HDRI assets that were imported before
@@ -223,7 +249,7 @@ actor EnvironmentCatalogManager {
         for asset in existing where asset.hdriYawOffset == nil {
             let ext = URL(fileURLWithPath: asset.assetPath).pathExtension.lowercased()
             guard Self.hdriExtensions.contains(ext) else { continue }
-            let fileURL = URL(fileURLWithPath: asset.assetPath)
+            guard let fileURL = managedImportedAssetURL(for: asset) else { continue }
             guard fileManager.fileExists(atPath: fileURL.path) else { continue }
             let resolvedYawOffset = Self.resolveHdriYawOffset(
                 from: await HDRIOrientationAnalyzer.detectScreenYaw(at: fileURL)
@@ -256,12 +282,27 @@ actor EnvironmentCatalogManager {
         }
     }
 
-    func activateAsset(id: String) async throws {
-        try await database.setActiveEnvironmentAsset(id: id)
+    @discardableResult
+    func activateAsset(id: String) async throws -> Bool {
+        guard try await database.setActiveEnvironmentAsset(id: id) else { return false }
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: nil)
+        try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: id)
+        notifyEnvironmentsChanged()
+        return true
+    }
+
+    func clearActiveAsset() async throws {
+        try await database.clearActiveEnvironmentAsset()
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: "1")
+        try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: nil)
         notifyEnvironmentsChanged()
     }
 
     func importEnvironment(from sourceURL: URL) async throws -> EnvironmentAsset {
+        guard sourceURL.isFileURL else {
+            throw EnvironmentCatalogError.missingFile
+        }
+
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw EnvironmentCatalogError.missingFile
         }
@@ -314,14 +355,20 @@ actor EnvironmentCatalogManager {
         hdriYawOffset: Float? = nil,
         environmentTag: String? = nil
     ) async throws -> EnvironmentAsset {
-        let originalExt = sourceURL.pathExtension
-        let normalizedExt = originalExt.lowercased()
-        try Self.validateExtension(normalizedExt)
+        guard let validatedSourceURL = EnvironmentURLPolicy.webURL(
+            from: sourceURL.absoluteString,
+            requiresHTTPS: true
+        ) else {
+            throw EnvironmentCatalogError.downloadFailed("Only HTTPS environment downloads are supported.")
+        }
+        try Self.validateRemoteSourceExtensionIfPresent(validatedSourceURL)
 
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await remoteDataFetcher(sourceURL)
+            (data, response) = try await remoteDataFetcher(validatedSourceURL)
+        } catch let error as EnvironmentCatalogError {
+            throw error
         } catch {
             throw EnvironmentCatalogError.downloadFailed(error.localizedDescription)
         }
@@ -330,6 +377,16 @@ actor EnvironmentCatalogManager {
            !(200...299).contains(httpResponse.statusCode) {
             throw EnvironmentCatalogError.downloadFailed("HTTP \(httpResponse.statusCode)")
         }
+
+        let finalResponseURL = try Self.validatedRemoteResponseURL(
+            response,
+            fallbackURL: validatedSourceURL
+        )
+        try Self.rejectOversizeRemoteResponse(response)
+        let resolvedExt = try Self.resolvedRemoteExtension(
+            sourceURL: finalResponseURL,
+            response: response
+        )
 
         guard !data.isEmpty else {
             throw EnvironmentCatalogError.downloadFailed("No data returned")
@@ -341,13 +398,12 @@ actor EnvironmentCatalogManager {
 
         try fileManager.createDirectory(at: environmentsDirectory, withIntermediateDirectories: true)
 
-        let sourceName = sourceURL.deletingPathExtension().lastPathComponent
-        let sanitizedSourceName = sourceName
-            .removingPercentEncoding?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let temporaryFileNameBase = sanitizedSourceName.isEmpty ? "remote-\(UUID().uuidString)" : "remote-\(UUID().uuidString)-\(sanitizedSourceName)"
-        let temporaryFileName = originalExt.isEmpty ? temporaryFileNameBase : "\(temporaryFileNameBase).\(originalExt)"
+        let sourceName = validatedSourceURL.deletingPathExtension().lastPathComponent
+        let sanitizedSourceName = Self.sanitizedEnvironmentDisplayName(from: sourceName)
+        let temporaryFileNameBase = sanitizedSourceName.map {
+            "remote-\(UUID().uuidString)-\($0)"
+        } ?? "remote-\(UUID().uuidString)"
+        let temporaryFileName = "\(temporaryFileNameBase).\(resolvedExt)"
         let temporaryURL = environmentsDirectory.appendingPathComponent(temporaryFileName)
         try data.write(to: temporaryURL, options: .atomic)
         defer {
@@ -362,8 +418,8 @@ actor EnvironmentCatalogManager {
 
         return try await persistImportedAsset(
             sourceURL: temporaryURL,
-            extension: originalExt,
-            sourceNameHint: sourceURL.deletingPathExtension().lastPathComponent,
+            extension: resolvedExt,
+            sourceNameHint: validatedSourceURL.deletingPathExtension().lastPathComponent,
             preferredName: preferredName,
             licenseName: licenseName,
             sourceAttributionURL: sourceAttributionURL,
@@ -389,24 +445,21 @@ actor EnvironmentCatalogManager {
         let id = UUID().uuidString
         let sourceName = sourceNameHint
             ?? sourceURL.deletingPathExtension().lastPathComponent
-        let cleanedSourceName = sourceName
-            .removingPercentEncoding
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            ?? sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let cleanedPreferredName = preferredName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedSourceName = Self.sanitizedEnvironmentDisplayName(from: sourceName)
+        let cleanedPreferredName = Self.sanitizedEnvironmentDisplayName(from: preferredName)
+        let cleanedFallbackName = Self.sanitizedEnvironmentDisplayName(
+            from: sourceURL.deletingPathExtension().lastPathComponent
+        )
         let resolvedName: String
-        if let cleanedPreferredName,
-           !cleanedPreferredName.isEmpty {
+        if let cleanedPreferredName {
             resolvedName = cleanedPreferredName
-        } else if preferredName == nil,
-                  !cleanedSourceName.isEmpty {
+        } else if let cleanedSourceName {
             resolvedName = cleanedSourceName
         } else {
-            let sourcePathName = sourceURL.deletingPathExtension().lastPathComponent
-            resolvedName = sourcePathName.isEmpty ? "Imported Environment" : sourcePathName
+            resolvedName = cleanedFallbackName ?? Self.fallbackImportedEnvironmentName
         }
-        let targetFileName = ext.isEmpty ? id : "\(id).\(ext)"
+        let normalizedExt = EnvironmentImportValidationPolicy.normalizedExtension(for: ext)
+        let targetFileName = normalizedExt.isEmpty ? id : "\(id).\(normalizedExt)"
         let targetURL = environmentsDirectory.appendingPathComponent(targetFileName, isDirectory: false)
         if fileManager.fileExists(atPath: targetURL.path) {
             // Use replaceItemAt for atomic replacement, avoiding TOCTOU race.
@@ -417,7 +470,7 @@ actor EnvironmentCatalogManager {
 
         // Auto-detect yaw for HDRI files when no explicit offset was provided.
         let resolvedYawOffset: Float?
-        if hdriYawOffset == nil, Self.hdriExtensions.contains(ext) {
+        if hdriYawOffset == nil, Self.hdriExtensions.contains(normalizedExt) {
             resolvedYawOffset = Self.resolveHdriYawOffset(
                 from: await HDRIOrientationAnalyzer.detectScreenYaw(at: targetURL)
             )
@@ -431,9 +484,9 @@ actor EnvironmentCatalogManager {
             sourceType: .imported,
             assetPath: targetURL.path,
             thumbnailPath: nil,
-            licenseName: licenseName,
-            sourceAttributionURL: sourceAttributionURL,
-            previewImagePath: previewImagePath,
+            licenseName: Self.sanitizedOptionalMetadataText(licenseName),
+            sourceAttributionURL: Self.sanitizedSourceAttributionURL(sourceAttributionURL),
+            previewImagePath: sanitizedPreviewImagePath(previewImagePath),
             hdriYawOffset: resolvedYawOffset,
             environmentTag: environmentTag,
             createdAt: Date(),
@@ -444,13 +497,64 @@ actor EnvironmentCatalogManager {
         return asset
     }
 
+    private static func sanitizedEnvironmentDisplayName(from value: String?) -> String? {
+        guard let rawValue = value else { return nil }
+        let decodedValue = rawValue.removingPercentEncoding ?? rawValue
+        let separators = CharacterSet.whitespacesAndNewlines
+            .union(.controlCharacters)
+            .union(CharacterSet(charactersIn: "/\\:"))
+        let collapsedName = decodedValue
+            .components(separatedBy: separators)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsedName.isEmpty else { return nil }
+
+        let cappedName = String(collapsedName.prefix(maximumEnvironmentDisplayNameLength))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cappedName.isEmpty ? nil : cappedName
+    }
+
+    private static func sanitizedOptionalMetadataText(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func sanitizedSourceAttributionURL(_ value: String?) -> String? {
+        EnvironmentURLPolicy.webURL(from: value)?.absoluteString
+    }
+
+    private func sanitizedPreviewImagePath(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        if trimmed.hasPrefix("bundle://") {
+            let relativePath = String(trimmed.dropFirst("bundle://".count))
+            guard Self.urlInResourceBundle(relativePath: relativePath) != nil else {
+                return nil
+            }
+            return "bundle://\(relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
+        }
+
+        guard let fileURL = EnvironmentURLPolicy.absoluteFileURL(fromStoredPath: trimmed),
+              EnvironmentURLPolicy.fileURL(fileURL, isInside: environmentsDirectory) else {
+            return nil
+        }
+        return fileURL.standardizedFileURL.path
+    }
+
     func deleteAsset(id: String) async throws {
         guard let existing = try await database.fetchEnvironmentAssets().first(where: { $0.id == id }) else {
             return
         }
 
-        if existing.sourceType == .imported {
-            let fileURL = URL(fileURLWithPath: existing.assetPath)
+        if existing.sourceType == .imported,
+           let fileURL = managedImportedAssetURL(for: existing) {
             if fileManager.fileExists(atPath: fileURL.path) {
                 try? fileManager.removeItem(at: fileURL)
             }
@@ -458,9 +562,10 @@ actor EnvironmentCatalogManager {
 
         try await database.deleteEnvironmentAsset(id: id)
 
-        if existing.isActive,
-           let fallback = try await database.fetchEnvironmentAssets().first {
-            try await database.setActiveEnvironmentAsset(id: fallback.id)
+        if existing.isActive {
+            try await database.clearActiveEnvironmentAsset()
+            try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: "1")
+            try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: nil)
         }
 
         notifyEnvironmentsChanged()
@@ -485,23 +590,47 @@ actor EnvironmentCatalogManager {
             return Self.urlInResourceBundle(relativePath: relative)
         }
 
-        let fileURL = URL(fileURLWithPath: asset.assetPath)
+        guard let fileURL = managedImportedAssetURL(for: asset) else {
+            return nil
+        }
         if fileManager.fileExists(atPath: fileURL.path) {
             return fileURL
         }
         return nil
     }
 
-    private static func urlInResourceBundle(relativePath: String) -> URL? {
-        let relative = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let parts = relative.split(separator: "/").map(String.init)
-        guard let file = parts.last, !file.isEmpty else { return nil }
-        let fileURL = URL(fileURLWithPath: file)
-        let name = fileURL.deletingPathExtension().lastPathComponent
-        let ext = fileURL.pathExtension.isEmpty ? nil : fileURL.pathExtension
-        let subdirectory = parts.dropLast().isEmpty ? nil : parts.dropLast().joined(separator: "/")
+    private func managedImportedAssetURL(for asset: EnvironmentAsset) -> URL? {
+        guard asset.sourceType == .imported,
+              let fileURL = EnvironmentURLPolicy.absoluteFileURL(fromStoredPath: asset.assetPath),
+              EnvironmentURLPolicy.fileURL(fileURL, isInside: environmentsDirectory) else {
+            return nil
+        }
 
-        return resourceBundle.url(forResource: name, withExtension: ext, subdirectory: subdirectory)
+        return fileURL.standardizedFileURL
+    }
+
+    private static func urlInResourceBundle(relativePath: String) -> URL? {
+        EnvironmentURLPolicy.bundleResourceURL(relativePath: relativePath, in: resourceBundle)
+    }
+
+    private static func validatedRemoteResponseURL(
+        _ response: URLResponse,
+        fallbackURL: URL
+    ) throws -> URL {
+        let finalURL = response.url ?? fallbackURL
+        guard let validatedURL = EnvironmentURLPolicy.webURL(
+            from: finalURL.absoluteString,
+            requiresHTTPS: true
+        ) else {
+            throw EnvironmentCatalogError.downloadFailed("Only HTTPS environment downloads are supported.")
+        }
+        return validatedURL
+    }
+
+    private static func validateRemoteSourceExtensionIfPresent(_ sourceURL: URL) throws {
+        let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ext.isEmpty else { return }
+        try validateExtension(ext)
     }
 
     private static var resourceBundle: Bundle {
@@ -519,19 +648,17 @@ actor EnvironmentCatalogManager {
 
         guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
 
-        if ext == "reality" {
-            return true
-        }
-
         let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey])
         let fileSize = resourceValues?.fileSize ?? 0
         guard fileSize > 0 else { return false }
         guard EnvironmentImportValidationPolicy.isWithinSizeLimit(fileSize) else { return false }
 
-        // HDRI / panorama files (HDR, EXR, PNG, JPG) are validated via the image source.
+        // HDRI / panorama files (HDR, EXR, PNG, JPG, JPEG) are validated via the image source.
         if case .hdri = classification {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
-            return CGImageSourceGetCount(source) > 0
+            guard CGImageSourceGetCount(source) > 0 else { return false }
+            guard imageSourceHasPanoramaAspectRatio(source) else { return false }
+            return imageSourceCreatesValidationThumbnail(source)
         }
 
         #if os(visionOS)
@@ -546,6 +673,39 @@ actor EnvironmentCatalogManager {
         #endif
     }
 
+    private static func imageSourceHasPanoramaAspectRatio(_ source: CGImageSource) -> Bool {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            return false
+        }
+        let width = pixelDimension(properties[kCGImagePropertyPixelWidth])
+        let height = pixelDimension(properties[kCGImagePropertyPixelHeight])
+        return EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(
+            width: width ?? 0,
+            height: height ?? 0
+        )
+    }
+
+    private static func pixelDimension(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
+
+    private static func imageSourceCreatesValidationThumbnail(_ source: CGImageSource) -> Bool {
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldAllowFloat: false,
+            kCGImageSourceThumbnailMaxPixelSize: 64,
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) != nil
+    }
+
     static func resolveHdriYawOffset(from detectedYaw: Float?) -> Float {
         detectedYaw ?? 0
     }
@@ -554,6 +714,104 @@ actor EnvironmentCatalogManager {
         guard EnvironmentImportValidationPolicy.isSupportedExtension(ext) else {
             throw EnvironmentCatalogError.unsupportedFileType
         }
+    }
+
+    private static func resolvedRemoteExtension(sourceURL: URL, response: URLResponse) throws -> String {
+        let urlExt = normalizedSupportedExtension(sourceURL.pathExtension)
+        let suggestedExt = normalizedSupportedExtension(response.suggestedFilename)
+        let mimeExt = try normalizedRemoteMIMEExtension(
+            response.mimeType,
+            treatsUnsupportedAsAbsent: !hasExplicitContentType(response)
+        )
+
+        if let urlExt {
+            try validateRemoteExtension(urlExt, isCompatibleWith: mimeExt)
+            return urlExt
+        }
+
+        if let suggestedExt {
+            try validateRemoteExtension(suggestedExt, isCompatibleWith: mimeExt)
+            return suggestedExt
+        }
+
+        guard let mimeExt else {
+            throw EnvironmentCatalogError.unsupportedFileType
+        }
+        return mimeExt
+    }
+
+    private static func normalizedSupportedExtension(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let ext = URL(fileURLWithPath: rawValue).pathExtension.isEmpty
+            ? rawValue
+            : URL(fileURLWithPath: rawValue).pathExtension
+        let normalized = EnvironmentImportValidationPolicy.normalizedExtension(for: ext)
+        return EnvironmentImportValidationPolicy.isSupportedExtension(normalized) ? normalized : nil
+    }
+
+    private static func normalizedRemoteMIMEExtension(
+        _ rawMIMEType: String?,
+        treatsUnsupportedAsAbsent: Bool
+    ) throws -> String? {
+        guard let rawMIMEType else { return nil }
+        let mimeType = rawMIMEType
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let mimeType, !mimeType.isEmpty else { return nil }
+
+        switch mimeType {
+        case "application/octet-stream", "binary/octet-stream":
+            return nil
+        case "image/vnd.radiance", "image/x-hdr", "application/radiance":
+            return "hdr"
+        case "image/exr", "image/x-exr", "image/x-openexr", "application/x-exr":
+            return "exr"
+        case "image/png":
+            return "png"
+        case "image/jpeg", "image/jpg":
+            return "jpg"
+        case "model/vnd.usdz+zip", "application/vnd.usdz+zip", "model/usd", "application/x-usdz":
+            return "usdz"
+        case "model/vnd.reality", "application/vnd.apple.reality", "application/x-reality":
+            return "reality"
+        default:
+            if treatsUnsupportedAsAbsent {
+                return nil
+            }
+            throw EnvironmentCatalogError.unsupportedFileType
+        }
+    }
+
+    private static func hasExplicitContentType(_ response: URLResponse) -> Bool {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return response.mimeType?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+        guard let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") else {
+            return false
+        }
+        return !contentType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func validateRemoteExtension(_ ext: String, isCompatibleWith mimeExt: String?) throws {
+        guard let mimeExt else { return }
+        guard remoteExtensionsAreCompatible(ext, mimeExt) else {
+            throw EnvironmentCatalogError.unsupportedFileType
+        }
+    }
+
+    private static func remoteExtensionsAreCompatible(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs == rhs { return true }
+        return Set([lhs, rhs]).isSubset(of: ["jpg", "jpeg"])
+    }
+
+    private static func rejectOversizeRemoteResponse(_ response: URLResponse) throws {
+        guard response.expectedContentLength > Int64(EnvironmentImportValidationPolicy.maxFileSizeBytes) else {
+            return
+        }
+        throw EnvironmentCatalogError.unsupportedFileType
     }
 
     /// Rejects files that exceed the import size cap. Unknown sizes (e.g. unreadable

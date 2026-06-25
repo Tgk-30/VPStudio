@@ -140,6 +140,22 @@ struct SearchResultsPresentationPolicyTests {
             explorePhase: .idle,
             hasActiveFilters: true
         ))
+        let omdbVisibleFilterCount = SearchResultsPresentationPolicy.visibleActiveFilterCount(
+            sortOption: .popularityDesc,
+            languageFilters: ["fr-FR"],
+            yearFilter: nil,
+            yearRangePreset: nil,
+            selectedGenre: nil,
+            supportsLanguageFilters: false
+        )
+        #expect(omdbVisibleFilterCount == 0)
+        #expect(!SearchResultsPresentationPolicy.shouldShowTypeFilterSection(
+            submittedQuery: "",
+            hasSelectedGenre: false,
+            hasActiveMoodCard: false,
+            explorePhase: .idle,
+            hasActiveFilters: omdbVisibleFilterCount > 0
+        ))
     }
 
     @Test
@@ -184,6 +200,15 @@ struct SearchResultsPresentationPolicyTests {
             languageFilters: ["ja-JP"],
             yearFilter: nil,
             yearRangePreset: nil
+        ))
+        #expect(!SearchResultsPresentationPolicy.shouldShowFilterSummary(
+            hasActiveMoodCard: false,
+            hasSelectedGenre: false,
+            sortOption: .popularityDesc,
+            languageFilters: ["ja-JP"],
+            yearFilter: nil,
+            yearRangePreset: nil,
+            supportsLanguageFilters: false
         ))
         #expect(SearchResultsPresentationPolicy.shouldShowFilterSummary(
             hasActiveMoodCard: false,
@@ -230,6 +255,14 @@ struct SearchResultsPresentationPolicyTests {
             yearFilter: nil,
             yearRangePreset: nil
         ))
+        #expect(!SearchResultsPresentationPolicy.shouldShowResultsFilterSummary(
+            hasSelectedGenre: false,
+            sortOption: .popularityDesc,
+            languageFilters: ["fr-FR"],
+            yearFilter: nil,
+            yearRangePreset: nil,
+            supportsLanguageFilters: false
+        ))
         #expect(SearchResultsPresentationPolicy.shouldShowResultsFilterSummary(
             hasSelectedGenre: false,
             sortOption: .popularityDesc,
@@ -244,6 +277,23 @@ struct SearchResultsPresentationPolicyTests {
             yearFilter: nil,
             yearRangePreset: .classic
         ))
+
+        #expect(SearchResultsPresentationPolicy.visibleActiveFilterCount(
+            sortOption: .ratingDesc,
+            languageFilters: ["fr-FR"],
+            yearFilter: 1982,
+            yearRangePreset: nil,
+            selectedGenre: Genre(id: 18, name: "Drama"),
+            supportsLanguageFilters: false
+        ) == 3)
+        #expect(SearchResultsPresentationPolicy.visibleActiveFilterCount(
+            sortOption: .popularityDesc,
+            languageFilters: ["fr-FR"],
+            yearFilter: nil,
+            yearRangePreset: nil,
+            selectedGenre: nil,
+            supportsLanguageFilters: false
+        ) == 0)
     }
 
     @Test

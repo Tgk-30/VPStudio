@@ -166,6 +166,98 @@ struct TasteEvent: Codable, Sendable, Identifiable, Equatable, FetchableRecord, 
     }
 }
 
+enum TasteRatingLookupPolicy {
+    static func lookup(from events: [TasteEvent]) -> [String: TasteEvent] {
+        var ratingsByKey: [String: TasteEvent] = [:]
+        for event in events where event.eventType == .rated {
+            guard let mediaId = normalizedLookupKey(event.mediaId) else { continue }
+            let keys = lookupKeys(for: mediaId)
+            for key in keys {
+                if shouldReplace(existing: ratingsByKey[key], with: event) {
+                    ratingsByKey[key] = event
+                }
+            }
+        }
+        return ratingsByKey
+    }
+
+    static func lookupKeys(for mediaId: String) -> Set<String> {
+        guard let normalizedMediaId = normalizedLookupKey(mediaId) else { return [] }
+        var keys = Set([normalizedMediaId])
+
+        if let imdbID = IMDbIdentifierPolicy.firstID(in: normalizedMediaId) {
+            keys.formUnion([
+                imdbID,
+                "imdb-\(imdbID)",
+                "movie-imdb-\(imdbID)",
+                "series-imdb-\(imdbID)",
+                "movie-omdb-\(imdbID)",
+                "series-omdb-\(imdbID)",
+            ])
+        }
+
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: normalizedMediaId) {
+            keys.formUnion([
+                "tmdb-\(tmdbID)",
+                "movie-tmdb-\(tmdbID)",
+                "series-tmdb-\(tmdbID)",
+            ])
+        }
+
+        return keys
+    }
+
+    static func lookupKeys(
+        mediaId: String?,
+        type: MediaType?,
+        tmdbId: Int?,
+        resolvedMediaId: String? = nil
+    ) -> Set<String> {
+        var keys = Set<String>()
+        for id in [mediaId, resolvedMediaId] {
+            guard let id else { continue }
+            keys.formUnion(lookupKeys(for: id))
+        }
+        if let tmdbId {
+            keys.formUnion(lookupKeys(for: "tmdb-\(tmdbId)"))
+            if let type {
+                keys.insert("\(type.rawValue)-tmdb-\(tmdbId)")
+            }
+        }
+        return keys
+    }
+
+    static func rating(
+        in ratingsByKey: [String: TasteEvent],
+        mediaId: String?,
+        type: MediaType?,
+        tmdbId: Int?,
+        resolvedMediaId: String? = nil
+    ) -> TasteEvent? {
+        var best: TasteEvent?
+        for key in lookupKeys(mediaId: mediaId, type: type, tmdbId: tmdbId, resolvedMediaId: resolvedMediaId) {
+            guard let event = ratingsByKey[key] else { continue }
+            if shouldReplace(existing: best, with: event) {
+                best = event
+            }
+        }
+        return best
+    }
+
+    private static func normalizedLookupKey(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func shouldReplace(existing: TasteEvent?, with candidate: TasteEvent) -> Bool {
+        guard let existing else { return true }
+        if candidate.createdAt != existing.createdAt {
+            return candidate.createdAt > existing.createdAt
+        }
+        return candidate.id > existing.id
+    }
+}
+
 enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
     case likeDislike = "like_dislike"
     case oneToTen = "one_to_ten"

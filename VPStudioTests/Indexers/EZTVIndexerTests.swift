@@ -58,6 +58,31 @@ struct EZTVIndexerTests {
         #expect(results.first?.title == "Show.S01E01.720p.mkv")
     }
 
+    @Test func searchByIMDbNormalizesEmbeddedID() async throws {
+        final class State: @unchecked Sendable {
+            var capturedIMDbID: String?
+        }
+        let state = State()
+
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try #require(request.url)
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            state.capturedIMDbID = components?.queryItems?.first(where: { $0.name == "imdb_id" })?.value
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"torrents":[]}"#.utf8))
+        }
+
+        let indexer = EZTVIndexer(session: session)
+        _ = try await indexer.search(
+            imdbId: "https://www.imdb.com/title/TT1234567/",
+            type: .series,
+            season: nil,
+            episode: nil
+        )
+
+        #expect(state.capturedIMDbID == "1234567")
+    }
+
     @Test func searchByIMDbFiltersBySeasonAndEpisode() async throws {
         let session = URLProtocolHarness.makeSession { request in
             let url = try #require(request.url)

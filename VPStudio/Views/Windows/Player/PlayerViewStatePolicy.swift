@@ -29,6 +29,7 @@ enum PlayerViewStatePolicy {
 
     enum ControlsToggleAction: Equatable {
         case keepVisibleForPresentedModal
+        case keepVisibleAndCancelScheduledHide
         case showAndScheduleHide
         case hideAndCancelScheduledHide
     }
@@ -155,13 +156,34 @@ enum PlayerViewStatePolicy {
 
     static func controlsToggleAction(
         isControlModalPresented: Bool,
-        isShowingControls: Bool
+        isShowingControls: Bool,
+        playbackState: PlayerPlaybackState,
+        isPlaying: Bool,
+        isScrubbing: Bool,
+        isShowingSubtitlePicker: Bool,
+        isShowingAudioPicker: Bool,
+        isControlsLocked: Bool,
+        isShowingEnvironmentPicker: Bool,
+        isShowingCinemaSettings: Bool
     ) -> ControlsToggleAction {
         if isControlModalPresented {
             return .keepVisibleForPresentedModal
         }
 
-        return isShowingControls ? .hideAndCancelScheduledHide : .showAndScheduleHide
+        guard isShowingControls else { return .showAndScheduleHide }
+
+        let canHideControls = shouldAutoHideControls(
+            playbackState: playbackState,
+            isPlaying: isPlaying,
+            isScrubbing: isScrubbing,
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isControlsLocked: isControlsLocked,
+            isShowingEnvironmentPicker: isShowingEnvironmentPicker,
+            isShowingCinemaSettings: isShowingCinemaSettings
+        )
+
+        return canHideControls ? .hideAndCancelScheduledHide : .keepVisibleAndCancelScheduledHide
     }
 
     static func controlModalVisibilityAction(isPresented: Bool) -> ControlModalVisibilityAction {
@@ -170,6 +192,52 @@ enum PlayerViewStatePolicy {
 
     static func shouldShowControlsForModalPresentation(isShowingControls: Bool) -> Bool {
         !isShowingControls
+    }
+
+    static func shouldElevatePlayerStageFallback(
+        playbackState: PlayerPlaybackState,
+        hasPlayedOnce: Bool
+    ) -> Bool {
+        playbackState == .failed || !hasPlayedOnce
+    }
+
+    static func shouldShowTransportDock(
+        playbackState: PlayerPlaybackState,
+        hasPlayedOnce: Bool
+    ) -> Bool {
+        playbackState == .playing || hasPlayedOnce
+    }
+
+    static func avPlayerObservedPlaybackState(
+        currentState: PlayerPlaybackState,
+        isPlaying: Bool,
+        isBuffering: Bool,
+        hasPlayedOnce: Bool
+    ) -> PlayerPlaybackState {
+        if isPlaying {
+            return .playing
+        }
+
+        if isBuffering {
+            return .buffering
+        }
+
+        if hasPlayedOnce, currentState == .buffering {
+            return .playing
+        }
+
+        return currentState
+    }
+
+    static func playbackMessageAfterObservedState(
+        currentMessage: String?,
+        observedPlaybackState: PlayerPlaybackState,
+        hasPlayedOnce: Bool
+    ) -> String? {
+        if observedPlaybackState == .buffering, hasPlayedOnce {
+            return nil
+        }
+        return currentMessage
     }
 
     static func immersiveControlModalFlags(
@@ -302,7 +370,7 @@ enum PlayerViewStatePolicy {
         for nextEpisode: PlayerSessionRequest.NextEpisodeCandidate,
         errorDescription: String
     ) -> String {
-        "Could not auto-play \(nextEpisode.title). \(errorDescription)"
+        "Could not auto-play \(nextEpisode.title). \(userVisibleErrorDescription(errorDescription))"
     }
 
     static func autoplayResolutionFinishOutcome(hasQueuedNextEpisode: Bool) -> PlayerAutoplayNextPolicy.ResolutionOutcome {
@@ -340,11 +408,30 @@ enum PlayerViewStatePolicy {
     }
 
     static func preparationFailureLine(kind: PlayerEngineKind, errorDescription: String) -> String {
-        "\(kind.displayName): \(errorDescription)"
+        "\(kind.displayName): \(userVisibleErrorDescription(errorDescription))"
     }
 
     static func preparationFailureReason(failures: [String]) -> String {
         failures.isEmpty ? "No compatible player engine was available." : failures.joined(separator: "\n")
+    }
+
+    static func userVisibleErrorDescription(_ errorDescription: String) -> String {
+        var sanitized = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitized.isEmpty else { return "Playback failed." }
+
+        let replacements: [(pattern: String, replacement: String)] = [
+            (#"(https?|ftp|file)://[^\s<>"']+"#, "[redacted URL]"),
+            (#"\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}"#, "$1 [redacted]"),
+            (#"\b(access_token|refresh_token|client_secret|token|apikey|api_key|signature|sig|auth)=([^&\s]+)"#, "$1=[redacted]"),
+        ]
+        for replacement in replacements {
+            sanitized = sanitized.replacingOccurrences(
+                of: replacement.pattern,
+                with: replacement.replacement,
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        return sanitized
     }
 
     static func autoSubtitlePreflight(

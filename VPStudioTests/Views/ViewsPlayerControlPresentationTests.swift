@@ -350,7 +350,7 @@ struct PlayerViewPolicyTests {
     func progressBarDisplayPercentIgnoresInvalidInputs() {
         #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: .nan, duration: 120) == 0)
         #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 10, duration: .nan) == 0)
-        #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 0, duration: 0) == 1)
+        #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 0, duration: 0) == 0)
     }
 
     @Test("scrubberDragPercent treats invalid location values as zero")

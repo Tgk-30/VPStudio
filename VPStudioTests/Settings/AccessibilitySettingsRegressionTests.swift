@@ -63,10 +63,10 @@ struct AccessibilitySettingsRegressionTests {
     }
 
     @Test
-    func setupWizardSourceRequiresTMDBAndSurfacesSaveFailures() throws {
+    func setupWizardSourceRequiresOMDbAndSurfacesSaveFailures() throws {
         let setupWizardSource = try contents(of: "VPStudio/Views/Windows/Settings/Onboarding/SetupWizardView.swift")
 
-        #expect(setupWizardSource.contains("SetupWizardValidationPolicy.requiredTMDBMessage"))
+        #expect(setupWizardSource.contains("SetupWizardValidationPolicy.requiredOMDbMessage"))
         #expect(setupWizardSource.contains("guard stepAfterAdvance > stepBeforeAdvance else { break }"))
         #expect(setupWizardSource.contains("saveError = error.localizedDescription"))
     }

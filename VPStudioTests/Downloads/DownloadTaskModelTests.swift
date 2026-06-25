@@ -80,6 +80,14 @@ import Testing
         #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/abc123.jpg")
     }
 
+    @Test func posterURLPreservesAbsoluteOMDbURL() {
+        let task = DownloadTask(
+            mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv",
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+        #expect(task.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
+    }
+
     @Test func posterURLIsNilWhenPathNil() {
         let task = DownloadTask(
             mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv"
@@ -476,8 +484,7 @@ import Testing
             mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv",
             posterPath: "abc123.jpg"
         )
-        // Should still construct a URL (even if path has no leading slash)
-        #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342abc123.jpg")
+        #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/abc123.jpg")
     }
 
     @Test func posterURLWithEmptyPath() {
@@ -486,7 +493,7 @@ import Testing
             mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv",
             posterPath: ""
         )
-        #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342")
+        #expect(task.posterURL == nil)
     }
 
     // MARK: - destinationURL edge cases

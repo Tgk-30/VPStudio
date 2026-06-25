@@ -28,7 +28,7 @@ struct ViewModelTaskLifecycleTests {
         let source = try contents(of: "VPStudio/Views/Windows/Detail/DetailView.swift")
         #expect(source.contains(".onDisappear"))
         #expect(source.contains("viewModel?.cancelInFlightWork()"))
-        #expect(source.contains("tmdbReloadTask?.cancel()"))
+        #expect(source.contains("metadataReloadTask?.cancel()"))
         #expect(source.contains("libraryReloadTask?.cancel()"))
         #expect(source.contains("feedbackReloadTask?.cancel()"))
         #expect(source.contains("streamResolutionTask?.cancel()"))
@@ -44,8 +44,8 @@ struct ViewModelTaskLifecycleTests {
     @Test
     func detailViewCoalescesNotificationDrivenReloadTasks() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Detail/DetailView.swift")
-        #expect(source.contains("tmdbReloadTask?.cancel()"))
-        #expect(source.contains("tmdbReloadTask = Task { await reloadDetailForLatestTMDBKey() }"))
+        #expect(source.contains("metadataReloadTask?.cancel()"))
+        #expect(source.contains("metadataReloadTask = Task { await reloadDetailForLatestMetadataKey() }"))
         #expect(source.contains("libraryReloadTask?.cancel()"))
         #expect(source.contains("libraryReloadTask = Task { await vm.reloadLibraryState() }"))
         #expect(source.contains(".watchHistoryDidChange"))
@@ -157,15 +157,19 @@ struct ViewModelTaskLifecycleTests {
         let detailContentBody = try functionBody(containing: "func detailContent(", in: detailSource)
         #expect(detailContentBody.contains(".id(previewTaskIdentity)"))
         #expect(layoutSource.contains("ScrollView {"))
-        #expect(!layoutSource.contains("ScrollViewReader"))
-        #expect(!layoutSource.contains(".scrollTo("))
+        // A user-initiated jump to the episode picker (episodeScrollRequest) is
+        // allowed, but torrent-results loading must never force a scroll. Assert
+        // every programmatic scroll targets the episodes section, nothing else.
+        let totalScrollTo = layoutSource.components(separatedBy: ".scrollTo(").count - 1
+        let episodeScrollTo = layoutSource.components(separatedBy: ".scrollTo(episodesSectionID").count - 1
+        #expect(totalScrollTo == episodeScrollTo)
     }
 
     @Test
-    func searchViewCoalescesTMDBReloadTask() throws {
+    func searchViewCoalescesMetadataReloadTask() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Search/SearchView.swift")
-        #expect(source.contains("tmdbReloadTask?.cancel()"))
-        #expect(source.contains("tmdbReloadTask = Task { await reloadTMDBConfigurationAndSearch() }"))
+        #expect(source.contains("metadataReloadTask?.cancel()"))
+        #expect(source.contains("metadataReloadTask = Task { await reloadMetadataConfigurationAndSearch() }"))
     }
 
     @Test
@@ -321,6 +325,15 @@ struct ViewModelTaskLifecycleTests {
         #expect(source.contains(".contextMenu {"))
         #expect(source.contains(".accessibilityLabel(SeriesDetailPresentationPolicy.episodeAccessibilityLabel("))
         #expect(source.contains("Press and hold for watched options."))
+    }
+
+    @Test
+    func seriesDetailHeroUsesPosterWhenBackdropIsUnavailable() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Detail/SeriesDetailLayout.swift")
+        let heroImage = try functionBody(containing: "private var heroImage: some View", in: source)
+
+        #expect(heroImage.contains("viewModel.mediaItem?.backdropURL ?? viewModel.mediaItem?.posterURL"))
+        #expect(heroImage.contains("AsyncImage(url: artworkURL)"))
     }
 
     @Test

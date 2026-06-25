@@ -105,8 +105,7 @@ struct EnvironmentPickerSheetVisionCoverageTests {
                 AnyView(
                     EnvironmentPreviewCard(
                         asset: importedHDR,
-                        isActive: true,
-                        isImmersiveOpen: true,
+                        status: .active,
                         onSelect: {},
                         onDelete: {}
                     )
@@ -117,8 +116,16 @@ struct EnvironmentPickerSheetVisionCoverageTests {
                 AnyView(
                     EnvironmentPreviewCard(
                         asset: bundledScene,
-                        isActive: false,
-                        isImmersiveOpen: false,
+                        status: .inactive,
+                        onSelect: {}
+                    )
+                )
+            ),
+            (
+                "Standard room card",
+                AnyView(
+                    NoEnvironmentPreviewCard(
+                        status: .current,
                         onSelect: {}
                     )
                 )
@@ -127,8 +134,7 @@ struct EnvironmentPickerSheetVisionCoverageTests {
                 "Cinema environment card",
                 AnyView(
                     CinemaEnvironmentPreviewCard(
-                        isActive: true,
-                        isImmersiveOpen: true,
+                        status: .active,
                         onSelect: {}
                     )
                 )

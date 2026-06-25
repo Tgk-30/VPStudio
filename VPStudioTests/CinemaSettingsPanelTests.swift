@@ -52,6 +52,20 @@ struct CinemaSettingsPanelBindingHelper {
 @Suite("CinemaSettingsPanel")
 @MainActor
 struct CinemaSettingsPanelTests {
+    private func contents(of relativePath: String) throws -> String {
+        let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
+        return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func repoRootURL() -> URL {
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }
+            url = parent
+        }
+        return url
+    }
 
     // MARK: - Initialization
 
@@ -216,6 +230,14 @@ struct CinemaSettingsPanelTests {
         #expect(panel.settings.activePreset == .custom)
     }
 
+    @Test("preset picker omits custom no-op preset")
+    func presetPickerOmitsCustomNoOpPreset() throws {
+        let source = try contents(of: "VPStudio/Views/Immersive/Cinema/CinemaSettingsPanel.swift")
+        #expect(source.contains("ForEach(CinemaPreset.selectablePresets)"))
+        #expect(!source.contains("ForEach(CinemaPreset.allCases)"))
+        #expect(source.contains(#"Label("Custom settings", systemImage: "slider.horizontal.3")"#))
+    }
+
     // MARK: - Action Buttons
 
     @Test("save button persists current values")
@@ -248,6 +270,13 @@ struct CinemaSettingsPanelTests {
         #expect(panel.settings.screenWidth == 5.0)
         #expect(panel.settings.screenDistance == 2.5)
         #expect(panel.settings.videoAspectRatio == 16.0 / 9.0)
+    }
+
+    @Test("reset to preset action is guarded for custom layouts")
+    func resetToPresetActionGuardedForCustomLayouts() throws {
+        let source = try contents(of: "VPStudio/Views/Immersive/Cinema/CinemaSettingsPanel.swift")
+        #expect(source.contains("guard CinemaPreset.selectablePresets.contains(activePreset) else { return }"))
+        #expect(source.contains(".disabled(!CinemaPreset.selectablePresets.contains(activePreset))"))
     }
 
     // MARK: - Comfort Warning Logic

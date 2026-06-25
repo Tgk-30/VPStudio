@@ -7,6 +7,18 @@ import os
 
 private let logger = Logger(subsystem: "com.vpstudio", category: "HDRISkybox")
 
+enum HDRISkyboxGroundPolicy {
+    static let groundY: Float = 0
+    static let ambientRimY: Float = 0.08
+}
+
+enum HDRISkyboxFailureCopy {
+    static let noEnvironmentSelected = "No environment selected. Showing the fallback cinema screen."
+    static let missingEnvironmentFile = "The selected environment file is missing. Showing the fallback cinema screen."
+    static let decodeFailure = "This panorama could not be decoded. Showing the fallback cinema screen."
+    static let resourceFailure = "The environment failed to load. Showing the fallback cinema screen."
+}
+
 // MARK: - Screen Size Presets
 
 /// Cinema screen size/distance presets. Cycle with `.immersiveControlCycleScreenSize`.
@@ -145,19 +157,19 @@ struct HDRISkyboxEnvironment: View {
 
             // MARK: Async HDRI load
             guard let asset = appState.selectedEnvironmentAsset else {
-                setLoadingState(.failed("No environment selected"))
+                setLoadingState(.failed(HDRISkyboxFailureCopy.noEnvironmentSelected))
                 return
             }
 
             guard let url = await appState.environmentCatalogManager.resolvedAssetURL(for: asset) else {
-                setLoadingState(.failed("Environment file missing: \(asset.name)"))
+                setLoadingState(.failed(HDRISkyboxFailureCopy.missingEnvironmentFile))
                 return
             }
 
             guard let cgImage = await Task.detached(priority: .userInitiated, operation: {
                 Self.loadHDRImage(from: url)
             }).value else {
-                setLoadingState(.failed("Could not decode HDRI image"))
+                setLoadingState(.failed(HDRISkyboxFailureCopy.decodeFailure))
                 return
             }
 
@@ -184,11 +196,6 @@ struct HDRISkyboxEnvironment: View {
 
                 // Remove placeholder
                 placeholder.removeFromParent()
-
-                // Remove loading indicator
-                if let loadingPanel = attachments.entity(for: "loadingIndicator") {
-                    loadingPanel.removeFromParent()
-                }
 
                 // MARK: IBL
                 let environmentResource = try await EnvironmentResource(equirectangular: cgImage)
@@ -223,13 +230,14 @@ struct HDRISkyboxEnvironment: View {
                 rimMat.color = .init(tint: .init(red: 0.15, green: 0.12, blue: 0.08, alpha: 0.06))
                 let rimEntity = ModelEntity(mesh: rimMesh, materials: [rimMat])
                 rimEntity.name = "hdri-floor-rim"
-                rimEntity.position.y = 0.001
+                rimEntity.position.y = HDRISkyboxGroundPolicy.ambientRimY
                 content.add(rimEntity)
 
                 setLoadingState(.loaded)
 
             } catch {
-                setLoadingState(.failed(error.localizedDescription))
+                logger.error("HDRI environment resource creation failed: \(error.localizedDescription, privacy: .public)")
+                setLoadingState(.failed(HDRISkyboxFailureCopy.resourceFailure))
             }
 
         } update: { content, attachments in
@@ -475,12 +483,12 @@ struct HDRISkyboxEnvironment: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.title2)
                 .foregroundStyle(.yellow)
-            Text("Failed to load environment")
+            Text("Environment Warning")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
             Button {
                 NotificationCenter.default.post(name: .immersiveControlDismiss, object: nil)
@@ -497,7 +505,7 @@ struct HDRISkyboxEnvironment: View {
             .padding(.top, 4)
         }
         .padding(24)
-        .frame(maxWidth: 300)
+        .frame(maxWidth: 320)
         .glassBackgroundEffect()
     }
 

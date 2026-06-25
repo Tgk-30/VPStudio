@@ -507,7 +507,7 @@ struct ScrobbleCoordinatorHistoryTests {
             session: session
         )
 
-        await coordinator.startPlayback(mediaId: "ttfractional", mediaType: .movie, progress: 0)
+        await coordinator.startPlayback(mediaId: "tt91000002", mediaType: .movie, progress: 0)
         await coordinator.stopPlayback(progress: 0.85)
 
         #expect(tracker.contains("/sync/history"))
@@ -752,7 +752,7 @@ struct ScrobbleCoordinatorErrorResilienceTests {
             session: session
         )
 
-        await coordinator.startPlayback(mediaId: "tt-start-failure", mediaType: .movie, progress: 0)
+        await coordinator.startPlayback(mediaId: "tt91000004", mediaType: .movie, progress: 0)
         await coordinator.stopPlayback(progress: 0.95)
 
         #expect(tracker.contains("/sync/history"))

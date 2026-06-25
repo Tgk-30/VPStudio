@@ -188,17 +188,18 @@ enum DetailPresentationPolicy {
         previewType: MediaType,
         previewTMDBID: Int?,
         mediaTitle: String?,
+        mediaID: String? = nil,
         mediaTMDBID: Int?
     ) -> String {
         let baseTitle = mediaTitle ?? previewTitle
-        if previewID.hasPrefix("tt") {
-            return "\(baseTitle)\nhttps://www.imdb.com/title/\(previewID)/"
-        }
-        if let tmdbId = mediaTMDBID ?? previewTMDBID {
-            let path = previewType == .movie ? "movie" : "tv"
-            return "\(baseTitle)\nhttps://www.themoviedb.org/\(path)/\(tmdbId)"
+        if let imdbID = mediaID.flatMap(imdbID(from:)) ?? imdbID(from: previewID) {
+            return "\(baseTitle)\nhttps://www.imdb.com/title/\(imdbID)/"
         }
         return baseTitle
+    }
+
+    private static func imdbID(from id: String) -> String? {
+        IMDbIdentifierPolicy.firstID(in: id)
     }
 }
 
@@ -302,13 +303,14 @@ enum DetailQASamplePolicy {
 
     static func downloadArguments(
         mediaItem: MediaItem?,
+        preview: MediaPreview? = nil,
         previewType: MediaType,
         selectedEpisode: Episode?
     ) -> DownloadArguments? {
         guard let mediaItem else { return nil }
         let isSeries = previewType == .series
         return DownloadArguments(
-            mediaId: mediaItem.id,
+            mediaId: DetailMediaIdentityPolicy.canonicalMediaID(mediaItem: mediaItem, preview: preview) ?? mediaItem.id,
             episodeId: isSeries ? selectedEpisode?.id : nil,
             mediaTitle: mediaItem.title,
             mediaType: mediaItem.type.rawValue,
@@ -423,10 +425,10 @@ struct DetailView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
     @State private var viewModel: DetailViewModel?
-    @State private var tmdbApiKey = ""
+    @State private var metadataApiKey = ""
     @State private var isShowingRatingSheet = false
     @State private var draftFeedbackValue: Double = 1
-    @State private var tmdbReloadTask: Task<Void, Never>?
+    @State private var metadataReloadTask: Task<Void, Never>?
     @State private var libraryReloadTask: Task<Void, Never>?
     @State private var feedbackReloadTask: Task<Void, Never>?
     @State private var downloadsReloadTask: Task<Void, Never>?
@@ -454,7 +456,7 @@ struct DetailView: View {
         preview: MediaPreview,
         initialAction: DetailInitialAction = .none,
         initialViewModel: DetailViewModel? = nil,
-        initialTMDBApiKey: String = "",
+        initialOMDbApiKey: String = "",
         initialIsShowingRatingSheet: Bool = false,
         initialDraftFeedbackValue: Double = 1,
         initialShowActiveSessionToast: Bool = false,
@@ -467,7 +469,7 @@ struct DetailView: View {
         self.initialAction = initialAction
         self.disablesAutomaticLoading = disablesAutomaticLoading
         _viewModel = State(initialValue: initialViewModel)
-        _tmdbApiKey = State(initialValue: initialTMDBApiKey)
+        _metadataApiKey = State(initialValue: initialOMDbApiKey)
         _isShowingRatingSheet = State(initialValue: initialIsShowingRatingSheet)
         _draftFeedbackValue = State(initialValue: initialDraftFeedbackValue)
         _showActiveSessionToast = State(initialValue: initialShowActiveSessionToast)
@@ -520,14 +522,14 @@ struct DetailView: View {
             hasHandledInitialAction = false
             torrentAutoSearchTask?.cancel()
             torrentAutoSearchTask = nil
-            await reloadDetailForLatestTMDBKey()
+            await reloadDetailForLatestMetadataKey()
             guard !Task.isCancelled else { return }
             isPreparingInitialPresentation = false
         }
         .onDisappear {
             viewModel?.cancelInFlightWork()
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = nil
+            metadataReloadTask?.cancel()
+            metadataReloadTask = nil
             libraryReloadTask?.cancel()
             libraryReloadTask = nil
             feedbackReloadTask?.cancel()
@@ -541,9 +543,9 @@ struct DetailView: View {
             activeSessionToastTask?.cancel()
             activeSessionToastTask = nil
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = Task { await reloadDetailForLatestTMDBKey() }
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
+            metadataReloadTask?.cancel()
+            metadataReloadTask = Task { await reloadDetailForLatestMetadataKey() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryDidChange)) { _ in
             guard let vm = viewModel else { return }
@@ -577,12 +579,12 @@ struct DetailView: View {
     }
 
     @MainActor
-    private func reloadDetailForLatestTMDBKey() async {
+    private func reloadDetailForLatestMetadataKey() async {
         torrentAutoSearchTask?.cancel()
         torrentAutoSearchTask = nil
 
-        let key = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
-        tmdbApiKey = key
+        let key = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
+        metadataApiKey = key
 
         let vm: DetailViewModel
         if let existingViewModel = viewModel {
@@ -621,7 +623,7 @@ struct DetailView: View {
         SeriesDetailLayout(
             viewModel: vm,
             title: preview.title,
-            tmdbApiKey: tmdbApiKey,
+            metadataApiKey: metadataApiKey,
             mediaType: preview.type,
             streamResultsAnchor: streamResultsAnchor,
             shareItem: detailShareItem(vm),
@@ -679,7 +681,7 @@ struct DetailView: View {
                 set: { vm.error = $0 }
             ),
             onRetry: {
-                Task { await vm.retryLastFailedOperation(apiKey: tmdbApiKey) }
+                Task { await vm.retryLastFailedOperation(apiKey: metadataApiKey) }
             }
         )
         .overlay(alignment: .top) {
@@ -722,6 +724,7 @@ struct DetailView: View {
             previewType: preview.type,
             previewTMDBID: preview.tmdbId,
             mediaTitle: vm.mediaItem?.title,
+            mediaID: vm.mediaItem?.id,
             mediaTMDBID: vm.mediaItem?.tmdbId
         )
     }
@@ -905,7 +908,7 @@ private extension DetailView {
             selectedSeason: QARuntimeOptions.selectedSeason,
             currentSeason: vm.selectedSeason
         ) {
-            await vm.loadSeason(season, apiKey: tmdbApiKey)
+            await vm.loadSeason(season, apiKey: metadataApiKey)
         }
 
         if let episode = DetailQAActionsPolicy.episodeToSelect(
@@ -973,6 +976,7 @@ private extension DetailView {
     func queueQASampleDownload(_ stream: StreamInfo, vm: DetailViewModel) async {
         guard let arguments = DetailQASamplePolicy.downloadArguments(
             mediaItem: vm.mediaItem,
+            preview: preview,
             previewType: preview.type,
             selectedEpisode: vm.selectedEpisode
         ) else { return }

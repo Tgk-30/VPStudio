@@ -66,6 +66,49 @@ struct DetailFeedbackTests {
     }
 
     @MainActor
+    @Test func submitFeedbackPersistsOMDbIMDbIdentifierForSync() async throws {
+        let (appState, tempDir) = try makeIsolatedAppState()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await appState.database.migrate()
+        try await appState.settingsManager.setString(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+
+        let preview = makePreview(id: "tt1160419", title: "Dune")
+        let viewModel = DetailViewModel(appState: appState)
+        viewModel.setPreviewContext(preview)
+
+        await viewModel.submitFeedback(value: 9)
+
+        let latest = try await appState.database.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest?.mediaId == "tt1160419")
+        #expect(latest?.metadata["title"] == "Dune")
+        #expect(viewModel.currentFeedbackSummary == "9/10")
+    }
+
+    @MainActor
+    @Test func submitFeedbackNormalizesCompositeIMDbIdentifierForSync() async throws {
+        let (appState, tempDir) = try makeIsolatedAppState()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await appState.database.migrate()
+        try await appState.settingsManager.setString(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+
+        let preview = makePreview(id: "movie-imdb-TT1160419", title: "Dune")
+        let viewModel = DetailViewModel(appState: appState)
+        viewModel.setPreviewContext(preview)
+
+        await viewModel.submitFeedback(value: 9)
+
+        let latest = try await appState.database.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest?.mediaId == "tt1160419")
+        #expect(try await appState.database.fetchLatestTasteRating(mediaId: "movie-imdb-tt1160419")?.id == latest?.id)
+    }
+
+    @MainActor
     @Test func submitFeedbackShowsActionableMessageWhenIdentifierMissing() async throws {
         let (appState, tempDir) = try makeIsolatedAppState()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -336,6 +379,51 @@ struct DatabaseDeleteLatestTasteRatingTests {
         let remaining = try await db.fetchLatestTasteRating(mediaId: mediaId)
         #expect(remaining != nil)
         #expect(remaining?.feedbackValue == 3)
+    }
+
+    @MainActor
+    @Test func fetchLatestTasteRatingResolvesBareAndCompositeIMDbAliases() async throws {
+        let (db, tempDir) = try makeIsolatedDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await db.migrate()
+
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "tt1160419",
+                eventType: .rated,
+                signalStrength: 0.9,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .automatic
+            )
+        )
+
+        let latest = try await db.fetchLatestTasteRating(mediaId: "movie-imdb-tt1160419")
+        #expect(latest?.mediaId == "tt1160419")
+        #expect(latest?.feedbackValue == 9)
+    }
+
+    @MainActor
+    @Test func deleteLatestTasteRatingRemovesAliasedBareIMDbRating() async throws {
+        let (db, tempDir) = try makeIsolatedDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await db.migrate()
+
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "tt1160419",
+                eventType: .rated,
+                signalStrength: 0.9,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .automatic
+            )
+        )
+
+        try await db.deleteLatestTasteRating(mediaId: "movie-imdb-tt1160419")
+
+        let latest = try await db.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest == nil)
     }
 
     @MainActor

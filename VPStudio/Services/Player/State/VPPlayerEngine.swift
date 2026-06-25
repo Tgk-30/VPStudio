@@ -39,6 +39,7 @@ final class VPPlayerEngine {
     // MARK: - Subtitle Display
 
     var currentSubtitleText: String?
+    var subtitleOffset: TimeInterval = 0
 
     // MARK: - Video Info
 
@@ -134,7 +135,8 @@ final class VPPlayerEngine {
     }
 
     func selectSubtitleTrack(_ index: Int) {
-        guard index == -1 || subtitleTracks.isEmpty || subtitleTracks.contains(where: { $0.id == index }) else {
+        let hasLoadedTracks = !subtitleTracks.isEmpty
+        guard index == -1 || !hasLoadedTracks || subtitleTracks.contains(where: { $0.id == index }) else {
             return
         }
         selectedSubtitleTrack = index
@@ -146,9 +148,12 @@ final class VPPlayerEngine {
         if index == -1 {
             subtitlesEnabled = false
             currentSubtitleText = nil
-        } else {
+        } else if hasLoadedTracks {
             subtitlesEnabled = true
             updateSubtitleText(at: currentTime)
+        } else {
+            subtitlesEnabled = false
+            currentSubtitleText = nil
         }
     }
 
@@ -174,6 +179,7 @@ final class VPPlayerEngine {
         selectedSubtitleTrack = -1
         subtitlesEnabled = false
         currentSubtitleText = nil
+        subtitleOffset = 0
         videoSize = .zero
         fps = 0
         videoBitrate = 0
@@ -326,7 +332,7 @@ final class VPPlayerEngine {
             currentSubtitleText = nil
             return
         }
-        currentSubtitleText = SubtitleParser.activeCue(at: time, in: cues)?.text
+        currentSubtitleText = SubtitleParser.activeCue(at: max(0, time + subtitleOffset), in: cues)?.text
     }
 
     // MARK: - Computed

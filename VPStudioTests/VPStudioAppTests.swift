@@ -70,7 +70,7 @@ struct VPStudioAppTests {
     func playerWindowGroupPassesSessionRequestForValueBackedDismissal() throws {
         let source = try Self.contents(of: "VPStudio/App/VPStudioApp.swift")
         #expect(source.contains("WindowGroup(id: \"player\", for: PlayerSessionRequest.self)"))
-        #expect(source.contains("sessionRequest: request"))
+        #expect(source.contains("sessionRequest: resolved"))
     }
 
     @Test
@@ -166,20 +166,23 @@ struct VPStudioAppTests {
     func audioSessionConfiguredForPlaybackOnNonMacOS() throws {
         #if !os(macOS)
         let source = try Self.contents(of: "VPStudio/App/VPStudioApp.swift")
-        #expect(source.contains("AVAudioSession.sharedInstance()"))
-        #expect(source.contains(".playback"))
-        #expect(source.contains(".moviePlayback"))
-        #expect(source.contains(".longFormVideo"))
+        let configurator = try Self.contents(of: "VPStudio/Services/Player/Audio/AudioSessionConfigurator.swift")
+        #expect(source.contains("AudioSessionConfigurator.configurePlaybackAsync(policy: .longFormVideo)"))
+        #expect(configurator.contains("AVAudioSession.sharedInstance()"))
+        #expect(configurator.contains(".playback"))
+        #expect(configurator.contains(".moviePlayback"))
+        #expect(configurator.contains(".longFormVideo"))
         #else
         #expect(Bool(true), "non-macOS test — skipped on this platform")
         #endif
     }
 
     @Test
-    func audioSessionActivatesOnInit() throws {
+    func audioSessionActivationIsNonblockingOnInit() throws {
         #if !os(macOS)
-        let source = try Self.contents(of: "VPStudio/App/VPStudioApp.swift")
-        #expect(source.contains("try session.setActive(true)"))
+        let configurator = try Self.contents(of: "VPStudio/Services/Player/Audio/AudioSessionConfigurator.swift")
+        #expect(configurator.contains("Task.detached(priority: .userInitiated)"))
+        #expect(configurator.contains("try session.setActive(true)"))
         #else
         #expect(Bool(true), "non-macOS test — skipped on this platform")
         #endif
@@ -188,9 +191,9 @@ struct VPStudioAppTests {
     @Test
     func audioSessionConfiguresMultichannelSupportOniOS15Plus() throws {
         #if !os(macOS)
-        let source = try Self.contents(of: "VPStudio/App/VPStudioApp.swift")
-        #expect(source.contains("setSupportsMultichannelContent(true)"))
-        #expect(source.contains("#available(iOS 15.0"))
+        let configurator = try Self.contents(of: "VPStudio/Services/Player/Audio/AudioSessionConfigurator.swift")
+        #expect(configurator.contains("setSupportsMultichannelContent(true)"))
+        #expect(configurator.contains("#available(iOS 15.0"))
         #else
         #expect(Bool(true), "non-macOS test — skipped on this platform")
         #endif
@@ -199,8 +202,8 @@ struct VPStudioAppTests {
     @Test
     func audioSessionConfigErrorsAreLoggedNotThrown() throws {
         #if !os(macOS)
-        let source = try Self.contents(of: "VPStudio/App/VPStudioApp.swift")
-        #expect(source.contains("Self.logger.error("))
+        let source = try Self.contents(of: "VPStudio/Services/Player/Audio/AudioSessionConfigurator.swift")
+        #expect(source.contains("logger.error("))
         #expect(source.contains("Failed to configure AVAudioSession"))
         #else
         #expect(Bool(true), "non-macOS test — skipped on this platform")

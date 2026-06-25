@@ -14,8 +14,8 @@ struct SettingsAccessibilityPolicyTests {
 
     @Test
     func rowLabelWithoutStatusIsJustTitle() {
-        let label = SettingsAccessibilityPolicy.rowLabel(title: "TMDB API Key", status: nil)
-        #expect(label == "TMDB API Key")
+        let label = SettingsAccessibilityPolicy.rowLabel(title: "OMDb API Key", status: nil)
+        #expect(label == "OMDb API Key")
     }
 
     @Test

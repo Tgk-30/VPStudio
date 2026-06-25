@@ -3,27 +3,55 @@ import Testing
 
 @Suite("TestModeData")
 struct TestModeDataTests {
+    @Test func previewSeedsUseOMDbFirstIMDbIdentities() {
+        let moviePreview = DiscoverPreviewSeed.moviePreviews[0]
+        let seriesPreview = DiscoverPreviewSeed.showPreviews[0]
+
+        #expect(moviePreview.id == "tt15239678")
+        #expect(seriesPreview.id == "tt11280740")
+        #expect(moviePreview.tmdbId == nil)
+        #expect(seriesPreview.tmdbId == nil)
+
+        let detailMovie = DetailPreviewSeed.mediaItem(for: .movie)
+        let detailSeries = DetailPreviewSeed.mediaItem(for: .series)
+        #expect(detailMovie.id == "tt15239678")
+        #expect(detailSeries.id == "tt11280740")
+        #expect(detailMovie.tmdbId == nil)
+        #expect(detailSeries.tmdbId == nil)
+        #expect(detailSeries.title == "Severance")
+        #expect(detailSeries.overview?.localizedCaseInsensitiveContains("corporate") == true)
+        #expect(detailSeries.overview?.localizedCaseInsensitiveContains("therapist") == false)
+        #expect(DetailPreviewSeed.episodes(for: .series).first?.mediaId == "tt11280740")
+
+        #expect(LibraryPreviewSeed.entries.allSatisfy { IMDbIdentifierPolicy.normalizedID(from: $0.mediaId) != nil })
+        #expect(LibraryPreviewSeed.mediaItems.values.allSatisfy { IMDbIdentifierPolicy.normalizedID(from: $0.id) != nil })
+        #expect(LibraryPreviewSeed.mediaItems.values.allSatisfy { $0.tmdbId == nil })
+
+        #expect(DownloadsPreviewSeed.tasks.allSatisfy { IMDbIdentifierPolicy.normalizedID(from: $0.mediaId) != nil })
+        #expect(DownloadsPreviewSeed.tasks.compactMap(\.episodeId).contains("tt11280740-s2e1"))
+    }
+
     @Test func mediaPreviewsUseStableVisualQAIdentities() {
         let movie = TestModeData.moviePreview
         let series = TestModeData.seriesPreview
 
-        #expect(movie.id == "test-movie-1")
+        #expect(movie.id == "tt15239678")
         #expect(movie.type == .movie)
         #expect(movie.title == "Dune: Part Two")
         #expect(movie.year == 2024)
         #expect(movie.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/8b8R8l88QJejddJmXAdzF9xFGAD.jpg")
         #expect(movie.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/xOMo8BRK7PfcJv9JCnx7s5hj0PX.jpg")
         #expect(movie.imdbRating == 8.8)
-        #expect(movie.tmdbId == 693_134)
+        #expect(movie.tmdbId == nil)
 
-        #expect(series.id == "test-series-1")
+        #expect(series.id == "tt15677150")
         #expect(series.type == .series)
         #expect(series.title == "Shrinking")
         #expect(series.year == 2023)
         #expect(series.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/vEF6xlpIIyJPKJLRG0llLxM5sQS.jpg")
         #expect(series.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/sIhNMJZzW1V3R9O8VwR2F8XJE1W.jpg")
         #expect(series.imdbRating == 8.1)
-        #expect(series.tmdbId == 209_163)
+        #expect(series.tmdbId == nil)
     }
 
     @Test func movieTorrentFixturesPreserveSearchMetadataAndParserHints() {
@@ -74,9 +102,16 @@ struct TestModeDataTests {
         #expect(seasons.last?.seasonNumber == episodes.first?.seasonNumber)
         #expect(seasons.reduce(0) { $0 + $1.episodeCount } == 29)
 
-        #expect(episodes.map(\.id) == ["ep-s3e1", "ep-s3e2", "ep-s3e3", "ep-s3e4", "ep-s3e5", "ep-s3e6"])
+        #expect(episodes.map(\.id) == [
+            "tt15677150-s3e1",
+            "tt15677150-s3e2",
+            "tt15677150-s3e3",
+            "tt15677150-s3e4",
+            "tt15677150-s3e5",
+            "tt15677150-s3e6",
+        ])
         #expect(episodes.map(\.episodeNumber) == [1, 2, 3, 4, 5, 6])
-        #expect(Set(episodes.map(\.mediaId)) == ["209163"])
+        #expect(Set(episodes.map(\.mediaId)) == ["tt15677150"])
         #expect(episodes.map(\.shortLabel) == ["S03E01", "S03E02", "S03E03", "S03E04", "S03E05", "S03E06"])
         #expect(episodes.first?.displayTitle == "S03E01 - Fanatics")
         #expect(episodes.compactMap(\.stillURL).count == 4)
@@ -104,6 +139,15 @@ struct TestModeDataTests {
         #expect(entries.allSatisfy { $0.backdropURL == nil })
         #expect(entries.compactMap(\.year).min() == 2022)
         #expect(entries.compactMap(\.year).max() == 2023)
-        #expect(entries.compactMap(\.tmdbId) == [872_585, 739_542, 1_062_719, 466_420, 73_586, 840_430])
+        #expect(entries.map(\.id) == [
+            "tt15398776",
+            "tt14230458",
+            "tt14452776",
+            "tt5537002",
+            "tt5875444",
+            "tt14849194",
+        ])
+        #expect(entries.allSatisfy { IMDbIdentifierPolicy.normalizedID(from: $0.id) != nil })
+        #expect(entries.allSatisfy { $0.tmdbId == nil })
     }
 }

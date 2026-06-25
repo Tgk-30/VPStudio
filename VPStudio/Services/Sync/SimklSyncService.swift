@@ -117,8 +117,9 @@ actor SimklSyncService {
     }
 
     func addToList(imdbId: String, type: MediaType, list: String = "plantowatch") async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let key = type == .movie ? "movies" : "shows"
-        let item = SimklAddItem(ids: SimklAddIds(imdb: imdbId), to: list, watchedAt: nil)
+        let item = SimklAddItem(ids: SimklAddIds(imdb: normalizedIMDbID), to: list, watchedAt: nil)
 
         var dict: [String: [SimklAddItem]] = [:]
         dict[key] = [item]
@@ -131,10 +132,11 @@ actor SimklSyncService {
         type: MediaType,
         watchedAt: Date = Date()
     ) async throws {
+        let normalizedIMDbID = try Self.validIMDbID(imdbId)
         let key = type == .movie ? "movies" : "shows"
         let formatter = ISO8601DateFormatter()
         let item = SimklAddItem(
-            ids: SimklAddIds(imdb: imdbId),
+            ids: SimklAddIds(imdb: normalizedIMDbID),
             to: nil,
             watchedAt: formatter.string(from: watchedAt)
         )
@@ -142,6 +144,13 @@ actor SimklSyncService {
         dict[key] = [item]
         let wrappedData = try JSONEncoder().encode(dict)
         let _: SimklActionResponse = try await postData(path: "/sync/history", data: wrappedData)
+    }
+
+    private static func validIMDbID(_ imdbId: String) throws -> String {
+        guard let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) else {
+            throw SimklError.invalidIMDbID
+        }
+        return normalizedIMDbID
     }
 
     // MARK: - Networking
@@ -504,6 +513,7 @@ extension SimklIds: Decodable {}
 
 enum SimklError: LocalizedError {
     case invalidURL
+    case invalidIMDbID
     case httpError(Int)
     case unauthorized
     case notConnected
@@ -518,6 +528,7 @@ enum SimklError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid Simkl URL"
+        case .invalidIMDbID: return "Invalid IMDb ID"
         case .httpError(let code): return "Simkl API error: HTTP \(code)"
         case .unauthorized: return "Simkl authorization expired"
         case .notConnected: return "Not connected to Simkl"

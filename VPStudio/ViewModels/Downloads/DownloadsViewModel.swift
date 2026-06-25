@@ -51,8 +51,7 @@ struct DownloadMediaGroup: Identifiable {
     var tasks: [DownloadTask]
 
     var posterURL: URL? {
-        guard let path = posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w342\(path)")
+        MediaArtworkURLPolicy.url(for: posterPath, legacyTMDBSizePath: "w342")
     }
 
     var completedCount: Int {
@@ -200,6 +199,7 @@ final class DownloadsViewModel {
             stream: stream,
             mediaTitle: task.displayTitle,
             mediaId: task.mediaId,
+            posterPath: task.posterPath,
             episodeId: task.episodeId
         )
         appState.activePlayerSession = request

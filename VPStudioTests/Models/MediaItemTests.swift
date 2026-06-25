@@ -33,6 +33,63 @@ struct MediaItemComputedPropertiesTests {
         #expect(item.posterURL == nil)
     }
 
+    @Test func posterURLPreservesSecureArtworkURLsFromOMDb() {
+        let secure = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+
+        #expect(secure.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
+    }
+
+    @Test func artworkURLRejectsUnsafeAbsoluteSchemes() {
+        #expect(MediaArtworkURLPolicy.url(for: "http://img.omdb.example/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "file:///Users/example/private.png", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "javascript:alert(1)", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "data:image/png;base64,AAAA", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https:///missing-host.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "http:/missing-host.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "//m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+    }
+
+    @Test func artworkURLRejectsCredentialBearingHTTPSURLs() {
+        #expect(MediaArtworkURLPolicy.url(for: "https://user:password@m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://token@m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "https://token@m.media-amazon.com/images/M/poster.jpg",
+            backdropPath: "https://user:password@m.media-amazon.com/images/M/backdrop.jpg"
+        )
+        #expect(item.posterURL == nil)
+        #expect(item.backdropURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func artworkURLRejectsOMDbPlaceholderPaths() {
+        #expect(MediaArtworkURLPolicy.url(for: "N/A", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: " n/a ", legacyTMDBSizePath: "w500") == nil)
+
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "N/A",
+            backdropPath: " n/a "
+        )
+        #expect(item.posterURL == nil)
+        #expect(item.backdropURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func artworkURLNormalizesLegacyTMDBPathWithoutLeadingSlash() {
+        #expect(MediaArtworkURLPolicy.url(for: "poster.jpg", legacyTMDBSizePath: "w500")?.absoluteString == "https://image.tmdb.org/t/p/w500/poster.jpg")
+    }
+
     @Test func backdropURLBuildsTMDBW1280() {
         let item = MediaItem(
             id: "tt123",
@@ -85,6 +142,20 @@ struct MediaItemComputedPropertiesTests {
 
     @Test func hasArtworkFalseWithNilPaths() {
         let item = MediaItem(id: "tt123", type: .movie, title: "Test")
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func hasArtworkFalseWhenPersistedArtworkCannotRender() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "javascript:alert(1)",
+            backdropPath: "//m.media-amazon.com/images/M/backdrop.jpg"
+        )
+
+        #expect(item.posterURL == nil)
+        #expect(item.backdropURL == nil)
         #expect(item.hasArtwork == false)
     }
 

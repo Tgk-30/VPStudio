@@ -8,9 +8,11 @@ struct LaneBFixesTests {
             title: "Indie Favorite",
             recommendationMediaID: "tt1234567",
             recommendationType: .movie,
+            imdbId: "tt1234567",
             tmdbId: nil,
             ratedMediaIds: ["tt1234567"],
             libraryMediaIds: [],
+            watchedMediaIds: [],
             ratedTitles: [],
             watchedTitles: [],
             libraryTitles: []
@@ -21,12 +23,55 @@ struct LaneBFixesTests {
 
     @Test func discoverFilteringRejectsEachLibraryRatedAndTitleExclusion() {
         #expect(Self.shouldKeepDiscoverRecommendation(libraryMediaIds: ["movie-local-1"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(watchedMediaIds: ["movie-local-1"]) == false)
         #expect(Self.shouldKeepDiscoverRecommendation(tmdbId: 42, ratedMediaIds: ["movie-tmdb-42"]) == false)
         #expect(Self.shouldKeepDiscoverRecommendation(tmdbId: 42, libraryMediaIds: ["movie-tmdb-42"]) == false)
+        #expect(Self.shouldKeepDiscoverRecommendation(tmdbId: 42, watchedMediaIds: ["movie-tmdb-42"]) == false)
         #expect(Self.shouldKeepDiscoverRecommendation(title: "Already Rated", ratedTitles: ["already rated"]) == false)
         #expect(Self.shouldKeepDiscoverRecommendation(title: "Already Watched", watchedTitles: ["already watched"]) == false)
         #expect(Self.shouldKeepDiscoverRecommendation(title: "Already Saved", libraryTitles: ["already saved"]) == false)
         #expect(Self.shouldKeepDiscoverRecommendation(title: "Fresh Pick") == true)
+    }
+
+    @Test func discoverFilteringRejectsOMDbCompositeIMDbIdentifiers() {
+        #expect(
+            Self.shouldKeepDiscoverRecommendation(
+                recommendationMediaID: "tt0133093",
+                imdbId: "tt0133093",
+                ratedMediaIds: ["movie-omdb-tt0133093"]
+            ) == false
+        )
+        #expect(
+            Self.shouldKeepDiscoverRecommendation(
+                recommendationMediaID: "tt0133093",
+                imdbId: "tt0133093",
+                libraryMediaIds: ["movie-omdb-tt0133093"]
+            ) == false
+        )
+    }
+
+    @Test func discoverFilteringRejectsEmbeddedIMDbIdentifiers() {
+        #expect(
+            Self.shouldKeepDiscoverRecommendation(
+                recommendationMediaID: "movie-imdb-tt1160419",
+                imdbId: "https://www.imdb.com/title/TT1160419/",
+                ratedMediaIds: ["tt1160419"]
+            ) == false
+        )
+        #expect(
+            Self.shouldKeepDiscoverRecommendation(
+                recommendationMediaID: "movie-imdb-tt1160419",
+                imdbId: "https://www.imdb.com/title/TT1160419/",
+                libraryMediaIds: ["movie-omdb-tt1160419"]
+            ) == false
+        )
+    }
+
+    @Test func discoverRecommendationScoringNormalizesIMDbIdentifierForms() {
+        #expect(DiscoverViewModel.imdbIDsMatch("https://www.imdb.com/title/TT1160419/", "movie-imdb-tt1160419"))
+        #expect(DiscoverViewModel.imdbIDsMatch("TT1160419", "movie-omdb-tt1160419"))
+        #expect(DiscoverViewModel.imdbIDsMatch("tt1160419", "tt15239678") == false)
+        #expect(DiscoverViewModel.imdbIDsMatch(nil, "tt1160419") == false)
     }
 
     @Test func discoverMissingKeyResetPolicyOnlyTriggersForConfiguredKey() {
@@ -239,9 +284,11 @@ struct LaneBFixesTests {
         title: String = "Fresh Pick",
         recommendationMediaID: String = "movie-local-1",
         recommendationType: MediaType = .movie,
+        imdbId: String? = nil,
         tmdbId: Int? = nil,
         ratedMediaIds: Set<String> = [],
         libraryMediaIds: Set<String> = [],
+        watchedMediaIds: Set<String> = [],
         ratedTitles: Set<String> = [],
         watchedTitles: Set<String> = [],
         libraryTitles: Set<String> = []
@@ -250,9 +297,11 @@ struct LaneBFixesTests {
             title: title,
             recommendationMediaID: recommendationMediaID,
             recommendationType: recommendationType,
+            imdbId: imdbId,
             tmdbId: tmdbId,
             ratedMediaIds: ratedMediaIds,
             libraryMediaIds: libraryMediaIds,
+            watchedMediaIds: watchedMediaIds,
             ratedTitles: ratedTitles,
             watchedTitles: watchedTitles,
             libraryTitles: libraryTitles

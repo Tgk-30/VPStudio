@@ -20,7 +20,7 @@ struct SettingsRootMacRenderCoverageTests {
         let warningStatuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "Missing provider", kind: .warning),
             .indexers: SettingsDestinationStatus(message: "No active indexers", kind: .warning),
-            .metadata: SettingsDestinationStatus(message: "API key required", kind: .warning),
+            .metadata: SettingsDestinationStatus(message: "OMDb key required", kind: .warning),
             .ai: SettingsDestinationStatus(message: "Provider key required", kind: .warning),
             .subtitles: SettingsDestinationStatus(message: "Optional", kind: .neutral),
         ]

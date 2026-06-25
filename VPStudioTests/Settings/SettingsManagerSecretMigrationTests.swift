@@ -11,6 +11,7 @@ struct SettingsManagerSecretMigrationTests {
     }
 
     private static let knownSecretKeys: [String] = [
+        SettingsKeys.omdbApiKey,
         SettingsKeys.tmdbApiKey,
         SettingsKeys.openSubtitlesApiKey,
         SettingsKeys.openAIApiKey,
@@ -143,10 +144,10 @@ struct SettingsManagerSecretMigrationTests {
     @Test
     func settingSecretTrimsWhitespaceBeforePersisting() async throws {
         try await withTempSettingsEnvironment(databaseName: "settings-trim.sqlite") { _, secretStore, manager in
-            try await manager.setString(key: SettingsKeys.tmdbApiKey, value: "  token-value  ")
+            try await manager.setString(key: SettingsKeys.omdbApiKey, value: "  token-value  ")
 
-            let persisted = try await manager.getString(key: SettingsKeys.tmdbApiKey)
-            let storedSecret = try await secretStore.getSecret(for: SecretKey.setting(SettingsKeys.tmdbApiKey))
+            let persisted = try await manager.getString(key: SettingsKeys.omdbApiKey)
+            let storedSecret = try await secretStore.getSecret(for: SecretKey.setting(SettingsKeys.omdbApiKey))
             #expect(persisted == "token-value")
             #expect(storedSecret == "token-value")
         }
@@ -155,12 +156,12 @@ struct SettingsManagerSecretMigrationTests {
     @Test
     func settingSecretWhitespaceOnlyClearsStoredSecret() async throws {
         try await withTempSettingsEnvironment(databaseName: "settings-trim-clear.sqlite") { database, secretStore, manager in
-            try await manager.setString(key: SettingsKeys.tmdbApiKey, value: "token")
-            try await manager.setString(key: SettingsKeys.tmdbApiKey, value: "   ")
+            try await manager.setString(key: SettingsKeys.omdbApiKey, value: "token")
+            try await manager.setString(key: SettingsKeys.omdbApiKey, value: "   ")
 
-            let persisted = try await manager.getString(key: SettingsKeys.tmdbApiKey)
-            let raw = try await database.getSetting(key: SettingsKeys.tmdbApiKey)
-            let storedSecret = try await secretStore.getSecret(for: SecretKey.setting(SettingsKeys.tmdbApiKey))
+            let persisted = try await manager.getString(key: SettingsKeys.omdbApiKey)
+            let raw = try await database.getSetting(key: SettingsKeys.omdbApiKey)
+            let storedSecret = try await secretStore.getSecret(for: SecretKey.setting(SettingsKeys.omdbApiKey))
 
             #expect(persisted == nil)
             #expect(raw == nil)

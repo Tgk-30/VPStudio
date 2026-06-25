@@ -148,7 +148,10 @@ enum GenreEnvironmentSuggestionPolicy {
         36: classics,      // History
     ]
 
-    /// Normalized human genre names -> mood.
+    /// Normalized human genre names -> mood. Covers TMDB display names AND the full
+    /// OMDb genre vocabulary (Biography, Family, Film-Noir, Music, Musical, Sport,
+    /// War, Western, …) so OMDb-sourced titles resolve to a tailored environment
+    /// instead of always falling back to the neutral cinema default.
     private static let nameSuggestions: [String: EnvironmentSuggestion] = [
         "horror": horror,
         "science fiction": scifi,
@@ -159,16 +162,26 @@ enum GenreEnvironmentSuggestionPolicy {
         "documentary": docs,
         "documentaries": docs,
         "docs": docs,
+        "news": docs,
         "romance": chill,
+        "music": chill,
+        "musical": chill,
+        "family": chill,
         "action": action,
         "action & adventure": action,
         "adventure": action,
+        "sport": action,
+        "war": action,
+        "war & politics": action,
         "thriller": mystery,
         "mystery": mystery,
         "crime": mystery,
+        "film-noir": mystery,
         "drama": drama,
+        "biography": drama,
         "comedy": comedy,
         "fantasy": fantasy,
         "history": classics,
+        "western": classics,
     ]
 }

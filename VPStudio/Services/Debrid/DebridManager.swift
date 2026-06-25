@@ -246,6 +246,7 @@ actor DebridManager {
     }
 
     func resolveStream(from context: StreamRecoveryContext) async throws -> StreamInfo {
+        try await ensureServicesInitializedIfNeeded()
         await cleanupRemoteTransfer(using: context)
         let preferredService = context.resolvedDebridService
             .flatMap(DebridServiceType.init(rawValue:))

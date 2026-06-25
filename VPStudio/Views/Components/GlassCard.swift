@@ -62,6 +62,7 @@ struct GlassTag: View {
     var tintColor: Color?
     var symbol: String?
     var weight: Font.Weight = .medium
+    var foregroundColor: Color?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -87,7 +88,7 @@ struct GlassTag: View {
                     lineWidth: 1
                 )
         }
-        .foregroundStyle(tintColor.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+        .foregroundStyle(foregroundStyle)
     }
 
     private var tagBackground: AnyShapeStyle {
@@ -96,6 +97,14 @@ struct GlassTag: View {
         } else {
             AnyShapeStyle(.ultraThinMaterial)
         }
+    }
+
+    private var foregroundStyle: AnyShapeStyle {
+        if let foregroundColor {
+            return AnyShapeStyle(foregroundColor)
+        }
+
+        return tintColor.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary)
     }
 }
 
@@ -461,7 +470,8 @@ struct CinematicStateCard<Content: View>: View {
                 Image(artworkName)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .frame(height: minHeight, alignment: .center)
                     .opacity(0.28)
                     .clipped()
                     .allowsHitTesting(false)

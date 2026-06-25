@@ -96,6 +96,29 @@ struct YTSIndexerTests {
         #expect(state.capturedQuery == "Dune")
     }
 
+    @Test func buildSearchPathDoesNotDuplicateFullEndpointInBaseURL() async throws {
+        final class State: @unchecked Sendable {
+            var requestPath: String?
+        }
+        let state = State()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            state.requestPath = url.path
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = #"{"status":"ok","data":{"movies":[]}}"#
+            return (response, Data(body.utf8))
+        }
+
+        let indexer = YTSIndexer(
+            baseURLs: ["https://yts.example/api/v2/list_movies.json"],
+            session: session
+        )
+        _ = try await indexer.searchByQuery(query: "Dune", type: .movie)
+
+        #expect(state.requestPath == "/api/v2/list_movies.json")
+    }
+
     @Test func searchByIMDbReturnsMoviesOnly() async throws {
         final class RequestState: @unchecked Sendable {
             var requestCount = 0
@@ -346,7 +369,7 @@ struct YTSIndexerTests {
         )
         let results = try await indexer.searchByQuery(query: "Fallback Movie", type: .movie)
 
-        #expect(state.hosts == ["first.example", "second.example"])
+        #expect(state.hosts == ["first.example", "first.example", "first.example", "second.example"])
         #expect(results.map(\.title) == ["Fallback Movie"])
     }
 

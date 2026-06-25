@@ -17,8 +17,8 @@ struct SettingsSearchPolicyTestsSettingsSettingssearchpolicytests2 {
 
     @Test
     func resultsSummarySingularFormatting() {
-        let summary = SettingsSearchPolicy.resultsSummary(count: 1, query: "tmdb")
-        #expect(summary == "1 result for \"tmdb\"")
+        let summary = SettingsSearchPolicy.resultsSummary(count: 1, query: "omdb")
+        #expect(summary == "1 result for \"omdb\"")
     }
 
     @Test

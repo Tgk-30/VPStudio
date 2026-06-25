@@ -169,15 +169,15 @@ struct AppErrorInitMappingTests {
         #expect(mapped == .unknown("named error"))
     }
 
-    @Test func tmdbSetupRequiredMarksActionableSetupErrorsOnly() {
-        let setup = AppError.tmdbSetupRequired(feature: "Search")
-        let plain = AppError.unknown("Search needs a TMDB API key.")
+    @Test func metadataSetupRequiredMarksActionableSetupErrorsOnly() {
+        let setup = AppError.metadataSetupRequired(feature: "Search")
+        let plain = AppError.unknown("Search needs an OMDb API key.")
         let network = AppError.network(.unauthorized)
 
-        #expect(setup.requiresTMDBSetupAction)
-        #expect(setup.errorDescription?.contains("Search needs a TMDB API key") == true)
-        #expect(!plain.requiresTMDBSetupAction)
-        #expect(!network.requiresTMDBSetupAction)
+        #expect(setup.requiresMetadataSetupAction)
+        #expect(setup.errorDescription?.contains("Search needs an OMDb API key") == true)
+        #expect(!plain.requiresMetadataSetupAction)
+        #expect(!network.requiresMetadataSetupAction)
     }
 }
 

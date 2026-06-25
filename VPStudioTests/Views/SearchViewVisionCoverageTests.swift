@@ -44,7 +44,8 @@ struct SearchViewVisionCoverageTests {
     @Test
     func resultsAndScrollChangesDriveVisibleBranches() async throws {
         let appState = AppState(testHooks: .init())
-        let viewModel = SearchViewModel()
+        let metadataProvider = StubMetadataProvider()
+        let viewModel = SearchViewModel(metadataService: metadataProvider)
         let genre = Genre(id: 878, name: "Science Fiction")
         let firstResult = Fixtures.mediaPreview(
             id: "movie-1",
@@ -60,6 +61,12 @@ struct SearchViewVisionCoverageTests {
             year: 2024,
             tmdbId: 2
         )
+        await metadataProvider.setSearchResult(MetadataSearchResult(
+            items: [firstResult, secondResult],
+            page: 1,
+            totalPages: 1,
+            totalResults: 2
+        ))
 
         let hosted = try hostInVisibleVisionWindow(
             NavigationStack {
@@ -99,7 +106,7 @@ struct SearchViewVisionCoverageTests {
                 score: 0.94
             ),
         ]
-        try await Task.sleep(nanoseconds: 120_000_000)
+        try await Self.waitForResultsPhase(viewModel)
 
         #expect(hosted.host.view.bounds.width > 0)
         #expect(viewModel.explorePhase == .results)
@@ -133,7 +140,7 @@ struct SearchViewVisionCoverageTests {
                 model.selectedGenre = genre
             }),
             ("error state", Self.searchViewModel { model in
-                model.error = .tmdbSetupRequired(feature: "Search")
+                model.error = .metadataSetupRequired(feature: "Search")
             }),
         ]
 
@@ -167,6 +174,13 @@ struct SearchViewVisionCoverageTests {
         let model = SearchViewModel()
         configure(model)
         return model
+    }
+
+    private static func waitForResultsPhase(_ viewModel: SearchViewModel) async throws {
+        for _ in 0..<20 {
+            if viewModel.explorePhase == .results { return }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 
     private static func recommendation(

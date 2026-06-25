@@ -6,12 +6,12 @@ enum DiscoverInitialLoadPolicy {
     }
 
     /// Retained for completeness, but the initial-load latch is now set STICKY — synchronously,
-    /// before the awaited TMDB/AI fetch — so this is no longer consulted after the await. (See the
+    /// before the awaited metadata/AI fetch — so this is no longer consulted after the await. (See the
     /// `.task` in `DiscoverView`.) ContentView hosts tabs via a `switch`, so leaving Discover tears
     /// the view down and cancels its `.task`; latching before the await means a mid-flight tab leave
     /// cannot undo it, and the view model — held as ContentView `@State` — keeps the cache across the
     /// teardown/recreation round trip. A cancellation-gated mark (the old behavior) re-fired the slow
-    /// TMDB + AI load on every tab switch, which was BUG 5.
+    /// metadata + AI load on every tab switch, which was BUG 5.
     static func shouldMarkCompleted(isCancelled: Bool) -> Bool {
         !isCancelled
     }
@@ -70,24 +70,25 @@ enum DiscoverHierarchyPolicy {
         trendingShows: [MediaPreview],
         popularMovies: [MediaPreview],
         topRatedMovies: [MediaPreview],
-        nowPlayingMovies: [MediaPreview]
+        nowPlayingMovies: [MediaPreview],
+        enabledCatalogs: Set<DiscoverCatalogKind> = DiscoverCatalogPreferencesPolicy.defaultKinds
     ) -> [DiscoverMediaRowSpec] {
-        let candidates: [(id: String, title: String, symbol: String, items: [MediaPreview])] = [
-            ("trending-movies", "Trending Now", "flame", trendingMovies),
-            ("trending-shows", "Trending TV Shows", "tv", trendingShows),
-            ("popular-movies", "Popular", "star", popularMovies),
-            ("top-rated-movies", "Top Rated", "trophy", topRatedMovies),
-            ("now-playing-movies", "Now Playing", "film", nowPlayingMovies),
+        let candidates: [(kind: DiscoverCatalogKind, items: [MediaPreview])] = [
+            (.trendingMovies, trendingMovies),
+            (.trendingShows, trendingShows),
+            (.popularMovies, popularMovies),
+            (.topRatedMovies, topRatedMovies),
+            (.nowPlayingMovies, nowPlayingMovies),
         ]
 
         return candidates
-            .filter { !$0.items.isEmpty }
+            .filter { enabledCatalogs.contains($0.kind) && !$0.items.isEmpty }
             .enumerated()
             .map { index, row in
                 DiscoverMediaRowSpec(
-                    id: row.id,
-                    title: row.title,
-                    symbol: row.symbol,
+                    id: row.kind.rowID,
+                    title: row.kind.title,
+                    symbol: row.kind.symbol,
                     items: row.items,
                     animationDelay: animationDelay(forVisibleCatalogIndex: index)
                 )
@@ -176,10 +177,10 @@ struct DiscoverErrorPresentation: Equatable {
 }
 
 enum DiscoverErrorPresentationPolicy {
-    static let setupInlineMessage = "Add your TMDB key in Settings, then come back here for live trending rows and hero art. Library and Downloads keep working in the meantime."
+    static let setupInlineMessage = "Add your OMDb key in Settings, then come back here for metadata, posters, and Discover rows. Library and Downloads keep working in the meantime."
 
     static func presentation(for error: AppError) -> DiscoverErrorPresentation {
-        let isSetupError = error.requiresTMDBSetupAction
+        let isSetupError = error.requiresMetadataSetupAction
         return DiscoverErrorPresentation(
             isSetupError: isSetupError,
             artworkName: isSetupError ? "genre-art-new" : "genre-art-deep",
@@ -217,6 +218,49 @@ struct DiscoverDetailRoute: Identifiable, Hashable {
     }
 }
 
+private struct DiscoverLockedPreviewTile: View {
+    let index: Int
+
+    private var accent: Color {
+        switch index % 5 {
+        case 0: return .yellow
+        case 1: return .pink
+        case 2: return .teal
+        case 3: return .purple
+        default: return .orange
+        }
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        accent.opacity(0.16),
+                        Color.white.opacity(0.08),
+                        Color.white.opacity(0.03),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay {
+                Image(systemName: index.isMultiple(of: 2) ? "play.rectangle" : "film")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.34))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        .white.opacity(0.22),
+                        style: StrokeStyle(lineWidth: 1, dash: [6, 5])
+                    )
+            }
+            .frame(width: 112, height: 132)
+            .opacity(0.86)
+    }
+}
+
 enum DiscoverNavigationPolicy {
     static func browseRoute(for preview: MediaPreview) -> DiscoverDetailRoute {
         DiscoverDetailRoute(preview: preview, initialAction: .none)
@@ -233,6 +277,7 @@ struct DiscoverView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
     @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
+    @AppStorage(DiscoverCatalogPreferencesPolicy.storageKey) private var enabledCatalogIDs = DiscoverCatalogPreferencesPolicy.defaultStorageValue
     @Bindable var viewModel: DiscoverViewModel
     /// When the first-run Quick Start prompt is on screen, suppress Discover's own setup panel so
     /// the user isn't shown two competing "finish setup" surfaces at once.
@@ -243,7 +288,7 @@ struct DiscoverView: View {
         Binding(get: { appState.discoverDetailRoute }, set: { appState.discoverDetailRoute = $0 })
     }
     @State private var currentHeroIndex = 0
-    @State private var tmdbReloadTask: Task<Void, Never>?
+    @State private var metadataReloadTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var recommendationsFilterTask: Task<Void, Never>?
     @State private var userRatings: [String: TasteEvent] = [:]
@@ -258,8 +303,13 @@ struct DiscoverView: View {
             trendingShows: viewModel.trendingShows,
             popularMovies: viewModel.popularMovies,
             topRatedMovies: viewModel.topRatedMovies,
-            nowPlayingMovies: viewModel.nowPlayingMovies
+            nowPlayingMovies: viewModel.nowPlayingMovies,
+            enabledCatalogs: enabledCatalogs
         )
+    }
+
+    private var enabledCatalogs: Set<DiscoverCatalogKind> {
+        DiscoverCatalogPreferencesPolicy.enabledKinds(from: enabledCatalogIDs)
     }
 
     private var aiCuratedSectionState: DiscoverAICuratedSectionState? {
@@ -293,11 +343,26 @@ struct DiscoverView: View {
         )
     }
 
+    private var suppressedSetupBackdropPresentation: DiscoverErrorPresentation? {
+        guard suppressSetupSurface, let error = viewModel.error else { return nil }
+        let presentation = DiscoverErrorPresentationPolicy.presentation(for: error)
+        guard DiscoverSetupSurfacePolicy.showsSuppressedSetupBackdrop(
+            suppressSetupSurface: suppressSetupSurface,
+            isSetupError: presentation.isSetupError
+        ) else { return nil }
+        return presentation
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 36) {
                 if let error = viewModel.error, !suppressSetupSurface {
                     discoverStatePanel(error: error)
+                    if DiscoverErrorPresentationPolicy.presentation(for: error).isSetupError {
+                        discoverLockedPreviewRows
+                    }
+                } else if let presentation = suppressedSetupBackdropPresentation {
+                    discoverSuppressedSetupBackdrop(presentation: presentation)
                 }
 
                 if discoverLoadingPresentation == .blockingSkeleton {
@@ -377,7 +442,7 @@ struct DiscoverView: View {
             }
             .animation(.easeOut(duration: 0.25), value: discoverLoadingPresentation)
             .padding(.horizontal, 4)
-            .padding(.bottom, 24)
+            .padding(.bottom, DiscoverLayoutPolicy.bottomContentPadding(for: appState.navigationLayout))
         }
         .background {
             if useObsidianGlass {
@@ -402,11 +467,11 @@ struct DiscoverView: View {
                 hasPerformedInitialLoad: viewModel.hasPerformedInitialLoad
             ) else { return }
             // Latch BEFORE the await so leaving the Discover tab (which cancels this `.task`)
-            // mid-fetch cannot undo it and re-fire the slow TMDB + AI load on the next tab switch.
+            // mid-fetch cannot undo it and re-fire the slow metadata + AI load on the next tab switch.
             // The view model lives on ContentView as `@State`, so the latch — and the cache it
             // guards — persists across the view teardown/recreation.
             viewModel.hasPerformedInitialLoad = true
-            await reloadDiscoverForLatestTMDBKey()
+            await reloadDiscoverForLatestMetadataKey()
         }
         .task(id: accessibilityVoiceOverEnabled) {
             guard !accessibilityVoiceOverEnabled else { return }
@@ -424,9 +489,9 @@ struct DiscoverView: View {
                 currentHeroIndex = 0
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = Task { await reloadDiscoverForLatestTMDBKey() }
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
+            metadataReloadTask?.cancel()
+            metadataReloadTask = Task { await reloadDiscoverForLatestMetadataKey() }
         }
         .task {
             await loadUserRatings()
@@ -469,10 +534,112 @@ struct DiscoverView: View {
             }
         }
         .onDisappear {
-            tmdbReloadTask?.cancel()
+            metadataReloadTask?.cancel()
             userRatingsReloadTask?.cancel()
             recommendationsFilterTask?.cancel()
         }
+    }
+
+    private var secondarySetupActionTint: Color {
+        .white.opacity(0.95)
+    }
+
+    private var secondarySetupActionForeground: Color {
+        .white.opacity(0.9)
+    }
+
+    private var discoverLockedPreviewRows: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(0 ..< DiscoverSetupSurfacePolicy.lockedPreviewRowCount, id: \.self) { row in
+                VStack(alignment: .leading, spacing: 12) {
+                    GlassTag(
+                        text: row == 0 ? "Preview locked" : "Popular preview",
+                        tintColor: .white.opacity(0.48),
+                        symbol: row == 0 ? "lock.fill" : "star",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.92)
+                    )
+                    HStack(spacing: 14) {
+                        ForEach(0 ..< 5, id: \.self) { index in
+                            DiscoverLockedPreviewTile(index: row * 5 + index)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func discoverSuppressedSetupBackdrop(presentation: DiscoverErrorPresentation) -> some View {
+        CinematicStateCard(
+            accent: .yellow,
+            artworkName: presentation.artworkName,
+            minHeight: 360
+        ) {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 16) {
+                    Image(systemName: "sparkles.tv.fill")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 64, height: 64)
+                        .background(.yellow.opacity(0.26), in: Circle())
+                        .overlay {
+                            Circle()
+                                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+                        }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        GlassTag(
+                            text: "Ready when you are",
+                            tintColor: .yellow.opacity(0.34),
+                            symbol: "sparkles",
+                            weight: .semibold,
+                            foregroundColor: .white.opacity(0.92)
+                        )
+                        Text(presentation.headline)
+                            .font(.largeTitle.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.76)
+                        Text(presentation.message)
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                FlowLayout(spacing: 10) {
+                    GlassTag(
+                        text: "Trending rows",
+                        tintColor: .white.opacity(0.36),
+                        symbol: "rectangle.grid.1x2",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.88)
+                    )
+                    GlassTag(
+                        text: "Hero artwork",
+                        tintColor: .white.opacity(0.36),
+                        symbol: "photo.on.rectangle.angled",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.88)
+                    )
+                    GlassTag(
+                        text: "Search and streams",
+                        tintColor: .white.opacity(0.36),
+                        symbol: "play.rectangle.on.rectangle",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.88)
+                    )
+                }
+            }
+        }
+        .padding(.top, 72)
+        .padding(.horizontal, 8)
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     @ViewBuilder
@@ -482,8 +649,8 @@ struct DiscoverView: View {
 
         CinematicStateCard(
             accent: accent,
-            artworkName: presentation.artworkName,
-            minHeight: 228
+            artworkName: presentation.isSetupError ? nil : presentation.artworkName,
+            minHeight: presentation.isSetupError ? 340 : 228
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 14) {
@@ -505,9 +672,10 @@ struct DiscoverView: View {
                         )
                         Text(presentation.headline)
                             .font(.title3.weight(.semibold))
+                            .foregroundStyle(.white)
                         Text(presentation.message)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(presentation.isSetupError ? .white.opacity(0.82) : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -518,9 +686,16 @@ struct DiscoverView: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title3)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(presentation.isSetupError ? .white.opacity(0.78) : .secondary)
+                            .frame(width: 32, height: 32)
+                            .background(.white.opacity(0.08), in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                            }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(presentation.isSetupError ? "Dismiss setup message" : "Dismiss error message")
                 }
 
                 FlowLayout(spacing: 10) {
@@ -531,31 +706,29 @@ struct DiscoverView: View {
                         }
                     }
 
-                    Button {
-                        Task { await viewModel.refresh() }
-                        viewModel.error = nil
-                    } label: {
-                        GlassTag(text: presentation.retryTitle, tintColor: .white.opacity(0.18), symbol: "arrow.clockwise")
+                    if !presentation.isSetupError {
+                        Button {
+                            if DiscoverErrorActionPolicy.retryBehavior(isSetupError: presentation.isSetupError) == .refreshAndDismiss {
+                                Task { await viewModel.refresh() }
+                            }
+                            viewModel.error = nil
+                        } label: {
+                            GlassTag(
+                                text: presentation.retryTitle,
+                                tintColor: secondarySetupActionTint,
+                                symbol: "arrow.clockwise",
+                                foregroundColor: secondarySetupActionForeground
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        appState.selectedTab = .library
-                        viewModel.error = nil
-                    } label: {
-                        GlassTag(text: "Go to Library", tintColor: .white.opacity(0.18), symbol: "books.vertical")
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        appState.selectedTab = .downloads
-                        viewModel.error = nil
-                    } label: {
-                        GlassTag(text: "Open Downloads", tintColor: .white.opacity(0.18), symbol: "arrow.down.circle")
-                    }
-                    .buttonStyle(.plain)
                 }
             }
+            .frame(
+                maxWidth: .infinity,
+                minHeight: presentation.isSetupError ? 220 : 0,
+                alignment: .leading
+            )
         }
     }
 
@@ -685,18 +858,12 @@ struct DiscoverView: View {
     @MainActor
     private func loadUserRatings() async {
         let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
-        var dict: [String: TasteEvent] = [:]
-        for event in events {
-            if let mediaId = event.mediaId {
-                dict[mediaId] = event
-            }
-        }
-        userRatings = dict
+        userRatings = TasteRatingLookupPolicy.lookup(from: events)
     }
 
     @MainActor
-    private func reloadDiscoverForLatestTMDBKey() async {
-        let key = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+    private func reloadDiscoverForLatestMetadataKey() async {
+        let key = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
         viewModel.configure(database: appState.database)
         currentHeroIndex = 0
         await viewModel.load(apiKey: key)
@@ -1158,12 +1325,16 @@ struct FeaturedHeroView: View {
 
     private var backdropURL: URL? {
         // Prefer landscape backdrop for cinematic hero; fall back to poster if unavailable
-        guard let path = item.backdropPath ?? item.posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+        MediaArtworkURLPolicy.url(for: item.backdropPath ?? item.posterPath, legacyTMDBSizePath: "w1280")
     }
 }
 
 // MARK: - MediaRow
+
+enum MediaRowScrollCuePolicy {
+    static let trailingFadeStart = 0.98
+    static let trailingFadeEnd = 1.0
+}
 
 struct MediaRow: View {
     let title: String
@@ -1227,7 +1398,12 @@ struct MediaRow: View {
                         Button { onSelect(item) } label: {
                             MediaCardView(
                                 item: item,
-                                userRating: userRatings[item.id],
+                                userRating: TasteRatingLookupPolicy.rating(
+                                    in: userRatings,
+                                    mediaId: item.id,
+                                    type: item.type,
+                                    tmdbId: item.tmdbId
+                                ),
                                 progressPercent: progressByItemID[item.continueWatchingRowID],
                                 lastFrameURL: lastFrameByItemID[item.continueWatchingRowID],
                                 isResuming: resumingItemID == item.continueWatchingRowID
@@ -1245,8 +1421,8 @@ struct MediaRow: View {
                 LinearGradient(
                     stops: [
                         .init(color: .black, location: 0.0),
-                        .init(color: .black, location: 0.92),
-                        .init(color: .clear, location: 1.0),
+                        .init(color: .black, location: MediaRowScrollCuePolicy.trailingFadeStart),
+                        .init(color: .clear, location: MediaRowScrollCuePolicy.trailingFadeEnd),
                     ],
                     startPoint: .leading,
                     endPoint: .trailing

@@ -4,10 +4,11 @@ import UniformTypeIdentifiers
 // MARK: - Metadata Settings Policy
 
 enum MetadataSettingsPolicy {
-    static let savedMessage = "TMDB API key saved."
-    static let removedMessage = "TMDB API key removed."
+    static let savedMessage = "OMDb API key saved."
+    static let removedMessage = "OMDb API key removed."
     static let missingKeyMessage = "Enter an API key before testing."
-    static let validationFailureFallbackMessage = "TMDB validation failed."
+    static let validationFailureFallbackMessage = "OMDb validation failed."
+    static let validationProbeIMDbID = "tt0111161"
 
     struct APIKeyState: Equatable {
         let visibleValue: String
@@ -42,6 +43,10 @@ enum MetadataSettingsPolicy {
         SettingsInputValidation.hasUnsavedSecretChange(current: current, initial: baseline)
     }
 
+    static func shouldInvalidateSavedState(newValue: String, baseline: String) -> Bool {
+        hasUnsavedAPIKeyChange(current: newValue, baseline: baseline)
+    }
+
     static func loadedState(for persistedValue: String?) -> APIKeyState {
         let value = normalizedAPIKey(persistedValue ?? "") ?? ""
         return APIKeyState(
@@ -71,8 +76,8 @@ enum MetadataSettingsPolicy {
 
 struct MetadataSettingsView: View {
     @Environment(AppState.self) private var appState
-    @State private var tmdbApiKey = ""
-    @State private var initialTMDBApiKey = ""
+    @State private var omdbApiKey = ""
+    @State private var initialOMDbApiKey = ""
     @State private var isSaved = false
     @State private var isTestingApiKey = false
     @State private var surfaceError: AppError?
@@ -80,16 +85,16 @@ struct MetadataSettingsView: View {
     private let disablesAutomaticTasks: Bool
 
     init(
-        initialTMDBApiKey: String = "",
-        initialBaselineTMDBApiKey: String? = nil,
+        initialOMDbApiKey: String = "",
+        initialBaselineOMDbApiKey: String? = nil,
         initialIsSaved: Bool = false,
         initialIsTestingApiKey: Bool = false,
         initialSurfaceError: AppError? = nil,
         initialNotice: SettingsInlineNotice? = nil,
         disablesAutomaticTasks: Bool = false
     ) {
-        _tmdbApiKey = State(initialValue: initialTMDBApiKey)
-        _initialTMDBApiKey = State(initialValue: initialBaselineTMDBApiKey ?? initialTMDBApiKey)
+        _omdbApiKey = State(initialValue: initialOMDbApiKey)
+        _initialOMDbApiKey = State(initialValue: initialBaselineOMDbApiKey ?? initialOMDbApiKey)
         _isSaved = State(initialValue: initialIsSaved)
         _isTestingApiKey = State(initialValue: initialIsTestingApiKey)
         _surfaceError = State(initialValue: initialSurfaceError)
@@ -101,24 +106,24 @@ struct MetadataSettingsView: View {
         Form {
             Section {
                 HStack {
-                    SecureField("TMDB API Key", text: $tmdbApiKey)
-                    PasteFieldButton { tmdbApiKey = $0 }
+                    SecureField("OMDb API Key", text: $omdbApiKey)
+                    PasteFieldButton { omdbApiKey = $0 }
                 }
-                Text("Get a free key at themoviedb.org")
+                Text("Get a free key at omdbapi.com")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section {
                 Button("Save") {
-                    Task { await saveTMDBAPIKey() }
+                    Task { await saveOMDbAPIKey() }
                 }
                 .disabled(!hasUnsavedChanges)
 
                 Button(isTestingApiKey ? "Testing..." : "Test API Key") {
-                    Task { await testTMDBAPIKey() }
+                    Task { await testOMDbAPIKey() }
                 }
-                .disabled(isTestingApiKey || normalizedTMDBApiKey == nil)
+                .disabled(isTestingApiKey || normalizedOMDbApiKey == nil)
 
                 if isSaved {
                     Label("Saved", systemImage: "checkmark.circle.fill")
@@ -134,37 +139,41 @@ struct MetadataSettingsView: View {
                 }
             }
         }
-        .navigationTitle("Movie & TV Metadata (TMDB)")
+        .navigationTitle("Movie & TV Metadata (OMDb)")
         .task {
             guard !disablesAutomaticTasks else { return }
-            await loadTMDBAPIKey()
+            await loadOMDbAPIKey()
         }
-        .onChange(of: tmdbApiKey) { _, _ in
+        .onChange(of: omdbApiKey) { _, newValue in
+            guard MetadataSettingsPolicy.shouldInvalidateSavedState(
+                newValue: newValue,
+                baseline: initialOMDbApiKey
+            ) else { return }
             isSaved = false
             notice = nil
             surfaceError = nil
         }
     }
 
-    private var normalizedTMDBApiKey: String? {
-        MetadataSettingsPolicy.normalizedAPIKey(tmdbApiKey)
+    private var normalizedOMDbApiKey: String? {
+        MetadataSettingsPolicy.normalizedAPIKey(omdbApiKey)
     }
 
     private var hasUnsavedChanges: Bool {
-        MetadataSettingsPolicy.hasUnsavedAPIKeyChange(current: tmdbApiKey, baseline: initialTMDBApiKey)
+        MetadataSettingsPolicy.hasUnsavedAPIKeyChange(current: omdbApiKey, baseline: initialOMDbApiKey)
     }
 
-    private func saveTMDBAPIKey() async {
+    private func saveOMDbAPIKey() async {
         do {
-            let normalized = normalizedTMDBApiKey
-            try await appState.settingsManager.setString(key: SettingsKeys.tmdbApiKey, value: normalized)
+            let normalized = normalizedOMDbApiKey
+            try await appState.settingsManager.setString(key: SettingsKeys.omdbApiKey, value: normalized)
             let presentation = MetadataSettingsPolicy.savePresentation(for: normalized)
-            tmdbApiKey = presentation.visibleValue
-            initialTMDBApiKey = presentation.baselineValue
+            initialOMDbApiKey = presentation.baselineValue
+            omdbApiKey = presentation.visibleValue
             isSaved = presentation.isSaved
             surfaceError = nil
             notice = presentation.notice
-            NotificationCenter.default.post(name: .tmdbApiKeyDidChange, object: nil)
+            NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)
         } catch {
             isSaved = false
             notice = nil
@@ -172,8 +181,8 @@ struct MetadataSettingsView: View {
         }
     }
 
-    private func testTMDBAPIKey() async {
-        guard let apiKey = normalizedTMDBApiKey else {
+    private func testOMDbAPIKey() async {
+        guard let apiKey = normalizedOMDbApiKey else {
             notice = MetadataSettingsPolicy.missingAPIKeyNotice
             surfaceError = nil
             return
@@ -184,8 +193,8 @@ struct MetadataSettingsView: View {
 
         do {
             let service = appState.createMetadataService(apiKey: apiKey)
-            _ = try await service.getTrending(type: .movie, timeWindow: .week, page: 1)
-            notice = .success("TMDB API key is valid.")
+            _ = try await service.getDetail(id: MetadataSettingsPolicy.validationProbeIMDbID, type: .movie)
+            notice = .success("OMDb API key is valid.")
             surfaceError = nil
         } catch {
             notice = nil
@@ -193,18 +202,18 @@ struct MetadataSettingsView: View {
         }
     }
 
-    private func loadTMDBAPIKey() async {
+    private func loadOMDbAPIKey() async {
         do {
             let state = MetadataSettingsPolicy.loadedState(
-                for: try await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)
+                for: try await appState.settingsManager.getMetadataApiKey()
             )
-            tmdbApiKey = state.visibleValue
-            initialTMDBApiKey = state.baselineValue
+            initialOMDbApiKey = state.baselineValue
+            omdbApiKey = state.visibleValue
             isSaved = state.isSaved
             surfaceError = nil
         } catch {
-            tmdbApiKey = ""
-            initialTMDBApiKey = ""
+            omdbApiKey = ""
+            initialOMDbApiKey = ""
             isSaved = false
             surfaceError = AppError(error)
         }

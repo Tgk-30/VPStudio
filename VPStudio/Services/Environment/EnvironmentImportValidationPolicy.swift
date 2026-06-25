@@ -28,15 +28,26 @@ enum EnvironmentImportValidationPolicy {
     /// RealityKit model/scene formats.
     static let modelExtensions: Set<String> = ["usdz", "reality"]
 
+    /// Stable order for picker filters and reader-facing copy.
+    static let supportedExtensionOrder = ["hdr", "exr", "png", "jpg", "jpeg", "usdz", "reality"]
+
     /// All extensions that route to the HDRI skybox space (HDR + LDR panoramas).
     static let hdriExtensions: Set<String> = hdrPanoramaExtensions.union(ldrPanoramaExtensions)
 
     /// Every accepted extension.
-    static let supportedExtensions: Set<String> = hdriExtensions.union(modelExtensions)
+    static let supportedExtensions: Set<String> = Set(supportedExtensionOrder)
+
+    /// Stable, reader-facing list for errors, prompts, and tests.
+    static let supportedExtensionDisplayList = ".hdr, .exr, .png, .jpg, .jpeg, .usdz, or .reality"
 
     /// Hard cap on imported environment file size (bytes). 512 MB comfortably fits a
     /// 8K HDR panorama or a sizeable USDZ scene while rejecting accidental huge files.
     static let maxFileSizeBytes: Int = 512 * 1024 * 1024
+
+    /// Equirectangular 360° panoramas should be approximately 2:1. Keep a little
+    /// tolerance for encoder rounding/cropping, but reject regular photos that
+    /// would visibly stretch across the immersive skybox.
+    static let panoramaAspectRatioRange: ClosedRange<Double> = 1.75...2.25
 
     /// Lowercases and trims a raw extension (handles leading dots and whitespace).
     static func normalizedExtension(for raw: String) -> String {
@@ -78,5 +89,12 @@ enum EnvironmentImportValidationPolicy {
     static func isWithinSizeLimit(_ byteCount: Int) -> Bool {
         guard byteCount > 0 else { return true }
         return byteCount <= maxFileSizeBytes
+    }
+
+    /// Whether decoded image dimensions look like a usable equirectangular panorama.
+    static func hasPanoramaAspectRatio(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0 else { return false }
+        let ratio = Double(width) / Double(height)
+        return panoramaAspectRatioRange.contains(ratio)
     }
 }

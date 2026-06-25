@@ -3,9 +3,9 @@ import Foundation
 /// Seeds the **real** Detail surface (`DetailView` → `SeriesDetailLayout`) with realistic content
 /// for visual QA, mirroring [`DiscoverPreviewSeed`].
 ///
-/// Uses public TMDB image paths (the `image.tmdb.org` CDN requires no API key) and pre-populates a
-/// `DetailViewModel`, so the production detail layout — hero, metadata, genre chips, season picker,
-/// and stream section — renders without credentials or network metadata calls. Wired into Test
+/// Uses public image paths and pre-populates a `DetailViewModel`, so the production detail layout
+/// — hero, metadata, genre chips, season picker, and stream section — renders without credentials
+/// or network metadata calls while preserving OMDb-style IMDb identities. Wired into Test
 /// Mode's `detailMovie` / `detailSeries` screens via `DetailView(initialViewModel:disablesAutomaticLoading:)`.
 enum DetailPreviewSeed {
     /// Dune: Part Two — a landscape-friendly backdrop that shows the cinematic hero well.
@@ -24,19 +24,19 @@ enum DetailPreviewSeed {
     static func mediaItem(for type: MediaType) -> MediaItem {
         let e = entry(for: type)
         return MediaItem(
-            id: "seed-\(e.tmdbId)",
+            id: e.imdbId,
             type: e.type,
             title: e.title,
             year: e.year,
             posterPath: e.poster,
             backdropPath: e.backdrop,
             overview: type == .series
-                ? "A reluctant therapist starts breaking the rules and telling his clients exactly what he thinks — a heartfelt, sharp-edged comedy about grief, friendship, and second chances."
+                ? "Mark Scout leads a team whose memories have been surgically divided between work and personal life, exposing the cost of a corporate experiment built on secrecy and control."
                 : "Paul Atreides unites with the Fremen on a warpath of revenge against the conspirators who destroyed his family, racing to stop a terrible future only he can foresee.",
             genres: type == .series ? ["Comedy", "Drama"] : ["Science Fiction", "Adventure", "Drama"],
             imdbRating: e.rating,
             runtime: type == .series ? 36 : 166,
-            tmdbId: e.tmdbId
+            tmdbId: nil
         )
     }
 
@@ -51,7 +51,7 @@ enum DetailPreviewSeed {
 
     static func episodes(for type: MediaType) -> [Episode] {
         guard type == .series else { return [] }
-        let mediaId = "seed-\(seriesEntry.tmdbId)"
+        let mediaId = seriesEntry.imdbId
         let titles = ["Good News About Hell", "Half Loop", "Outliers", "Coward", "Punch", "Yips", "Trust", "Changing Patterns"]
         return titles.enumerated().map { index, title in
             Episode(

@@ -709,6 +709,13 @@ struct CinemaSettingsTests {
         #expect(CinemaPreset.allCases.count == 5)
     }
 
+    @Test("CinemaPreset selectable presets exclude custom")
+    func cinemaPresetSelectablePresets() async throws {
+        #expect(CinemaPreset.selectablePresets == [.default, .frontRow, .backRow, .imax])
+        #expect(!CinemaPreset.selectablePresets.contains(.custom))
+        #expect(CinemaPreset.selectablePresets.allSatisfy { CinemaPreset.allCases.contains($0) })
+    }
+
     @Test("CinemaImmersionStyle allCases count")
     func cinemaImmersionStyleAllCases() async throws {
         #expect(CinemaImmersionStyle.allCases.count == 3)

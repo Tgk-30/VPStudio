@@ -83,6 +83,9 @@ struct DownloadTaskStateManagementTests {
 
         let task2 = DownloadTask(mediaId: "tt002", fileName: "test.mkv")
         #expect(task2.posterURL == nil)
+
+        let task3 = DownloadTask(mediaId: "tt003", fileName: "test.mkv", posterPath: "https://m.media-amazon.com/images/M/poster.jpg")
+        #expect(task3.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
     }
 
     @Test func downloadTaskEpisodeSortKey() {

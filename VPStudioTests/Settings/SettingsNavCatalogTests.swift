@@ -24,8 +24,9 @@ struct SettingsNavigationCatalogTests {
     func destinationMetadataCoversEveryDestination() {
         let expected: [(SettingsDestination, String, String, SettingsCategory, String)] = [
             (.debrid, "Streaming Providers (Debrid)", "cloud", .connect, "realdebrid"),
+            (.debridCloud, "Debrid Cloud", "cloud.fill", .connect, "premium"),
             (.indexers, "Search Providers", "magnifyingglass.circle", .connect, "torznab"),
-            (.metadata, "Movie & TV Metadata (TMDB)", "film", .connect, "tmdb"),
+            (.metadata, "Movie & TV Metadata (OMDb)", "film", .connect, "omdb"),
             (.ai, "AI Recommendations", "brain", .connect, "openai"),
             (.trakt, "Trakt", "arrow.triangle.2.circlepath", .connect, "watch history"),
             (.simkl, "Simkl", "arrow.triangle.2.circlepath.circle", .connect, "cleanup-only"),
@@ -62,11 +63,18 @@ struct SettingsNavigationCatalogTests {
     }
 
     @Test
-    func tmdbQueryFindsOnlyMetadataDestination() {
-        let groups = SettingsNavigationCatalog.groups(matching: "tmdb")
+    func omdbQueryFindsOnlyMetadataDestination() {
+        let groups = SettingsNavigationCatalog.groups(matching: "omdb")
         let flattened = groups.flatMap(\.destinations)
 
         #expect(flattened == [.metadata])
+    }
+
+    @Test
+    func legacyTMDBQueryDoesNotRouteToMetadataDestination() {
+        let flattened = SettingsNavigationCatalog.groups(matching: "tmdb").flatMap(\.destinations)
+
+        #expect(flattened.isEmpty)
     }
 
     @Test
@@ -74,7 +82,7 @@ struct SettingsNavigationCatalogTests {
         let groups = SettingsNavigationCatalog.groups(matching: "realdebrid")
         let flattened = groups.flatMap(\.destinations)
 
-        #expect(flattened == [.debrid])
+        #expect(flattened == [.debrid, .debridCloud])
     }
 
     @Test
@@ -150,6 +158,7 @@ struct SettingsNavigationCatalogTests {
         #expect(SettingsDestination.ai.isEssential == true)
         #expect(SettingsDestination.trakt.isEssential == true)
         #expect(SettingsDestination.simkl.isEssential == false)
+        #expect(SettingsDestination.debridCloud.isEssential == false)
 
         // Non-essential: work with defaults
         #expect(SettingsDestination.player.isEssential == false)

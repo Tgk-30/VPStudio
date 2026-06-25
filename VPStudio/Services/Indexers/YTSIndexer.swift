@@ -112,18 +112,16 @@ struct YTSIndexer: TorrentIndexer {
             throw URLError(.badURL)
         }
 
-        let normalizedBasePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let appendPath = "list_movies.json".trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        switch (normalizedBasePath.isEmpty, appendPath.isEmpty) {
-        case (true, false):
-            components.path = "/\(appendPath)"
-        case (false, true):
-            components.path = "/\(normalizedBasePath)"
-        case (false, false):
-            components.path = "/\(normalizedBasePath)/\(appendPath)"
-        default:
-            components.path = ""
+        let baseSegments = Self.pathSegments(components.path)
+        let endpointSegments: [String]
+        if baseSegments.suffix(3) == ["api", "v2", "list_movies.json"] {
+            endpointSegments = []
+        } else if baseSegments.suffix(2) == ["api", "v2"] {
+            endpointSegments = ["list_movies.json"]
+        } else {
+            endpointSegments = ["api", "v2", "list_movies.json"]
         }
+        components.path = Self.path(from: baseSegments + endpointSegments)
 
         components.queryItems = [
             URLQueryItem(name: "query_term", value: queryTerm),
@@ -134,6 +132,14 @@ struct YTSIndexer: TorrentIndexer {
             throw URLError(.unsupportedURL)
         }
         return url
+    }
+
+    private static func pathSegments(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
+    }
+
+    private static func path(from segments: [String]) -> String {
+        segments.isEmpty ? "" : "/" + segments.joined(separator: "/")
     }
 
     private func normalizedQueryTerm(from query: String) -> String {

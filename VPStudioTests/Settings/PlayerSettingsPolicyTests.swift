@@ -88,8 +88,15 @@ struct PlayerSettingsPolicyTests {
             preferCachedStoredValue: nil,
             preferAtmosStoredValue: nil,
             hdrPreferenceRawValue: "super_hdr",
+            sourceFilterPresetRawValue: nil,
+            sourceFilterHideDownloadsStoredValue: nil,
+            sourceFilterHideCamStoredValue: nil,
+            sourceFilterMinimumSeedersRawValue: nil,
+            sourceFilterMaximumSizeGBRawValue: nil,
+            sourceFilterMinimumQualityRawValue: nil,
             runtimeDiagnosticsStoredValue: nil,
             runtimeDiagnosticsFallback: true,
+            guestModeStoredValue: nil,
             navigationLayoutRawValue: "top-nav",
             navigationFallback: .leftSidebar
         )
@@ -105,7 +112,9 @@ struct PlayerSettingsPolicyTests {
                     preferCached: true,
                     preferAtmos: true,
                     hdrPreference: .auto,
+                    sourceFilterOptions: SourceFilterPreset.balanced.defaultOptions,
                     runtimeDiagnosticsEnabled: true,
+                    guestModeEnabled: false,
                     navigationLayout: .leftSidebar
                 )
         )
@@ -122,8 +131,15 @@ struct PlayerSettingsPolicyTests {
             preferCachedStoredValue: false,
             preferAtmosStoredValue: false,
             hdrPreferenceRawValue: HDRPreference.dolbyVision.rawValue,
+            sourceFilterPresetRawValue: SourceFilterPreset.instant.rawValue,
+            sourceFilterHideDownloadsStoredValue: false,
+            sourceFilterHideCamStoredValue: false,
+            sourceFilterMinimumSeedersRawValue: "20",
+            sourceFilterMaximumSizeGBRawValue: "5",
+            sourceFilterMinimumQualityRawValue: VideoQuality.uhd4k.rawValue,
             runtimeDiagnosticsStoredValue: false,
             runtimeDiagnosticsFallback: true,
+            guestModeStoredValue: true,
             navigationLayoutRawValue: NavigationLayout.bottomTabBar.rawValue,
             navigationFallback: .leftSidebar
         )
@@ -139,7 +155,9 @@ struct PlayerSettingsPolicyTests {
                     preferCached: false,
                     preferAtmos: false,
                     hdrPreference: .dolbyVision,
+                    sourceFilterOptions: SourceFilterPreset.instant.defaultOptions,
                     runtimeDiagnosticsEnabled: false,
+                    guestModeEnabled: true,
                     navigationLayout: .bottomTabBar
                 )
         )
@@ -193,6 +211,30 @@ struct PlayerSettingsPolicyTests {
         #expect(
             PlayerSettingsPolicy.navigationLayoutWrite(.leftSidebar)
                 == .string(key: SettingsKeys.navigationLayout, value: NavigationLayout.leftSidebar.rawValue)
+        )
+    }
+
+    @Test
+    func sourceFilterPersistenceWritesUseExpectedKeysAndValues() {
+        #expect(
+            PlayerSettingsPolicy.sourceFilterPresetWrite(.instant)
+                == .string(key: SettingsKeys.sourceFilterPreset, value: SourceFilterPreset.instant.rawValue)
+        )
+        #expect(
+            PlayerSettingsPolicy.sourceFilterHideDownloadsWrite(true)
+                == .bool(key: SettingsKeys.sourceFilterHideDownloads, value: true)
+        )
+        #expect(
+            PlayerSettingsPolicy.sourceFilterHideCamWrite(false)
+                == .bool(key: SettingsKeys.sourceFilterHideCam, value: false)
+        )
+        #expect(
+            PlayerSettingsPolicy.sourceFilterMinimumQualityWrite(.hd1080p)
+                == .string(key: SettingsKeys.sourceFilterMinimumQuality, value: VideoQuality.hd1080p.rawValue)
+        )
+        #expect(
+            PlayerSettingsPolicy.sourceFilterMinimumQualityWrite(nil)
+                == .string(key: SettingsKeys.sourceFilterMinimumQuality, value: nil)
         )
     }
 

@@ -1,5 +1,19 @@
 import SwiftUI
 
+enum PlayerAutoPlayNextPromptStylePolicy {
+    static func primaryButtonOpacity(isResolving: Bool) -> Double {
+        isResolving ? 0.52 : 1.0
+    }
+
+    static func primaryButtonBackgroundOpacity(isResolving: Bool) -> Double {
+        isResolving ? 0.68 : 1.0
+    }
+
+    static func secondaryButtonOpacity(isResolving: Bool) -> Double {
+        isResolving ? 0.42 : 1.0
+    }
+}
+
 struct PlayerAutoPlayNextPromptView: View {
     let nextEpisode: PlayerSessionRequest.NextEpisodeCandidate
     let remainingSeconds: Int
@@ -31,15 +45,34 @@ struct PlayerAutoPlayNextPromptView: View {
 
                 HStack(spacing: 8) {
                     Button(action: onPlayNow) {
-                        Label("Play Now", systemImage: "play.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.black)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.white, in: Capsule())
+                        HStack(spacing: 6) {
+                            if isResolving {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.black)
+                            } else {
+                                Image(systemName: "play.fill")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            Text(isResolving ? "Loading" : "Play Now")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            .white.opacity(
+                                PlayerAutoPlayNextPromptStylePolicy.primaryButtonBackgroundOpacity(
+                                    isResolving: isResolving
+                                )
+                            ),
+                            in: Capsule()
+                        )
+                        .opacity(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: isResolving))
                     }
                     .buttonStyle(.plain)
                     .disabled(isResolving)
+                    .accessibilityLabel(isResolving ? "Loading next episode" : "Play next episode now")
 
                     Button(action: onCancel) {
                         Image(systemName: "xmark")
@@ -54,6 +87,7 @@ struct PlayerAutoPlayNextPromptView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isResolving)
+                    .opacity(PlayerAutoPlayNextPromptStylePolicy.secondaryButtonOpacity(isResolving: isResolving))
                     .accessibilityLabel("Cancel auto-play")
                 }
                 .padding(.top, 3)

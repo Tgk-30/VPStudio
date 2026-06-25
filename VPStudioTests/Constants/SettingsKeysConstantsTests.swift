@@ -7,6 +7,7 @@ struct SettingsKeysConstantsTests {
 
     @Test("All SettingsKeys are non-empty static constants")
     func allKeysAreNonNil() {
+        #expect(!SettingsKeys.omdbApiKey.isEmpty)
         #expect(!SettingsKeys.tmdbApiKey.isEmpty)
         #expect(!SettingsKeys.preferredQuality.isEmpty)
         #expect(!SettingsKeys.subtitleLanguage.isEmpty)
@@ -77,6 +78,7 @@ struct SettingsKeysConstantsTests {
         #expect(!SettingsKeys.lastSelectedTab.isEmpty)
         #expect(!SettingsKeys.personalizationEnabled.isEmpty)
         #expect(!SettingsKeys.preferredEnvironment.isEmpty)
+        #expect(!SettingsKeys.activeEnvironmentSelectionCleared.isEmpty)
         #expect(!SettingsKeys.autoOpenEnvironment.isEmpty)
         #expect(!SettingsKeys.autoSuggestEnvironmentByGenre.isEmpty)
         #expect(!SettingsKeys.feedbackScaleMode.isEmpty)
@@ -93,7 +95,7 @@ struct SettingsKeysConstantsTests {
     @Test("All keys are unique")
     func allKeysUnique() {
         let allKeys: [String] = [
-            SettingsKeys.tmdbApiKey, SettingsKeys.preferredQuality,
+            SettingsKeys.omdbApiKey, SettingsKeys.tmdbApiKey, SettingsKeys.preferredQuality,
             SettingsKeys.subtitleLanguage, SettingsKeys.audioLanguage,
             SettingsKeys.subtitleFontSize, SettingsKeys.subtitleAutoSearch,
             SettingsKeys.openSubtitlesApiKey, SettingsKeys.autoPlayNext,
@@ -110,6 +112,7 @@ struct SettingsKeysConstantsTests {
             SettingsKeys.traktAccessToken, SettingsKeys.traktRefreshToken,
             SettingsKeys.simklClientId, SettingsKeys.simklAccessToken,
             SettingsKeys.lastSelectedTab, SettingsKeys.navigationLayout,
+            SettingsKeys.activeEnvironmentSelectionCleared,
             SettingsKeys.playerDimPassthrough, SettingsKeys.cinemaAutoDimOnPlay
         ]
         let uniqueKeys = Set(allKeys)
@@ -118,6 +121,7 @@ struct SettingsKeysConstantsTests {
 
     @Test("Keys follow expected naming patterns")
     func keyNamingPatterns() {
+        #expect(SettingsKeys.omdbApiKey.hasPrefix("omdb"))
         #expect(SettingsKeys.tmdbApiKey.hasPrefix("tmdb"))
         #expect(SettingsKeys.openAIApiKey.hasPrefix("openai"))
         #expect(SettingsKeys.anthropicApiKey.hasPrefix("anthropic"))

@@ -85,6 +85,120 @@ struct DetailLifecycleBehaviorTests {
 
     @Test
     @MainActor
+    func searchUsesPreviewIMDbAliasWhenLoadedDetailItemKeepsLegacyTMDbID() async {
+        let appState = AppState()
+        let indexer = FixedDetailIndexerManager(results: makeTorrentResults(count: 1))
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(id: "series-tmdb-77", type: .series, title: "Alias Show", tmdbId: 77),
+            seasonsResult: [
+                Season(id: 1, seasonNumber: 1, name: "Season 1", overview: nil, posterPath: nil, episodeCount: 1, airDate: nil)
+            ],
+            episodesBySeason: [
+                1: [
+                    Episode(
+                        id: "77-s1e1",
+                        mediaId: "series-tmdb-77",
+                        seasonNumber: 1,
+                        episodeNumber: 1,
+                        title: "Pilot",
+                        overview: nil,
+                        airDate: nil,
+                        stillPath: nil,
+                        runtime: nil
+                    )
+                ]
+            ]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataProviderFactory: { _ in metadata },
+            indexerManager: indexer,
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "series-imdb-tt2300101",
+            type: .series,
+            title: "Alias Show",
+            tmdbId: 77
+        )
+
+        await viewModel.loadDetail(preview: preview, apiKey: "")
+        viewModel.selectedSeason = 1
+        viewModel.selectedEpisode = Episode(
+            id: "77-s1e1",
+            mediaId: "series-tmdb-77",
+            seasonNumber: 1,
+            episodeNumber: 1,
+            title: "Pilot",
+            overview: nil,
+            airDate: nil,
+            stillPath: nil,
+            runtime: nil
+        )
+
+        await viewModel.searchTorrents()
+
+        #expect(viewModel.torrentSearch.results.count == 1)
+        #expect(viewModel.lastSearchContextKey == "tt2300101-s1e1")
+        #expect(viewModel.requiresFreshEpisodeSearch == false)
+    }
+
+    @Test
+    @MainActor
+    func omdbDetailPreservesPreviewTMDbAliasForExistingRatings() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "detail-omdb-rating-alias-\(UUID().uuidString)")
+        try await database.migrate()
+        let appState = AppState(database: database)
+        // The rating was captured on the 1–10 scale; surface it on the same scale
+        // so the preserved value round-trips to 9 instead of being re-projected onto
+        // the default like/dislike display scale.
+        try await database.setSetting(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+        try await database.saveTasteEvent(
+            TasteEvent(
+                mediaId: "movie-tmdb-438631",
+                eventType: .rated,
+                signalStrength: 0.9,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .manual,
+                metadata: ["title": "Dune"]
+            )
+        )
+
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(id: "tt1160419", type: .movie, title: "Dune", tmdbId: nil),
+            seasonsResult: [],
+            episodesBySeason: [:]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataProviderFactory: { _ in metadata },
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438_631
+        )
+
+        await viewModel.loadDetail(preview: preview, apiKey: "")
+
+        #expect(viewModel.mediaItem?.id == "tt1160419")
+        #expect(viewModel.mediaItem?.tmdbId == 438_631)
+        #expect(viewModel.currentFeedbackValue == 9)
+        #expect(try await database.fetchLatestTasteRating(mediaId: "tt1160419")?.mediaId == "movie-tmdb-438631")
+    }
+
+    @Test
+    @MainActor
     func secondSearchCancelsBlockedFirstSearchAndKeepsNewestResults() async {
         let appState = AppState()
         let staleResult = Fixtures.torrent(hash: "stale-hash", title: "Old.Result")
@@ -440,6 +554,48 @@ struct DetailLifecycleBehaviorTests {
 
     @Test
     @MainActor
+    func queueDownloadUsesCanonicalIMDbMediaIdentifierWhenPreviewProvidesAlias() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let downloads = StubDownloadManager()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: downloads
+        )
+        viewModel.mediaItem = MediaItem(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            tmdbId: 438_631
+        )
+        viewModel.setPreviewContext(
+            MediaPreview(
+                id: "movie-imdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                posterPath: nil,
+                imdbRating: nil,
+                tmdbId: nil
+            )
+        )
+
+        let torrent = Fixtures.torrent(
+            hash: "canonical-download",
+            title: "Dune.2021.1080p.WEB-DL.mkv",
+            cached: true
+        )
+
+        await viewModel.queueDownload(torrent: torrent)
+
+        let tasks = (try? await downloads.listDownloads()) ?? []
+        #expect(tasks.first?.mediaId == "tt1160419")
+    }
+
+    @Test
+    @MainActor
     func resolveStreamDoesNotAttachRecoveryContextForSyntheticDirectOnlyResult() async {
         let appState = AppState()
         let debrid = StubDebridManager()
@@ -669,6 +825,82 @@ struct DetailLifecycleBehaviorTests {
         #expect(viewModel.downloadState(for: torrent) == .downloading)
     }
 
+    @Test
+    @MainActor
+    func seriesWatchTallyCountsLoadedOMDbEpisodeIMDbIDs() async {
+        let appState = AppState()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "tt2300999", type: .series, title: "OMDb Series")
+        viewModel.seasons = [
+            Season(id: 1, seasonNumber: 1, name: "Season 1", overview: nil, posterPath: nil, episodeCount: 2, airDate: nil)
+        ]
+        viewModel.episodes = [
+            Episode(
+                id: "tt2301001",
+                mediaId: "tt2300999",
+                seasonNumber: 1,
+                episodeNumber: 1,
+                title: "Pilot",
+                overview: nil,
+                airDate: nil,
+                stillPath: nil,
+                runtime: nil
+            ),
+            Episode(
+                id: "tt2301002",
+                mediaId: "tt2300999",
+                seasonNumber: 1,
+                episodeNumber: 2,
+                title: "Second",
+                overview: nil,
+                airDate: nil,
+                stillPath: nil,
+                runtime: nil
+            )
+        ]
+        viewModel.episodeWatchStates = [
+            "tt2301001": WatchHistory(
+                id: "watch-omdb-episode",
+                mediaId: "tt2300999",
+                episodeId: "tt2301001",
+                title: "Pilot",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            ),
+            "tt-unloaded-episode": WatchHistory(
+                id: "watch-unloaded-omdb-episode",
+                mediaId: "tt2300999",
+                episodeId: "tt-unloaded-episode",
+                title: "Unknown",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            ),
+            "s01e02": WatchHistory(
+                id: "watch-trakt-synced-episode",
+                mediaId: "tt2300999",
+                episodeId: "s01e02",
+                title: "Second",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        ]
+
+        let tally = viewModel.seriesWatchTally
+        #expect(tally.watched == 2)
+        #expect(tally.total == 2)
+    }
+
     private func makeTorrentResults(count: Int) -> [TorrentResult] {
         (0..<count).map { index in
             Fixtures.torrent(
@@ -691,6 +923,8 @@ private actor TestDetailMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
 }

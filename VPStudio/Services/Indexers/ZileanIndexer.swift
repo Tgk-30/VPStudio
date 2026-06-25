@@ -83,19 +83,11 @@ struct ZileanIndexer: TorrentIndexer {
             throw URLError(.badURL)
         }
 
-        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let appendPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-        switch (basePath.isEmpty, appendPath.isEmpty) {
-        case (true, false):
-            components.path = "/\(appendPath)"
-        case (false, true):
-            components.path = "/\(basePath)"
-        case (false, false):
-            components.path = "/\(basePath)/\(appendPath)"
-        default:
-            components.path = ""
-        }
+        let baseSegments = Self.pathSegments(components.path)
+        let pathSegments = Self.pathSegments(path)
+        components.path = Self.path(
+            from: Self.mergedPathSegments(baseSegments, appending: pathSegments)
+        )
 
         components.queryItems = queryItems
         guard let url = components.url else {
@@ -105,6 +97,29 @@ struct ZileanIndexer: TorrentIndexer {
             throw URLError(.unsupportedURL)
         }
         return url
+    }
+
+    private static func pathSegments(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
+    }
+
+    private static func mergedPathSegments(_ baseSegments: [String], appending pathSegments: [String]) -> [String] {
+        guard !baseSegments.isEmpty, !pathSegments.isEmpty else {
+            return baseSegments + pathSegments
+        }
+
+        let maxOverlap = min(baseSegments.count, pathSegments.count)
+        for count in stride(from: maxOverlap, through: 1, by: -1) {
+            if Array(baseSegments.suffix(count)) == Array(pathSegments.prefix(count)) {
+                return baseSegments + Array(pathSegments.dropFirst(count))
+            }
+        }
+
+        return baseSegments + pathSegments
+    }
+
+    private static func path(from segments: [String]) -> String {
+        segments.isEmpty ? "" : "/" + segments.joined(separator: "/")
     }
 }
 

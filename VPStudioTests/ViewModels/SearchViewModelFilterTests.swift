@@ -172,6 +172,24 @@ struct SearchViewModelFilterTests {
         }
     }
 
+    private static func ratedPreview(
+        id: String,
+        title: String,
+        year: Int?,
+        rating: Double?
+    ) -> MediaPreview {
+        MediaPreview(
+            id: id,
+            type: .movie,
+            title: title,
+            year: year,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: rating,
+            tmdbId: nil
+        )
+    }
+
     /// Polls until `condition` returns true, yielding between checks. Fails after `timeout`.
     @MainActor
     private static func waitUntil(
@@ -1125,7 +1143,10 @@ struct SearchViewModelFilterTests {
 
         viewModel.selectMoodCard(actionCard)
         try await Self.waitUntil {
-            viewModel.activeMoodCard?.id == "action" && viewModel.selectedGenre?.id == 28
+            let discoverCallCount = await stub.getDiscoverCallCount()
+            return viewModel.activeMoodCard?.id == "action"
+                && viewModel.selectedGenre?.id == 28
+                && discoverCallCount == 1
         }
 
         let discoverCallsBefore = await stub.getDiscoverCallCount()
@@ -1274,8 +1295,9 @@ struct SearchViewModelFilterTests {
         viewModel.handleSelectedTypeChange()
 
         try await Self.waitUntil {
-            await stub.getDiscoverCallCount() == discoverCallsAfterStaleGenre + 1 &&
-            viewModel.selectedGenre?.id == 16
+            let discoverCallCount = await stub.getDiscoverCallCount()
+            return discoverCallCount == discoverCallsAfterStaleGenre + 1
+                && viewModel.selectedGenre?.id == 16
         }
 
         #expect(viewModel.activeMoodCard == nil)
@@ -1442,6 +1464,107 @@ struct SearchViewModelFilterTests {
         let secondSearchCount = await stub.getSearchCallCount()
         #expect(secondSearchCount > firstSearchCount)
         #expect(viewModel.sortOption == .releaseDateDesc)
+    }
+
+    @Test
+    @MainActor
+    func textSearchAppliesLocalRatingSortToOMDbBackedResults() async throws {
+        let stub = FilterTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [
+                    Self.ratedPreview(id: "tt-low", title: "Low", year: 2024, rating: 6.2),
+                    Self.ratedPreview(id: "tt-missing", title: "Missing", year: 2024, rating: nil),
+                    Self.ratedPreview(id: "tt-high", title: "High", year: 2024, rating: 8.7),
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 3
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.sortOption = .ratingDesc
+        viewModel.query = "dune"
+        viewModel.search()
+
+        try await Self.waitUntil { !viewModel.isSearching && viewModel.results.count == 3 }
+
+        #expect(viewModel.results.map(\.id) == ["tt-high", "tt-low", "tt-missing"])
+    }
+
+    @Test
+    @MainActor
+    func loadMoreKeepsTextSearchRatingSortAcrossPages() async throws {
+        let stub = FilterTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [
+                    Self.ratedPreview(id: "tt-mid", title: "Mid", year: 2024, rating: 7.1),
+                    Self.ratedPreview(id: "tt-low", title: "Low", year: 2024, rating: 6.4),
+                ],
+                page: 1,
+                totalPages: 2,
+                totalResults: 4
+            ),
+            2: MetadataSearchResult(
+                items: [
+                    Self.ratedPreview(id: "tt-high", title: "High", year: 2024, rating: 9.0),
+                    Self.ratedPreview(id: "tt-missing", title: "Missing", year: 2024, rating: nil),
+                ],
+                page: 2,
+                totalPages: 2,
+                totalResults: 4
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.sortOption = .ratingDesc
+        viewModel.query = "dune"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.isSearching && viewModel.results.count == 2 }
+
+        viewModel.loadMore()
+        try await Self.waitUntil { !viewModel.isLoadingMore && viewModel.currentPage == 2 }
+
+        #expect(viewModel.results.map(\.id) == ["tt-high", "tt-mid", "tt-low", "tt-missing"])
+    }
+
+    @Test
+    @MainActor
+    func loadMoreGenreBrowseKeepsRatingSortAcrossPages() async throws {
+        let stub = FilterTestMetadataStub()
+        await stub.setDiscoverResults([
+            1: MetadataSearchResult(
+                items: [
+                    Self.ratedPreview(id: "tt-mid", title: "Mid", year: 2024, rating: 7.1),
+                    Self.ratedPreview(id: "tt-low", title: "Low", year: 2024, rating: 6.4),
+                ],
+                page: 1,
+                totalPages: 2,
+                totalResults: 4
+            ),
+            2: MetadataSearchResult(
+                items: [
+                    Self.ratedPreview(id: "tt-high", title: "High", year: 2024, rating: 9.0),
+                    Self.ratedPreview(id: "tt-missing", title: "Missing", year: 2024, rating: nil),
+                ],
+                page: 2,
+                totalPages: 2,
+                totalResults: 4
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.sortOption = .ratingDesc
+        viewModel.selectGenre(Genre(id: 18, name: "Drama"))
+        try await Self.waitUntil { !viewModel.isSearching && viewModel.results.count == 2 }
+
+        viewModel.loadMore()
+        try await Self.waitUntil { !viewModel.isLoadingMore && viewModel.currentPage == 2 }
+
+        #expect(viewModel.results.map(\.id) == ["tt-high", "tt-mid", "tt-low", "tt-missing"])
+        #expect(await stub.getLastDiscoverFilters()?.sortBy == .ratingDesc)
     }
 
     @Test
@@ -1759,12 +1882,15 @@ struct SearchViewModelFilterTests {
         let viewModel = SearchViewModel(metadataService: stub)
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.query = "batman"
         viewModel.search()
 
         try await Self.waitUntil { await stub.getSearchCallCount() == 1 }
         #expect(viewModel.hasAttemptedTextSearch == true)
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 1)
 
         viewModel.clear()
         #expect(viewModel.selectedGenre == nil)
@@ -1773,7 +1899,7 @@ struct SearchViewModelFilterTests {
         #expect(viewModel.results.isEmpty)
 
         try await Task.sleep(for: .milliseconds(50))
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 1)
     }
 
     @Test
@@ -1886,7 +2012,7 @@ struct SearchViewModelFilterTests {
         let viewModel = SearchViewModel(metadataService: FilterTestMetadataStub())
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
         viewModel.query = "action movies"
-        #expect(viewModel.isGenreBrowsing == false)
+        #expect(viewModel.isGenreBrowsing == true)
     }
 
     @Test

@@ -12,14 +12,13 @@ struct VPMenuBackgroundTests {
     @Test("VPMenuBackground constructs successfully")
     func constructs() {
         let view = VPMenuBackground()
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view, width: 800, height: 600)
     }
 
     @Test("VPMenuBackground uses GeometryReader for layout")
     func usesGeometryReader() {
         let view = VPMenuBackground()
-        let body = view.body
-        _ = body
+        SwiftUIViewDiagnosticHost.render(view, width: 800, height: 600)
     }
 
     #if os(macOS)
@@ -48,25 +47,25 @@ struct LibraryEmptyStateViewTestsViewsVpmenubackgroundandnavigationtests {
     @Test("LibraryEmptyStateView constructs with favorites list type")
     func constructsWithFavorites() {
         let view = LibraryEmptyStateView(listType: .favorites)
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     @Test("LibraryEmptyStateView constructs with watchlist list type")
     func constructsWithWatchlist() {
         let view = LibraryEmptyStateView(listType: .watchlist)
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     @Test("LibraryEmptyStateView constructs with history list type")
     func constructsWithHistory() {
         let view = LibraryEmptyStateView(listType: .history)
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     @Test("LibraryEmptyStateView constructs with downloads list type")
     func constructsWithDownloads() {
         let view = LibraryEmptyStateView(listType: .downloads)
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     @Test("LibraryEmptyStateView constructs with onCTAAction callback")
@@ -74,7 +73,7 @@ struct LibraryEmptyStateViewTestsViewsVpmenubackgroundandnavigationtests {
         let view = LibraryEmptyStateView(listType: .favorites) { action in
             _ = action
         }
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     @Test("LibraryEmptyStateView CTA button triggers callback for switchToDiscover")
@@ -82,7 +81,7 @@ struct LibraryEmptyStateViewTestsViewsVpmenubackgroundandnavigationtests {
         let view = LibraryEmptyStateView(listType: .favorites) { action in
             _ = action
         }
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     @Test("LibraryEmptyStateView CTA button triggers callback for openSettings")
@@ -90,7 +89,7 @@ struct LibraryEmptyStateViewTestsViewsVpmenubackgroundandnavigationtests {
         let view = LibraryEmptyStateView(listType: .downloads) { action in
             _ = action
         }
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 420, height: 360))
     }
 
     #if os(macOS)
@@ -166,7 +165,7 @@ struct VPSidebarViewTests {
             onOpenEnvironmentPicker: {},
             onTabSelection: { _ in }
         )
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 220, height: 520))
     }
 
     @Test("VPSidebarView constructs with all parameters")
@@ -183,7 +182,7 @@ struct VPSidebarViewTests {
             activeDownloadCount: 3,
             settingsWarningCount: 2
         )
-        _ = view.body
+        SwiftUIViewDiagnosticHost.render(view.frame(width: 220, height: 520))
 
         #expect(openedPicker == false)
         #expect(selectedTabs.isEmpty)

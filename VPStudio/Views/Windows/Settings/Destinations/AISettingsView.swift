@@ -781,32 +781,41 @@ struct AISettingsView: View {
             modelRefreshTask?.cancel()
             modelRefreshTask = nil
         }
+        .onAppear {
+            guard enablesRuntimeControls else { return }
+            onRuntimeControlsReady?()
+        }
         .modifier(
             AISettingsRuntimeControlHandlers(
                 enabled: enablesRuntimeControls,
-                onReady: onRuntimeControlsReady,
-                onCommandCompleted: onRuntimeControlCommandCompleted,
                 persistCloudCredential: { command in
                     guard let key = command.settingsKey else { return }
                     await persistCloudKey(key: key, value: command.value, provider: command.provider)
+                    onRuntimeControlCommandCompleted?()
                 },
                 deleteCloudCredential: { provider in
                     await deleteCloudCredential(for: provider)
+                    onRuntimeControlCommandCompleted?()
                 },
                 persistOllamaEndpoint: { value in
                     await persistOllamaEndpoint(value)
+                    onRuntimeControlCommandCompleted?()
                 },
                 persistStringSetting: { command in
                     await persistStringSetting(key: command.key, value: command.value)
+                    onRuntimeControlCommandCompleted?()
                 },
                 persistBoolSetting: { command in
                     await persistBoolSetting(key: command.key, value: command.value)
+                    onRuntimeControlCommandCompleted?()
                 },
                 scheduleModelPresetSave: { command in
                     scheduleModelPresetSave(key: command.key, value: command.value)
+                    onRuntimeControlCommandCompleted?()
                 },
                 resetUsageStats: {
                     await resetUsageStats()
+                    onRuntimeControlCommandCompleted?()
                 }
             )
         )
@@ -1939,7 +1948,7 @@ struct AISettingsView: View {
         let mediaIDs = Set(events.compactMap(\.mediaId))
         var titleByMediaID: [String: String] = [:]
         for mediaID in mediaIDs {
-            if let title = try? await appState.database.fetchMediaItem(id: mediaID)?.title,
+            if let title = try? await appState.database.fetchMediaItemResolvingAliases(id: mediaID)?.title,
                !title.isEmpty {
                 titleByMediaID[mediaID] = title
             }
@@ -1966,8 +1975,6 @@ private extension String {
 
 private struct AISettingsRuntimeControlHandlers: ViewModifier {
     let enabled: Bool
-    let onReady: (@MainActor () -> Void)?
-    let onCommandCompleted: (@MainActor () -> Void)?
     let persistCloudCredential: @MainActor (AISettingsCloudCredentialRuntimeCommand) async -> Void
     let deleteCloudCredential: @MainActor (AIProviderKind) async -> Void
     let persistOllamaEndpoint: @MainActor (String) async -> Void
@@ -1978,55 +1985,44 @@ private struct AISettingsRuntimeControlHandlers: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onAppear {
-                guard enabled else { return }
-                onReady?()
-            }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlPersistCloudCredential)) { notification in
                 guard enabled, let command = notification.object as? AISettingsCloudCredentialRuntimeCommand else { return }
                 Task {
                     await persistCloudCredential(command)
-                    onCommandCompleted?()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlDeleteCloudCredential)) { notification in
                 guard enabled, let provider = notification.object as? AIProviderKind else { return }
                 Task {
                     await deleteCloudCredential(provider)
-                    onCommandCompleted?()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlPersistOllamaEndpoint)) { notification in
                 guard enabled, let value = notification.object as? String else { return }
                 Task {
                     await persistOllamaEndpoint(value)
-                    onCommandCompleted?()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlPersistStringSetting)) { notification in
                 guard enabled, let command = notification.object as? AISettingsStringRuntimeCommand else { return }
                 Task {
                     await persistStringSetting(command)
-                    onCommandCompleted?()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlPersistBoolSetting)) { notification in
                 guard enabled, let command = notification.object as? AISettingsBoolRuntimeCommand else { return }
                 Task {
                     await persistBoolSetting(command)
-                    onCommandCompleted?()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlScheduleModelPresetSave)) { notification in
                 guard enabled, let command = notification.object as? AISettingsStringRuntimeCommand else { return }
                 scheduleModelPresetSave(command)
-                onCommandCompleted?()
             }
             .onReceive(NotificationCenter.default.publisher(for: .aiSettingsControlResetUsageStats)) { _ in
                 guard enabled else { return }
                 Task {
                     await resetUsageStats()
-                    onCommandCompleted?()
                 }
             }
     }

@@ -37,7 +37,7 @@ final class DiscoverViewModel {
     init(
         metadataService: (any MetadataProvider)? = nil,
         database: DatabaseManager? = nil,
-        metadataServiceFactory: @escaping @Sendable (String) -> any MetadataProvider = { TMDBService(apiKey: $0) }
+        metadataServiceFactory: @escaping @Sendable (String) -> any MetadataProvider = { OMDbService(apiKey: $0) }
     ) {
         self.metadataService = metadataService
         self.database = database
@@ -79,7 +79,7 @@ final class DiscoverViewModel {
 
                 if generation == loadGeneration {
                     isLoading = false
-                    error = .tmdbSetupRequired(feature: "Discover")
+                    error = .metadataSetupRequired(feature: "Discover")
                 }
                 return
             }
@@ -98,7 +98,7 @@ final class DiscoverViewModel {
 
                 if generation == loadGeneration {
                     isLoading = false
-                    error = .tmdbSetupRequired(feature: "Discover")
+                    error = .metadataSetupRequired(feature: "Discover")
                 }
                 return
             }
@@ -117,14 +117,14 @@ final class DiscoverViewModel {
         guard let service = metadataService else {
             if generation == loadGeneration {
                 isLoading = false
-                error = .tmdbSetupRequired(feature: "Discover")
+                error = .metadataSetupRequired(feature: "Discover")
             }
             return
         }
         isLoading = true
         error = nil
 
-        // Load continue watching from local database (non-blocking for TMDB fetches).
+        // Load continue watching from local database without blocking metadata fetches.
         await loadContinueWatching()
         guard generation == loadGeneration else { return }
 
@@ -187,8 +187,7 @@ final class DiscoverViewModel {
                 !$0.isCompleted && $0.progressPercent > 0.02 && $0.progressPercent < PlayerWatchProgressPolicy.completionThreshold
             }.prefix(10))
 
-            let cachedItems = try await database.fetchMediaItems(ids: inProgress.map(\.mediaId))
-            let cachedByID = Dictionary(uniqueKeysWithValues: cachedItems.map { ($0.id, $0) })
+            let cachedByID = try await database.fetchMediaItemsResolvingAliases(ids: inProgress.map(\.mediaId))
             guard generation == loadGeneration else { return }
 
             continueWatching = inProgress.compactMap { entry in
@@ -247,9 +246,11 @@ final class DiscoverViewModel {
         title: String,
         recommendationMediaID: String,
         recommendationType: MediaType,
+        imdbId: String?,
         tmdbId: Int?,
         ratedMediaIds: Set<String>,
         libraryMediaIds: Set<String>,
+        watchedMediaIds: Set<String>,
         ratedTitles: Set<String>,
         watchedTitles: Set<String>,
         libraryTitles: Set<String>
@@ -258,11 +259,30 @@ final class DiscoverViewModel {
 
         if ratedMediaIds.contains(recommendationMediaID) { return false }
         if libraryMediaIds.contains(recommendationMediaID) { return false }
+        if watchedMediaIds.contains(recommendationMediaID) { return false }
+
+        if let imdbId {
+            let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) ?? imdbId.lowercased()
+            let imdbCandidates: Set<String> = [
+                imdbId,
+                normalizedIMDbID,
+                "imdb-\(normalizedIMDbID)",
+                "\(recommendationType.rawValue)-imdb-\(normalizedIMDbID)",
+                "\(recommendationType.rawValue)-omdb-\(normalizedIMDbID)",
+            ]
+            if !ratedMediaIds.isDisjoint(with: imdbCandidates) { return false }
+            if !libraryMediaIds.isDisjoint(with: imdbCandidates) { return false }
+            if !watchedMediaIds.isDisjoint(with: imdbCandidates) { return false }
+        }
 
         if let tmdbId {
-            let compositeTMDBID = "\(recommendationType.rawValue)-tmdb-\(tmdbId)"
-            if ratedMediaIds.contains(compositeTMDBID) { return false }
-            if libraryMediaIds.contains(compositeTMDBID) { return false }
+            let tmdbCandidates: Set<String> = [
+                "tmdb-\(tmdbId)",
+                "\(recommendationType.rawValue)-tmdb-\(tmdbId)",
+            ]
+            if !ratedMediaIds.isDisjoint(with: tmdbCandidates) { return false }
+            if !libraryMediaIds.isDisjoint(with: tmdbCandidates) { return false }
+            if !watchedMediaIds.isDisjoint(with: tmdbCandidates) { return false }
         }
 
         if ratedTitles.contains(titleLower) { return false }
@@ -270,6 +290,36 @@ final class DiscoverViewModel {
         if libraryTitles.contains(titleLower) { return false }
 
         return true
+    }
+
+    nonisolated static func imdbIDsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let left = IMDbIdentifierPolicy.firstID(in: lhs),
+              let right = IMDbIdentifierPolicy.firstID(in: rhs) else {
+            return false
+        }
+        return left == right
+    }
+
+    private nonisolated static func mediaIDAliases(for item: MediaItem) -> Set<String> {
+        var aliases: Set<String> = [item.id]
+
+        if let imdbID = IMDbIdentifierPolicy.firstID(in: item.id) {
+            aliases.formUnion([
+                imdbID,
+                "imdb-\(imdbID)",
+                "\(item.type.rawValue)-imdb-\(imdbID)",
+                "\(item.type.rawValue)-omdb-\(imdbID)",
+            ])
+        }
+
+        if let tmdbID = item.tmdbId {
+            aliases.formUnion([
+                "tmdb-\(tmdbID)",
+                "\(item.type.rawValue)-tmdb-\(tmdbID)",
+            ])
+        }
+
+        return aliases
     }
 
     // MARK: - AI Curated Recommendations
@@ -491,23 +541,39 @@ final class DiscoverViewModel {
             let historyEntries = try await database.fetchLibraryEntries(listType: .history)
             let libraryEntries = watchlistEntries + favoritesEntries + historyEntries
 
-            let ratedMediaIds = Set(ratedEvents.compactMap(\.mediaId))
-            let ratedTitles = Set(ratedEvents.compactMap { $0.metadata["title"]?.lowercased() })
-            let watchedTitles = Set(history.map { $0.title.lowercased() })
-            let libraryMediaIds = Set(libraryEntries.map(\.mediaId))
+            var ratedMediaIds = Set(ratedEvents.compactMap(\.mediaId))
+            var ratedTitles = Set(ratedEvents.compactMap { $0.metadata["title"]?.lowercased() })
+            var watchedMediaIds = Set(history.map(\.mediaId))
+            var watchedTitles = Set(history.map { $0.title.lowercased() })
+            var libraryMediaIds = Set(libraryEntries.map(\.mediaId))
 
             // Resolve library titles from cached media items for title-based matching
-            let cachedLibraryItems = try await database.fetchMediaItems(ids: libraryEntries.map(\.mediaId))
-            let libraryTitles = Set(cachedLibraryItems.map { $0.title.lowercased() })
+            let cachedLibraryItems = try await database.fetchMediaItemsResolvingAliases(ids: libraryEntries.map(\.mediaId))
+            let libraryTitles = Set(cachedLibraryItems.values.map { $0.title.lowercased() })
+            for item in cachedLibraryItems.values {
+                libraryMediaIds.formUnion(Self.mediaIDAliases(for: item))
+            }
+            let cachedRatedItems = try await database.fetchMediaItemsResolvingAliases(ids: ratedEvents.compactMap(\.mediaId))
+            for item in cachedRatedItems.values {
+                ratedMediaIds.formUnion(Self.mediaIDAliases(for: item))
+                ratedTitles.insert(item.title.lowercased())
+            }
+            let cachedWatchedItems = try await database.fetchMediaItemsResolvingAliases(ids: history.map(\.mediaId))
+            for item in cachedWatchedItems.values {
+                watchedMediaIds.formUnion(Self.mediaIDAliases(for: item))
+                watchedTitles.insert(item.title.lowercased())
+            }
 
             return recommendations.filter { rec in
                 Self.shouldKeepRecommendation(
                     title: rec.title,
                     recommendationMediaID: rec.toMediaPreview().id,
                     recommendationType: rec.type,
+                    imdbId: rec.imdbId,
                     tmdbId: rec.tmdbId,
                     ratedMediaIds: ratedMediaIds,
                     libraryMediaIds: libraryMediaIds,
+                    watchedMediaIds: watchedMediaIds,
                     ratedTitles: ratedTitles,
                     watchedTitles: watchedTitles,
                     libraryTitles: libraryTitles
@@ -630,37 +696,35 @@ final class DiscoverViewModel {
         for recommendation: AIMovieRecommendation,
         using metadataService: any MetadataProvider
     ) async -> MediaPreview? {
-        if let tmdbId = recommendation.tmdbId,
-           let detail = try? await metadataService.getDetail(id: String(tmdbId), type: recommendation.type),
+        if let imdbId = recommendation.imdbId,
+           let detail = try? await metadataService.getDetail(id: imdbId, type: recommendation.type),
            Self.isMatchingMetadata(
                recommendationTitle: recommendation.title,
                recommendationYear: recommendation.year,
                candidateTitle: detail.title,
                candidateYear: detail.year
-           ) {
+            ) {
+            let resolvedID = IMDbIdentifierPolicy.firstID(in: detail.id) ?? imdbId
             return MediaPreview(
-                id: "\(recommendation.type.rawValue)-tmdb-\(tmdbId)",
+                id: resolvedID,
                 type: recommendation.type,
                 title: detail.title,
                 year: detail.year ?? recommendation.year,
                 posterPath: detail.posterPath,
                 backdropPath: detail.backdropPath,
                 imdbRating: detail.imdbRating,
-                tmdbId: detail.tmdbId ?? tmdbId
+                tmdbId: detail.tmdbId
             )
         }
 
-        guard let searchResult = try? await metadataService.search(
+        let searchResult = try? await metadataService.search(
             query: recommendation.title,
             type: recommendation.type,
             page: 1,
             year: recommendation.year,
             language: "en-US"
-        ) else {
-            return nil
-        }
-
-        return searchResult.items
+        )
+        let searchMatch = searchResult?.items
             .filter { $0.type == recommendation.type }
             .map { ($0, Self.matchScore(for: recommendation, candidate: $0)) }
             .filter { $0.1 > 0 }
@@ -672,6 +736,34 @@ final class DiscoverViewModel {
             }
             .first?
             .0
+
+        if let searchMatch {
+            return searchMatch
+        }
+
+        if let tmdbId = recommendation.tmdbId,
+           !(metadataService is OMDbService),
+           let detail = try? await metadataService.getDetail(id: String(tmdbId), type: recommendation.type),
+           Self.isMatchingMetadata(
+               recommendationTitle: recommendation.title,
+               recommendationYear: recommendation.year,
+               candidateTitle: detail.title,
+               candidateYear: detail.year
+            ) {
+            let resolvedID = IMDbIdentifierPolicy.firstID(in: detail.id) ?? "\(recommendation.type.rawValue)-tmdb-\(tmdbId)"
+            return MediaPreview(
+                id: resolvedID,
+                type: recommendation.type,
+                title: detail.title,
+                year: detail.year ?? recommendation.year,
+                posterPath: detail.posterPath,
+                backdropPath: detail.backdropPath,
+                imdbRating: detail.imdbRating,
+                tmdbId: detail.tmdbId ?? tmdbId
+            )
+        }
+
+        return nil
     }
 
     private static func sanitizedRecommendation(
@@ -679,14 +771,17 @@ final class DiscoverViewModel {
         resolvedPreview: MediaPreview?
     ) -> AIMovieRecommendation {
         guard let resolvedPreview else {
-            var clearedRecommendation = recommendation
-            clearedRecommendation.tmdbId = nil
-            return clearedRecommendation
+            var sanitizedRecommendation = recommendation
+            sanitizedRecommendation.imdbId = IMDbIdentifierPolicy.firstID(in: recommendation.imdbId)
+            sanitizedRecommendation.tmdbId = nil
+            return sanitizedRecommendation
         }
 
         var sanitizedRecommendation = recommendation
         sanitizedRecommendation.title = resolvedPreview.title
         sanitizedRecommendation.year = resolvedPreview.year ?? recommendation.year
+        sanitizedRecommendation.imdbId = IMDbIdentifierPolicy.firstID(in: resolvedPreview.id)
+            ?? IMDbIdentifierPolicy.firstID(in: recommendation.imdbId)
         sanitizedRecommendation.tmdbId = resolvedPreview.tmdbId
         return sanitizedRecommendation
     }
@@ -734,6 +829,10 @@ final class DiscoverViewModel {
         if let recommendationYear = recommendation.year,
            let candidateYear = candidate.year,
            recommendationYear == candidateYear {
+            score += 2
+        }
+
+        if imdbIDsMatch(recommendation.imdbId, candidate.id) {
             score += 2
         }
 

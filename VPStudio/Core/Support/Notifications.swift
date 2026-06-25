@@ -10,7 +10,8 @@ extension Notification.Name {
     static let openSubtitlesDidChange = Notification.Name("VPStudio.OpenSubtitlesDidChange")
     static let environmentsDidChange = Notification.Name("VPStudio.EnvironmentsDidChange")
     static let indexersDidChange = Notification.Name("VPStudio.IndexersDidChange")
-    static let tmdbApiKeyDidChange = Notification.Name("VPStudio.TMDBApiKeyDidChange")
+    static let metadataApiKeyDidChange = Notification.Name("VPStudio.MetadataApiKeyDidChange")
+    static let metadataProviderDidChange = metadataApiKeyDidChange
     static let appDidResetAllData = Notification.Name("VPStudio.AppDidResetAllData")
     static let localModelsDidChange = Notification.Name("VPStudio.LocalModelsDidChange")
 

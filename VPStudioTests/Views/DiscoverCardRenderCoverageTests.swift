@@ -154,6 +154,13 @@ struct DiscoverCardRenderCoverageTests {
     }
 
     @Test
+    func mediaRowTrailingFadeStaysNarrowEnoughForVisibleTiles() {
+        #expect(MediaRowScrollCuePolicy.trailingFadeStart >= 0.98)
+        #expect(MediaRowScrollCuePolicy.trailingFadeStart < MediaRowScrollCuePolicy.trailingFadeEnd)
+        #expect(MediaRowScrollCuePolicy.trailingFadeEnd == 1.0)
+    }
+
+    @Test
     func mediaRowRendersSymbolRatingAndEmptyBranches() {
         var selectedIDs: [String] = []
         let rated = makePreview(

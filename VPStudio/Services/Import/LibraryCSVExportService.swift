@@ -140,7 +140,7 @@ actor LibraryCSVExportService {
             let item = mediaItems[entry.mediaId]
             let rating = ratings[entry.mediaId]
 
-            let imdbId = entry.mediaId.hasPrefix("tt") ? entry.mediaId : ""
+            let imdbId = IMDbIdentifierPolicy.firstID(in: entry.mediaId) ?? ""
             let title = escapeCSV(item?.title ?? "")
             let url = imdbId.isEmpty ? "" : "https://www.imdb.com/title/\(imdbId)/"
             let titleType = imdbTitleType(for: item?.type ?? .movie)
@@ -182,7 +182,7 @@ actor LibraryCSVExportService {
             let item = mediaItems[entry.mediaId]
             let rating = ratings[entry.mediaId]
 
-            let imdbId = entry.mediaId.hasPrefix("tt") ? entry.mediaId : ""
+            let imdbId = IMDbIdentifierPolicy.firstID(in: entry.mediaId) ?? ""
             let title = escapeCSV(item?.title ?? entry.title)
             let url = imdbId.isEmpty ? "" : "https://www.imdb.com/title/\(imdbId)/"
             let titleType = imdbTitleType(for: item?.type ?? .movie)
@@ -230,19 +230,17 @@ actor LibraryCSVExportService {
     }
 
     private func fetchMediaItems(for mediaIds: [String]) async throws -> [String: MediaItem] {
-        var result: [String: MediaItem] = [:]
-        let unique = Set(mediaIds)
-        for id in unique {
-            if let item = try await database.fetchMediaItem(id: id) {
-                result[id] = item
-            }
-        }
-        return result
+        try await database.fetchMediaItemsResolvingAliases(ids: mediaIds)
     }
 
     private func fetchRatings(for mediaIds: [String]) async throws -> [String: TasteEvent] {
         let relevant = Set(mediaIds)
         guard !relevant.isEmpty else { return [:] }
+
+        let relevantByIMDbID = relevant.reduce(into: [String: [String]]()) { partial, mediaId in
+            guard let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId) else { return }
+            partial[imdbID, default: []].append(mediaId)
+        }
 
         var dict: [String: TasteEvent] = [:]
         let pageSize = 1000
@@ -257,10 +255,16 @@ actor LibraryCSVExportService {
             if events.isEmpty { break }
 
             for event in events {
-                guard let mediaId = event.mediaId, relevant.contains(mediaId) else { continue }
+                guard let mediaId = event.mediaId else { continue }
                 // fetchTasteEvents is ordered DESC by createdAt, so first one is newest.
-                if dict[mediaId] == nil {
+                if relevant.contains(mediaId), dict[mediaId] == nil {
                     dict[mediaId] = event
+                }
+
+                guard let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId),
+                      let aliasedMediaIDs = relevantByIMDbID[imdbID] else { continue }
+                for aliasedMediaID in aliasedMediaIDs where dict[aliasedMediaID] == nil {
+                    dict[aliasedMediaID] = event
                 }
             }
 

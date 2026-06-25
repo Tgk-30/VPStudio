@@ -1146,7 +1146,7 @@ struct SearchViewModelAITests {
 
         let metadataService = SearchMetadataStub(
             searchResult: MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "search-result", year: 2010)],
+                items: [Fixtures.mediaPreview(id: "search-result", year: 2024)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -1320,7 +1320,7 @@ struct SearchViewModelAITests {
 
         let metadataService = SearchMetadataStub(
             searchResult: MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "search-result")],
+                items: [Fixtures.mediaPreview(id: "search-result", year: 2024)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -1369,7 +1369,7 @@ struct SearchViewModelAITests {
 
         let metadataService = SearchMetadataStub(
             searchResult: MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "search-result")],
+                items: [Fixtures.mediaPreview(id: "search-result", year: 2010)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -1418,7 +1418,7 @@ struct SearchViewModelAITests {
 
         let metadataService = SearchMetadataStub(
             searchResult: MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "search-result")],
+                items: [Fixtures.mediaPreview(id: "search-result", year: 2010)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -1579,7 +1579,7 @@ struct SearchViewModelAITests {
 
         let metadataService = SearchMetadataStub(
             searchResult: MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "search-result")],
+                items: [Fixtures.mediaPreview(id: "search-result", year: 2024)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -1628,7 +1628,7 @@ struct SearchViewModelAITests {
 
         let metadataService = SearchMetadataStub(
             searchResult: MetadataSearchResult(
-                items: [Fixtures.mediaPreview(id: "search-result")],
+                items: [Fixtures.mediaPreview(id: "search-result", year: 2010)],
                 page: 1,
                 totalPages: 1,
                 totalResults: 1
@@ -1742,7 +1742,7 @@ struct SearchViewModelAITests {
         viewModel.search()
 
         try await Self.waitUntil { viewModel.error != nil }
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
     }
@@ -2075,8 +2075,8 @@ struct SearchViewModelAITests {
 
         viewModel.clearAllFilters()
 
-        #expect(viewModel.query == "")
-        #expect(viewModel.queryDraft == "")
+        #expect(viewModel.query == "   ")
+        #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.hasQueryText == false)
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
@@ -2099,8 +2099,8 @@ struct SearchViewModelAITests {
 
         viewModel.clearAllFilters()
 
-        #expect(viewModel.query == "")
-        #expect(viewModel.queryDraft == "")
+        #expect(viewModel.query == "   ")
+        #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.hasQueryText == false)
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
@@ -2151,8 +2151,8 @@ struct SearchViewModelAITests {
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
         #expect(viewModel.isLoadingAI == false)
-        #expect(viewModel.query == "")
-        #expect(viewModel.queryDraft == "")
+        #expect(viewModel.query == "   ")
+        #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.hasQueryText == false)
 
         try await Self.waitUntil {
@@ -2180,8 +2180,8 @@ struct SearchViewModelAITests {
 
         viewModel.clearAllFilters()
 
-        #expect(viewModel.query == "")
-        #expect(viewModel.queryDraft == "")
+        #expect(viewModel.query == "   ")
+        #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.hasQueryText == false)
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
@@ -2206,12 +2206,12 @@ struct SearchViewModelAITests {
         let initialGeneration = viewModel.aiGeneration
         viewModel.query = "   "
         viewModel.fetchAIRecommendations(aiManager: aiManager)
-        #expect(viewModel.aiGeneration == initialGeneration + 3)
+        #expect(viewModel.aiGeneration == initialGeneration + 1)
         #expect(viewModel.isLoadingAI == true)
 
         viewModel.clearAllFilters()
 
-        #expect(viewModel.aiGeneration == initialGeneration + 5)
+        #expect(viewModel.aiGeneration == initialGeneration + 3)
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
         #expect(viewModel.isLoadingAI == false)
@@ -2256,8 +2256,8 @@ struct SearchViewModelAITests {
 
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.activeMoodCard == nil)
-        #expect(viewModel.query == "")
-        #expect(viewModel.queryDraft == "")
+        #expect(viewModel.query == "   ")
+        #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.hasQueryText == false)
         #expect(viewModel.aiRecommendations.isEmpty)
         #expect(viewModel.aiError == nil)
@@ -2299,12 +2299,12 @@ struct SearchViewModelAITests {
         #expect(viewModel.isLoadingAI == false)
 
         try await Self.waitUntil {
-            viewModel.error == .tmdbSetupRequired(feature: "Search")
+            viewModel.error == .metadataSetupRequired(feature: "Search")
         }
 
         #expect(viewModel.query == "apollo")
         #expect(viewModel.queryDraft == "apollo")
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.isSearching == false)
     }

@@ -381,10 +381,42 @@ struct PlayerSubtitleServicePolicyTests {
     }
 
     @Test
-    func imdbSearchIDOnlyUsesIMDbStyleMediaIdentifiers() {
+    func imdbSearchIDExtractsIMDbStyleMediaIdentifiers() {
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "tt0133093") == "tt0133093")
+        #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "movie-imdb-tt0133093") == "tt0133093")
+        #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "movie-imdb-TT0133093") == "tt0133093")
+        #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "ttnotanumber") == nil)
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "12345") == nil)
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: nil) == nil)
+    }
+
+    @Test
+    func lookupIDsPreferIMDbAndUseTMDBOnlyAsLegacyFallback() {
+        #expect(
+            PlayerSubtitleServicePolicy.lookupIDs(
+                mediaID: "movie-imdb-TT0133093",
+                tmdbId: 603
+            ) == PlayerSubtitleServicePolicy.LookupIDs(imdbId: "tt0133093", tmdbId: nil)
+        )
+        #expect(
+            PlayerSubtitleServicePolicy.lookupIDs(
+                mediaID: "movie-tmdb-603",
+                tmdbId: 603
+            ) == PlayerSubtitleServicePolicy.LookupIDs(imdbId: nil, tmdbId: 603)
+        )
+        #expect(
+            PlayerSubtitleServicePolicy.lookupIDs(
+                mediaID: "movie-tmdb-438631",
+                imdbId: "https://www.imdb.com/title/TT1160419/",
+                tmdbId: 438631
+            ) == PlayerSubtitleServicePolicy.LookupIDs(imdbId: "tt1160419", tmdbId: nil)
+        )
+        #expect(
+            PlayerSubtitleServicePolicy.lookupIDs(
+                mediaID: "legacy-title-id",
+                tmdbId: nil
+            ) == PlayerSubtitleServicePolicy.LookupIDs(imdbId: nil, tmdbId: nil)
+        )
     }
 
     @Test
@@ -1282,8 +1314,29 @@ struct PlayerProgressBarPresentationPolicyTests {
         #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 25, duration: 100) == 0.25)
         #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: -20, duration: 100) == 0)
         #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 250, duration: 100) == 1)
-        #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 5, duration: 0) == 1)
+        #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 5, duration: 0) == 0)
         #expect(PlayerViewPolicy.progressBarDisplayPercent(displayTime: 0.25, duration: 0.5) == 0.5)
+    }
+
+    @Test
+    func remainingTimeTracksDisplayTimeSoScrubbingLabelsStayConsistent() {
+        let duration: TimeInterval = 3_600
+        let displayTime = PlayerViewPolicy.progressBarDisplayTime(
+            currentTime: 600,
+            isScrubbing: true,
+            scrubTime: 3_000
+        )
+        let remaining = PlayerViewPolicy.progressBarRemainingTime(
+            displayTime: displayTime,
+            duration: duration
+        )
+
+        #expect(displayTime == 3_000)
+        #expect(remaining == 600)
+        #expect(displayTime + remaining == duration)
+        #expect(PlayerViewPolicy.progressBarRemainingTime(displayTime: 4_000, duration: duration) == 0)
+        #expect(PlayerViewPolicy.progressBarRemainingTime(displayTime: 10, duration: .infinity) == 0)
+        #expect(PlayerViewPolicy.progressBarRemainingTime(displayTime: .nan, duration: duration) == 0)
     }
 
     @Test
@@ -1298,6 +1351,16 @@ struct PlayerProgressBarPresentationPolicyTests {
         #expect(PlayerViewPolicy.scrubberDragPercent(locationX: 20, barWidth: .nan) == 0)
         #expect(PlayerViewPolicy.scrubberDragPercent(locationX: 0.5, barWidth: 1) == 0.5)
         #expect(PlayerViewPolicy.scrubberDragPercent(locationX: 0.5, barWidth: 0) == 0)
+    }
+
+    @Test
+    func progressBarMarkerPositionKeepsKnobInsideTrack() {
+        #expect(PlayerViewPolicy.progressBarMarkerX(percent: 0, barWidth: 100, markerWidth: 10) == 5)
+        #expect(PlayerViewPolicy.progressBarMarkerX(percent: 0.5, barWidth: 100, markerWidth: 10) == 50)
+        #expect(PlayerViewPolicy.progressBarMarkerX(percent: 1, barWidth: 100, markerWidth: 10) == 95)
+        #expect(PlayerViewPolicy.progressBarMarkerX(percent: 1.5, barWidth: 100, markerWidth: 10) == 95)
+        #expect(PlayerViewPolicy.progressBarMarkerX(percent: .nan, barWidth: 100, markerWidth: 10) == 0)
+        #expect(PlayerViewPolicy.progressBarMarkerX(percent: 0.5, barWidth: 8, markerWidth: 10) == 4)
     }
 
     @Test

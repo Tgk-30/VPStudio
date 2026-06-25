@@ -231,8 +231,8 @@ struct DetailPresentationPolicyTests {
         #expect(result.contains("imdb.com"))
     }
 
-    @Test("shareItem returns TMDB link when available")
-    func shareItemReturnsTMDBLink() {
+    @Test("shareItem returns title only for legacy TMDB IDs")
+    func shareItemReturnsTitleOnlyForLegacyTMDBID() {
         let result = DetailPresentationPolicy.shareItem(
             previewID: "custom-id",
             previewTitle: "Test Movie",
@@ -241,7 +241,7 @@ struct DetailPresentationPolicyTests {
             mediaTitle: nil,
             mediaTMDBID: nil
         )
-        #expect(result.contains("themoviedb.org"))
+        #expect(result == "Test Movie")
     }
 
     @Test("shareItem falls back to title when no links available")

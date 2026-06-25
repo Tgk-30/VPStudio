@@ -489,7 +489,7 @@ struct PlayerCinematicChromePolicyTests {
         #expect(PlayerCinematicChromePolicy.transportCardMaxWidth == 780)
         #expect(PlayerCinematicChromePolicy.controlsDockSpacing == 8)
         #expect(PlayerCinematicChromePolicy.controlsDockHorizontalPadding == 18)
-        #expect(PlayerCinematicChromePolicy.controlsDockBottomPadding == 18)
+        #expect(PlayerCinematicChromePolicy.controlsDockBottomPadding == 56)
         #expect(PlayerCinematicChromePolicy.transportCardHorizontalPadding == 20)
         #expect(PlayerCinematicChromePolicy.transportCardVerticalPadding == 12)
     }

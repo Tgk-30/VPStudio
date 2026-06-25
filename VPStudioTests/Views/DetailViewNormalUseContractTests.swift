@@ -339,7 +339,7 @@ struct DetailViewNormalUseContractTests {
                 DetailView(
                     preview: preview,
                     initialViewModel: viewModel,
-                    initialTMDBApiKey: "fixture-key",
+                    initialOMDbApiKey: "fixture-key",
                     initialIsShowingRatingSheet: true,
                     initialDraftFeedbackValue: 8,
                     initialShowActiveSessionToast: true,
@@ -358,7 +358,7 @@ struct DetailViewNormalUseContractTests {
         NotificationCenter.default.post(name: .watchHistoryDidChange, object: nil)
         NotificationCenter.default.post(name: .tasteProfileDidChange, object: nil)
         NotificationCenter.default.post(name: .downloadsDidChange, object: nil)
-        NotificationCenter.default.post(name: .tmdbApiKeyDidChange, object: nil)
+        NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)
 
         hosted.host.view.setNeedsLayout()
         hosted.host.view.layoutIfNeeded()
@@ -554,6 +554,14 @@ struct DetailViewNormalUseContractTests {
                 episodeTitle: nil
             )
         )
+
+        let aliasedArguments = DetailQASamplePolicy.downloadArguments(
+            mediaItem: MediaItem(id: "movie-tmdb-438631", type: .movie, title: "Dune", tmdbId: 438_631),
+            preview: MediaPreview(id: "movie-imdb-tt1160419", type: .movie, title: "Dune", tmdbId: nil),
+            previewType: .movie,
+            selectedEpisode: nil
+        )
+        #expect(aliasedArguments?.mediaId == "tt1160419")
     }
 }
 

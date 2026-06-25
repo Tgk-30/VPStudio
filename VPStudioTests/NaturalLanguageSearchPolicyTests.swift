@@ -10,8 +10,9 @@ struct NaturalLanguageSearchPolicyTests {
 
         // The literal phrase is embedded verbatim.
         #expect(prompt.contains(phrase))
-        // JSON array shape requested with the keys parseRecommendations expects.
-        #expect(prompt.contains("Format as JSON array with keys: title, year, type, reason, tmdbId."))
+        // JSON array shape requested with the keys new AI responses should provide.
+        #expect(prompt.contains("Format as JSON array with keys: title, year, type, reason, imdbId."))
+        #expect(!prompt.contains("tmdbId"))
         #expect(prompt.lowercased().contains("recommend"))
     }
 
@@ -20,7 +21,8 @@ struct NaturalLanguageSearchPolicyTests {
         for query in ["", "   ", "\n\t "] {
             let prompt = NaturalLanguageSearchPolicy.recommendationPrompt(from: query)
             #expect(prompt.contains("Based on my viewing history and preferences"))
-            #expect(prompt.contains("Format as JSON array with keys: title, year, type, reason, tmdbId."))
+            #expect(prompt.contains("Format as JSON array with keys: title, year, type, reason, imdbId."))
+            #expect(!prompt.contains("tmdbId"))
             // No empty quoted phrase leaks into the generic prompt.
             #expect(!prompt.contains("\u{201C}\u{201D}"))
             #expect(!prompt.contains("\"\""))

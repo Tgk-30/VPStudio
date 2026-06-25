@@ -99,6 +99,18 @@ enum SearchAutoOpenPolicy {
 }
 
 enum SearchResultsPresentationPolicy {
+    static let standardBottomContentPadding: CGFloat = 112
+    static let bottomTabBarContentPadding: CGFloat = 196
+
+    static func bottomContentPadding(for layout: NavigationLayout) -> CGFloat {
+        switch layout {
+        case .bottomTabBar:
+            return bottomTabBarContentPadding
+        case .leftSidebar:
+            return standardBottomContentPadding
+        }
+    }
+
     static func shouldShowTypeFilterSection(
         submittedQuery: String,
         hasSelectedGenre: Bool,
@@ -119,12 +131,13 @@ enum SearchResultsPresentationPolicy {
         sortOption: DiscoverFilters.SortOption,
         languageFilters: Set<String>,
         yearFilter: Int?,
-        yearRangePreset: YearRangePreset?
+        yearRangePreset: YearRangePreset?,
+        supportsLanguageFilters: Bool = true
     ) -> Bool {
         hasActiveMoodCard
             || hasSelectedGenre
             || sortOption != .popularityDesc
-            || isExplicitLanguageSelection(languageFilters)
+            || (supportsLanguageFilters && isExplicitLanguageSelection(languageFilters))
             || yearFilter != nil
             || yearRangePreset != nil
     }
@@ -134,13 +147,30 @@ enum SearchResultsPresentationPolicy {
         sortOption: DiscoverFilters.SortOption,
         languageFilters: Set<String>,
         yearFilter: Int?,
-        yearRangePreset: YearRangePreset?
+        yearRangePreset: YearRangePreset?,
+        supportsLanguageFilters: Bool = true
     ) -> Bool {
         sortOption != .popularityDesc
             || hasSelectedGenre
-            || isExplicitLanguageSelection(languageFilters)
+            || (supportsLanguageFilters && isExplicitLanguageSelection(languageFilters))
             || yearFilter != nil
             || yearRangePreset != nil
+    }
+
+    static func visibleActiveFilterCount(
+        sortOption: DiscoverFilters.SortOption,
+        languageFilters: Set<String>,
+        yearFilter: Int?,
+        yearRangePreset: YearRangePreset?,
+        selectedGenre: Genre?,
+        supportsLanguageFilters: Bool
+    ) -> Int {
+        var count = 0
+        if sortOption != .popularityDesc { count += 1 }
+        if yearFilter != nil || yearRangePreset != nil { count += 1 }
+        if supportsLanguageFilters && isExplicitLanguageSelection(languageFilters) { count += 1 }
+        if selectedGenre != nil { count += 1 }
+        return count
     }
 
     static func selectedContentDescriptor(selectedType: MediaType?) -> String {
@@ -277,7 +307,7 @@ struct SearchView: View {
             }
         )
     }
-    @State private var tmdbReloadTask: Task<Void, Never>?
+    @State private var metadataReloadTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var selectedYear: Int? = nil
     @State private var selectedLanguages: Set<String> = ["en-US"]
@@ -298,6 +328,8 @@ struct SearchView: View {
     @State private var hasTraktToken = false
     @State private var traktHistorySyncEnabled = false
     private let contentMaxWidth: CGFloat = 1080
+    // OMDb has no original-language filter, so Search must not surface inert language controls.
+    private let supportsSearchLanguageFilters = false
     private let disablesAutomaticTasks: Bool
 
     init(
@@ -370,7 +402,7 @@ struct SearchView: View {
                 searchDraft = viewModel.queryDraft
             }
             await hydrateRecentSearchesIfNeeded()
-            await reloadTMDBConfigurationAndSearch()
+            await reloadMetadataConfigurationAndSearch()
             await reloadPersonalizedRecsGate()
             applySearchQARuntimeIfNeeded()
         }
@@ -380,15 +412,15 @@ struct SearchView: View {
             userRatingsReloadTask?.cancel()
             userRatingsReloadTask = Task { await loadUserRatings(force: true) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
             guard !disablesAutomaticTasks else { return }
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = Task { await reloadTMDBConfigurationAndSearch() }
+            metadataReloadTask?.cancel()
+            metadataReloadTask = Task { await reloadMetadataConfigurationAndSearch() }
         }
         .onDisappear {
             viewModel.cancelInFlightWork()
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = nil
+            metadataReloadTask?.cancel()
+            metadataReloadTask = nil
             userRatingsReloadTask?.cancel()
             userRatingsReloadTask = nil
             if !disablesAutomaticTasks {
@@ -406,13 +438,16 @@ struct SearchView: View {
                 genres: viewModel.genres,
                 selectedGenre: $draftGenre,
                 displayedSortOptions: displayedSortOptions,
+                showsLanguageFilters: supportsSearchLanguageFilters,
                 onApply: {
                     // Commit all filters in ONE batched requery instead of genre/sort browsing
                     // live and year/language re-querying separately.
                     viewModel.applyFilterDraft(SearchFilterDraft(
                         sortOption: draftSortOption,
                         selectedYear: selectedYear,
-                        selectedLanguages: selectedLanguages,
+                        selectedLanguages: supportsSearchLanguageFilters
+                            ? selectedLanguages
+                            : [ExploreFilterSheetLanguageSelectionPolicy.defaultLanguageCode],
                         selectedGenre: draftGenre
                     ))
                 }
@@ -422,7 +457,9 @@ struct SearchView: View {
             if showing {
                 // Sync local filter drafts from viewModel when sheet opens
                 selectedYear = viewModel.yearFilter
-                selectedLanguages = SearchLanguageOption.normalizeSelection(from: viewModel.languageFilters)
+                selectedLanguages = supportsSearchLanguageFilters
+                    ? SearchLanguageOption.normalizeSelection(from: viewModel.languageFilters)
+                    : [ExploreFilterSheetLanguageSelectionPolicy.defaultLanguageCode]
                 draftSortOption = viewModel.sortOption
                 draftGenre = viewModel.selectedGenre
                 // Ensure genres are loaded for the filter sheet
@@ -517,7 +554,7 @@ struct SearchView: View {
             hasSelectedGenre: viewModel.selectedGenre != nil,
             hasActiveMoodCard: viewModel.activeMoodCard != nil,
             explorePhase: viewModel.explorePhase,
-            hasActiveFilters: viewModel.hasActiveFilters
+            hasActiveFilters: visibleActiveFilterCount > 0
         )
     }
 
@@ -695,8 +732,8 @@ struct SearchView: View {
                             }
                     }
 
-                if viewModel.activeFilterCount > 0 {
-                    Text("\(viewModel.activeFilterCount)")
+                if visibleActiveFilterCount > 0 {
+                    Text("\(visibleActiveFilterCount)")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
@@ -732,7 +769,7 @@ struct SearchView: View {
         }
         .padding(.horizontal, 26)
         .padding(.bottom, 8)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: viewModel.activeFilterCount)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: visibleActiveFilterCount)
     }
 
     private var chipDivider: some View {
@@ -744,7 +781,8 @@ struct SearchView: View {
 
     /// Language options currently shown as active (non-default selections).
     private var activeLanguageOptions: [SearchLanguageOption.Option] {
-        SearchLanguageOption.activeOptions(for: viewModel.languageFilters)
+        guard supportsSearchLanguageFilters else { return [] }
+        return SearchLanguageOption.activeOptions(for: viewModel.languageFilters)
     }
 
     /// Menu button to add additional languages.
@@ -790,7 +828,19 @@ struct SearchView: View {
             sortOption: viewModel.sortOption,
             languageFilters: viewModel.languageFilters,
             yearFilter: viewModel.yearFilter,
-            yearRangePreset: viewModel.yearRangePreset
+            yearRangePreset: viewModel.yearRangePreset,
+            supportsLanguageFilters: supportsSearchLanguageFilters
+        )
+    }
+
+    private var visibleActiveFilterCount: Int {
+        SearchResultsPresentationPolicy.visibleActiveFilterCount(
+            sortOption: viewModel.sortOption,
+            languageFilters: viewModel.languageFilters,
+            yearFilter: viewModel.yearFilter,
+            yearRangePreset: viewModel.yearRangePreset,
+            selectedGenre: viewModel.selectedGenre,
+            supportsLanguageFilters: supportsSearchLanguageFilters
         )
     }
 
@@ -847,9 +897,11 @@ struct SearchView: View {
                 )
             }
 
-            addLanguageMenu
+            if supportsSearchLanguageFilters {
+                addLanguageMenu
+            }
 
-            if viewModel.hasActiveFilters {
+            if visibleActiveFilterCount > 0 {
                 Button {
                     viewModel.clearAllFilters()
                 } label: {
@@ -1008,7 +1060,7 @@ struct SearchView: View {
                     )
                 }
                 .padding(.top, 12)
-                .padding(.bottom, 32)
+                .padding(.bottom, SearchResultsPresentationPolicy.bottomContentPadding(for: appState.navigationLayout))
             }
             // Match searchBarSection: pad OUTSIDE centeredStage (was an inner .horizontal 40
             // that pushed Recent/Browse ~40pt right of the search bar's left edge).
@@ -1068,7 +1120,8 @@ struct SearchView: View {
             sortOption: viewModel.sortOption,
             languageFilters: viewModel.languageFilters,
             yearFilter: viewModel.yearFilter,
-            yearRangePreset: viewModel.yearRangePreset
+            yearRangePreset: viewModel.yearRangePreset,
+            supportsLanguageFilters: supportsSearchLanguageFilters
         )
     }
 
@@ -1203,7 +1256,7 @@ struct SearchView: View {
                         }
                         .padding(.horizontal, 24)
                         .padding(.top, 8)
-                        .padding(.bottom, 32)
+                        .padding(.bottom, SearchResultsPresentationPolicy.bottomContentPadding(for: appState.navigationLayout))
                     }
                 }
                 .id("results-scroll-\(viewModel.selectedType?.rawValue ?? "all")")
@@ -1318,13 +1371,7 @@ struct SearchView: View {
 
         let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
         guard !Task.isCancelled else { return }
-        var dict: [String: TasteEvent] = [:]
-        for event in events {
-            if let mediaId = event.mediaId {
-                dict[mediaId] = event
-            }
-        }
-        userRatings = dict
+        userRatings = TasteRatingLookupPolicy.lookup(from: events)
         hasLoadedUserRatings = true
     }
 
@@ -1377,8 +1424,8 @@ struct SearchView: View {
     }
 
     @MainActor
-    private func reloadTMDBConfigurationAndSearch() async {
-        let key = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+    private func reloadMetadataConfigurationAndSearch() async {
+        let key = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
         let shouldRequery =
             !viewModel.submittedQuery.isEmpty ||
             viewModel.selectedGenre != nil ||
@@ -1596,7 +1643,15 @@ private struct SearchResultsGrid: View {
                         selectedItem = item
                     }
                 } label: {
-                    MediaCardView(item: item, userRating: userRatings[item.id])
+                    MediaCardView(
+                        item: item,
+                        userRating: TasteRatingLookupPolicy.rating(
+                            in: userRatings,
+                            mediaId: item.id,
+                            type: item.type,
+                            tmdbId: item.tmdbId
+                        )
+                    )
                 }
                 .buttonStyle(.plain)
                 #if os(visionOS)

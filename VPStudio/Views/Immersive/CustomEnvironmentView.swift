@@ -67,9 +67,6 @@ struct CustomEnvironmentView: View {
             if let loadingPanel = attachments.entity(for: "loadingIndicator") {
                 loadingPanel.position = SIMD3<Float>(0, 1.6, -4)
                 content.add(loadingPanel)
-                if case .loaded = loadingState {
-                    loadingPanel.removeFromParent()
-                }
             }
 
             guard let selected = appState.selectedEnvironmentAsset else {

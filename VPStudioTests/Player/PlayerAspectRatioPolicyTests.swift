@@ -98,7 +98,7 @@ struct PlayerAspectRatioPolicyTests {
         #expect(PlayerAspectRatioPolicy.shouldRequestGeometry(
             detectedRatio: 16.0 / 9.0,
             sceneAvailable: true
-        ))
+        ) == true)
     }
 
     @Test

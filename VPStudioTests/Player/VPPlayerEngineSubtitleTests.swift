@@ -421,6 +421,42 @@ struct VPPlayerEngineSubtitleTimingTests {
         #expect(engine.currentSubtitleText == nil)
     }
 
+    @Test @MainActor func positiveSubtitleOffsetShowsLaterCueEarly() throws {
+        let engine = try loadedEngine()
+
+        engine.subtitleOffset = 1.0
+        engine.updateSubtitleText(at: 4.0)
+
+        #expect(engine.currentSubtitleText == "Second cue.")
+    }
+
+    @Test @MainActor func negativeSubtitleOffsetShowsEarlierCueLate() throws {
+        let engine = try loadedEngine()
+
+        engine.subtitleOffset = -1.0
+        engine.updateSubtitleText(at: 5.0)
+
+        #expect(engine.currentSubtitleText == "First cue.")
+    }
+
+    @Test @MainActor func subtitleOffsetClampsLookupAtZero() throws {
+        let engine = try loadedEngine()
+
+        engine.subtitleOffset = -5.0
+        engine.updateSubtitleText(at: 2.0)
+
+        #expect(engine.currentSubtitleText == nil)
+    }
+
+    @Test @MainActor func resetSessionStateClearsSubtitleOffset() throws {
+        let engine = try loadedEngine()
+        engine.subtitleOffset = 1.5
+
+        engine.resetSessionState()
+
+        #expect(engine.subtitleOffset == 0)
+    }
+
     @Test @MainActor func updateSubtitleTextReturnsNilBeforeFirstCue() throws {
         let engine = try loadedEngine()
         engine.updateSubtitleText(at: 0.5) // Before first cue starts at 1.0

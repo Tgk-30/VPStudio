@@ -19,6 +19,18 @@ struct DownloadMediaGroupTests {
     }
 
     @Test
+    func posterURLPreservesAbsoluteOMDbURL() {
+        let group = DownloadMediaGroup(
+            mediaId: "tt100",
+            mediaTitle: "Movie",
+            mediaType: "movie",
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg",
+            tasks: []
+        )
+        #expect(group.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
+    }
+
+    @Test
     func posterURLIsNilWhenPathIsNil() {
         let group = DownloadMediaGroup(
             mediaId: "tt100",

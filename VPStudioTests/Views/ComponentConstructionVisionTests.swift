@@ -178,7 +178,7 @@ struct ComponentConstructionVisionTests {
                 viewModel.selectedGenre = genre
             },
             stateView("Search setup error") { viewModel in
-                viewModel.error = .tmdbSetupRequired(feature: "Search")
+                viewModel.error = .metadataSetupRequired(feature: "Search")
             },
             stateView("Search refreshing retained results", draft: "arrival") { viewModel in
                 viewModel.results = [movie]
@@ -407,7 +407,7 @@ struct ComponentConstructionVisionTests {
                 model.isLoading = true
             }),
             ("Discover setup error", viewModel { model in
-                model.error = .tmdbSetupRequired(feature: "Discover")
+                model.error = .metadataSetupRequired(feature: "Discover")
             }),
             ("Discover retained refresh with content", viewModel { model in
                 model.isLoading = true
@@ -709,7 +709,7 @@ struct ComponentConstructionVisionTests {
         let configuredStatuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "1 active service", kind: .positive),
             .indexers: SettingsDestinationStatus(message: "2 active indexers", kind: .positive),
-            .metadata: SettingsDestinationStatus(message: "API key configured", kind: .positive),
+            .metadata: SettingsDestinationStatus(message: "OMDb key configured", kind: .positive),
             .ai: SettingsDestinationStatus(message: "OpenRouter configured", kind: .positive),
             .subtitles: SettingsDestinationStatus(message: "API key configured", kind: .positive),
             .player: SettingsDestinationStatus(message: "Built-in player", kind: .neutral),
@@ -718,7 +718,7 @@ struct ComponentConstructionVisionTests {
         let warningStatuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "Not configured", kind: .warning),
             .indexers: SettingsDestinationStatus(message: "No active indexers", kind: .warning),
-            .metadata: SettingsDestinationStatus(message: "API key required", kind: .warning),
+            .metadata: SettingsDestinationStatus(message: "OMDb key required", kind: .warning),
             .ai: SettingsDestinationStatus(message: "Provider key required", kind: .warning),
             .subtitles: SettingsDestinationStatus(message: "Optional", kind: .neutral),
         ]
@@ -1032,18 +1032,18 @@ struct ComponentConstructionVisionTests {
         let views: [(String, AnyView)] = [
             ("Metadata saved", AnyView(NavigationStack {
                 MetadataSettingsView(
-                    initialTMDBApiKey: "fixture-tmdb-key",
+                    initialOMDbApiKey: "fixture-omdb-key",
                     initialIsSaved: true,
-                    initialNotice: .success("TMDB API key saved."),
+                    initialNotice: .success("OMDb API key saved."),
                     disablesAutomaticTasks: true
                 )
             }.environment(appState))),
             ("Metadata testing error", AnyView(NavigationStack {
                 MetadataSettingsView(
-                    initialTMDBApiKey: "fixture-unsaved-key",
-                    initialBaselineTMDBApiKey: "fixture-saved-key",
+                    initialOMDbApiKey: "fixture-unsaved-key",
+                    initialBaselineOMDbApiKey: "fixture-saved-key",
                     initialIsTestingApiKey: true,
-                    initialSurfaceError: .unknown("TMDB validation failed in construction test."),
+                    initialSurfaceError: .unknown("OMDb validation failed in construction test."),
                     disablesAutomaticTasks: true
                 )
             }.environment(appState))),
@@ -1195,7 +1195,7 @@ struct ComponentConstructionVisionTests {
                     initialStep: step,
                     initialDebridApiKey: "fixture-debrid-key",
                     initialSelectedService: .realDebrid,
-                    initialTMDBApiKey: "fixture-tmdb-key",
+                    initialOMDbApiKey: "fixture-omdb-key",
                     initialSelectedAIProvider: .openRouter,
                     initialAIAPIKey: "fixture-ai-key",
                     initialSelectedQuality: .uhd4k,
@@ -1306,7 +1306,7 @@ struct ComponentConstructionVisionTests {
                         feedbackScaleMode: .oneToTen,
                         currentFeedbackValue: 7
                     ),
-                    initialTMDBApiKey: "test-key",
+                    initialOMDbApiKey: "test-key",
                     initialIsShowingRatingSheet: true,
                     initialDraftFeedbackValue: 7,
                     disablesAutomaticLoading: true
@@ -1435,7 +1435,7 @@ struct ComponentConstructionVisionTests {
             SeriesDetailLayout(
                 viewModel: seriesViewModel,
                 title: "The Expanse",
-                tmdbApiKey: "test-key",
+                metadataApiKey: "test-key",
                 mediaType: .series,
                 streamResultsAnchor: "streams",
                 shareItem: "The Expanse",
@@ -1451,7 +1451,7 @@ struct ComponentConstructionVisionTests {
             SeriesDetailLayout(
                 viewModel: movieViewModel,
                 title: movie.title,
-                tmdbApiKey: "test-key",
+                metadataApiKey: "test-key",
                 mediaType: .movie,
                 streamResultsAnchor: "streams",
                 shareItem: movie.title,
@@ -1493,18 +1493,16 @@ struct ComponentConstructionVisionTests {
         )
 
         let view = HStack {
-            CinemaEnvironmentPreviewCard(isActive: true, isImmersiveOpen: true, onSelect: {})
+            CinemaEnvironmentPreviewCard(status: .active, onSelect: {})
             EnvironmentPreviewCard(
                 asset: importedHDRI,
-                isActive: true,
-                isImmersiveOpen: true,
+                status: .active,
                 onSelect: {},
                 onDelete: {}
             )
             EnvironmentPreviewCard(
                 asset: bundledScene,
-                isActive: false,
-                isImmersiveOpen: false,
+                status: .inactive,
                 onSelect: {},
                 onDelete: nil
             )

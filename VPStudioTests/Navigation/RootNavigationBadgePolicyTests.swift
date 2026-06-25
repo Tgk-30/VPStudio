@@ -68,7 +68,7 @@ struct RootNavigationBadgePolicyTests {
         var snapshot = SettingsStatusSnapshot()
         snapshot.activeDebridCount = 1
         snapshot.activeIndexerCount = 1
-        snapshot.hasTMDBKey = false
+        snapshot.hasMetadataKey = false
         snapshot.aiProvider = .openAI
         snapshot.hasOpenAIKey = true
         snapshot.hasTraktCredentials = true
@@ -87,7 +87,7 @@ struct RootNavigationBadgePolicyTests {
         var snapshot = SettingsStatusSnapshot()
         snapshot.activeDebridCount = 2
         snapshot.activeIndexerCount = 3
-        snapshot.hasTMDBKey = true
+        snapshot.hasMetadataKey = true
         snapshot.aiProvider = .openAI
         snapshot.hasOpenAIKey = true
         snapshot.hasOllamaEndpoint = false

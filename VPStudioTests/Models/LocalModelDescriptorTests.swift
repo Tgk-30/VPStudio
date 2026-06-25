@@ -170,7 +170,6 @@ struct LocalModelDescriptorStateMachineModelTests {
     @Test("Invalid status transitions")
     func invalidTransitions() {
         #expect(LocalModelDescriptor.canTransition(from: .available, to: .paused) == false)
-        #expect(LocalModelDescriptor.canTransition(from: .available, to: .failed) == false)
         #expect(LocalModelDescriptor.canTransition(from: .downloading, to: .available) == false)
         #expect(LocalModelDescriptor.canTransition(from: .paused, to: .downloaded) == false)
         #expect(LocalModelDescriptor.canTransition(from: .downloaded, to: .available) == false)

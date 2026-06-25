@@ -116,6 +116,7 @@ extension SettingsDestination {
     var tintColor: Color {
         switch self {
         case .debrid: return .blue
+        case .debridCloud: return .cyan
         case .indexers: return .teal
         case .metadata: return .green
         case .ai: return .purple

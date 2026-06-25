@@ -31,6 +31,7 @@ struct PlayerSessionRoutingTests {
         let request = viewModel.makePlayerSessionRequest(stream: primaryStream, preview: preview)
 
         #expect(request.mediaId == "tt1234567")
+        #expect(request.imdbId == "tt1234567")
         #expect(request.mediaTitle == "Example Show")
         #expect(request.tmdbId == 100)
         #expect(request.episodeId == episode.id)
@@ -48,6 +49,7 @@ struct PlayerSessionRoutingTests {
         let request = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
 
         #expect(request.mediaId == preview.id)
+        #expect(request.imdbId == nil)
         #expect(request.mediaTitle == preview.title)
         #expect(request.tmdbId == 90)
         #expect(request.episodeId == nil)

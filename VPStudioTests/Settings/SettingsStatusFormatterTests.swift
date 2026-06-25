@@ -66,24 +66,24 @@ struct SettingsStatusFormatterTests {
     }
 
     @Test
-    func metadataStatusWarnsWhenTMDBMissing() {
+    func metadataStatusWarnsWhenOMDbMissing() {
         var snapshot = SettingsStatusSnapshot()
-        snapshot.hasTMDBKey = false
+        snapshot.hasMetadataKey = false
 
         let status = SettingsStatusFormatter.status(for: .metadata, snapshot: snapshot)
         #expect(status.kind == .warning)
-        #expect(status.message == "API key required")
+        #expect(status.message == "OMDb key required")
     }
 
     @Test
-    func metadataStatusIsPositiveWhenTMDBIsConfigured() {
+    func metadataStatusIsPositiveWhenOMDbIsConfigured() {
         var snapshot = SettingsStatusSnapshot()
-        snapshot.hasTMDBKey = true
+        snapshot.hasMetadataKey = true
 
         let status = SettingsStatusFormatter.status(for: .metadata, snapshot: snapshot)
 
         #expect(status.kind == .positive)
-        #expect(status.message == "API key configured")
+        #expect(status.message == "OMDb key configured")
     }
 
     @Test

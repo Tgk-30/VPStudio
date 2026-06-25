@@ -4,12 +4,12 @@ import Testing
 @Suite("SetupWizardValidationPolicy")
 struct SetupWizardValidationPolicyTests {
     @Test
-    func tmdbKeyIsRequiredToContinueFromMetadataStep() {
+    func omdbKeyIsRequiredToContinueFromMetadataStep() {
         #expect(SetupWizardValidationPolicy.trimmedValue("  abc\n") == "abc")
-        #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "   ") == false)
-        #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "\n\t") == false)
-        #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "abcd") == true)
-        #expect(SetupWizardValidationPolicy.requiredTMDBMessage == "TMDB API key is required to continue.")
+        #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "   ") == false)
+        #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\n\t") == false)
+        #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "abcd") == true)
+        #expect(SetupWizardValidationPolicy.requiredOMDbMessage == "OMDb API key is required to continue.")
     }
 
     @Test
@@ -57,18 +57,22 @@ struct SetupWizardValidationPolicyTests {
         let rows = SetupWizardValidationPolicy.completionSummaryRows(
             selectedService: .realDebrid,
             debridApiKey: " token ",
-            tmdbApiKey: " tmdb ",
+            omdbApiKey: " omdb ",
             selectedAIProvider: .openRouter,
             selectedQuality: .uhd4k,
-            selectedSubtitleLanguage: .english
+            selectedSubtitleLanguage: .english,
+            selectedSourceFilterPreset: .cinema,
+            guestModeEnabled: true
         )
 
         #expect(rows == [
             SetupWizardValidationPolicy.SummaryRow(icon: "link", text: "Real-Debrid connected"),
-            SetupWizardValidationPolicy.SummaryRow(icon: "film", text: "TMDB metadata configured"),
+            SetupWizardValidationPolicy.SummaryRow(icon: "film", text: "OMDb metadata configured"),
             SetupWizardValidationPolicy.SummaryRow(icon: "brain", text: "OpenRouter AI enabled"),
             SetupWizardValidationPolicy.SummaryRow(icon: "4k.tv", text: "Quality set to 4K"),
+            SetupWizardValidationPolicy.SummaryRow(icon: "line.3.horizontal.decrease.circle", text: "Cinema source filters"),
             SetupWizardValidationPolicy.SummaryRow(icon: "captions.bubble", text: "English subtitles"),
+            SetupWizardValidationPolicy.SummaryRow(icon: "person.crop.circle.badge.clock", text: "Guest Mode enabled"),
         ])
     }
 
@@ -77,14 +81,17 @@ struct SetupWizardValidationPolicyTests {
         let rows = SetupWizardValidationPolicy.completionSummaryRows(
             selectedService: .premiumize,
             debridApiKey: "   ",
-            tmdbApiKey: "",
+            omdbApiKey: "",
             selectedAIProvider: .none,
             selectedQuality: .hd1080p,
-            selectedSubtitleLanguage: .none
+            selectedSubtitleLanguage: .none,
+            selectedSourceFilterPreset: .balanced,
+            guestModeEnabled: false
         )
 
         #expect(rows == [
             SetupWizardValidationPolicy.SummaryRow(icon: "4k.tv", text: "Quality set to 1080p"),
+            SetupWizardValidationPolicy.SummaryRow(icon: "line.3.horizontal.decrease.circle", text: "Balanced source filters"),
         ])
     }
 }

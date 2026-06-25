@@ -5,8 +5,12 @@ enum ExploreGenreTilePolicy {
     static let tileWidth: CGFloat = 152
     static let columnSpacing: CGFloat = 16
     static let rowSpacing: CGFloat = 15
-    static let cornerRadius: CGFloat = 17
-    static let referenceAspectRatio: CGFloat = 227.0 / 251.0
+    static let cornerRadius: CGFloat = VPRadius.control
+    static let referenceAspectRatio: CGFloat = 128.0 / 142.0
+    static let artworkOverscanScale: CGFloat = 1.16
+    static var tileHeight: CGFloat {
+        tileWidth / referenceAspectRatio
+    }
 
     static func imageName(for card: ExploreMoodCard) -> String {
         "genre-ref-\(card.id)"
@@ -57,36 +61,23 @@ private struct ExploreGenreTile: View {
 
     var body: some View {
         Button(action: onSelect) {
-            Image(ExploreGenreTilePolicy.imageName(for: card))
-                .resizable()
-                .interpolation(.high)
-                .antialiased(true)
-                .contrast(0.94)
-                .saturation(1.01)
-                .brightness(0.01)
-                .scaledToFill()
-                .aspectRatio(ExploreGenreTilePolicy.referenceAspectRatio, contentMode: .fit)
-                .clipShape(tileShape)
-                .overlay {
-                    tileShape
-                        .inset(by: 0.6)
-                        .strokeBorder(
-                            LinearGradient(
-                                gradient: Gradient(stops: [
-                                    .init(color: .white.opacity(0.16), location: 0.0),
-                                    .init(color: .white.opacity(0.05), location: 0.18),
-                                    .init(color: .clear, location: 0.42),
-                                    .init(color: .clear, location: 0.78),
-                                    .init(color: .black.opacity(0.05), location: 1.0),
-                                ]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.45
-                        )
-                        .blendMode(.screen)
-                }
-                .shadow(color: .black.opacity(0.012), radius: 0.35, y: 0.15)
+            ZStack {
+                Image(ExploreGenreTilePolicy.imageName(for: card))
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .scaledToFit()
+                    .frame(
+                        width: ExploreGenreTilePolicy.tileWidth,
+                        height: ExploreGenreTilePolicy.tileHeight
+                    )
+                    .scaleEffect(ExploreGenreTilePolicy.artworkOverscanScale)
+            }
+            .frame(
+                width: ExploreGenreTilePolicy.tileWidth,
+                height: ExploreGenreTilePolicy.tileHeight
+            )
+            .clipShape(tileShape)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)

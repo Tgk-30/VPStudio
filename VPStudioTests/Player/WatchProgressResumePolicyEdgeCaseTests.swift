@@ -29,21 +29,23 @@ struct WatchProgressResumePolicyEdgeCaseTests {
 
     // MARK: - Completion threshold edge cases
 
-    @Test func progressAt94PercentReturnsResumeTime() {
-        let history = Fixtures.watchHistory(progress: 940, duration: 1000)
+    @Test func progressJustBelowCompletionThresholdReturnsResumeTime() {
+        let progress = (PlayerWatchProgressPolicy.completionThreshold - 0.01) * 1000
+        let history = Fixtures.watchHistory(progress: progress, duration: 1000)
         let resume = WatchProgressResumePolicy.resumeTime(for: history)
-        // completion = 0.94 < 0.95, so resume time = min(940, 995) = 940
-        #expect(resume == 940)
+        #expect(resume == progress)
     }
 
-    @Test func progressAtExactly95PercentReturnsNil() {
-        let history = Fixtures.watchHistory(progress: 950, duration: 1000)
+    @Test func progressAtCompletionThresholdReturnsNil() {
+        let progress = PlayerWatchProgressPolicy.completionThreshold * 1000
+        let history = Fixtures.watchHistory(progress: progress, duration: 1000)
         let resume = WatchProgressResumePolicy.resumeTime(for: history)
         #expect(resume == nil)
     }
 
-    @Test func progressAt96PercentReturnsNil() {
-        let history = Fixtures.watchHistory(progress: 960, duration: 1000)
+    @Test func progressAboveCompletionThresholdReturnsNil() {
+        let progress = (PlayerWatchProgressPolicy.completionThreshold + 0.01) * 1000
+        let history = Fixtures.watchHistory(progress: progress, duration: 1000)
         let resume = WatchProgressResumePolicy.resumeTime(for: history)
         #expect(resume == nil)
     }
@@ -97,10 +99,11 @@ struct WatchProgressResumePolicyEdgeCaseTests {
 
     // MARK: - Buffer boundary behavior
 
-    @Test func shortMovieAt90PercentReturnsResumeTime() {
-        let history = Fixtures.watchHistory(progress: 54, duration: 60) // 90%
+    @Test func shortMovieBelowCompletionThresholdReturnsResumeTime() {
+        let progress = (PlayerWatchProgressPolicy.completionThreshold - 0.05) * 60
+        let history = Fixtures.watchHistory(progress: progress, duration: 60)
         let resume = WatchProgressResumePolicy.resumeTime(for: history)
-        #expect(resume == 54)
+        #expect(resume == progress)
     }
 
     @Test func shortMovieAt50PercentReturnsProgress() {
@@ -124,10 +127,10 @@ struct WatchProgressResumePolicyEdgeCaseTests {
         #expect(resume == 3600)
     }
 
-    @Test func movieOver3HoursAt94PercentReturnsResumeTime() {
+    @Test func movieOver3HoursPastCompletionThresholdReturnsNil() {
         let history = Fixtures.watchHistory(progress: 10152, duration: 10800) // ~94%
         let resume = WatchProgressResumePolicy.resumeTime(for: history)
-        #expect(resume == 10152)
+        #expect(resume == nil)
     }
 
     // MARK: - 5 second buffer boundary

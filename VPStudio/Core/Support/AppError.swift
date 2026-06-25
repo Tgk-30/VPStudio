@@ -121,7 +121,7 @@ enum AppError: LocalizedError, Equatable, Sendable {
     case player(PlayerError)
     case unknown(String)
 
-    private static let tmdbSetupGuidance = "Open Settings → Movie & TV Metadata (TMDB), add your key, then tap Retry."
+    private static let metadataSetupGuidance = "Open Settings → Movie & TV Metadata (OMDb), add your key, then tap Retry."
 
     init(_ error: Error, fallback: AppError? = nil) {
         if let mapped = Self.map(error) {
@@ -137,13 +137,14 @@ enum AppError: LocalizedError, Equatable, Sendable {
         self = .unknown((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
 
-    static func tmdbSetupRequired(feature: String) -> AppError {
-        .unknown("\(feature) needs a TMDB API key. \(tmdbSetupGuidance)")
+    static func metadataSetupRequired(feature: String) -> AppError {
+        .unknown("\(feature) needs an OMDb API key. \(metadataSetupGuidance)")
     }
 
-    var requiresTMDBSetupAction: Bool {
+    var requiresMetadataSetupAction: Bool {
         guard case .unknown(let message) = self else { return false }
-        return message.contains("TMDB API key") && message.contains(Self.tmdbSetupGuidance)
+        return (message.contains("OMDb API key") || message.contains("TMDB API key"))
+            && message.contains(Self.metadataSetupGuidance)
     }
 
     var errorDescription: String? {
@@ -192,6 +193,12 @@ enum AppError: LocalizedError, Equatable, Sendable {
         if let networkError = error as? URLError {
             return .network(NetworkError(networkError))
         }
+        if let metadataError = error as? MetadataProviderError {
+            return .network(NetworkError(metadataError))
+        }
+        if let omdbError = error as? OMDbError {
+            return AppError(omdbError)
+        }
         if let tmdbError = error as? TMDBError {
             return .network(NetworkError(tmdbError))
         }
@@ -226,6 +233,46 @@ enum AppError: LocalizedError, Equatable, Sendable {
 }
 
 private extension NetworkError {
+    init(_ error: MetadataProviderError) {
+        switch error {
+        case .unsupportedIdentifier(let id):
+            self = .notFound(id)
+        }
+    }
+
+    init(_ error: OMDbError) {
+        switch error {
+        case .invalidURL:
+            self = .invalidURL("https://www.omdbapi.com/")
+        case .invalidResponse:
+            self = .invalidResponse
+        case .unauthorized:
+            self = .unauthorized
+        case .notFound:
+            self = .notFound("OMDb title")
+        case .apiError(let message):
+            if message.localizedCaseInsensitiveContains("limit")
+                || message.localizedCaseInsensitiveContains("too many") {
+                self = .rateLimited
+            } else {
+                self = .server(statusCode: 200, message: message)
+            }
+        case .httpError(let statusCode, let message):
+            switch statusCode {
+            case 401:
+                self = .unauthorized
+            case 404:
+                self = .notFound(message)
+            case 429:
+                self = .rateLimited
+            default:
+                self = .server(statusCode: statusCode, message: message)
+            }
+        case .unsupported(let message):
+            self = .transport(message)
+        }
+    }
+
     init(_ error: URLError) {
         switch error.code {
         case .timedOut:
@@ -264,6 +311,17 @@ private extension NetworkError {
             default:
                 self = .server(statusCode: statusCode, message: message)
             }
+        }
+    }
+}
+
+private extension AppError {
+    init(_ error: OMDbError) {
+        switch error {
+        case .unsupported(let message):
+            self = .unknown(message)
+        default:
+            self = .network(NetworkError(error))
         }
     }
 }

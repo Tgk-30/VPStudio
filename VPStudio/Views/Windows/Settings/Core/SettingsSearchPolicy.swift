@@ -2,7 +2,7 @@ import Foundation
 
 enum SettingsSearchPolicy {
     private static let knownTerms: [String] = [
-        "debrid", "indexers", "tmdb", "playback", "subtitles",
+        "debrid", "indexers", "omdb", "playback", "subtitles",
         "environments", "ai", "trakt", "simkl", "openai",
         "anthropic", "ollama", "provider", "api key", "hdr",
     ]

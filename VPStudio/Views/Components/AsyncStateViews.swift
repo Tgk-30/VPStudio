@@ -346,7 +346,7 @@ struct ExploreErrorView: View {
                 }
 
                 FlowLayout(spacing: 10) {
-                    if error.requiresTMDBSetupAction, let onOpenSettings {
+                    if error.requiresMetadataSetupAction, let onOpenSettings {
                         SpatialButton(title: "Open Settings", icon: "gearshape.fill", tint: .yellow, action: onOpenSettings)
                     }
 

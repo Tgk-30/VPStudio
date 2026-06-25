@@ -118,8 +118,7 @@ struct CSVImportServiceParsingTests {
 
     @Test func parseIMDbIDExtractsFromVariousFormats() {
         #expect(parseIMDbID("tt1234567") == "tt1234567")
-        // Regex is case-sensitive, so uppercase TT doesn't match
-        #expect(parseIMDbID("TT1234567") == nil)
+        #expect(parseIMDbID("TT1234567") == "tt1234567")
         #expect(parseIMDbID("https://www.imdb.com/title/tt1234567/") == "tt1234567")
         #expect(parseIMDbID("Title (tt1234567)") == "tt1234567")
         #expect(parseIMDbID("tt1234567?ref_=tt_st") == "tt1234567")
@@ -128,8 +127,7 @@ struct CSVImportServiceParsingTests {
     @Test func parseIMDbIDReturnsNilForInvalid() {
         #expect(parseIMDbID("") == nil)
         #expect(parseIMDbID("1234567") == nil)
-        // "tt" hasPrefix "tt" and empty remainder satisfies allSatisfy(\&.isNumber)
-        #expect(parseIMDbID("tt") == "tt")
+        #expect(parseIMDbID("tt") == nil)
         #expect(parseIMDbID("ttabc") == nil)
     }
 
@@ -534,15 +532,7 @@ struct CSVImportServiceParsingTests {
     }
 
     private func parseIMDbID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        if let directMatch = raw.range(of: "tt\\d+", options: .regularExpression) {
-            return String(raw[directMatch]).lowercased()
-        }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("tt"), trimmed.dropFirst(2).allSatisfy(\.isNumber) {
-            return trimmed.lowercased()
-        }
-        return nil
+        IMDbIdentifierPolicy.firstID(in: raw)
     }
 
     private func parseMediaType(_ raw: String?) -> MediaType {

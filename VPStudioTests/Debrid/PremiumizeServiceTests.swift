@@ -2,6 +2,29 @@ import Foundation
 import Testing
 @testable import VPStudio
 
+private func requestBodyString(_ request: URLRequest) -> String? {
+    if let body = request.httpBody {
+        return String(data: body, encoding: .utf8)
+    }
+
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 1024)
+    while stream.hasBytesAvailable {
+        let read = stream.read(&buffer, maxLength: buffer.count)
+        if read > 0 {
+            data.append(buffer, count: read)
+        } else {
+            break
+        }
+    }
+
+    return String(data: data, encoding: .utf8)
+}
+
 @Suite("PremiumizeService")
 struct PremiumizeServiceTests {
     @Test func validateTokenReturnsTrueForValidToken() async throws {
@@ -86,8 +109,7 @@ struct PremiumizeServiceTests {
 
         let session = URLProtocolHarness.makeSession { request in
             let url = try #require(request.url)
-            let body = String(data: request.httpBody ?? Data(), encoding: .utf8)
-            state.capturedBody = body
+            state.capturedBody = requestBodyString(request)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
             let bodyResponse = "{\"status\":\"success\",\"id\":\"transfer123\"}"
             return (response, Data(bodyResponse.utf8))
@@ -106,7 +128,7 @@ struct PremiumizeServiceTests {
         let fullMagnet = "magnet:?xt=urn:btih:\(hash)&dn=Premiumize Test&tr=udp://tracker.example/announce"
         let session = URLProtocolHarness.makeSession { request in
             let url = try #require(request.url)
-            state.capturedBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+            state.capturedBody = requestBodyString(request)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data(#"{"status":"success"}"#.utf8))
         }
@@ -298,7 +320,7 @@ struct PremiumizeServiceTests {
         let state = State()
         let session = URLProtocolHarness.makeSession { request in
             let url = try #require(request.url)
-            state.capturedBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+            state.capturedBody = requestBodyString(request)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
             let body = #"{"status":"error","message":"delete denied"}"#
             return (response, Data(body.utf8))

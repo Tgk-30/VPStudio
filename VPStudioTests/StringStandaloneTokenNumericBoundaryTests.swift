@@ -18,6 +18,14 @@ struct StringStandaloneTokenNumericBoundaryTests {
         #expect("Movie.p2.VR".containsStandaloneToken("2") == false)
     }
 
+    @Test func numericTokensDoNotMatchResolutionOrFrameRateSuffixes() {
+        #expect("Movie.1080p.BluRay".containsStandaloneToken("1080") == false)
+        #expect("Movie.2160p.HDR".containsStandaloneToken("2160") == false)
+        #expect("Movie.p30.Source".containsStandaloneToken("30") == false)
+        #expect("Movie.p60.Source".containsStandaloneToken("60") == false)
+        #expect("Movie.p30.Source".containsStandaloneToken("p30") == true)
+    }
+
     @Test func nonNumericTokensStillAllowBoundedNumericAffixes() {
         #expect("Movie.SBS2.1080p".containsStandaloneToken("sbs") == true)
         #expect("Movie.2SBS.1080p".containsStandaloneToken("sbs") == true)

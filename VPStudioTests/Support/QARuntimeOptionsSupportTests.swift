@@ -106,6 +106,22 @@ struct QARuntimeOptionsTests {
     }
 
     @Test
+    func selectedTabParsesHumanReadableLaunchOverrides() {
+        #expect(QARuntimeOptions.selectedTab(from: .init(["VPSTUDIO_QA_SELECTED_TAB": "Library"])) == .library)
+        #expect(QARuntimeOptions.selectedTab(from: .init(["VPSTUDIO_QA_SELECTED_TAB": "Explore"])) == .search)
+        #expect(QARuntimeOptions.selectedTab(from: .init(["VPSTUDIO_QA_SELECTED_TAB": "search"])) == .search)
+        #expect(QARuntimeOptions.selectedTab(from: .init(["VPSTUDIO_QA_SELECTED_TAB": "not-a-tab"])) == nil)
+    }
+
+    @Test
+    func navigationLayoutParsesVisualQaLaunchOverrides() {
+        #expect(QARuntimeOptions.navigationLayout(from: .init(["VPSTUDIO_QA_NAVIGATION_LAYOUT": "sidebar"])) == .leftSidebar)
+        #expect(QARuntimeOptions.navigationLayout(from: .init(["VPSTUDIO_QA_NAVIGATION_LAYOUT": "Left Sidebar"])) == .leftSidebar)
+        #expect(QARuntimeOptions.navigationLayout(from: .init(["VPSTUDIO_QA_NAVIGATION_LAYOUT": "bottom tabs"])) == .bottomTabBar)
+        #expect(QARuntimeOptions.navigationLayout(from: .init(["VPSTUDIO_QA_NAVIGATION_LAYOUT": "unknown"])) == nil)
+    }
+
+    @Test
     func absoluteURLRejectsRelativeOrHostlessValues() {
         #expect(QARuntimeOptions.absoluteURL(from: "https://cdn.example.com/movie.mp4")?.absoluteString == "https://cdn.example.com/movie.mp4")
         #expect(QARuntimeOptions.absoluteURL(from: "not a url") == nil)
@@ -339,7 +355,7 @@ struct QARuntimeOptionsTests {
         _ = QARuntimeOptions.testScreenRawValue
         _ = QARuntimeOptions.suppressQuickStartPrompt
         _ = QARuntimeOptions.setupAutoAdvance
-        _ = QARuntimeOptions.setupTMDBApiKey
+        _ = QARuntimeOptions.setupOMDbApiKey
         _ = QARuntimeOptions.setupPreferredQuality
         _ = QARuntimeOptions.setupSubtitleLanguage
     }

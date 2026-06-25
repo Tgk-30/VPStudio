@@ -2,6 +2,51 @@ import Foundation
 import Testing
 @testable import VPStudio
 
+// MARK: - PlayerArtworkPresentationPolicy Tests
+
+@Suite("PlayerArtworkPresentationPolicy")
+struct PlayerArtworkPresentationPolicyTests {
+    @Test func backdropArtworkWinsOverPosterArtwork() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: "/backdrop.jpg",
+            posterPath: "/poster.jpg"
+        )
+
+        #expect(kind == .backdrop)
+        #expect(!PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+
+    @Test func posterOnlyArtworkUsesPosterCardPresentation() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: nil,
+            posterPath: "https://img.omdb.example/poster.jpg"
+        )
+
+        #expect(kind == .posterOnly)
+        #expect(PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+
+    @Test func blankArtworkPathsAreIgnored() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: " \n ",
+            posterPath: "  "
+        )
+
+        #expect(kind == .none)
+        #expect(!PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+
+    @Test func unrenderableArtworkPathsAreIgnored() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: "javascript:alert(1)",
+            posterPath: "//m.media-amazon.com/images/M/poster.jpg"
+        )
+
+        #expect(kind == .none)
+        #expect(!PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+}
+
 // MARK: - PlayerScrubPolicy Tests
 
 @Suite("PlayerScrubPolicy")

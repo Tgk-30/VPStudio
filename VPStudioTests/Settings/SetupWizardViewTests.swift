@@ -7,26 +7,26 @@ struct SetupWizardViewTests {
 
     // MARK: - SetupWizardValidationPolicy Tests
 
-    @Suite("SetupWizardValidationPolicy - TMDB Validation")
-    struct TMDBValidationTests {
+    @Suite("SetupWizardValidationPolicy - OMDb Validation")
+    struct OMDbValidationTests {
         @Test
         func canContinueFromMetadataStepRequiresNonEmptyKey() {
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "") == false)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "   ") == false)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "\n\t") == false)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "\r\n") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "   ") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\n\t") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\r\n") == false)
         }
 
         @Test
         func canContinueFromMetadataStepAcceptsValidKey() {
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "abc123") == true)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "  abc123  ") == true)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: "\tabc123\n") == true)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "abc123") == true)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "  abc123  ") == true)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\tabc123\n") == true)
         }
 
         @Test
-        func requiredTMDBMessageIsDescriptive() {
-            #expect(SetupWizardValidationPolicy.requiredTMDBMessage == "TMDB API key is required to continue.")
+        func requiredOMDbMessageIsDescriptive() {
+            #expect(SetupWizardValidationPolicy.requiredOMDbMessage == "OMDb API key is required to continue.")
         }
     }
 
@@ -142,23 +142,29 @@ struct SetupWizardViewTests {
             let rows = SetupWizardValidationPolicy.completionSummaryRows(
                 selectedService: .realDebrid,
                 debridApiKey: "token",
-                tmdbApiKey: "tmdb",
+                omdbApiKey: "omdb",
                 selectedAIProvider: .openAI,
                 selectedQuality: .uhd4k,
-                selectedSubtitleLanguage: .english
+                selectedSubtitleLanguage: .english,
+                selectedSourceFilterPreset: .cinema,
+                guestModeEnabled: true
             )
 
-            #expect(rows.count == 5)
+            #expect(rows.count == 7)
             #expect(rows[0].icon == "link")
             #expect(rows[0].text == "Real-Debrid connected")
             #expect(rows[1].icon == "film")
-            #expect(rows[1].text == "TMDB metadata configured")
+            #expect(rows[1].text == "OMDb metadata configured")
             #expect(rows[2].icon == "brain")
             #expect(rows[2].text == "OpenAI AI enabled")
             #expect(rows[3].icon == "4k.tv")
             #expect(rows[3].text == "Quality set to 4K")
-            #expect(rows[4].icon == "captions.bubble")
-            #expect(rows[4].text == "English subtitles")
+            #expect(rows[4].icon == "line.3.horizontal.decrease.circle")
+            #expect(rows[4].text == "Cinema source filters")
+            #expect(rows[5].icon == "captions.bubble")
+            #expect(rows[5].text == "English subtitles")
+            #expect(rows[6].icon == "person.crop.circle.badge.clock")
+            #expect(rows[6].text == "Guest Mode enabled")
         }
 
         @Test
@@ -166,31 +172,39 @@ struct SetupWizardViewTests {
             let rows = SetupWizardValidationPolicy.completionSummaryRows(
                 selectedService: .premiumize,
                 debridApiKey: "",
-                tmdbApiKey: "",
+                omdbApiKey: "",
                 selectedAIProvider: .none,
                 selectedQuality: .hd720p,
-                selectedSubtitleLanguage: .none
+                selectedSubtitleLanguage: .none,
+                selectedSourceFilterPreset: .balanced,
+                guestModeEnabled: false
             )
 
-            #expect(rows.count == 1)
+            #expect(rows.count == 2)
             #expect(rows[0].icon == "4k.tv")
             #expect(rows[0].text == "Quality set to 720p")
+            #expect(rows[1].icon == "line.3.horizontal.decrease.circle")
+            #expect(rows[1].text == "Balanced source filters")
         }
 
         @Test
-        func qualityIsAlwaysIncluded() {
+        func qualityAndSourceFiltersAreAlwaysIncluded() {
             let rowsNoDebrid = SetupWizardValidationPolicy.completionSummaryRows(
                 selectedService: .realDebrid,
                 debridApiKey: "  ",
-                tmdbApiKey: "",
+                omdbApiKey: "",
                 selectedAIProvider: .none,
                 selectedQuality: .hd1080p,
-                selectedSubtitleLanguage: .none
+                selectedSubtitleLanguage: .none,
+                selectedSourceFilterPreset: .instant,
+                guestModeEnabled: false
             )
 
-            #expect(rowsNoDebrid.count == 1)
+            #expect(rowsNoDebrid.count == 2)
             #expect(rowsNoDebrid[0].icon == "4k.tv")
             #expect(rowsNoDebrid[0].text == "Quality set to 1080p")
+            #expect(rowsNoDebrid[1].icon == "line.3.horizontal.decrease.circle")
+            #expect(rowsNoDebrid[1].text == "Instant source filters")
         }
 
         @Test
@@ -198,7 +212,7 @@ struct SetupWizardViewTests {
             let rows = SetupWizardValidationPolicy.completionSummaryRows(
                 selectedService: .realDebrid,
                 debridApiKey: "   ",
-                tmdbApiKey: "tmdb",
+                omdbApiKey: "omdb",
                 selectedAIProvider: .none,
                 selectedQuality: .hd1080p,
                 selectedSubtitleLanguage: .none
@@ -209,11 +223,11 @@ struct SetupWizardViewTests {
         }
 
         @Test
-        func tmdbWithWhitespaceKeyIsSkipped() {
+        func omdbWithWhitespaceKeyIsSkipped() {
             let rows = SetupWizardValidationPolicy.completionSummaryRows(
                 selectedService: .realDebrid,
                 debridApiKey: "token",
-                tmdbApiKey: "   ",
+                omdbApiKey: "   ",
                 selectedAIProvider: .none,
                 selectedQuality: .hd1080p,
                 selectedSubtitleLanguage: .none

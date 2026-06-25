@@ -242,7 +242,7 @@ struct PlayerResourceTeardownContractTests {
         ))
         #expect(containsIgnoringWhitespace(
             loadInitialBody,
-            "await loadEnvironmentAssets() guard !Task.isCancelled else { return } startProgressPersistence()"
+            "await loadEnvironmentAssets() await loadPrivacyPreferences() guard !Task.isCancelled else { return } if !guestModeEnabled { startProgressPersistence() }"
         ))
         #expect(containsIgnoringWhitespace(
             loadInitialBody,
@@ -255,6 +255,32 @@ struct PlayerResourceTeardownContractTests {
     }
 
     @Test
+    func playerViewGuestModeSuppressesPlaybackTrackingEntryPoints() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+
+        for functionName in ["scrobbleStart", "scrobblePause", "scrobbleResume", "scrobbleStop"] {
+            let body = try functionBody(named: functionName, in: source)
+            #expect(body.contains("guard await shouldSuppressPlaybackTracking() == false else { return }"))
+        }
+
+        let persistBody = try functionBody(named: "persistCurrentWatchProgress", in: source)
+        #expect(persistBody.contains("guard !guestModeEnabled else { return }"))
+        #expect(persistBody.contains("guard await shouldSuppressPlaybackTracking() == false else { return }"))
+
+        let saveBody = try functionBody(named: "saveWatchProgress", in: source)
+        #expect(saveBody.contains("guard !guestModeEnabled else { return }"))
+        #expect(saveBody.contains("guard await shouldSuppressPlaybackTracking() == false else { return }"))
+
+        let captureBody = try functionBody(named: "captureLastFrameIfDue", in: source)
+        #expect(captureBody.contains("guard !guestModeEnabled else { return }"))
+        #expect(captureBody.contains("guard await shouldSuppressPlaybackTracking() == false else { return }"))
+
+        let privacyBody = try functionBody(named: "shouldSuppressPlaybackTracking", in: source)
+        #expect(privacyBody.contains("key: SettingsKeys.guestModeEnabled"))
+        #expect(privacyBody.contains("default: false"))
+    }
+
+    @Test
     func playerViewBindsPlayPauseIconToControlPresentationMapper() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
         #expect(source.contains("private var playPausePresentation: PlayerControlPresentation"))
@@ -264,6 +290,20 @@ struct PlayerResourceTeardownContractTests {
         #expect(source.contains("Image(systemName: playPausePresentation.symbolName)"))
         #expect(source.contains(".accessibilityLabel(playPausePresentation.label)"))
         #expect(source.contains(".accessibilityValue(playPausePresentation.accessibilityValue)"))
+    }
+
+    @Test
+    func playerViewUsesEnginePlaybackStateForPlayPauseIcon() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let body = try section(
+            from: "private var isCurrentlyPlaying: Bool {",
+            to: "private var currentSubtitleSelectionIsOff: Bool {",
+            in: source
+        )
+
+        #expect(body.contains("engine.isPlaying"))
+        #expect(!body.contains("ksPlayerCoordinator?.state.isPlaying"))
+        #expect(!body.contains("avPlayer?.timeControlStatus"))
     }
 
     @Test
@@ -317,29 +357,42 @@ struct PlayerResourceTeardownContractTests {
     @Test
     func playerViewExposesCinemaEnvironmentFromBothVisionMenus() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let menuSource = try contents(of: "VPStudio/Views/Windows/Player/PlayerEnvironmentMenu.swift")
         let topBarMenuSection = try section(
             from: "#if os(visionOS)\n                    Section(\"Environment\") {",
             to: "#endif\n                } label: {",
             in: source
         )
         let transportPillSection = try section(
-            from: "#if os(visionOS)\n            // Environment toggle pill",
+            from: "#if os(visionOS)\n                // Environment toggle pill",
             to: ".animation(motionAnimationsEnabled ? .easeInOut(duration: 0.2) : nil, value: appState.isImmersiveSpaceOpen)",
             in: source
         )
 
-        for menuSection in [topBarMenuSection, transportPillSection] {
-            #expect(menuSection.contains("openCinemaEnvironmentAfterMenuDismissal()"))
-            #expect(menuSection.contains("Label(\"Cinema Environment\", systemImage: \"theatermasks\")"))
-            #expect(menuSection.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
-            #expect(menuSection.contains("activeEngine: activeEngine"))
-            #expect(menuSection.contains("hasAVPlayer: avPlayer != nil"))
-            #expect(menuSection.contains("Label(\"Cinema Settings\", systemImage: \"slider.horizontal.3\")"))
-        }
-
+        #expect(topBarMenuSection.contains("openCinemaEnvironmentAfterMenuDismissal()"))
+        #expect(topBarMenuSection.contains("PlayerEnvironmentMenuLabel("))
+        #expect(topBarMenuSection.contains("spec: .standardRoom("))
+        #expect(topBarMenuSection.contains("spec: .cinema("))
+        #expect(topBarMenuSection.contains("spec: .compactAsset("))
+        #expect(topBarMenuSection.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
+        #expect(topBarMenuSection.contains("activeEngine: activeEngine"))
+        #expect(topBarMenuSection.contains("hasAVPlayer: avPlayer != nil"))
+        #expect(topBarMenuSection.contains("Label(\"Cinema Settings\", systemImage: \"slider.horizontal.3\")"))
+        #expect(topBarMenuSection.contains("Text(\"No imported environments\")"))
         #expect(topBarMenuSection.contains("Label(\"Browse Environments\", systemImage: \"mountain.2\")"))
-        #expect(transportPillSection.contains("Text(\"No imported environments\")"))
-        #expect(transportPillSection.contains("Label(\"Browse Environments\", systemImage: \"mountain.2\")"))
+
+        #expect(transportPillSection.contains("PlayerEnvironmentButton("))
+        #expect(transportPillSection.contains("openCinemaEnvironmentAfterMenuDismissal()"))
+        #expect(transportPillSection.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
+        #expect(transportPillSection.contains("activeEngine: activeEngine"))
+        #expect(transportPillSection.contains("hasAVPlayer: avPlayer != nil"))
+        #expect(transportPillSection.contains("onShowCinemaSettings:"))
+        #expect(transportPillSection.contains("onShowPicker:"))
+        #expect(menuSource.contains(#"title: "Cinema Environment""#))
+        #expect(menuSource.contains("PlayerEnvironmentCinemaRow("))
+        #expect(menuSource.contains("Label(\"Cinema Settings\", systemImage: \"slider.horizontal.3\")"))
+        #expect(menuSource.contains("Text(\"No imported environments\")"))
+        #expect(menuSource.contains("Label(\"Browse Environments\", systemImage: \"mountain.2\")"))
     }
 
     @Test
@@ -428,6 +481,9 @@ struct PlayerResourceTeardownContractTests {
         #expect(body.contains("appState.spatialAudioManager.enterImmersiveMode()"))
         #expect(body.contains("appState.cancelImmersiveTransition()"))
 
+        let avPlayerAssignmentCount = body.components(separatedBy: "appState.activeAVPlayer = player").count - 1
+        #expect(avPlayerAssignmentCount == 1)
+
         let firstAVPlayerAssignment = try requiredRange(of: "appState.activeAVPlayer = player", in: body)
         let openRange = try requiredRange(of: "openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)", in: body)
         #expect(firstAVPlayerAssignment.lowerBound < openRange.lowerBound)
@@ -457,7 +513,27 @@ struct PlayerResourceTeardownContractTests {
         #expect(source.contains("PlayerEnvironmentMenuPolicy.cinemaIconName("))
 
         #expect(menuSection.contains("ForEach(assets, id: \\.id)"))
-        #expect(buttonSection.contains("Text(\"No environments available\")"))
+        #expect(buttonSection.contains("Text(\"No imported environments\")"))
+        #expect(buttonSection.contains("var onShowCinemaSettings: (() -> Void)? = nil"))
+        #expect(buttonSection.contains("var onShowPicker: (() -> Void)? = nil"))
+        #expect(buttonSection.contains("canOpenCinema"))
+    }
+
+    @Test
+    func playerViewUsesIsolatedEnvironmentButtonForInfoPill() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let infoPillsRow = try section(
+            from: "private var infoPillsRow: some View {",
+            to: "// Dim passthrough toggle pill",
+            in: source
+        )
+
+        #expect(infoPillsRow.contains("PlayerEnvironmentButton("))
+        #expect(infoPillsRow.contains("assets: environmentAssets"))
+        #expect(infoPillsRow.contains("onClear:"))
+        #expect(infoPillsRow.contains("onShowCinemaSettings:"))
+        #expect(infoPillsRow.contains("onShowPicker:"))
+        #expect(infoPillsRow.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
     }
 
     @Test
@@ -498,6 +574,37 @@ struct PlayerResourceTeardownContractTests {
         #expect(cinematicPolicySource.contains("enum PlayerCinematicVisualPolicy"))
         let chromePolicySource = try contents(of: "VPStudio/Views/Windows/Player/PlayerCinematicChromePolicy.swift")
         #expect(chromePolicySource.contains("enum PlayerCinematicChromePolicy"))
+    }
+
+    @Test
+    func playerInfoPillsRenderInsideTransportDock() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let controlsOverlay = try section(
+            from: "private var controlsOverlay: some View {",
+            to: "// MARK: - Title Bar",
+            in: source
+        )
+        let transportBar = try section(
+            from: "private var transportBar: some View {",
+            to: "private var playbackProgressBar: some View {",
+            in: source
+        )
+
+        #expect(!containsIgnoringWhitespace(controlsOverlay, """
+        VStack(spacing: PlayerCinematicChromePolicy.controlsDockSpacing) {
+            infoPillsRow
+                .frame(maxWidth: PlayerCinematicChromePolicy.quickActionsMaxWidth)
+
+            transportBar
+                .compositingGroup()
+        }
+        """))
+        #expect(transportBar.contains("infoPillsRow"))
+        #expect(transportBar.contains(".frame(maxWidth: PlayerCinematicChromePolicy.quickActionsMaxWidth)"))
+
+        let infoPillsRange = try requiredRange(of: "infoPillsRow", in: transportBar)
+        let progressRange = try requiredRange(of: "playbackProgressBar", in: transportBar)
+        #expect(infoPillsRange.lowerBound < progressRange.lowerBound)
     }
 
     @Test
@@ -582,6 +689,8 @@ struct PlayerResourceTeardownContractTests {
             in: scheduleBody
         )
 
+        #expect(!scheduleBody.contains("didDismiss"))
+        #expect(!scheduleBody.contains("restoresMainWindow &&"))
         #expect(scheduleRange.lowerBound < visionOSSection.endIndex)
         #expect(dismissRange.lowerBound < restoreRange.lowerBound)
     }

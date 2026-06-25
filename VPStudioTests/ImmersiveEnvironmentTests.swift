@@ -6,6 +6,9 @@ import Testing
 
 @Suite("EnvironmentType — HDRI Skybox Overhaul")
 struct HDRIEnvironmentTypeTests {
+    @Test func ambientFloorRimIsSeparatedFromGroundPlane() {
+        #expect(HDRISkyboxGroundPolicy.ambientRimY - HDRISkyboxGroundPolicy.groundY >= 0.05)
+    }
 
     // MARK: - Case Count & CaseIterable
 
@@ -165,7 +168,8 @@ struct HDRIEnvironmentTypeTests {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
 
         #expect(source.contains("openCinemaEnvironmentAfterMenuDismissal()"))
-        #expect(source.contains("Label(\"Cinema Environment\", systemImage: \"theatermasks\")"))
+        #expect(source.contains("PlayerEnvironmentMenuLabel("))
+        #expect(source.contains("spec: .cinema("))
         #expect(source.contains("Label(\"Cinema Settings\", systemImage: \"slider.horizontal.3\")"))
         #expect(source.contains("ForEach(environmentAssets, id: \\.id)"))
         #expect(source.contains("Label(\"Browse Environments\", systemImage: \"mountain.2\")"))

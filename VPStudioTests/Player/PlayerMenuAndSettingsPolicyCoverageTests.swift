@@ -33,22 +33,28 @@ struct PlayerEnvironmentMenuPolicyAdditionalCoverageTests {
     }
 
     @Test
-    func menuAssetIconNameUsesActiveAndSourceSpecificGlyphs() {
+    func menuAssetIconNameUsesSelectionAndSourceSpecificGlyphs() {
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: true,
+                assetID: "selected",
+                selectedAssetID: "selected",
+                activeEnvironment: .hdriSkybox,
                 sourceType: .bundled
             ) == "checkmark"
         )
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: false,
+                assetID: "bundled",
+                selectedAssetID: "selected",
+                activeEnvironment: .customEnvironment,
                 sourceType: .bundled
             ) == "circle.fill"
         )
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: false,
+                assetID: "imported",
+                selectedAssetID: nil,
+                activeEnvironment: nil,
                 sourceType: .imported
             ) == "pano"
         )
@@ -130,8 +136,15 @@ struct PlayerSettingsPolicyAdditionalCoverageTests {
             preferCachedStoredValue: nil,
             preferAtmosStoredValue: nil,
             hdrPreferenceRawValue: nil,
+            sourceFilterPresetRawValue: nil,
+            sourceFilterHideDownloadsStoredValue: nil,
+            sourceFilterHideCamStoredValue: nil,
+            sourceFilterMinimumSeedersRawValue: nil,
+            sourceFilterMaximumSizeGBRawValue: nil,
+            sourceFilterMinimumQualityRawValue: nil,
             runtimeDiagnosticsStoredValue: nil,
             runtimeDiagnosticsFallback: false,
+            guestModeStoredValue: nil,
             navigationLayoutRawValue: nil,
             navigationFallback: .bottomTabBar
         )
@@ -146,7 +159,9 @@ struct PlayerSettingsPolicyAdditionalCoverageTests {
                 preferCached: true,
                 preferAtmos: true,
                 hdrPreference: .auto,
+                sourceFilterOptions: SourceFilterPreset.balanced.defaultOptions,
                 runtimeDiagnosticsEnabled: false,
+                guestModeEnabled: false,
                 navigationLayout: .bottomTabBar
             )
         )
@@ -163,8 +178,15 @@ struct PlayerSettingsPolicyAdditionalCoverageTests {
             preferCachedStoredValue: nil,
             preferAtmosStoredValue: false,
             hdrPreferenceRawValue: HDRPreference.hdr10.rawValue,
+            sourceFilterPresetRawValue: SourceFilterPreset.custom.rawValue,
+            sourceFilterHideDownloadsStoredValue: true,
+            sourceFilterHideCamStoredValue: true,
+            sourceFilterMinimumSeedersRawValue: "2",
+            sourceFilterMaximumSizeGBRawValue: "10",
+            sourceFilterMinimumQualityRawValue: VideoQuality.hd1080p.rawValue,
             runtimeDiagnosticsStoredValue: nil,
             runtimeDiagnosticsFallback: false,
+            guestModeStoredValue: false,
             navigationLayoutRawValue: nil,
             navigationFallback: .leftSidebar
         )
@@ -179,7 +201,16 @@ struct PlayerSettingsPolicyAdditionalCoverageTests {
                 preferCached: true,
                 preferAtmos: false,
                 hdrPreference: .hdr10,
+                sourceFilterOptions: SourceFilterOptions(
+                    preset: .custom,
+                    hideConfirmedDownloads: true,
+                    hideCamSources: true,
+                    minimumSeeders: 2,
+                    maximumSizeGB: 10,
+                    minimumQuality: .hd1080p
+                ),
                 runtimeDiagnosticsEnabled: false,
+                guestModeEnabled: false,
                 navigationLayout: .leftSidebar
             )
         )

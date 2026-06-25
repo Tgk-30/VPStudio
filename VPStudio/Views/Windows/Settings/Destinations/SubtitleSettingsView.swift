@@ -2,32 +2,6 @@ import SwiftUI
 
 // MARK: - Subtitle Settings Policy
 
-enum SubtitleSettingsPolicy {
-    static let defaultLanguage = "en"
-    static let defaultAutoSearch = true
-    static let defaultFontSize: Double = 24
-    static let minFontSize: Double = 16
-    static let maxFontSize: Double = 48
-
-    static func resolvedLanguage(_ storedValue: String?) -> String {
-        let trimmed = storedValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? defaultLanguage : trimmed
-    }
-
-    static func resolvedAutoSearch(_ storedValue: Bool?) -> Bool {
-        storedValue ?? defaultAutoSearch
-    }
-
-    static func resolvedFontSize(_ storedValue: String?) -> Double {
-        guard let storedValue,
-              let parsed = Double(storedValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return defaultFontSize
-        }
-
-        return max(minFontSize, min(maxFontSize, parsed))
-    }
-}
-
 // MARK: - Subtitle Settings
 
 struct SubtitleSettingsView: View {
@@ -37,6 +11,7 @@ struct SubtitleSettingsView: View {
     @State private var preferredAudioLanguage = "en"
     @State private var autoSearch = true
     @State private var fontSize: Double = 24
+    @State private var subtitleOffsetMilliseconds = 0
     @State private var openSubsSaveTask: Task<Void, Never>?
     @State private var surfaceError: AppError?
 
@@ -68,6 +43,9 @@ struct SubtitleSettingsView: View {
         }
         .onChange(of: fontSize) { _, newValue in
             Task { await persistStringSetting(key: SettingsKeys.subtitleFontSize, value: String(Int(newValue))) }
+        }
+        .onChange(of: subtitleOffsetMilliseconds) { _, newValue in
+            Task { await persistStringSetting(key: SettingsKeys.subtitleOffsetMilliseconds, value: String(newValue)) }
         }
     }
 
@@ -133,6 +111,24 @@ struct SubtitleSettingsView: View {
                 .accessibilityLabel("Subtitle font size")
                 .accessibilityValue("\(Int(fontSize)) points")
                 .accessibilityHint("Adjusts the subtitle font size between 16 and 48 points.")
+
+            HStack {
+                Text("Sync Offset")
+                Spacer()
+                Text(SubtitleSettingsPolicy.formattedOffset(subtitleOffsetMilliseconds))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(subtitleOffsetMilliseconds) },
+                    set: { subtitleOffsetMilliseconds = Int($0.rounded()) }
+                ),
+                in: Double(SubtitleSettingsPolicy.minOffsetMilliseconds)...Double(SubtitleSettingsPolicy.maxOffsetMilliseconds),
+                step: 250
+            )
+            .accessibilityLabel("Subtitle sync offset")
+            .accessibilityValue(SubtitleSettingsPolicy.formattedOffset(subtitleOffsetMilliseconds))
+            .accessibilityHint("Moves subtitle timing earlier or later by up to five seconds.")
         }
     }
 
@@ -184,6 +180,15 @@ struct SubtitleSettingsView: View {
         } catch {
             firstError = firstError ?? AppError(error)
             fontSize = SubtitleSettingsPolicy.defaultFontSize
+        }
+
+        do {
+            subtitleOffsetMilliseconds = SubtitleSettingsPolicy.resolvedOffsetMilliseconds(
+                try await appState.settingsManager.getString(key: SettingsKeys.subtitleOffsetMilliseconds)
+            )
+        } catch {
+            firstError = firstError ?? AppError(error)
+            subtitleOffsetMilliseconds = SubtitleSettingsPolicy.defaultOffsetMilliseconds
         }
 
         surfaceError = firstError

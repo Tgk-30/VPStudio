@@ -225,7 +225,7 @@ struct SearchViewModelBranchCoverageTests {
             selectedLanguages: ["en-US"],
             selectedGenre: nil
         )
-        #expect(boundaryOutside.inferredYearRangePreset == nil)
+        #expect(boundaryOutside.inferredYearRangePreset == .twenties)
     }
 
     @Test

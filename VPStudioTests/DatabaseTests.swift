@@ -95,6 +95,79 @@ struct DatabaseMediaCacheTests {
         #expect(resolved["movie-tmdb-438631"]?.tmdbId == 438631)
         #expect(resolved["missing"] == nil)
     }
+
+    @Test func fetchMediaItemsResolvingAliasesMatchesOMDbIMDbBackedItems() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "media-cache-imdb-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                posterPath: "https://img.omdbapi.com/poster.jpg",
+                tmdbId: nil,
+                lastFetched: Date()
+            )
+        )
+
+        let resolved = try await db.fetchMediaItemsResolvingAliases(ids: [
+            "movie-imdb-tt1160419",
+            "TT1160419",
+            "missing"
+        ])
+
+        #expect(resolved["movie-imdb-tt1160419"]?.title == "Dune")
+        #expect(resolved["TT1160419"]?.title == "Dune")
+        #expect(resolved["missing"] == nil)
+    }
+
+    @Test func fetchMediaItemsResolvingAliasesMatchesOMDbCompositeBackedItems() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "media-cache-omdb-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                posterPath: "https://img.omdbapi.com/poster.jpg",
+                tmdbId: nil,
+                lastFetched: Date()
+            )
+        )
+
+        let resolved = try await db.fetchMediaItemsResolvingAliases(ids: [
+            "tt1160419",
+            "movie-imdb-tt1160419",
+            "movie-omdb-tt1160419",
+            "missing"
+        ])
+
+        #expect(resolved["tt1160419"]?.title == "Dune")
+        #expect(resolved["movie-imdb-tt1160419"]?.title == "Dune")
+        #expect(resolved["movie-omdb-tt1160419"]?.title == "Dune")
+        #expect(resolved["missing"] == nil)
+    }
+
+    @Test func fetchMediaItemsResolvingAliasesDoesNotSubstringMatchIMDbIDs() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "media-cache-imdb-prefix.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt12345678",
+            type: .movie,
+            title: "Long IMDb ID",
+            year: 2026,
+            tmdbId: 9001
+        ))
+
+        let resolved = try await db.fetchMediaItemsResolvingAliases(ids: ["tt1234567"])
+
+        #expect(resolved["tt1234567"] == nil)
+    }
 }
 
 // MARK: - Database Watch History Tests
@@ -739,6 +812,23 @@ struct DatabaseEnvironmentAssetTests {
         #expect(active?.id == "env-2")
     }
 
+    @Test func clearActiveEnvironmentDeactivatesAllAssets() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "env-assets-clear-active.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let a1 = EnvironmentAsset(id: "env-1", name: "Theater", sourceType: .bundled, assetPath: "/a.usdz", isActive: true)
+        let a2 = EnvironmentAsset(id: "env-2", name: "Void", sourceType: .bundled, assetPath: "/b.usdz", isActive: false)
+        try await db.saveEnvironmentAsset(a1)
+        try await db.saveEnvironmentAsset(a2)
+
+        try await db.clearActiveEnvironmentAsset()
+
+        let active = try await db.fetchActiveEnvironmentAsset()
+        let assets = try await db.fetchEnvironmentAssets()
+        #expect(active == nil)
+        #expect(assets.allSatisfy { !$0.isActive })
+    }
+
     @Test func fetchActiveEnvironmentReturnsNilWhenNoneActive() async throws {
         let (db, tempDir) = try await makeTemporaryDatabase(named: "env-assets-none.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -970,6 +1060,88 @@ struct DatabaseTasteProfileTests {
         #expect(latestRating?.feedbackValue == 9)
     }
 
+    @Test func latestRatingAndDeletionResolveCachedIMDbTMDBAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "taste-event-identity-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+        try await db.saveTasteEvent(TasteEvent(
+            id: "rating-tmdb",
+            mediaId: "movie-tmdb-438631",
+            eventType: .rated,
+            feedbackScale: .oneToTen,
+            feedbackValue: 8,
+            source: .manual,
+            createdAt: Date()
+        ))
+
+        let latest = try await db.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest?.id == "rating-tmdb")
+
+        try await db.deleteLatestTasteRating(mediaId: "movie-imdb-tt1160419")
+
+        #expect(try await db.fetchLatestTasteRating(mediaId: "movie-tmdb-438631") == nil)
+    }
+
+    @Test func latestRatingAndDeletionResolveOMDbCompositeAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "taste-event-omdb-identity-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: nil
+        ))
+        try await db.saveTasteEvent(TasteEvent(
+            id: "rating-omdb",
+            mediaId: "movie-omdb-tt1160419",
+            eventType: .rated,
+            feedbackScale: .oneToTen,
+            feedbackValue: 8,
+            source: .manual,
+            createdAt: Date()
+        ))
+
+        let latest = try await db.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest?.id == "rating-omdb")
+
+        try await db.deleteLatestTasteRating(mediaId: "movie-imdb-tt1160419")
+
+        #expect(try await db.fetchLatestTasteRating(mediaId: "movie-omdb-tt1160419") == nil)
+    }
+
+    @Test func latestRatingDoesNotSubstringMatchLongerIMDbIDs() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "taste-event-imdb-prefix.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt12345678",
+            type: .movie,
+            title: "Long IMDb ID",
+            year: 2026,
+            tmdbId: 9001
+        ))
+        try await db.saveTasteEvent(TasteEvent(
+            id: "rating-long-imdb",
+            mediaId: "movie-tmdb-9001",
+            eventType: .rated,
+            feedbackScale: .oneToTen,
+            feedbackValue: 10,
+            source: .manual,
+            createdAt: Date()
+        ))
+
+        #expect(try await db.fetchLatestTasteRating(mediaId: "tt1234567") == nil)
+    }
+
     @Test func fetchTasteProfileReturnsNilWhenEmpty() async throws {
         let (db, tempDir) = try await makeTemporaryDatabase(named: "taste-profile-empty.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -1115,6 +1287,64 @@ struct DatabaseLibraryFolderTests {
 
         try await db.removeFromLibrary(mediaId: "movie-1", listType: .favorites)
         #expect(try await db.isInLibrary(mediaId: "movie-1", listType: .favorites) == false)
+    }
+
+    @Test func libraryMembershipAndRemovalResolveCachedIMDbTMDBAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "library-identity-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+
+        let folderId = try await db.fetchSystemLibraryFolderID(listType: .watchlist)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "entry-tmdb",
+            mediaId: "movie-tmdb-438631",
+            folderId: folderId,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        #expect(try await db.isInLibrary(mediaId: "tt1160419", listType: .watchlist))
+        #expect(try await db.isInLibrary(mediaId: "movie-imdb-tt1160419", listType: .watchlist))
+
+        try await db.removeFromLibrary(mediaId: "tt1160419", listType: .watchlist)
+
+        #expect(try await db.isInLibrary(mediaId: "movie-tmdb-438631", listType: .watchlist) == false)
+    }
+
+    @Test func libraryMembershipAndRemovalResolveOMDbCompositeAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "library-omdb-identity-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: nil
+        ))
+
+        let folderId = try await db.fetchSystemLibraryFolderID(listType: .watchlist)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "entry-omdb",
+            mediaId: "movie-omdb-tt1160419",
+            folderId: folderId,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        #expect(try await db.isInLibrary(mediaId: "tt1160419", listType: .watchlist))
+        #expect(try await db.isInLibrary(mediaId: "movie-imdb-tt1160419", listType: .watchlist))
+
+        try await db.removeFromLibrary(mediaId: "tt1160419", listType: .watchlist)
+
+        #expect(try await db.isInLibrary(mediaId: "movie-omdb-tt1160419", listType: .watchlist) == false)
     }
 
     @Test func createLibraryFolderCreatesManualFolderForWatchlist() async throws {

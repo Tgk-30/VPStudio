@@ -140,7 +140,7 @@ struct StremioIndexerSearchEdgeCasesTests {
             case "/manifest.json":
                 let body = #"{"catalogs":[{"id":"movies","type":"movie","extra":[{"name":"search"}]}]}"#
                 return (response, Data(body.utf8))
-            case "/catalog/movie/movies/search=Dune%202024.json":
+            case "/catalog/movie/movies/search=Dune.json":
                 let body = #"{"metas":[{"id":"dune","name":"Dune","type":"movie"},{"id":"dune","name":"Dune 2021","type":"movie"}]}"#
                 return (response, Data(body.utf8))
             case "/stream/movie/dune.json":
@@ -551,6 +551,7 @@ struct StremioIndexerSearchEdgeCasesTests {
                   "sources":[
                     "TRACKER:udp://tracker.example.com:1337/announce",
                     "tracker:udp://tracker.example.com:1337/announce",
+                    "tracker:udp%3A%2F%2Ftracker-encoded.example.com%3A1337%2Fannounce",
                     "https://cdn.example.com/stream.mkv",
                     "tracker:https://tracker.example.net:8080/announce",
                     "invalid:abc"
@@ -577,6 +578,7 @@ struct StremioIndexerSearchEdgeCasesTests {
         #expect(queryItems.first { $0.name == "xt" }?.value == "urn:btih:\(hash)")
         #expect(trackers == [
             "udp://tracker.example.com:1337/announce",
+            "udp://tracker-encoded.example.com:1337/announce",
             "https://tracker.example.net:8080/announce"
         ])
     }
@@ -1186,7 +1188,7 @@ struct StremioIndexerSearchEdgeCasesTests {
             case "/manifest.json":
                 let body = #"{"catalogs":[{"id":"movies","type":"movie","extra":[{"name":"search"}]}]}"#
                 return (response, Data(body.utf8))
-            case "/catalog/movie/movies/search=Dune.json":
+            case "/catalog/movie/movies/search=Dune%202024.json":
                 let body = """
                 {
                   "metas":[

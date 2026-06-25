@@ -32,7 +32,7 @@ struct PresentationSupportValueCoverageTests {
         )
         let loadingMode: DiscoverLoadingPresentationMode = .refreshingRetainedContent
         let presentation: DiscoverErrorPresentation = DiscoverErrorPresentationPolicy.presentation(
-            for: .tmdbSetupRequired(feature: "Discover")
+            for: .metadataSetupRequired(feature: "Discover")
         )
 
         #expect(rowSpec.id == "trending-shows")

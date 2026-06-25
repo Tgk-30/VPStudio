@@ -105,6 +105,7 @@ struct BugFixVerificationTests {
         @Test("lastSelectedTab key is distinct from all other settings keys")
         func keyIsUnique() {
             let allKeys = [
+                SettingsKeys.omdbApiKey,
                 SettingsKeys.tmdbApiKey,
                 SettingsKeys.preferredQuality,
                 SettingsKeys.subtitleLanguage,

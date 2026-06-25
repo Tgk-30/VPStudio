@@ -74,6 +74,12 @@ struct NavigationChromePolicyTests {
         let usesSidebar = NavigationChromePolicy.usesSidebar(for: layout)
         #expect(usesBottom != usesSidebar, "Bottom and sidebar should be mutually exclusive")
     }
+
+    @Test func bottomTabOrnamentStaysNearSceneBottom() {
+        #expect(BottomTabOrnamentPolicy.visionYOffset == 8)
+        #expect(BottomTabOrnamentPolicy.visionRegularChromeScale == 1.14)
+        #expect(BottomTabOrnamentPolicy.visionCompactChromeScale == 1.08)
+    }
 }
 
 // MARK: - AppState Default

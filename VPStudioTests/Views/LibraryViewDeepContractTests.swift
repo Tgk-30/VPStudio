@@ -9,6 +9,9 @@ struct LibraryViewDeepContractTests {
         #expect(LibraryLayoutPolicy.rootPinsContentToTop)
         #expect(LibraryLayoutPolicy.emptyStatePinsContentToTop)
         #expect(LibraryLayoutPolicy.emptyStateTopPadding == 20)
+        #expect(LibraryLayoutPolicy.topTabMaxWidth == 720)
+        #expect(LibraryGridPolicy.topContentPadding == 8)
+        #expect(LibraryGridPolicy.bottomContentPadding == 132)
 
         #expect(
             LibraryLayoutPolicy.showsEmptyState(
@@ -124,9 +127,12 @@ struct LibraryViewDeepContractTests {
         #expect(source.contains("alignment: LibraryLayoutPolicy.rootPinsContentToTop ? .top : .center"))
         #expect(source.contains("alignment: LibraryLayoutPolicy.emptyStatePinsContentToTop ? .top : .center"))
         #expect(source.contains(".padding(.top, LibraryLayoutPolicy.emptyStateTopPadding)"))
+        #expect(source.contains(".frame(maxWidth: LibraryLayoutPolicy.topTabMaxWidth, alignment: .leading)"))
         #expect(source.contains(".adaptive(minimum: LibraryGridPolicy.cardMinWidth)"))
         #expect(source.contains("spacing: LibraryGridPolicy.gridSpacing"))
         #expect(source.contains(".padding(.horizontal, LibraryGridPolicy.horizontalPadding)"))
+        #expect(source.contains(".padding(.top, LibraryGridPolicy.topContentPadding)"))
+        #expect(source.contains(".padding(.bottom, LibraryGridPolicy.bottomContentPadding)"))
     }
 
     @Test

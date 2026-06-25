@@ -25,7 +25,10 @@ struct PlayerSessionRequest: Codable, Sendable, Identifiable, Hashable {
     var availableStreams: [StreamInfo]
     var mediaTitle: String
     var mediaId: String
+    var imdbId: String?
     var tmdbId: Int?
+    var posterPath: String?
+    var backdropPath: String?
     var episodeId: String?
     var nextEpisode: NextEpisodeCandidate?
 
@@ -35,7 +38,10 @@ struct PlayerSessionRequest: Codable, Sendable, Identifiable, Hashable {
         availableStreams: [StreamInfo] = [],
         mediaTitle: String,
         mediaId: String,
+        imdbId: String? = nil,
         tmdbId: Int? = nil,
+        posterPath: String? = nil,
+        backdropPath: String? = nil,
         episodeId: String? = nil,
         nextEpisode: NextEpisodeCandidate? = nil
     ) {
@@ -44,7 +50,10 @@ struct PlayerSessionRequest: Codable, Sendable, Identifiable, Hashable {
         self.availableStreams = availableStreams
         self.mediaTitle = mediaTitle
         self.mediaId = mediaId
+        self.imdbId = IMDbIdentifierPolicy.firstID(in: imdbId) ?? IMDbIdentifierPolicy.firstID(in: mediaId)
         self.tmdbId = tmdbId
+        self.posterPath = posterPath
+        self.backdropPath = backdropPath
         self.episodeId = episodeId
         self.nextEpisode = nextEpisode
     }

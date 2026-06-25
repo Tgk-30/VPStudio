@@ -34,6 +34,7 @@ struct ExploreFilterSheet: View {
     let genres: [Genre]
     @Binding var selectedGenre: Genre?
     let displayedSortOptions: [DiscoverFilters.SortOption]
+    var showsLanguageFilters = true
     let onApply: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -78,9 +79,10 @@ struct ExploreFilterSheet: View {
                     }
                 }
 
-                // Language
-                Section("Languages") {
-                    languageRows
+                if showsLanguageFilters {
+                    Section("Languages") {
+                        languageRows
+                    }
                 }
             }
             .navigationTitle("Filters")
@@ -88,7 +90,11 @@ struct ExploreFilterSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .onAppear {
-                selectedLanguages = ExploreFilterSheetLanguageSelectionPolicy.normalizedSelection(from: selectedLanguages)
+                if showsLanguageFilters {
+                    selectedLanguages = ExploreFilterSheetLanguageSelectionPolicy.normalizedSelection(from: selectedLanguages)
+                } else {
+                    selectedLanguages = [ExploreFilterSheetLanguageSelectionPolicy.defaultLanguageCode]
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

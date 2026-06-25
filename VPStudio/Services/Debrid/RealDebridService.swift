@@ -115,7 +115,8 @@ actor RealDebridService: DebridServiceProtocol {
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             resolvedFileNameHint: nil,
-            resolvedFileSizeHint: nil
+            resolvedFileSizeHint: nil,
+            allowSingleVideoFallback: false
         ) else {
             return false
         }
@@ -136,7 +137,8 @@ actor RealDebridService: DebridServiceProtocol {
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             resolvedFileNameHint: resolvedFileNameHint,
-            resolvedFileSizeHint: resolvedFileSizeHint
+            resolvedFileSizeHint: resolvedFileSizeHint,
+            allowSingleVideoFallback: false
         ) else {
             return false
         }
@@ -233,7 +235,8 @@ actor RealDebridService: DebridServiceProtocol {
         seasonNumber: Int,
         episodeNumber: Int,
         resolvedFileNameHint: String?,
-        resolvedFileSizeHint: Int64?
+        resolvedFileSizeHint: Int64?,
+        allowSingleVideoFallback: Bool = true
     ) -> RDFile? {
         guard let files else { return nil }
         let videoFiles = files.filter { file in
@@ -255,7 +258,7 @@ actor RealDebridService: DebridServiceProtocol {
             return tokens.contains { path.contains($0) }
         }
 
-        if matchedVideoFiles.isEmpty, videoFiles.count == 1 {
+        if allowSingleVideoFallback, matchedVideoFiles.isEmpty, videoFiles.count == 1 {
             return videoFiles.first
         }
         return matchedVideoFiles.max(by: { ($0.bytes ?? 0) < ($1.bytes ?? 0) })

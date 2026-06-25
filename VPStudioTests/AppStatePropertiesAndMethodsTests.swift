@@ -828,7 +828,7 @@ struct AppStateMigrationTests {
 
 // MARK: - AppState Notifications Tests
 
-@Suite("AppState - Notifications")
+@Suite("AppState - Notifications", .serialized)
 struct AppStateNotificationsTests {
 
     private final class NotificationFlag: @unchecked Sendable {
@@ -946,7 +946,7 @@ struct AppStateNotificationsTests {
             // expected
         }
 
-        #expect(!flag.didPost())
+        #expect(flag.didPost() == false)
         #expect(try await appState.settingsManager.getString(key: SettingsKeys.traktAccessToken) == "access-token")
         #expect(try await appState.settingsManager.getString(key: SettingsKeys.traktRefreshToken) == "refresh-token")
     }
@@ -976,7 +976,7 @@ struct AppStateNotificationsTests {
             // expected
         }
 
-        #expect(!flag.didPost())
+        #expect(flag.didPost() == false)
         #expect(try await appState.settingsManager.getString(key: SettingsKeys.traktAccessToken) == "access-token")
         #expect(try await appState.settingsManager.getString(key: SettingsKeys.traktRefreshToken) == "refresh-token")
         #expect(await secretStore.setSecretAttempts == 4)
@@ -1008,7 +1008,7 @@ struct AppStateNotificationsTests {
             // expected
         }
 
-        #expect(!flag.didPost())
+        #expect(flag.didPost() == false)
         #expect(try await appState.settingsManager.getString(key: SettingsKeys.traktAccessToken) == "access-token")
         #expect(try await appState.settingsManager.getString(key: SettingsKeys.traktRefreshToken) == "refresh-token")
         #expect(await secretStore.setSecretAttempts == 4)

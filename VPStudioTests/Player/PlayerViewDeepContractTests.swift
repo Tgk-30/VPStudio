@@ -52,6 +52,16 @@ struct PlayerViewDeepPolicyTests {
     }
 
     @Test
+    func scrobbleIMDbIDPrefersExplicitOMDbIdentity() {
+        #expect(PlayerViewPolicy.scrobbleIMDbID(
+            mediaId: "movie-tmdb-438631",
+            imdbId: "https://www.imdb.com/title/TT1160419/"
+        ) == "tt1160419")
+        #expect(PlayerViewPolicy.scrobbleIMDbID(mediaId: "movie-imdb-tt2543164", imdbId: nil) == "tt2543164")
+        #expect(PlayerViewPolicy.scrobbleIMDbID(mediaId: "movie-tmdb-438631", imdbId: nil) == nil)
+    }
+
+    @Test
     func bufferedPercentRejectsInvalidRanges() {
         #expect(PlayerViewPolicy.bufferedPercent(
             loadedRangeStart: 0,
@@ -219,9 +229,13 @@ struct PlayerViewDeepMenuAndSheetContractTests {
             in: source
         )
 
-        #expect(body.contains("Label(\"Cinema Environment\", systemImage: \"theatermasks\")"))
+        #expect(body.contains("PlayerEnvironmentMenuLabel("))
+        #expect(body.contains("spec: .standardRoom("))
+        #expect(body.contains("spec: .cinema("))
+        #expect(body.contains("spec: .compactAsset("))
         #expect(body.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(body.contains("Label(\"Cinema Settings\", systemImage: \"slider.horizontal.3\")"))
+        #expect(body.contains("Text(\"No imported environments\")"))
         #expect(body.contains("Label(\"Browse Environments\", systemImage: \"mountain.2\")"))
         #expect(body.contains("Label(\"Exit Environment\", systemImage: \"xmark.circle\")"))
     }

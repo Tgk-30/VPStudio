@@ -39,14 +39,30 @@ struct EnvironmentImmersiveCoverageTests {
         #expect(source.contains("screen.name = \"cinema-screen\""))
         #expect(source.contains("tapCatcher.name = \"tap-catcher\""))
         #expect(source.contains("anchor.name = \"controls-anchor\""))
-        #expect(source.contains("setLoadingState(.failed(\"No environment selected\"))"))
-        #expect(source.contains("setLoadingState(.failed(\"Environment file missing: \\(asset.name)\"))"))
-        #expect(source.contains("setLoadingState(.failed(\"Could not decode HDRI image\"))"))
+        #expect(source.contains("setLoadingState(.failed(HDRISkyboxFailureCopy.noEnvironmentSelected))"))
+        #expect(source.contains("setLoadingState(.failed(HDRISkyboxFailureCopy.missingEnvironmentFile))"))
+        #expect(source.contains("setLoadingState(.failed(HDRISkyboxFailureCopy.decodeFailure))"))
+        #expect(source.contains("setLoadingState(.failed(HDRISkyboxFailureCopy.resourceFailure))"))
+        #expect(source.contains("HDRI environment resource creation failed"))
+        #expect(!source.contains("setLoadingState(.failed(error.localizedDescription))"))
         #expect(source.contains("TextureResource("))
         #expect(source.contains("EnvironmentResource(equirectangular: cgImage)"))
+        #expect(!source.contains("loadingPanel.removeFromParent()"))
         #expect(source.contains("appState.immersiveSpaceDidAppear(.hdriSkybox)"))
         #expect(source.contains("appState.immersiveSpaceDidDisappear()"))
         #expect(source.contains("renderState.reset()"))
+    }
+
+    @Test
+    func hdriSkyboxFailureCopyExplainsFallbackScreen() {
+        for message in [
+            HDRISkyboxFailureCopy.noEnvironmentSelected,
+            HDRISkyboxFailureCopy.missingEnvironmentFile,
+            HDRISkyboxFailureCopy.decodeFailure,
+            HDRISkyboxFailureCopy.resourceFailure,
+        ] {
+            #expect(message.contains("Showing the fallback cinema screen."))
+        }
     }
 
     @Test
@@ -61,6 +77,7 @@ struct EnvironmentImmersiveCoverageTests {
         #expect(source.contains("let keywords = [\"screen\", \"display\", \"tv\", \"monitor\", \"cinema\", \"video\"]"))
         #expect(source.contains("keywords.contains(where: { lowerName.containsStandaloneToken($0) })"))
         #expect(source.contains("screen.name = \"custom-fallback-screen\""))
+        #expect(!source.contains("loadingPanel.removeFromParent()"))
         #expect(source.contains("ImmersivePlayerControlsView(showsScreenSizeControl: false)"))
         #expect(source.contains("appState.immersiveSpaceDidAppear(.customEnvironment)"))
         #expect(source.contains("appState.immersiveSpaceDidDisappear()"))

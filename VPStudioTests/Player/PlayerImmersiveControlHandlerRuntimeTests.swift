@@ -337,6 +337,8 @@ struct PlayerSubtitleControlHandlerRuntimeTests {
 
         let requests = await service.firstMatchRequests()
         #expect(!requests.isEmpty)
+        #expect(requests.allSatisfy { $0.imdbId == "tt7654321" })
+        #expect(requests.allSatisfy { $0.tmdbId == nil })
         #expect(requests.allSatisfy { $0.query == "Autoplay Runtime 1080p" })
         #expect(requests.allSatisfy { $0.languages == ["en"] })
         #expect(requests.allSatisfy { $0.season == 1 && $0.episode == 2 })
@@ -400,7 +402,9 @@ struct PlayerSubtitleControlHandlerRuntimeTests {
         #expect(probe.snapshots.contains { $0.isRefreshingSubtitleCatalog })
         #expect(requests.count == 1)
         #expect(requests.first?.imdbId == "tt1234567")
-        #expect(requests.first?.tmdbId == 55_555)
+        // IMDb-first policy (see lookupIDsPreferIMDbAndUseTMDBOnlyAsLegacyFallback):
+        // when an IMDb id is present, the TMDb id is dropped from subtitle lookup.
+        #expect(requests.first?.tmdbId == nil)
         #expect(requests.first?.languages == ["en"])
         #expect(requests.first?.season == 1)
         #expect(requests.first?.episode == 2)
@@ -787,6 +791,8 @@ private actor PlayerSubtitleRuntimeService: OpenSubtitlesServicing {
     private var recordedFirstMatchRequests: [FirstMatchRequest] = []
 
     struct FirstMatchRequest: Equatable {
+        var imdbId: String?
+        var tmdbId: Int?
         var query: String
         var languages: [String]
         var season: Int?
@@ -835,7 +841,27 @@ private actor PlayerSubtitleRuntimeService: OpenSubtitlesServicing {
         season: Int?,
         episode: Int?
     ) async throws -> Subtitle {
+        try await downloadFirstMatch(
+            imdbId: nil,
+            tmdbId: nil,
+            query: query,
+            languages: languages,
+            season: season,
+            episode: episode
+        )
+    }
+
+    func downloadFirstMatch(
+        imdbId: String?,
+        tmdbId: Int?,
+        query: String,
+        languages: [String],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle {
         recordedFirstMatchRequests.append(FirstMatchRequest(
+            imdbId: imdbId,
+            tmdbId: tmdbId,
             query: query,
             languages: languages,
             season: season,

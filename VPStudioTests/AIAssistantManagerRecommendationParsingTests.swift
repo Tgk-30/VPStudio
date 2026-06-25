@@ -165,6 +165,62 @@ struct AIAssistantManagerRecommendationParsingTests {
     }
 
     @Test
+    func parsesCommonIMDbAndTMDBKeyVariants() async throws {
+        let manager = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: manager.tempDir) }
+
+        let payload = """
+        [{"title":"Dune","year":"2021","type":"movie","reason":"Epic","imdbID":"TT1160419","tmdb_id":"438631"}]
+        """
+        let response = AIProviderResponse(
+            provider: .openAI,
+            content: payload,
+            model: "stub",
+            inputTokens: 1,
+            outputTokens: 1
+        )
+        await manager.instance.registerProvider(
+            kind: .openAI,
+            provider: StubAIProvider(providerKind: .openAI, result: .success(response))
+        )
+
+        let recommendations = try await manager.instance.getRecommendations(context: AssistantContext(), provider: .openAI)
+
+        #expect(recommendations.count == 1)
+        #expect(recommendations[0].imdbId == "tt1160419")
+        #expect(recommendations[0].tmdbId == nil)
+        #expect(recommendations[0].id == "movie-imdb-tt1160419")
+        #expect(recommendations[0].toMediaPreview().id == "tt1160419")
+    }
+
+    @Test
+    func dropsInvalidIMDbVariantValue() async throws {
+        let manager = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: manager.tempDir) }
+
+        let payload = """
+        [{"title":"Dune","year":2021,"type":"movie","reason":"Epic","imdb":"not-an-imdb-id","tmdb":438631}]
+        """
+        let response = AIProviderResponse(
+            provider: .openAI,
+            content: payload,
+            model: "stub",
+            inputTokens: 1,
+            outputTokens: 1
+        )
+        await manager.instance.registerProvider(
+            kind: .openAI,
+            provider: StubAIProvider(providerKind: .openAI, result: .success(response))
+        )
+
+        let recommendations = try await manager.instance.getRecommendations(context: AssistantContext(), provider: .openAI)
+
+        #expect(recommendations.count == 1)
+        #expect(recommendations[0].imdbId == nil)
+        #expect(recommendations[0].tmdbId == 438631)
+    }
+
+    @Test
     func parsesUnknownWrapperObject() async throws {
         let manager = try await makeManager()
         defer { try? FileManager.default.removeItem(at: manager.tempDir) }

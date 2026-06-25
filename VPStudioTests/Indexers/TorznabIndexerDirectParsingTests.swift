@@ -161,17 +161,21 @@ struct TorznabIndexerParseTorznabXMLTests {
     }
 
     @Test func parsesMagnetURIFromAttributes() throws {
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         let xml = """
         <?xml version="1.0"?>
         <rss><channel>
         <item>
         <title>Movie.2024</title>
-        <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:abc123"/>
+        <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:\(hash)"/>
         </item>
         </channel></rss>
         """
         let results = try indexer().parseTorznabXML(Data(xml.utf8))
-        #expect(results[0].magnetURI == "magnet:?xt=urn:btih:abc123")
+        #expect(results.count == 1)
+        guard let result = results.first else { return }
+        #expect(result.infoHash == hash)
+        #expect(result.magnetURI == "magnet:?xt=urn:btih:\(hash)")
     }
 
     @Test func extractsHashFromMagnetURIWhenInfoHashMissing() throws {
@@ -410,6 +414,40 @@ struct TorznabIndexerBuildRequestTests {
         #expect(request.value(forHTTPHeaderField: "X-Api-Key") == "secret123")
     }
 
+    @Test func buildRequestDoesNotDuplicateEndpointWhenBaseURLAlreadyContainsFullPath() throws {
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "https://prowlarr.example/api/v1/search",
+            endpointPath: "/api/v1/search",
+            apiKey: "secret123",
+            apiKeyTransport: .query
+        )
+        let request = try indexer.buildRequest(queryItems: [
+            URLQueryItem(name: "query", value: "dune"),
+        ])
+        let url = try #require(request.url)
+
+        #expect(url.path == "/api/v1/search")
+        #expect(indexer.isProwlarrEndpoint)
+    }
+
+    @Test func buildRequestDoesNotAppendApiEndpointToFullProwlarrBasePath() throws {
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "https://prowlarr.example/api/v1/search",
+            endpointPath: "/api",
+            apiKey: "secret123",
+            apiKeyTransport: .query
+        )
+        let request = try indexer.buildRequest(queryItems: [
+            URLQueryItem(name: "query", value: "dune"),
+        ])
+        let url = try #require(request.url)
+
+        #expect(url.path == "/api/v1/search")
+        #expect(indexer.isProwlarrEndpoint)
+    }
+
     @Test func emptyApiKeyOmitsAuth() throws {
         let indexer = TorznabIndexer(
             name: "Test",
@@ -465,6 +503,15 @@ struct TorznabIndexerProwlarrHelpersTests {
             name: "Prowlarr",
             baseURL: "https://prowlarr.example",
             endpointPath: "/api/v1/search"
+        )
+        #expect(indexer.isProwlarrEndpoint == true)
+    }
+
+    @Test func detectsProwlarrEndpointWhenBaseAlreadyIncludesSearchPathAndEndpointIsApi() {
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "https://prowlarr.example/api/v1/search",
+            endpointPath: "/api"
         )
         #expect(indexer.isProwlarrEndpoint == true)
     }

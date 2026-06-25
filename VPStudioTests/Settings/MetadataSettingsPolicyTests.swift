@@ -5,7 +5,7 @@ import Testing
 struct MetadataSettingsPolicyTests {
     @Test
     func normalizedAPIKeyTrimsWhitespaceAndRejectsBlankValues() {
-        #expect(MetadataSettingsPolicy.normalizedAPIKey("  tmdb-key  ") == "tmdb-key")
+        #expect(MetadataSettingsPolicy.normalizedAPIKey("  omdb-key  ") == "omdb-key")
         #expect(MetadataSettingsPolicy.normalizedAPIKey("\n\t  ") == nil)
     }
 
@@ -13,23 +13,39 @@ struct MetadataSettingsPolicyTests {
     func unsavedAPIKeyChangeUsesNormalizedValues() {
         #expect(
             MetadataSettingsPolicy.hasUnsavedAPIKeyChange(
-                current: "  tmdb-key ",
-                baseline: "tmdb-key"
+                current: "  omdb-key ",
+                baseline: "omdb-key"
             ) == false
         )
         #expect(
             MetadataSettingsPolicy.hasUnsavedAPIKeyChange(
                 current: "",
-                baseline: "tmdb-key"
+                baseline: "omdb-key"
+            )
+        )
+    }
+
+    @Test
+    func savedStateInvalidationOnlyTriggersForNormalizedEdits() {
+        #expect(
+            MetadataSettingsPolicy.shouldInvalidateSavedState(
+                newValue: "  omdb-key  ",
+                baseline: "omdb-key"
+            ) == false
+        )
+        #expect(
+            MetadataSettingsPolicy.shouldInvalidateSavedState(
+                newValue: "omdb-key-updated",
+                baseline: "omdb-key"
             )
         )
     }
 
     @Test
     func loadedStateNormalizesPersistedKeyAndMarksOnlyNonEmptyKeysSaved() {
-        let saved = MetadataSettingsPolicy.loadedState(for: "  tmdb-key  ")
-        #expect(saved.visibleValue == "tmdb-key")
-        #expect(saved.baselineValue == "tmdb-key")
+        let saved = MetadataSettingsPolicy.loadedState(for: "  omdb-key  ")
+        #expect(saved.visibleValue == "omdb-key")
+        #expect(saved.baselineValue == "omdb-key")
         #expect(saved.isSaved)
 
         let missing = MetadataSettingsPolicy.loadedState(for: "   ")
@@ -56,9 +72,9 @@ struct MetadataSettingsPolicyTests {
 
     @Test
     func savePresentationMarksNonEmptyKeyAsSaved() {
-        let saved = MetadataSettingsPolicy.savePresentation(for: "tmdb-key")
-        #expect(saved.visibleValue == "tmdb-key")
-        #expect(saved.baselineValue == "tmdb-key")
+        let saved = MetadataSettingsPolicy.savePresentation(for: "omdb-key")
+        #expect(saved.visibleValue == "omdb-key")
+        #expect(saved.baselineValue == "omdb-key")
         #expect(saved.isSaved)
         #expect(saved.noticeMessage == MetadataSettingsPolicy.savedMessage)
         #expect(saved.noticeTone == .success)
@@ -98,6 +114,7 @@ struct MetadataSettingsPolicyTests {
 
     @Test
     func validationFailureFallbackMessageStaysUserFacing() {
-        #expect(MetadataSettingsPolicy.validationFailureFallbackMessage == "TMDB validation failed.")
+        #expect(MetadataSettingsPolicy.validationFailureFallbackMessage == "OMDb validation failed.")
+        #expect(MetadataSettingsPolicy.validationProbeIMDbID == "tt0111161")
     }
 }

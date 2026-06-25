@@ -37,6 +37,24 @@ private struct SlowTorrentIndexer: TorrentIndexer {
     }
 }
 
+private final class CapturedIndexerSearchState: @unchecked Sendable {
+    var imdbId: String?
+}
+
+private struct CapturingTorrentIndexer: TorrentIndexer {
+    let name = "Capturing"
+    let state: CapturedIndexerSearchState
+
+    func search(imdbId: String, type: MediaType, season: Int?, episode: Int?) async throws -> [TorrentResult] {
+        state.imdbId = imdbId
+        return []
+    }
+
+    func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
+        []
+    }
+}
+
 @Suite("Indexer Manager Dedup And Sort")
 struct IndexerManagerDedupAndSortTests {
     struct CaseData: Sendable {
@@ -254,6 +272,27 @@ struct IndexerManagerSearchTests {
 
         #expect(results.map(\.infoHash) == ["hash-match", "hash-pack"])
         #expect(await manager.lastSearchErrors.isEmpty)
+    }
+
+    @Test
+    func imdbSearchNormalizesEmbeddedIDsBeforeProviderDispatch() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "indexer-manager-imdb-normalization.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+        let state = CapturedIndexerSearchState()
+        let manager = IndexerManager(
+            database: database,
+            indexers: [CapturingTorrentIndexer(state: state)],
+            hasInitialized: true
+        )
+
+        _ = try await manager.search(
+            imdbId: "https://www.imdb.com/title/TT1160419/",
+            type: .movie,
+            season: nil,
+            episode: nil
+        )
+
+        #expect(state.imdbId == "tt1160419")
     }
 
     @Test

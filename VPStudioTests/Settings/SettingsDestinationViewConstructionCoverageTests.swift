@@ -112,8 +112,8 @@ struct SettingsDestinationViewConstructionCoverageTests {
     @MainActor
     func metadataSettingsViewBuildsWithSavedAndTestingStates() {
         let view = MetadataSettingsView(
-            initialTMDBApiKey: "tmdb-key",
-            initialBaselineTMDBApiKey: "tmdb-key",
+            initialOMDbApiKey: "omdb-key",
+            initialBaselineOMDbApiKey: "omdb-key",
             initialIsSaved: true,
             initialIsTestingApiKey: true,
             initialSurfaceError: .unknown("metadata failure"),

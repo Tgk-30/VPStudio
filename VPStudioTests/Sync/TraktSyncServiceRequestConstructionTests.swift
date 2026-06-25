@@ -201,6 +201,29 @@ struct TraktSyncServiceRequestConstructionTests {
         #expect(ids?["imdb"] == "tt0000001")
     }
 
+    @Test func addToWatchlistNormalizesEmbeddedIMDbID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToWatchlist(imdbId: "https://www.imdb.com/title/TT1160419/", type: .movie)
+
+        let movies = state.capturedBody?["movies"] as? [[String: Any]]
+        let ids = movies?[0]["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1160419")
+    }
+
     @Test func addToWatchlistShowSendsCorrectBody() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedBody: [String: Any]?

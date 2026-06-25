@@ -1,6 +1,27 @@
 import Foundation
 import GRDB
 
+enum MediaArtworkURLPolicy {
+    static func url(for path: String?, legacyTMDBSizePath: String) -> URL? {
+        guard let path else { return nil }
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else { return nil }
+        guard trimmedPath.lowercased() != "n/a" else { return nil }
+
+        if let absolute = URL(string: trimmedPath), let scheme = absolute.scheme?.lowercased() {
+            guard scheme == "https",
+                  absolute.host?.isEmpty == false,
+                  absolute.user == nil,
+                  absolute.password == nil else { return nil }
+            return absolute
+        }
+        guard !trimmedPath.hasPrefix("//") else { return nil }
+
+        let normalizedPath = trimmedPath.hasPrefix("/") ? trimmedPath : "/\(trimmedPath)"
+        return URL(string: "https://image.tmdb.org/t/p/\(legacyTMDBSizePath)\(normalizedPath)")
+    }
+}
+
 struct MediaItem: Codable, Sendable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "media_cache"
 
@@ -19,21 +40,17 @@ struct MediaItem: Codable, Sendable, Identifiable, Equatable, FetchableRecord, P
     var lastFetched: Date?
 
     var posterURL: URL? {
-        guard let path = posterPath, !path.isEmpty else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w500\(path)")
+        MediaArtworkURLPolicy.url(for: posterPath, legacyTMDBSizePath: "w500")
     }
 
     var backdropURL: URL? {
-        guard let path = backdropPath, !path.isEmpty else { return nil }
         // w1280 (not original): hero backdrops render at <=280pt; cuts payload ~5x with no
         // visible quality loss, and matches MediaPreview.backdropURL.
-        return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+        return MediaArtworkURLPolicy.url(for: backdropPath, legacyTMDBSizePath: "w1280")
     }
 
     var hasArtwork: Bool {
-        let hasPoster = posterPath?.isEmpty == false
-        let hasBackdrop = backdropPath?.isEmpty == false
-        return hasPoster || hasBackdrop
+        posterURL != nil || backdropURL != nil
     }
 
     func withID(_ newID: String) -> MediaItem {
@@ -171,13 +188,11 @@ struct MediaPreview: Sendable, Identifiable, Equatable, Hashable {
     var episodeNumber: Int? = nil
 
     var posterURL: URL? {
-        guard let path = posterPath, !path.isEmpty else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w342\(path)")
+        MediaArtworkURLPolicy.url(for: posterPath, legacyTMDBSizePath: "w342")
     }
 
     var backdropURL: URL? {
-        guard let path = backdropPath, !path.isEmpty else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+        MediaArtworkURLPolicy.url(for: backdropPath, legacyTMDBSizePath: "w1280")
     }
 
     /// Stable per-tile identity that distinguishes individual in-progress episodes of the same

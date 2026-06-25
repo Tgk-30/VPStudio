@@ -12,10 +12,10 @@ enum PlayerGesturePolicy {
     static let doubleTapMaxInterval: TimeInterval = 0.35
 
     /// Seek offset applied when double-tapping the left half.
-    static let doubleTapSeekBackSeconds: TimeInterval = -10
+    static let doubleTapSeekBackSeconds: TimeInterval = -TimeInterval(PlayerCinematicChromePolicy.skipBackInterval)
 
     /// Seek offset applied when double-tapping the right half.
-    static let doubleTapSeekForwardSeconds: TimeInterval = 30
+    static let doubleTapSeekForwardSeconds: TimeInterval = TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval)
 
     /// The fraction of the player surface width that defines the
     /// left/right tap zones. The center dead zone is excluded.

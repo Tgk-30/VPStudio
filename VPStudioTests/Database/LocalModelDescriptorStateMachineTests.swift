@@ -11,6 +11,10 @@ struct LocalModelDescriptorStateMachineTests {
         #expect(LocalModelDescriptor.canTransition(from: .available, to: .downloading))
     }
 
+    @Test func canTransitionFromAvailableToFailed() {
+        #expect(LocalModelDescriptor.canTransition(from: .available, to: .failed))
+    }
+
     @Test func canTransitionFromDownloadingToDownloaded() {
         #expect(LocalModelDescriptor.canTransition(from: .downloading, to: .downloaded))
     }
@@ -47,10 +51,6 @@ struct LocalModelDescriptorStateMachineTests {
 
     @Test func cannotTransitionFromAvailableToDownloaded() {
         #expect(!LocalModelDescriptor.canTransition(from: .available, to: .downloaded))
-    }
-
-    @Test func cannotTransitionFromAvailableToFailed() {
-        #expect(!LocalModelDescriptor.canTransition(from: .available, to: .failed))
     }
 
     @Test func cannotTransitionFromDownloadingToAvailable() {

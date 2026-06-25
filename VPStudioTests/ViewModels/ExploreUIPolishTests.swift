@@ -217,6 +217,13 @@ struct ExploreUIPolishTests {
             #expect(ExploreGenreTilePolicy.imageName(for: card) == "genre-ref-\(card.id)")
             #expect(ExploreGenreTilePolicy.accessibilityLabel(for: card) == "\(card.title), \(card.subtitle)")
         }
+        #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.16) < 0.0001)
+    }
+
+    @Test func catalogDoesNotUseWideReferenceContextAssetsAsTiles() {
+        let catalogIDs = Set(ExploreGenreCatalog.cards.map(\.id))
+        #expect(!catalogIDs.contains("grid"))
+        #expect(!catalogIDs.contains("grid-context"))
     }
 
     @Test func genreTilePolicyKeepsScreenshotGeometryStable() {
@@ -224,8 +231,9 @@ struct ExploreUIPolishTests {
         #expect(ExploreGenreTilePolicy.tileWidth == 152)
         #expect(ExploreGenreTilePolicy.columnSpacing == 16)
         #expect(ExploreGenreTilePolicy.rowSpacing == 15)
-        #expect(ExploreGenreTilePolicy.cornerRadius == 17)
-        #expect(abs(Double(ExploreGenreTilePolicy.referenceAspectRatio) - (227.0 / 251.0)) < 0.000_001)
+        #expect(ExploreGenreTilePolicy.cornerRadius == VPRadius.control)
+        #expect(abs(Double(ExploreGenreTilePolicy.referenceAspectRatio) - (128.0 / 142.0)) < 0.000_001)
+        #expect(abs(Double(ExploreGenreTilePolicy.tileHeight) - (152.0 / (128.0 / 142.0))) < 0.000_001)
         #expect(ExploreGenreTilePolicy.gridColumns().count == ExploreGenreTilePolicy.columns)
     }
 

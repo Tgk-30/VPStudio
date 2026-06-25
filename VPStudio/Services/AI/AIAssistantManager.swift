@@ -182,8 +182,8 @@ actor AIAssistantManager {
             "Based on my viewing history and preferences, recommend 10 movies or TV shows I'd enjoy.",
             "Focus on titles I haven't seen yet.",
             "For each, provide: title, year, type (movie/series), and a brief reason why I'd like it.",
-            "Format as JSON array with keys: title, year, type, reason, tmdbId.",
-            "Only include tmdbId when you are highly confident it is correct. Otherwise use null.",
+            "Format as JSON array with keys: title, year, type, reason, imdbId.",
+            "Include imdbId when you are highly confident it is correct; otherwise use null.",
         ]
         if let mood = context.currentMood {
             promptParts.insert("I'm currently in the mood for: \(mood).", at: 1)
@@ -239,8 +239,8 @@ actor AIAssistantManager {
             "Weight my most recently watched titles most heavily — lean into the patterns in my recent viewing history while still respecting my longer-term favorites and ratings.",
             "Focus on titles I haven't seen yet.",
             "For each, provide: title, year, type (movie/series), and a brief reason connecting it to what I've recently watched.",
-            "Format as JSON array with keys: title, year, type, reason, tmdbId.",
-            "Only include tmdbId when you are highly confident it is correct. Otherwise use null.",
+            "Format as JSON array with keys: title, year, type, reason, imdbId.",
+            "Include imdbId when you are highly confident it is correct; otherwise use null.",
         ]
         let exclusions = excludingTitles
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -661,6 +661,7 @@ actor AIAssistantManager {
             let year: Int?
             let type: String?
             let reason: String?
+            let imdbId: String?
             let tmdbId: Int?
 
             private enum CodingKeys: String, CodingKey {
@@ -668,11 +669,61 @@ actor AIAssistantManager {
                 case year
                 case type
                 case reason
+                case imdbId
+                case imdbID
+                case imdbSnake = "imdb_id"
+                case imdb
                 case tmdbId
+                case tmdbID
+                case tmdbSnake = "tmdb_id"
+                case tmdb
             }
 
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
+
+                func firstString(for keys: [CodingKeys]) -> String? {
+                    for key in keys {
+                        if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty {
+                                return trimmed
+                            }
+                        }
+                    }
+                    return nil
+                }
+
+                func integerValue(for key: CodingKeys) -> Int? {
+                    if let intId = try? container.decodeIfPresent(Int.self, forKey: key) {
+                        return intId
+                    }
+                    if let stringId = try? container.decodeIfPresent(String.self, forKey: key) {
+                        let trimmedIdString = stringId.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let parsedId = Int(trimmedIdString) {
+                            return parsedId
+                        }
+                        if let parsedIdDouble = Double(trimmedIdString),
+                           parsedIdDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                            return Int(exactly: parsedIdDouble) // nil (not a trap) if out of Int range
+                        }
+                    }
+                    if let doubleId = try? container.decodeIfPresent(Double.self, forKey: key),
+                       doubleId.truncatingRemainder(dividingBy: 1) == 0 {
+                        return Int(exactly: doubleId) // nil (not a trap) if out of Int range
+                    }
+                    return nil
+                }
+
+                func firstInteger(for keys: [CodingKeys]) -> Int? {
+                    for key in keys {
+                        if let value = integerValue(for: key) {
+                            return value
+                        }
+                    }
+                    return nil
+                }
+
                 title = try container.decode(String.self, forKey: .title)
                 if let yearNumber = try? container.decodeIfPresent(Int.self, forKey: .year) {
                     year = yearNumber
@@ -707,24 +758,13 @@ actor AIAssistantManager {
                     reason = nil
                 }
 
-                if let intId = try? container.decodeIfPresent(Int.self, forKey: .tmdbId) {
-                    tmdbId = intId
-                } else if let stringId = try? container.decodeIfPresent(String.self, forKey: .tmdbId) {
-                    let trimmedIdString = stringId.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let parsedId = Int(trimmedIdString) {
-                        tmdbId = parsedId
-                    } else if let parsedIdDouble = Double(trimmedIdString),
-                              parsedIdDouble.truncatingRemainder(dividingBy: 1) == 0 {
-                        tmdbId = Int(exactly: parsedIdDouble) // nil (not a trap) if out of Int range
-                    } else {
-                        tmdbId = nil
-                    }
-                } else if let doubleId = try? container.decodeIfPresent(Double.self, forKey: .tmdbId),
-                          doubleId.truncatingRemainder(dividingBy: 1) == 0 {
-                    tmdbId = Int(exactly: doubleId) // nil (not a trap) if out of Int range
+                if let imdbString = firstString(for: [.imdbId, .imdbID, .imdbSnake, .imdb]) {
+                    imdbId = IMDbIdentifierPolicy.firstID(in: imdbString)
                 } else {
-                    tmdbId = nil
+                    imdbId = nil
                 }
+
+                tmdbId = firstInteger(for: [.tmdbId, .tmdbID, .tmdbSnake, .tmdb])
             }
 
             private enum ReasonValue: Decodable {
@@ -804,7 +844,8 @@ actor AIAssistantManager {
                     year: raw.year,
                     type: isSeriesType ? .series : .movie,
                     reason: raw.reason ?? "",
-                    tmdbId: raw.tmdbId
+                    imdbId: raw.imdbId,
+                    tmdbId: raw.imdbId == nil ? raw.tmdbId : nil
                 )
             }
         }
@@ -819,6 +860,7 @@ actor AIAssistantManager {
                 let key = [
                     normalizedTitle,
                     "\(recommendation.year ?? 0)",
+                    recommendation.imdbId ?? "",
                     "\(recommendation.tmdbId ?? 0)",
                     recommendation.type.rawValue
                 ].joined(separator: "|")
@@ -1001,7 +1043,7 @@ actor AIAssistantManager {
             await withTaskGroup(of: (String, String?).self) { group in
                 for mediaID in allMediaIDs {
                     group.addTask {
-                        let title = try? await database.fetchMediaItem(id: mediaID)?.title
+                        let title = try? await database.fetchMediaItemResolvingAliases(id: mediaID)?.title
                         return (mediaID, title)
                     }
                 }

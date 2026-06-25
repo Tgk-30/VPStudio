@@ -243,7 +243,7 @@ struct RefreshLoadingPolicyTests {
             previewTMDBID: 278,
             mediaTitle: nil,
             mediaTMDBID: nil
-        ) == "Fallback Title\nhttps://www.themoviedb.org/movie/278")
+        ) == "Fallback Title")
 
         #expect(DetailPresentationPolicy.shareItem(
             previewID: "tv-1396",
@@ -252,7 +252,7 @@ struct RefreshLoadingPolicyTests {
             previewTMDBID: nil,
             mediaTitle: "Better Title",
             mediaTMDBID: 1396
-        ) == "Better Title\nhttps://www.themoviedb.org/tv/1396")
+        ) == "Better Title")
 
         #expect(DetailPresentationPolicy.shareItem(
             previewID: "local",
@@ -288,6 +288,194 @@ struct RefreshLoadingPolicyTests {
                 episodeCount: 0,
                 isLoadingSeasonEpisodes: true
             ) == false
+        )
+    }
+
+    @Test
+    func detailMetadataLookupPolicyUsesEmbeddedIMDbIDForOMDb() {
+        let preview = MediaPreview(
+            id: "movie-imdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.detailID(for: preview, preference: .imdbOrTitle)
+                == "tt1160419"
+        )
+    }
+
+    @Test
+    func detailMetadataLookupPolicyFallsBackToTitleForOMDbWhenOnlyTMDBExists() {
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.detailID(for: preview, preference: .imdbOrTitle)
+                == "Dune (2021)"
+        )
+    }
+
+    @Test
+    func detailMetadataLookupPolicyFallsBackToPlainTitleForOMDbWhenYearIsMissing() {
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: nil,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.detailID(for: preview, preference: .imdbOrTitle)
+                == "Dune"
+        )
+    }
+
+    @Test
+    func detailMetadataLookupPolicyKeepsLegacyTMDBLookupForTMDBProviders() {
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.detailID(for: preview, preference: .tmdbOrStableID)
+                == "438631"
+        )
+    }
+
+    @Test
+    func detailEpisodeLookupPolicyFallsBackToTitleForOMDbWhenOnlyTMDBExists() {
+        let item = MediaItem(
+            id: "tmdb-1399",
+            type: .series,
+            title: "Game of Thrones",
+            year: 2011,
+            tmdbId: 1399
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.episodeLookupID(for: item, preference: .imdbOrTitle)
+                == "Game of Thrones (2011)"
+        )
+    }
+
+    @Test
+    func detailEpisodeLookupPolicyFallsBackToPlainTitleForOMDbWhenYearIsMissing() {
+        let item = MediaItem(
+            id: "tmdb-1399",
+            type: .series,
+            title: "Game of Thrones",
+            year: nil,
+            tmdbId: 1399
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.episodeLookupID(for: item, preference: .imdbOrTitle)
+                == "Game of Thrones"
+        )
+    }
+
+    @Test
+    func detailEpisodeLookupPolicyKeepsLegacyTMDBForTMDBProviders() {
+        let item = MediaItem(
+            id: "tmdb-1399",
+            type: .series,
+            title: "Game of Thrones",
+            year: 2011,
+            tmdbId: 1399
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.episodeLookupID(for: item, preference: .tmdbOrStableID)
+                == "tmdb-1399"
+        )
+    }
+
+    @Test
+    func detailMediaIdentityPolicyPrefersNormalizedIMDbIDFromPreviewAlias() {
+        let preview = MediaPreview(
+            id: "movie-imdb-TT1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMediaIdentityPolicy.canonicalMediaID(mediaItem: nil, preview: preview)
+                == "tt1160419"
+        )
+    }
+
+    @Test
+    func detailMediaIdentityPolicyPrefersOMDbItemIMDbIDOverLegacyPreviewTMDBID() {
+        let item = MediaItem(
+            id: "TT1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: nil
+        )
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMediaIdentityPolicy.canonicalMediaID(mediaItem: item, preview: preview)
+                == "tt1160419"
+        )
+    }
+
+    @Test
+    func detailMediaIdentityPolicyFallsBackToTMDBAliasWhenNoStableIDExists() {
+        let preview = MediaPreview(
+            id: "   ",
+            type: .movie,
+            title: "Untitled",
+            year: nil,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        #expect(
+            DetailMediaIdentityPolicy.canonicalMediaID(mediaItem: nil, preview: preview)
+                == "tmdb-438631"
         )
     }
 
@@ -332,6 +520,23 @@ struct RefreshLoadingPolicyTests {
             DetailRefreshRetentionPolicy.shouldPreserveExistingContent(
                 currentMediaItem: current,
                 incomingPreview: sameTMDBDifferentIDPreview
+            )
+        )
+
+        let sameIMDbCompositePreview = MediaPreview(
+            id: "movie-imdb-tt0111161",
+            type: .movie,
+            title: "The Shawshank Redemption",
+            year: 1994,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: nil
+        )
+        #expect(
+            DetailRefreshRetentionPolicy.shouldPreserveExistingContent(
+                currentMediaItem: current,
+                incomingPreview: sameIMDbCompositePreview
             )
         )
     }

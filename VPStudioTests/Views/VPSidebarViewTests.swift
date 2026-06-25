@@ -58,7 +58,7 @@ struct VPSidebarViewTestsViewsVpsidebarviewtests {
                 onOpenEnvironmentPicker: {},
                 onTabSelection: { _ in }
             )
-            _ = view.body
+            SwiftUIViewDiagnosticHost.render(view.frame(width: 220, height: 520))
         }
 
         @Test("VPSidebarView can be constructed with all parameters")
@@ -71,7 +71,7 @@ struct VPSidebarViewTestsViewsVpsidebarviewtests {
                 activeDownloadCount: 5,
                 settingsWarningCount: 2
             )
-            _ = view.body
+            SwiftUIViewDiagnosticHost.render(view.frame(width: 220, height: 520))
         }
     }
 

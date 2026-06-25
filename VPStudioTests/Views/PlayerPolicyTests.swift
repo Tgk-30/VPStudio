@@ -142,9 +142,10 @@ struct PlayerCinemaEnvironmentPolicyTestsViewsPlayerpolicytests {
         #expect(PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: "/path/to/sky.exr") == "pano")
     }
 
-    @Test("iconName returns cube for other extensions")
-    func iconNameReturnsCubeForOther() {
-        #expect(PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: "/path/to/sky.jpg") == "cube.transparent")
+    @Test("iconName returns pano for LDR panorama image extensions")
+    func iconNameReturnsPanoForLDRPanoramaImages() {
+        #expect(PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: "/path/to/sky.jpg") == "pano")
+        #expect(PlayerCinemaEnvironmentPolicy.iconName(forAssetPath: "/path/to/sky.png") == "pano")
     }
 }
 
@@ -432,9 +433,9 @@ struct PlayerGesturePolicyTestsViewsPlayerpolicytests {
         #expect(PlayerGesturePolicy.doubleTapSeekBackSeconds == -10)
     }
 
-    @Test("doubleTapSeekForwardSeconds is 30")
+    @Test("doubleTapSeekForwardSeconds matches transport forward interval")
     func doubleTapSeekForwardSecondsIsCorrect() {
-        #expect(PlayerGesturePolicy.doubleTapSeekForwardSeconds == 30)
+        #expect(PlayerGesturePolicy.doubleTapSeekForwardSeconds == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test("doubleTapZoneFraction is 0.35")
@@ -451,7 +452,7 @@ struct PlayerGesturePolicyTestsViewsPlayerpolicytests {
     @Test("doubleTapSeekOffset returns forward offset for right zone")
     func doubleTapSeekOffsetReturnsForwardForRightZone() {
         let result = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 900, surfaceWidth: 1000)
-        #expect(result == 30)
+        #expect(result == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test("doubleTapSeekOffset returns nil for center zone")

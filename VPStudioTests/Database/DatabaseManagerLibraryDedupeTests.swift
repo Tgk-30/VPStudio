@@ -27,6 +27,58 @@ struct DatabaseManagerLibraryDedupeTests {
     }
 
     @Test
+    func dedupePrefersExactOMDbUserRatingOverAliasFallbackRanking() async throws {
+        let db = try await makeDatabase(named: "dedupe-omdb-exact-rating-priority")
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            imdbRating: 9.2,
+            tmdbId: 438631
+        ))
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            imdbRating: 7.0,
+            tmdbId: nil
+        ))
+
+        let now = Date()
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "e-tmdb",
+            mediaId: "movie-tmdb-438631",
+            folderId: "",
+            listType: .favorites,
+            addedAt: now.addingTimeInterval(60)
+        ))
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "e-omdb",
+            mediaId: "movie-omdb-tt1160419",
+            folderId: "",
+            listType: .favorites,
+            addedAt: now
+        ))
+        try await db.saveTasteEvent(TasteEvent(
+            id: "rating-omdb",
+            mediaId: "movie-omdb-tt1160419",
+            eventType: .rated,
+            feedbackScale: .oneToTen,
+            feedbackValue: 9,
+            source: .manual,
+            createdAt: now
+        ))
+
+        let removed = try await db.dedupeLibraryEntriesByTitleEquivalence(listType: .favorites)
+        #expect(removed == 1)
+
+        let remaining = try await db.fetchLibraryEntries(listType: .favorites)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.mediaId == "movie-omdb-tt1160419")
+    }
+
+    @Test
     func dedupePrefersHigherIMDbWhenUserRatingsAreMissing() async throws {
         let db = try await makeDatabase(named: "dedupe-imdb-priority")
 

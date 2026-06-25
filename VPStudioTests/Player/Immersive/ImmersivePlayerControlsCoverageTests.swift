@@ -88,14 +88,27 @@ struct ImmersivePlayerControlsCoverageTests {
             ".immersiveControlRequestEnvironmentSwitch",
             ".immersiveControlDismiss"
         ] {
-            #expect(source.contains("NotificationCenter.default.post(name: \(expectedNotification)"))
+            // Each notification is either posted directly or routed through a
+            // small helper (chapterControl / toggleControl) that posts its
+            // `notification:` parameter — accept either wiring.
+            let directPost = source.contains("post(name: \(expectedNotification)")
+            let routedPost = source.contains("notification: \(expectedNotification)")
+            #expect(directPost || routedPost, "\(expectedNotification) is not wired to a post")
         }
+        // The shared helpers must actually forward their routed notification.
+        #expect(source.contains("NotificationCenter.default.post(name: notification"))
 
         #expect(source.contains("guard engine.duration > 0 else { return current.formattedDuration }"))
         #expect(source.contains("return \"\\(current.formattedDuration) of \\(engine.durationFormatted)\""))
         #expect(source.contains("case .increment:"))
         #expect(source.contains("case .decrement:"))
         #expect(source.contains("if showsScreenSizeControl {"))
+        #expect(source.contains(".foregroundStyle(VPColor.textTertiary)"))
+        #expect(source.contains("ImmersiveControlsPolicy.scrubberMarkerX("))
+        #expect(source.contains("ImmersiveControlsPolicy.scrubberDragPercent("))
+        #expect(source.contains(".frame(height: ImmersiveControlsPolicy.scrubberHitTargetHeight)"))
+        #expect(!source.contains("x: width * max(0, min(1, displayPercent))"))
+        #expect(!source.contains(".foregroundStyle(.white.opacity(0.55))"))
     }
 }
 

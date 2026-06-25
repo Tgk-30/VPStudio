@@ -88,6 +88,7 @@ actor DownloadManager {
     typealias AvailableDiskSpaceProvider = @Sendable (URL) throws -> Int64?
 
     private static let defaultMaxConcurrentTransfers = 2
+    private static let badStreamURLMessage = "Invalid stream URL: bad URL."
 
     private let database: DatabaseManager
     private let fileManager: FileManager
@@ -475,7 +476,7 @@ actor DownloadManager {
             try? await database.updateDownloadTaskStatus(
                 id: id,
                 status: .failed,
-                errorMessage: error.localizedDescription
+                errorMessage: Self.errorMessage(forStartingRequestError: error)
             )
             notifyDownloadsChanged()
             return
@@ -509,7 +510,7 @@ actor DownloadManager {
                 try? await database.updateDownloadTaskStatus(
                     id: id,
                     status: .failed,
-                    errorMessage: URLError(.badURL).localizedDescription
+                    errorMessage: Self.badStreamURLMessage
                 )
                 notifyDownloadsChanged()
                 return
@@ -985,6 +986,14 @@ actor DownloadManager {
         return true
     }
 
+    private static func errorMessage(forStartingRequestError error: Error) -> String {
+        if let urlError = error as? URLError, urlError.code == .badURL {
+            return badStreamURLMessage
+        }
+
+        return error.localizedDescription
+    }
+
     private func persistedRecoveryContext(for stream: StreamInfo) -> StreamRecoveryContext? {
         stream.recoveryContext?.enrichedForDownloadPersistence(
             fileName: stream.fileName,
@@ -1141,7 +1150,12 @@ actor DownloadManager {
                 if let resumeData = request.resumeData {
                     task = session.downloadTask(withResumeData: resumeData)
                 } else {
-                    var urlRequest = URLRequest(url: request.url!)
+                    guard let url = request.url else {
+                        continuation.resume(throwing: URLError(.badURL))
+                        return
+                    }
+
+                    var urlRequest = URLRequest(url: url)
                     for (name, value) in request.requestHeaders ?? [:] {
                         urlRequest.setValue(value, forHTTPHeaderField: name)
                     }

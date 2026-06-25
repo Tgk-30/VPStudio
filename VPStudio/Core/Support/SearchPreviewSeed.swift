@@ -2,11 +2,11 @@ import Foundation
 
 /// Realistic mock content for visual QA of the **real** Search surface (`SearchView`).
 ///
-/// Mirrors [`DiscoverPreviewSeed`] / [`DetailPreviewSeed`]: results reuse the shared TMDB-seeded
-/// previews (the `image.tmdb.org` CDN requires no API key), so the production Explore grid, filter
-/// bar, and `MediaCardView` tiles render with real artwork without credentials or network. The
-/// `SearchViewModel.seededPreview(showsResults:)` factory that wires this in lives in
-/// SearchViewModel.swift, because it sets `private(set)` query state and must share that file.
+/// Mirrors [`DiscoverPreviewSeed`] / [`DetailPreviewSeed`]: results reuse the shared IMDb-keyed
+/// previews, so the production Explore grid, filter bar, and `MediaCardView` tiles render with
+/// real artwork without credentials or network. The `SearchViewModel.seededPreview(showsResults:)`
+/// factory that wires this in lives in SearchViewModel.swift, because it sets `private(set)` query
+/// state and must share that file.
 enum SearchPreviewSeed {
     /// Genre chips shown in the idle Explore grid.
     static let genres: [Genre] = [

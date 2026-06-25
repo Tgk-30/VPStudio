@@ -306,7 +306,7 @@ struct QARuntimeOptionsTestsSupportSupportqaruntimeoptionstests {
         _ = QARuntimeOptions.testScreenRawValue
         _ = QARuntimeOptions.suppressQuickStartPrompt
         _ = QARuntimeOptions.setupAutoAdvance
-        _ = QARuntimeOptions.setupTMDBApiKey
+        _ = QARuntimeOptions.setupOMDbApiKey
         _ = QARuntimeOptions.setupPreferredQuality
         _ = QARuntimeOptions.setupSubtitleLanguage
     }

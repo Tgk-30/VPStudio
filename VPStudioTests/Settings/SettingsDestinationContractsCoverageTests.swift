@@ -34,21 +34,21 @@ struct SettingsDestinationContractsCoverageTests {
     func metadataSettingsView_usesSecureField_andValidationHelpers_andNeverDisplaysApiKeyPlaintext() throws {
         let source = try loadSource(at: "VPStudio/Views/Windows/Settings/Destinations/MetadataSettingsView.swift")
 
-        #expect(source.contains("SecureField(\"TMDB API Key\", text: $tmdbApiKey)"))
-        #expect(source.contains("MetadataSettingsPolicy.normalizedAPIKey(tmdbApiKey)"))
-        #expect(source.contains("MetadataSettingsPolicy.hasUnsavedAPIKeyChange(current: tmdbApiKey, baseline: initialTMDBApiKey)"))
+        #expect(source.contains("SecureField(\"OMDb API Key\", text: $omdbApiKey)"))
+        #expect(source.contains("MetadataSettingsPolicy.normalizedAPIKey(omdbApiKey)"))
+        #expect(source.contains("MetadataSettingsPolicy.hasUnsavedAPIKeyChange(current: omdbApiKey, baseline: initialOMDbApiKey)"))
         #expect(source.contains("SettingsInputValidation.normalizedSecret(value)"))
         #expect(source.contains("SettingsInputValidation.hasUnsavedSecretChange(current: current, initial: baseline)"))
 
-        expectNoPlaintextDisplays(of: ["tmdbApiKey"], in: source)
+        expectNoPlaintextDisplays(of: ["omdbApiKey"], in: source)
 
         // Saving should use SettingsManager so empty/whitespace clears the stored secret deterministically.
-        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.tmdbApiKey, value: normalized)"))
-        #expect(source.contains("NotificationCenter.default.post(name: .tmdbApiKeyDidChange, object: nil)"))
+        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.omdbApiKey, value: normalized)"))
+        #expect(source.contains("NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)"))
         #expect(source.contains("notice = MetadataSettingsPolicy.missingAPIKeyNotice"))
 
         // Provider/service creation should be lazy (only inside explicit test action).
-        let testFnRange = try requiredRange(of: "private func testTMDBAPIKey() async {", in: source)
+        let testFnRange = try requiredRange(of: "private func testOMDbAPIKey() async {", in: source)
         let serviceUseRange = try requiredRange(
             of: "let service = appState.createMetadataService(apiKey: apiKey)",
             in: source,
@@ -60,6 +60,7 @@ struct SettingsDestinationContractsCoverageTests {
     @Test
     func subtitleSettingsView_openSubtitlesKeyIsSecure_andPersistsThroughSettingsManager_andNeverDisplaysApiKeyPlaintext() throws {
         let source = try loadSource(at: "VPStudio/Views/Windows/Settings/Destinations/SubtitleSettingsView.swift")
+        let policySource = try loadSource(at: "VPStudio/Views/Windows/Settings/Destinations/SubtitleSettingsPolicy.swift")
 
         #expect(source.contains("SecureField(\"API Key\", text: $openSubsApiKey)"))
         expectNoPlaintextDisplays(of: ["openSubsApiKey"], in: source)
@@ -69,8 +70,8 @@ struct SettingsDestinationContractsCoverageTests {
         #expect(source.contains("if key == SettingsKeys.openSubtitlesApiKey {"))
         #expect(source.contains("NotificationCenter.default.post(name: .openSubtitlesDidChange, object: nil)"))
         #expect(source.contains("fontSize = SubtitleSettingsPolicy.resolvedFontSize("))
-        #expect(source.contains("static let minFontSize: Double = 16"))
-        #expect(source.contains("static let maxFontSize: Double = 48"))
+        #expect(policySource.contains("static let minFontSize: Double = 16"))
+        #expect(policySource.contains("static let maxFontSize: Double = 48"))
         #expect(source.contains("Slider(value: $fontSize, in: 16...48"))
     }
 

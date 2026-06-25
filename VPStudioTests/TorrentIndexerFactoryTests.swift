@@ -4,7 +4,7 @@ import Testing
 
 private final class IndexerFactoryRequestProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestHandlers: [String: (URLRequest) throws -> (HTTPURLResponse, Data)] = [:]
-    nonisolated(unsafe) static let lock = NSLock()
+    static let lock = NSLock()
     static let handlerHeader = "X-VPStudio-Factory-ID"
 
     static func register(_ handler: @escaping (URLRequest) throws -> (HTTPURLResponse, Data)) -> String {
@@ -129,7 +129,7 @@ struct TorrentIndexerFactoryTests {
         _ = try await ytsIndexer.searchByQuery(query: "dune", type: .movie)
 
         #expect(state.requestURL?.host == "yts.custom")
-        #expect(state.requestURL?.path == "/root/list_movies.json")
+        #expect(state.requestURL?.path == "/root/api/v2/list_movies.json")
         #expect(state.queryItems.first(where: { $0.name == "query_term" })?.value == "dune")
         #expect(state.queryItems.first(where: { $0.name == "limit" })?.value == "20")
     }
@@ -445,8 +445,8 @@ struct TorrentIndexerFactoryTests {
         _ = try await torznabIndexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
 
         #expect(state.requestURL?.path == "/base/api")
-        #expect(state.queryItems.first(where: { $0.name == "type" })?.value == "moviesearch")
-        #expect(state.queryItems.first(where: { $0.name == "query" })?.value == "{ImdbId:tt1234567}")
+        #expect(state.queryItems.first(where: { $0.name == "t" })?.value == "search")
+        #expect(state.queryItems.first(where: { $0.name == "imdbid" })?.value == "tt1234567")
         #expect(state.apiKeyQuery == "query-key")
     }
 
@@ -488,7 +488,7 @@ struct TorrentIndexerFactoryTests {
         #expect(state.requestURL?.host == "prowlarr.custom")
         #expect(state.requestURL?.path == "/base/api/v1/search")
         #expect(state.apiKeyHeader == "prowlarr-key")
-        #expect(state.queryItems.first(where: { $0.name == "t" })?.value == "search")
-        #expect(state.queryItems.first(where: { $0.name == "imdbid" })?.value == "tt1234567")
+        #expect(state.queryItems.first(where: { $0.name == "type" })?.value == "moviesearch")
+        #expect(state.queryItems.first(where: { $0.name == "query" })?.value == "{ImdbId:tt1234567}")
     }
 }

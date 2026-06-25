@@ -120,7 +120,14 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-tracking-p\(filters.page)")],
+                page: filters.page,
+                totalPages: 1,
+                totalResults: 1
+            )
+        }
         func getGenres(type: MediaType) async throws -> [Genre] {
             getGenresCallCount += 1
             return genres
@@ -157,7 +164,14 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "slow-genre-p\(filters.page)")],
+                page: filters.page,
+                totalPages: 1,
+                totalResults: 1
+            )
+        }
         func getGenres(type: MediaType) async throws -> [Genre] {
             getGenresCallCount += 1
             // Deliberately ignore cancellation to emulate non-cooperative network code.
@@ -227,7 +241,14 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "discover-\(marker)-p\(filters.page)")],
+                page: filters.page,
+                totalPages: 1,
+                totalResults: 1
+            )
+        }
         func getGenres(type: MediaType) async throws -> [Genre] { [] }
         func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
         func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { [] }
@@ -328,6 +349,22 @@ struct SearchViewModelTests {
             }
             // Yield first to give pending Tasks a chance to run on the main actor,
             // then sleep to avoid busy-waiting.
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    @MainActor
+    private static func waitUntil(
+        timeout: Duration = .milliseconds(5000),
+        _ condition: @MainActor () async -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !(await condition()) {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("waitUntil timed out after \(timeout)")
+                return
+            }
             await Task.yield()
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -678,6 +715,9 @@ struct SearchViewModelTests {
         let viewModel = SearchViewModel(metadataService: stub)
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.results = [Fixtures.mediaPreview(id: "stale")]
         viewModel.query = ""
 
@@ -691,7 +731,7 @@ struct SearchViewModelTests {
         #expect(viewModel.totalPages == 1)
         #expect(viewModel.error == nil)
         #expect(await stub.getSearchCallCount() == 0)
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 1)
     }
 
     @Test
@@ -784,6 +824,36 @@ struct SearchViewModelTests {
 
         #expect(viewModel.results.count == 1)
         #expect(viewModel.results.first?.id == "target")
+    }
+
+    @Test
+    @MainActor
+    func selectedTypeNilAppliesYearRangePresetLocallyToSearchResults() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "lower-bound", year: 2020),
+                    Fixtures.mediaPreview(id: "inside-range", year: 2024),
+                    Fixtures.mediaPreview(id: "outside-range", year: 2019),
+                    Fixtures.mediaPreview(id: "missing-year", year: nil)
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 4
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+        viewModel.yearFilter = 2020
+        viewModel.yearRangePreset = .twenties
+        viewModel.selectedType = nil
+
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        #expect(viewModel.results.map(\.id) == ["lower-bound", "inside-range"])
     }
 
     @Test
@@ -970,18 +1040,21 @@ struct SearchViewModelTests {
 
         let viewModel = SearchViewModel(metadataService: stub)
         viewModel.selectedGenre = Genre(id: 18, name: "Drama")
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.queryDraft = "query"
         viewModel.queryDraft = ""
 
         var attempts = 0
         var discoverCalls = await stub.getDiscoverCallCount()
-        while discoverCalls == 0 && attempts < 80 {
+        while discoverCalls < 2 && attempts < 80 {
             attempts += 1
             try await Task.sleep(for: .milliseconds(25))
             discoverCalls = await stub.getDiscoverCallCount()
         }
 
-        #expect(discoverCalls == 1)
+        #expect(discoverCalls == 2)
         #expect(await stub.getSearchCallCount() == 0)
         #expect(viewModel.results.count == 1)
         #expect(viewModel.results.first?.id == "genre-browse-result")
@@ -1213,7 +1286,7 @@ struct SearchViewModelTests {
         viewModel.search()
 
         #expect(viewModel.results.isEmpty)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.submittedQuery == "Dune")
     }
 
@@ -1226,7 +1299,7 @@ struct SearchViewModelTests {
 
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.selectedGenre?.id == 28)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
     }
 
     @Test
@@ -1239,7 +1312,7 @@ struct SearchViewModelTests {
 
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.activeMoodCard?.id == newReleasesCard.id)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
     }
 
     @Test
@@ -1554,18 +1627,21 @@ struct SearchViewModelTests {
 
         let viewModel = SearchViewModel(metadataService: stub)
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
-        viewModel.query = "query that should be ignored by genre context"
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
+        viewModel.queryDraft = ""
 
         viewModel.requery()
         for _ in 0..<40 {
-            if await stub.getDiscoverCallCount() == 1 {
+            if await stub.getDiscoverCallCount() == 2 {
                 break
             }
             try await Task.sleep(for: .milliseconds(25))
         }
 
         #expect(await stub.getSearchCallCount() == 0)
-        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(await stub.getDiscoverCallCount() == 2)
         #expect(viewModel.selectedGenre?.id == 28)
         #expect(viewModel.results.first?.id == "genre-result")
     }
@@ -1642,6 +1718,11 @@ struct SearchViewModelTests {
         try await Self.waitUntil { !viewModel.results.isEmpty }
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        viewModel.queryDraft = ""
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() >= 2
+                && viewModel.results.first?.id == "discover-result"
+        }
         let discoverCallsBefore = await stub.getDiscoverCallCount()
         let searchCallsBefore = await stub.getSearchCallCount()
 
@@ -1671,7 +1752,7 @@ struct SearchViewModelTests {
 
         viewModel.requery()
 
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.searchGeneration == generationBefore + 1)
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.currentPage == 1)
@@ -1689,12 +1770,12 @@ struct SearchViewModelTests {
         viewModel.selectMoodCard(moodCard)
 
         try await Task.sleep(for: .milliseconds(40))
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
 
         viewModel.requery()
 
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
-        #expect(viewModel.searchGeneration == generationBefore + 2)
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
+        #expect(viewModel.searchGeneration == generationBefore + 1)
         #expect(viewModel.submittedQuery == "dune")
         #expect(viewModel.query == "dune")
         #expect(viewModel.queryDraft == "dune")

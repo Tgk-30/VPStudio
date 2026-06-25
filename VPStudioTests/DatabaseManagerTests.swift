@@ -286,6 +286,94 @@ struct DatabaseManagerWatchHistoryTests {
         #expect(hasOutsideTolerance == false)
     }
 
+    @Test func watchHistoryLookupResolvesIMDbCompositeAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "wh-imdb-alias-lookup.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let older = WatchHistory(
+            id: "wh-older",
+            mediaId: "tt1160419",
+            title: "Dune",
+            progress: 120,
+            duration: 9_300,
+            watchedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            isCompleted: false
+        )
+        let newer = WatchHistory(
+            id: "wh-newer",
+            mediaId: "movie-imdb-tt1160419",
+            title: "Dune",
+            progress: 240,
+            duration: 9_300,
+            watchedAt: Date(timeIntervalSince1970: 1_700_000_060),
+            isCompleted: false
+        )
+        try await db.saveWatchHistory(older)
+        try await db.saveWatchHistory(newer)
+
+        let fetchedFromBareID = try await db.fetchWatchHistory(mediaId: "tt1160419")
+        let fetchedFromCompositeID = try await db.fetchWatchHistory(mediaId: "movie-imdb-tt1160419")
+        let fetchedFromUppercaseURL = try await db.fetchWatchHistory(mediaId: "https://www.imdb.com/title/TT1160419/")
+
+        #expect(fetchedFromBareID?.id == "wh-newer")
+        #expect(fetchedFromCompositeID?.id == "wh-newer")
+        #expect(fetchedFromUppercaseURL?.id == "wh-newer")
+    }
+
+    @Test func completedWatchHistoryDedupeResolvesIMDbCompositeAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "wh-imdb-alias-completed.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let watchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try await db.saveWatchHistory(
+            WatchHistory(
+                id: "wh-completed",
+                mediaId: "movie-imdb-tt0133093",
+                title: "The Matrix",
+                progress: 1,
+                duration: 1,
+                watchedAt: watchedAt,
+                isCompleted: true
+            )
+        )
+
+        #expect(
+            try await db.hasCompletedWatchHistoryEntry(
+                mediaId: "tt0133093",
+                watchedAt: watchedAt.addingTimeInterval(0.25),
+                tolerance: 1
+            )
+        )
+        #expect(
+            try await db.fetchCompletedWatchHistory(
+                mediaId: "https://www.imdb.com/title/TT0133093/",
+                watchedAt: watchedAt,
+                tolerance: 0
+            ).first?.id == "wh-completed"
+        )
+    }
+
+    @Test func episodeWatchStatesAndUnwatchedActionsResolveIMDbCompositeAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "wh-imdb-alias-episodes.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.markEpisodeWatched(
+            mediaId: "series-imdb-tt0903747",
+            episodeId: "s01e01",
+            title: "Pilot"
+        )
+        try await db.markMovieWatched(mediaId: "movie-imdb-tt0133093", title: "The Matrix")
+
+        let states = try await db.fetchEpisodeWatchStates(mediaId: "tt0903747")
+        #expect(states["s01e01"]?.isCompleted == true)
+
+        try await db.markEpisodeUnwatched(mediaId: "https://www.imdb.com/title/TT0903747/", episodeId: "s01e01")
+        #expect(try await db.fetchEpisodeWatchStates(mediaId: "series-imdb-tt0903747").isEmpty)
+
+        try await db.markMovieUnwatched(mediaId: "tt0133093")
+        #expect(try await db.fetchWatchHistory(mediaId: "movie-imdb-tt0133093") == nil)
+    }
+
     @Test func markEpisodeWatchedAndUnwatched() async throws {
         let (db, tempDir) = try await makeTemporaryDatabase(named: "wh-mark-ep.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }

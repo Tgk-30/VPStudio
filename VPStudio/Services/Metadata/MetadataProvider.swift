@@ -58,7 +58,9 @@ struct DiscoverFilters: Sendable {
 
     /// A date string offset by the given number of days from `now`.
     static func dateString(daysFromNow days: Int, now: Date = Date()) -> String {
-        let date = Calendar(identifier: .gregorian).date(byAdding: .day, value: days, to: now)!
+        guard let date = Calendar(identifier: .gregorian).date(byAdding: .day, value: days, to: now) else {
+            return todayString(now: now)
+        }
         return todayString(now: date)
     }
 
@@ -75,22 +77,75 @@ struct Genre: Codable, Sendable, Identifiable, Hashable {
 }
 
 protocol MetadataProvider: Sendable {
+    var supportsPersonCreditSearch: Bool { get }
+
     func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult
     func search(query: String, type: MediaType?, page: Int, year: Int?, language: String?) async throws -> MetadataSearchResult
     func getDetail(id: String, type: MediaType) async throws -> MediaItem
     func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult
     func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult
     func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult
+    func searchPersonCredits(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult
     func getGenres(type: MediaType) async throws -> [Genre]
     func getSeasons(tmdbId: Int) async throws -> [Season]
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode]
+    func getSeasons(id: String, type: MediaType) async throws -> [Season]
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode]
     func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds
 }
 
 extension MetadataProvider {
+    var supportsPersonCreditSearch: Bool { false }
+
     /// Default: delegates to the 3-param search (ignoring year/language) for backward compatibility.
     func search(query: String, type: MediaType?, page: Int, year: Int?, language: String?) async throws -> MetadataSearchResult {
         try await search(query: query, type: type, page: page)
+    }
+
+    func searchPersonCredits(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
+        MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+    }
+
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] {
+        guard let tmdbId = MetadataProviderIdentifierPolicy.tmdbID(from: id) else {
+            throw MetadataProviderIdentifierPolicy.unsupportedIdentifierError(id)
+        }
+        return try await getSeasons(tmdbId: tmdbId)
+    }
+
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+        guard let tmdbId = MetadataProviderIdentifierPolicy.tmdbID(from: id) else {
+            throw MetadataProviderIdentifierPolicy.unsupportedIdentifierError(id)
+        }
+        return try await getEpisodes(tmdbId: tmdbId, season: season)
+    }
+}
+
+enum MetadataProviderIdentifierPolicy {
+    static func tmdbID(from id: String) -> Int? {
+        if let direct = Int(id) { return direct }
+        if id.hasPrefix("tmdb-") {
+            return Int(id.dropFirst(5))
+        }
+        if id.contains("tmdb-"), let suffix = id.split(separator: "-").last {
+            return Int(suffix)
+        }
+        return nil
+    }
+
+    static func unsupportedIdentifierError(_ id: String) -> Error {
+        MetadataProviderError.unsupportedIdentifier(id)
+    }
+}
+
+enum MetadataProviderError: LocalizedError, Equatable, Sendable {
+    case unsupportedIdentifier(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedIdentifier(let id):
+            return "Unsupported metadata identifier: \(id)"
+        }
     }
 }
 
@@ -125,6 +180,57 @@ struct MetadataSearchResult: Sendable {
     var page: Int
     var totalPages: Int
     var totalResults: Int
+}
+
+enum MetadataSearchResultSortPolicy {
+    static func sort(_ items: [MediaPreview], by option: DiscoverFilters.SortOption) -> [MediaPreview] {
+        switch option {
+        case .ratingDesc:
+            return sorted(items, ascending: false) { $0.imdbRating }
+        case .ratingAsc:
+            return sorted(items, ascending: true) { $0.imdbRating }
+        case .releaseDateDesc:
+            return sorted(items, ascending: false) { $0.year }
+        case .releaseDateAsc:
+            return sorted(items, ascending: true) { $0.year }
+        case .titleAsc:
+            return sorted(items, ascending: true) { normalizedTitle($0.title) }
+        case .popularityDesc, .popularityAsc:
+            return items
+        }
+    }
+
+    private static func sorted<Value: Comparable>(
+        _ items: [MediaPreview],
+        ascending: Bool,
+        value: (MediaPreview) -> Value?
+    ) -> [MediaPreview] {
+        items.enumerated().sorted { lhs, rhs in
+            let lhsValue = value(lhs.element)
+            let rhsValue = value(rhs.element)
+
+            switch (lhsValue, rhsValue) {
+            case let (lhsValue?, rhsValue?):
+                if lhsValue == rhsValue {
+                    return lhs.offset < rhs.offset
+                }
+                return ascending ? lhsValue < rhsValue : lhsValue > rhsValue
+            case (.some, nil):
+                return true
+            case (nil, .some):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }
+        .map(\.element)
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 enum TrendingWindow: String, Sendable {

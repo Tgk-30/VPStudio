@@ -23,6 +23,15 @@ protocol OpenSubtitlesServicing: Sendable {
         season: Int?,
         episode: Int?
     ) async throws -> Subtitle
+
+    func downloadFirstMatch(
+        imdbId: String?,
+        tmdbId: Int?,
+        query: String,
+        languages: [String],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle
 }
 
 extension OpenSubtitlesServicing {
@@ -33,6 +42,22 @@ extension OpenSubtitlesServicing {
         episode: Int?
     ) async throws -> Subtitle {
         try await downloadFirstMatch(query: query, languages: languages)
+    }
+
+    func downloadFirstMatch(
+        imdbId: String?,
+        tmdbId: Int?,
+        query: String,
+        languages: [String],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle {
+        try await downloadFirstMatch(
+            query: query,
+            languages: languages,
+            season: season,
+            episode: episode
+        )
     }
 }
 
@@ -83,7 +108,9 @@ actor OpenSubtitlesService {
         var params: [String: String] = [
             "languages": languages.joined(separator: ","),
         ]
-        if let imdbId { params["imdb_id"] = imdbId.replacingOccurrences(of: "tt", with: "") }
+        if let imdbId = IMDbIdentifierPolicy.firstID(in: imdbId) {
+            params["imdb_id"] = String(imdbId.dropFirst(2))
+        }
         if let tmdbId { params["tmdb_id"] = String(tmdbId) }
         if let query { params["query"] = query }
         if let season { params["season_number"] = String(season) }
@@ -140,11 +167,36 @@ actor OpenSubtitlesService {
         episode: Int?
     ) async throws -> Subtitle {
         let candidates = try await search(
+            imdbId: nil,
+            tmdbId: nil,
             query: query,
             season: season,
             episode: episode,
             languages: languages
         )
+        return try await downloadFirstRenderableSubtitle(from: candidates)
+    }
+
+    func downloadFirstMatch(
+        imdbId: String?,
+        tmdbId: Int?,
+        query: String,
+        languages: [String] = ["en"],
+        season: Int?,
+        episode: Int?
+    ) async throws -> Subtitle {
+        let candidates = try await search(
+            imdbId: imdbId,
+            tmdbId: tmdbId,
+            query: query,
+            season: season,
+            episode: episode,
+            languages: languages
+        )
+        return try await downloadFirstRenderableSubtitle(from: candidates)
+    }
+
+    private func downloadFirstRenderableSubtitle(from candidates: [Subtitle]) async throws -> Subtitle {
         guard let selected = candidates.first(where: { $0.fileId != nil && $0.isSupportedSubtitle }),
               let fileId = selected.fileId else {
             throw SubtitleError.noSubtitlesFound
@@ -225,6 +277,7 @@ actor OpenSubtitlesService {
                 // config error — don't mislabel it as "Invalid subtitle API URL". Propagate
                 // cancellation as cancellation; map the rest to a generic transport error.
                 if urlError.code == .cancelled { throw CancellationError() }
+                if urlError.code == .badURL { throw SubtitleError.invalidURL }
                 throw SubtitleError.httpError(0)
             }
             guard let http = response as? HTTPURLResponse else {

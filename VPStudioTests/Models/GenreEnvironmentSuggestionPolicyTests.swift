@@ -88,9 +88,29 @@ struct GenreEnvironmentSuggestionPolicyNameTests {
     }
 
     @Test func unrecognizedButPresentNamesYieldNeutralDefault() {
-        let match = GenreEnvironmentSuggestionPolicy.suggestion(forGenreNames: ["Western"])
+        // A genre string that maps to no mood still resolves to the neutral default.
+        let match = GenreEnvironmentSuggestionPolicy.suggestion(forGenreNames: ["Telenovela"])
         #expect(match == GenreEnvironmentSuggestionPolicy.neutralDefault)
         #expect(match?.matchKey == "cinema")
+    }
+
+    @Test func omdbGenreVocabularyMapsToTailoredMoods() {
+        // OMDb returns genre *names* (not ids), so the full OMDb vocabulary should
+        // resolve to a tailored environment rather than the neutral cinema default.
+        let cases: [(String, EnvironmentSuggestion)] = [
+            ("War", GenreEnvironmentSuggestionPolicy.action),
+            ("Sport", GenreEnvironmentSuggestionPolicy.action),
+            ("Western", GenreEnvironmentSuggestionPolicy.classics),
+            ("Biography", GenreEnvironmentSuggestionPolicy.drama),
+            ("Family", GenreEnvironmentSuggestionPolicy.chill),
+            ("Music", GenreEnvironmentSuggestionPolicy.chill),
+            ("Musical", GenreEnvironmentSuggestionPolicy.chill),
+            ("Film-Noir", GenreEnvironmentSuggestionPolicy.mystery),
+        ]
+        for (name, expected) in cases {
+            #expect(GenreEnvironmentSuggestionPolicy.suggestion(forGenreNames: [name]) == expected,
+                    "OMDb genre \(name) should map to \(expected.matchKey)")
+        }
     }
 
     @Test func emptyOrBlankNameListReturnsNil() {

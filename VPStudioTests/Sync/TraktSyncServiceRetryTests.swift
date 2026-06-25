@@ -503,6 +503,31 @@ struct TraktSyncServiceEpisodeContextTests {
         #expect(episodes?[0]["number"] as? Int == 1)
     }
 
+    @Test func episodeSyncPreflightAcceptsStandaloneIMDbIDOnly() {
+        #expect(TraktEpisodeIdentifierPolicy.canSyncEpisodeID("TT0959621"))
+        #expect(!TraktEpisodeIdentifierPolicy.canSyncEpisodeID("https://www.imdb.com/title/TT0959621/"))
+    }
+
+    @Test func compositeOMDbFallbackEpisodeIDUsesShowSeasonEpisodePayload() async throws {
+        let state = CapturedBodyState()
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToHistory(imdbId: "tt0944947", type: .series, episodeId: "tt0944947-s1e1")
+
+        let episodePayload = state.capturedBody?["episodes"] as? [[String: Any]]
+        #expect(episodePayload == nil)
+
+        let shows = state.capturedBody?["shows"] as? [[String: Any]]
+        #expect(shows?.count == 1)
+        let ids = shows?[0]["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt0944947")
+        let seasons = shows?[0]["seasons"] as? [[String: Any]]
+        #expect(seasons?[0]["number"] as? Int == 1)
+        let episodes = seasons?[0]["episodes"] as? [[String: Any]]
+        #expect(episodes?[0]["number"] as? Int == 1)
+        #expect(TraktEpisodeIdentifierPolicy.canonicalID(from: "tt0944947-s1e1") == "s01e01")
+    }
+
     @Test func episodeContextParsesS12E123() async throws {
         let state = CapturedBodyState()
         let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
@@ -591,59 +616,70 @@ struct TraktSyncServiceEpisodeContextTests {
         #expect(shows?[0]["seasons"] == nil)
     }
 
-    @Test func episodeContextReturnsNilForS01Only() async throws {
+    @Test func episodeContextRejectsS01Only() async throws {
         let state = CapturedBodyState()
         let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
         await service.setTokens(access: "token", refresh: nil)
-        try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "S01")
 
-        let shows = state.capturedBody?["shows"] as? [[String: Any]]
-        #expect(shows?.count == 1)
-        #expect(shows?[0]["seasons"] == nil)
+        await #expect(throws: TraktError.self) {
+            try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "S01")
+        }
+        #expect(state.capturedBody == nil)
     }
 
-    @Test func episodeContextReturnsNilForE01Only() async throws {
+    @Test func episodeContextRejectsE01Only() async throws {
         let state = CapturedBodyState()
         let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
         await service.setTokens(access: "token", refresh: nil)
-        try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "E01")
 
-        let shows = state.capturedBody?["shows"] as? [[String: Any]]
-        #expect(shows?.count == 1)
-        #expect(shows?[0]["seasons"] == nil)
+        await #expect(throws: TraktError.self) {
+            try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "E01")
+        }
+        #expect(state.capturedBody == nil)
     }
 
-    @Test func episodeContextReturnsNilForS01X01() async throws {
+    @Test func episodeContextRejectsS01X01() async throws {
         let state = CapturedBodyState()
         let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
         await service.setTokens(access: "token", refresh: nil)
-        try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "S01X01")
 
-        let shows = state.capturedBody?["shows"] as? [[String: Any]]
-        #expect(shows?.count == 1)
-        #expect(shows?[0]["seasons"] == nil)
+        await #expect(throws: TraktError.self) {
+            try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "S01X01")
+        }
+        #expect(state.capturedBody == nil)
     }
 
-    @Test func episodeContextReturnsNilForPlainText() async throws {
+    @Test func episodeContextRejectsPlainText() async throws {
         let state = CapturedBodyState()
         let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
         await service.setTokens(access: "token", refresh: nil)
-        try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "Season 1 Episode 1")
 
-        let shows = state.capturedBody?["shows"] as? [[String: Any]]
-        #expect(shows?.count == 1)
-        #expect(shows?[0]["seasons"] == nil)
+        await #expect(throws: TraktError.self) {
+            try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "Season 1 Episode 1")
+        }
+        #expect(state.capturedBody == nil)
     }
 
-    @Test func episodeContextReturnsNilForRandomString() async throws {
+    @Test func episodeContextRejectsRandomString() async throws {
         let state = CapturedBodyState()
         let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
         await service.setTokens(access: "token", refresh: nil)
-        try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "abc123")
 
-        let shows = state.capturedBody?["shows"] as? [[String: Any]]
-        #expect(shows?.count == 1)
-        #expect(shows?[0]["seasons"] == nil)
+        await #expect(throws: TraktError.self) {
+            try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "abc123")
+        }
+        #expect(state.capturedBody == nil)
+    }
+
+    @Test func episodeContextRejectsTmdbEpisodePlaceholder() async throws {
+        let state = CapturedBodyState()
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: makeBodyCaptureSession(state: state))
+        await service.setTokens(access: "token", refresh: nil)
+
+        await #expect(throws: TraktError.self) {
+            try await service.addToHistory(imdbId: "tt123", type: .series, episodeId: "tmdb-episode-987")
+        }
+        #expect(state.capturedBody == nil)
     }
 
     @Test func episodeContextParsesSubstringMatch() async throws {

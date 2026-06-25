@@ -30,7 +30,7 @@ final class AppState {
         var fetchActiveEnvironment: (@Sendable () async throws -> EnvironmentAsset?)?
         var fetchDebridConfigs: (@Sendable () async throws -> [DebridConfig])?
         var availableDebridServices: (@Sendable () async -> [DebridServiceType])?
-        var fetchTMDBApiKey: (@Sendable () async throws -> String?)?
+        var fetchMetadataApiKey: (@Sendable () async throws -> String?)?
         var initializeIndexers: (@Sendable () async throws -> Void)?
 
         nonisolated init(
@@ -42,7 +42,7 @@ final class AppState {
             fetchActiveEnvironment: (@Sendable () async throws -> EnvironmentAsset?)? = nil,
             fetchDebridConfigs: (@Sendable () async throws -> [DebridConfig])? = nil,
             availableDebridServices: (@Sendable () async -> [DebridServiceType])? = nil,
-            fetchTMDBApiKey: (@Sendable () async throws -> String?)? = nil,
+            fetchMetadataApiKey: (@Sendable () async throws -> String?)? = nil,
             initializeIndexers: (@Sendable () async throws -> Void)? = nil
         ) {
             self.databaseFactory = databaseFactory
@@ -53,7 +53,7 @@ final class AppState {
             self.fetchActiveEnvironment = fetchActiveEnvironment
             self.fetchDebridConfigs = fetchDebridConfigs
             self.availableDebridServices = availableDebridServices
-            self.fetchTMDBApiKey = fetchTMDBApiKey
+            self.fetchMetadataApiKey = fetchMetadataApiKey
             self.initializeIndexers = initializeIndexers
         }
     }
@@ -529,8 +529,8 @@ final class AppState {
         return _localInferenceEngine!
     }
 
-    func createMetadataService(apiKey: String) -> TMDBService {
-        TMDBService(apiKey: apiKey)
+    func createMetadataService(apiKey: String) -> any MetadataProvider {
+        OMDbService(apiKey: apiKey)
     }
 
     // MARK: - Initialization
@@ -593,16 +593,16 @@ final class AppState {
                 hasReadyDebridService = await !debridManager.availableServices().isEmpty
             }
 
-            let hasTMDBApiKey: Bool
-            if let fetchTMDBApiKey = testHooks.fetchTMDBApiKey {
-                let tmdbApiKey = try await fetchTMDBApiKey() ?? ""
-                hasTMDBApiKey = !tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasMetadataApiKey: Bool
+            if let fetchMetadataApiKey = testHooks.fetchMetadataApiKey {
+                let metadataApiKey = try await fetchMetadataApiKey() ?? ""
+                hasMetadataApiKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             } else {
-                let tmdbApiKey = (try? await settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
-                hasTMDBApiKey = !tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let metadataApiKey = (try? await settingsManager.getMetadataApiKey()) ?? ""
+                hasMetadataApiKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
 
-            setupRecommendationNeeded = !hasDebridConfig || !hasReadyDebridService || !hasTMDBApiKey
+            setupRecommendationNeeded = !hasDebridConfig || !hasReadyDebridService || !hasMetadataApiKey
 
             await localCatalogStore.seedCatalog()
             await localInferenceEngine.startMonitoring()
@@ -906,9 +906,36 @@ final class AppState {
         }
     }
 
-    func activateEnvironmentAsset(_ asset: EnvironmentAsset) async {
-        selectedEnvironmentAsset = asset
-        try? await environmentCatalogManager.activateAsset(id: asset.id)
+    @discardableResult
+    func activateEnvironmentAsset(_ asset: EnvironmentAsset) async -> Bool {
+        guard (try? await environmentCatalogManager.activateAsset(id: asset.id)) == true else {
+            return false
+        }
+        if let activeAsset = try? await environmentCatalogManager.activeAsset(),
+           activeAsset.id == asset.id {
+            selectedEnvironmentAsset = activeAsset
+        } else {
+            var activatedAsset = asset
+            activatedAsset.isActive = true
+            selectedEnvironmentAsset = activatedAsset
+        }
+        return true
+    }
+
+    @discardableResult
+    func selectSuggestedEnvironmentAsset(_ asset: EnvironmentAsset) async -> Bool {
+        await activateEnvironmentAsset(asset)
+    }
+
+    func clearEnvironmentSelection() async {
+        selectedEnvironmentAsset = nil
+        activeEnvironment = nil
+        try? await environmentCatalogManager.clearActiveAsset()
+    }
+
+    func clearEnvironmentSelectionIfCurrent(assetID: String) async {
+        guard selectedEnvironmentAsset?.id == assetID else { return }
+        await clearEnvironmentSelection()
     }
 
     func beginImmersiveTransition() -> Bool {
@@ -1142,13 +1169,20 @@ final class AppState {
               let context = try? JSONDecoder().decode(StreamRecoveryContext.self, from: data) else {
             return nil
         }
+        let identity = await resolvePlayerSessionIdentity(
+            mediaId: history.mediaId,
+            preview: preview
+        )
         do {
             // Resolve the stream and look up the autoplay-next candidate concurrently so the
             // extra metadata fetch doesn't add latency to resume.
             async let streamResult = debridManager.resolveStream(from: context)
             async let nextEpisodeResult = fetchNextEpisodeCandidate(
                 isSeries: history.episodeId != nil,
-                tmdbId: preview.tmdbId,
+                mediaId: identity.mediaId,
+                previewId: preview.id,
+                mediaTitle: preview.title,
+                tmdbId: identity.tmdbId,
                 season: context.seasonNumber,
                 episodeNumber: context.episodeNumber
             )
@@ -1158,8 +1192,11 @@ final class AppState {
                 stream: stream,
                 availableStreams: [stream],
                 mediaTitle: preview.title,
-                mediaId: history.mediaId,
-                tmdbId: preview.tmdbId,
+                mediaId: identity.mediaId,
+                imdbId: identity.imdbId,
+                tmdbId: identity.tmdbId,
+                posterPath: preview.posterPath,
+                backdropPath: preview.backdropPath,
                 episodeId: history.episodeId,
                 nextEpisode: nextEpisode
             )
@@ -1168,20 +1205,73 @@ final class AppState {
         }
     }
 
+    private struct PlayerSessionIdentity: Sendable, Equatable {
+        var mediaId: String
+        var imdbId: String?
+        var tmdbId: Int?
+    }
+
+    private func resolvePlayerSessionIdentity(
+        mediaId: String,
+        preview: MediaPreview
+    ) async -> PlayerSessionIdentity {
+        let fallback = PlayerSessionIdentity(
+            mediaId: mediaId,
+            imdbId: Self.playerSessionIMDbID(mediaId: mediaId, previewId: preview.id),
+            tmdbId: preview.tmdbId
+        )
+        let lookupIDs = Self.orderedNonEmptyIDs([mediaId, preview.id])
+        guard !lookupIDs.isEmpty,
+              let resolved = try? await database.fetchMediaItemsResolvingAliases(ids: lookupIDs) else {
+            return fallback
+        }
+
+        for lookupID in lookupIDs {
+            guard let item = resolved[lookupID] else { continue }
+            return PlayerSessionIdentity(
+                mediaId: item.id,
+                imdbId: Self.playerSessionIMDbID(mediaId: item.id, previewId: preview.id)
+                    ?? fallback.imdbId,
+                tmdbId: item.tmdbId ?? preview.tmdbId
+            )
+        }
+        return fallback
+    }
+
+    private static func orderedNonEmptyIDs(_ ids: [String?]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for id in ids {
+            let trimmed = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            ordered.append(trimmed)
+        }
+        return ordered
+    }
+
     /// Looks up the next-episode autoplay candidate for a resumed series episode, mirroring
     /// `DetailViewModel.nextEpisodeCandidate`. Returns nil for movies, missing metadata, or the
     /// last episode of the season.
     private func fetchNextEpisodeCandidate(
         isSeries: Bool,
+        mediaId: String,
+        previewId: String?,
+        mediaTitle: String?,
         tmdbId: Int?,
         season: Int?,
         episodeNumber: Int?
     ) async -> PlayerSessionRequest.NextEpisodeCandidate? {
-        guard isSeries, let tmdbId, let season, let episodeNumber else { return nil }
-        let apiKey = (try? await settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+        guard isSeries, let season, let episodeNumber else { return nil }
+        let apiKey = (try? await settingsManager.getMetadataApiKey()) ?? ""
         guard !apiKey.isEmpty else { return nil }
         let service = createMetadataService(apiKey: apiKey)
-        guard let episodes = try? await service.getEpisodes(tmdbId: tmdbId, season: season) else { return nil }
+        let lookupID = Self.metadataEpisodeLookupID(
+            mediaId: mediaId,
+            previewId: previewId,
+            mediaTitle: mediaTitle,
+            tmdbId: tmdbId
+        )
+        guard let episodes = try? await service.getEpisodes(id: lookupID, type: .series, season: season) else { return nil }
         let sorted = episodes.sorted { $0.episodeNumber < $1.episodeNumber }
         guard let index = sorted.firstIndex(where: { $0.episodeNumber == episodeNumber }),
               sorted.indices.contains(index + 1) else { return nil }
@@ -1192,6 +1282,30 @@ final class AppState {
             episodeNumber: next.episodeNumber,
             title: next.displayTitle
         )
+    }
+
+    static func metadataEpisodeLookupID(
+        mediaId: String,
+        previewId: String?,
+        mediaTitle: String? = nil,
+        tmdbId: Int?
+    ) -> String {
+        if let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId)
+            ?? IMDbIdentifierPolicy.firstID(in: previewId) {
+            return imdbID
+        }
+        if let title = mediaTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        if let tmdbId {
+            return "tmdb-\(tmdbId)"
+        }
+        return mediaId
+    }
+
+    private static func playerSessionIMDbID(mediaId: String, previewId: String?) -> String? {
+        IMDbIdentifierPolicy.firstID(in: mediaId) ?? IMDbIdentifierPolicy.firstID(in: previewId)
     }
 }
 

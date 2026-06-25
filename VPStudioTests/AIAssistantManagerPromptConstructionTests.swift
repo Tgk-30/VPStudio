@@ -290,7 +290,8 @@ struct AIAssistantManagerPromptConstructionTests {
 
         // The literal phrase rides in the user message via NaturalLanguageSearchPolicy.
         #expect(userMessage.contains(phrase))
-        #expect(userMessage.contains("Format as JSON array with keys: title, year, type, reason, tmdbId."))
+        #expect(userMessage.contains("Format as JSON array with keys: title, year, type, reason, imdbId."))
+        #expect(!userMessage.contains("tmdbId"))
 
         // History still injects through the shared ask(...) -> contextualizedContext pipeline.
         #expect(systemPrompt.contains("You are VPStudio AI"))
@@ -327,7 +328,8 @@ struct AIAssistantManagerPromptConstructionTests {
         let systemPrompt = await provider.systemPrompt() ?? ""
 
         #expect(userMessage.lowercased().contains("recently watched"))
-        #expect(userMessage.contains("Format as JSON array with keys: title, year, type, reason, tmdbId."))
+        #expect(userMessage.contains("Format as JSON array with keys: title, year, type, reason, imdbId."))
+        #expect(!userMessage.contains("tmdbId"))
         #expect(systemPrompt.contains("History titles: Parasite"))
     }
 

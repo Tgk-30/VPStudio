@@ -8,6 +8,10 @@ actor StubMetadataProvider: MetadataProvider, DetailMetadataProviding {
     var episodesResult: [Episode] = []
     var externalIdsResult = ExternalIds(imdbId: nil, tvdbId: nil)
 
+    func setSearchResult(_ result: MetadataSearchResult) {
+        searchResult = result
+    }
+
     func setDetailResult(_ result: MediaItem) {
         detailResult = result
     }
@@ -26,6 +30,8 @@ actor StubMetadataProvider: MetadataProvider, DetailMetadataProviding {
     func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { searchResult }
     func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { searchResult }
     func getGenres(type: MediaType) async throws -> [Genre] { [] }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] { episodesResult }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { episodesResult }
     func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { externalIdsResult }

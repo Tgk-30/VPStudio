@@ -981,12 +981,10 @@ struct DownloadManagerQueueingCoverageTests {
             )
         )
         let stream = makeStream(name: "remove-active-cleanup.mkv", recoveryContext: recoveryContext)
-        let expectedCleanupContext = try #require(
-            recoveryContext.enrichedForDownloadPersistence(
-                fileName: stream.fileName,
-                sizeBytes: stream.sizeBytes,
-                debridService: DebridServiceType.realDebrid.rawValue
-            )
+        let expectedCleanupContext = recoveryContext.enrichedForDownloadPersistence(
+            fileName: stream.fileName,
+            sizeBytes: stream.sizeBytes,
+            debridService: DebridServiceType.realDebrid.rawValue
         )
 
         let manager = DownloadManager(
@@ -1461,7 +1459,7 @@ struct DownloadManagerQueueingCoverageTests {
             Task { await gate.releaseAll() }
         }
 
-        let manager = DownloadManager(
+        _ = DownloadManager(
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
@@ -2816,7 +2814,7 @@ struct DownloadManagerQueueingCoverageTests {
                 return (tempURL, response)
             },
             linkRefresher: { _ in
-                await refresherCounter.next()
+                _ = await refresherCounter.next()
                 return freshURL
             },
             availableDiskSpace: Self.ampleDiskSpace
@@ -2865,11 +2863,11 @@ struct DownloadManagerQueueingCoverageTests {
             database: database,
             downloadsDirectory: downloadsDir,
             performer: { _, _, _ in
-                await attemptCounter.next()
+                _ = await attemptCounter.next()
                 throw DownloadTransferError.badHTTPStatus(403)
             },
             linkRefresher: { _ in
-                await refresherCounter.next()
+                _ = await refresherCounter.next()
                 throw DownloadTransferError.badHTTPStatus(451)
             },
             availableDiskSpace: Self.ampleDiskSpace
@@ -3011,12 +3009,10 @@ struct DownloadManagerQueueingCoverageTests {
             )
         )
         let stream = makeStream(name: "cancel-active-cleanup.mkv", recoveryContext: recoveryContext)
-        let expectedCleanupContext = try #require(
-            recoveryContext.enrichedForDownloadPersistence(
-                fileName: stream.fileName,
-                sizeBytes: stream.sizeBytes,
-                debridService: DebridServiceType.realDebrid.rawValue
-            )
+        let expectedCleanupContext = recoveryContext.enrichedForDownloadPersistence(
+            fileName: stream.fileName,
+            sizeBytes: stream.sizeBytes,
+            debridService: DebridServiceType.realDebrid.rawValue
         )
 
         let manager = DownloadManager(

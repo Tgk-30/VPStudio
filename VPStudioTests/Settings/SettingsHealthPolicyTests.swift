@@ -94,7 +94,7 @@ struct SettingsHealthPolicyTests {
     func essentialConfiguredCountIncludesOnlyEssentialPositives() {
         let statuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "1 active service", kind: .positive),
-            .metadata: SettingsDestinationStatus(message: "API key configured", kind: .positive),
+            .metadata: SettingsDestinationStatus(message: "OMDb key configured", kind: .positive),
             .ai: SettingsDestinationStatus(message: "Anthropic configured", kind: .positive),
             .player: SettingsDestinationStatus(message: "Playback preferences", kind: .neutral),
             .subtitles: SettingsDestinationStatus(message: "OpenSubtitles enabled", kind: .positive),
@@ -131,7 +131,7 @@ struct SettingsHealthPolicyTests {
         let statuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "Not configured", kind: .warning),
             .indexers: SettingsDestinationStatus(message: "No active indexers", kind: .warning),
-            .metadata: SettingsDestinationStatus(message: "API key required", kind: .warning),
+            .metadata: SettingsDestinationStatus(message: "OMDb key required", kind: .warning),
             .ai: SettingsDestinationStatus(message: "Needs credentials", kind: .warning),
             .trakt: SettingsDestinationStatus(message: "Not connected", kind: .warning),
             .simkl: SettingsDestinationStatus(message: "Not connected", kind: .warning),

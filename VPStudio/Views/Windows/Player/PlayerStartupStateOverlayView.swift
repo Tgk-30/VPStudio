@@ -1,5 +1,13 @@
 import SwiftUI
 
+enum PlayerStartupFailureOverlayPolicy {
+    static let maxWidth: CGFloat = 420
+    static let cornerRadius: CGFloat = 12
+    static let horizontalPadding: CGFloat = 24
+    static let verticalPadding: CGFloat = 20
+    static let messageLineLimit = 4
+}
+
 struct PlayerStartupStateOverlayView: View {
     let playbackState: PlayerPlaybackState
     let title: String
@@ -43,34 +51,36 @@ struct PlayerStartupStateOverlayView: View {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
 
             if let message, !message.isEmpty {
                 Text(message)
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 24)
+                    .lineLimit(PlayerStartupFailureOverlayPolicy.messageLineLimit)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 10) {
-                Button("Retry") {
-                    onRetry()
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    failureActions
                 }
-                .buttonStyle(.borderedProminent)
-
-                if hasNextStream {
-                    Button("Try Next Stream") {
-                        onTryNextStream()
-                    }
-                    .buttonStyle(.bordered)
+                VStack(spacing: 10) {
+                    failureActions
                 }
             }
+            .controlSize(.regular)
         }
-        .padding(.vertical, 20)
-        .padding(.horizontal, 28)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .frame(maxWidth: PlayerStartupFailureOverlayPolicy.maxWidth)
+        .padding(.vertical, PlayerStartupFailureOverlayPolicy.verticalPadding)
+        .padding(.horizontal, PlayerStartupFailureOverlayPolicy.horizontalPadding)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: PlayerStartupFailureOverlayPolicy.cornerRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: PlayerStartupFailureOverlayPolicy.cornerRadius)
                 .strokeBorder(
                     LinearGradient(
                         colors: [.white.opacity(0.24), .white.opacity(0.06)],
@@ -82,5 +92,25 @@ struct PlayerStartupStateOverlayView: View {
         }
         .shadow(color: .black.opacity(0.07), radius: 24, y: 0)
         .shadow(color: .black.opacity(0.13), radius: 8, y: 4)
+    }
+
+    @ViewBuilder
+    private var failureActions: some View {
+        Button {
+            onRetry()
+        } label: {
+            Label("Retry", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(.borderedProminent)
+
+        if hasNextStream {
+            Button {
+                onTryNextStream()
+            } label: {
+                Label("Try Next", systemImage: "forward.end.fill")
+            }
+            .accessibilityLabel("Try next stream")
+            .buttonStyle(.bordered)
+        }
     }
 }

@@ -229,6 +229,49 @@ struct DiscoverViewModelAIHeroPreviewTests {
 
     @Test
     @MainActor
+    func updateAIRecommendationsResolvesLegacyTMDBOnlyHintsThroughOMDbSearchFirst() async {
+        let legacyDetail = MediaItem(
+            id: "438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: "/legacy-poster.jpg",
+            backdropPath: "/legacy-backdrop.jpg",
+            overview: nil,
+            genres: [],
+            imdbRating: 7.7,
+            runtime: nil,
+            status: nil,
+            tmdbId: 438631
+        )
+        let omdbPreview = MediaPreview(
+            id: "tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: "https://img.omdbapi.com/dune.jpg",
+            backdropPath: nil,
+            imdbRating: 8.0,
+            tmdbId: nil
+        )
+        let metadata = DiscoverAIHeroMetadataStub(
+            detailByID: ["438631": legacyDetail],
+            searchResultsByQuery: ["Dune": [omdbPreview]]
+        )
+        let viewModel = DiscoverViewModel(metadataService: metadata)
+
+        await viewModel.updateAIRecommendations([
+            makeRecommendation(title: "Dune", year: 2021, tmdbId: 438631, score: 0.95)
+        ])
+
+        #expect(viewModel.aiRecommendations.first?.imdbId == "tt1160419")
+        #expect(viewModel.aiRecommendations.first?.tmdbId == nil)
+        #expect(viewModel.aiHeroPreview?.id == "tt1160419")
+        #expect(viewModel.aiHeroPreview?.posterPath == "https://img.omdbapi.com/dune.jpg")
+    }
+
+    @Test
+    @MainActor
     func updateAIRecommendationsIgnoresMismatchedTmdbHintAndUsesValidatedSearchMatch() async {
         let wrongDetail = MediaItem(
             id: "22",
@@ -289,6 +332,29 @@ struct DiscoverViewModelAIHeroPreviewTests {
             imdbRating: nil,
             tmdbId: nil
         ))
+    }
+
+    @Test
+    @MainActor
+    func updateAIRecommendationsPreservesIMDbIdWhenMetadataResolutionFails() async {
+        let metadata = DiscoverAIHeroMetadataStub()
+        let viewModel = DiscoverViewModel(metadataService: metadata)
+
+        await viewModel.updateAIRecommendations([
+            makeRecommendation(
+                title: "Primer",
+                year: 2004,
+                imdbId: "https://www.imdb.com/title/TT0390384/",
+                tmdbId: nil,
+                score: 0.82
+            )
+        ])
+
+        #expect(viewModel.aiRecommendations.first?.imdbId == "tt0390384")
+        #expect(viewModel.aiRecommendations.first?.id == "movie-imdb-tt0390384")
+        #expect(viewModel.aiRecommendations.first?.toMediaPreview().id == "tt0390384")
+        #expect(viewModel.aiHeroPreview?.id == "tt0390384")
+        #expect(viewModel.aiHeroPreview?.tmdbId == nil)
     }
 
     @Test
@@ -358,6 +424,7 @@ private func makeRecommendation(
     year: Int? = 2024,
     type: MediaType = .movie,
     reason: String = "Matches your recent favorites.",
+    imdbId: String? = nil,
     tmdbId: Int? = 1,
     score: Double? = 0.9
 ) -> AIMovieRecommendation {
@@ -366,6 +433,7 @@ private func makeRecommendation(
         year: year,
         type: type,
         reason: reason,
+        imdbId: imdbId,
         tmdbId: tmdbId,
         score: score
     )

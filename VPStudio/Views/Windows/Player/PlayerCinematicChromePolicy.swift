@@ -21,7 +21,7 @@ enum PlayerCinematicChromePolicy {
     static let transportCardMaxWidth: CGFloat = 780
     static let controlsDockSpacing: CGFloat = 8
     static let controlsDockHorizontalPadding: CGFloat = 18
-    static let controlsDockBottomPadding: CGFloat = 18
+    static let controlsDockBottomPadding: CGFloat = 56
     static let transportCardHorizontalPadding: CGFloat = 20
     static let transportCardVerticalPadding: CGFloat = 12
 

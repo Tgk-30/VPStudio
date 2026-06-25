@@ -17,7 +17,7 @@ struct PlayerGesturePolicyDoubleTapConstantsTests {
 
     @Test
     func doubleTapSeekForwardSeconds() {
-        #expect(PlayerGesturePolicy.doubleTapSeekForwardSeconds == 30)
+        #expect(PlayerGesturePolicy.doubleTapSeekForwardSeconds == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test
@@ -38,7 +38,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTests {
     @Test
     func rightZoneSeeksForward() {
         let offset = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 900, surfaceWidth: 1000)
-        #expect(offset == 30)
+        #expect(offset == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test
@@ -56,7 +56,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTests {
     @Test
     func nearRightEdgeSeeksForward() {
         let offset = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 990, surfaceWidth: 1000)
-        #expect(offset == 30)
+        #expect(offset == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test
@@ -86,7 +86,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTests {
     @Test
     func atBoundaryRightZoneThreshold() {
         let offset = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 650, surfaceWidth: 1000)
-        #expect(offset == 30)
+        #expect(offset == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 }
 

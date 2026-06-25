@@ -208,16 +208,16 @@ struct AppErrorCasesTests {
         #expect(error.errorDescription == "Something went wrong")
     }
 
-    @Test("AppError tmdbSetupRequired")
+    @Test("AppError metadataSetupRequired")
     func appErrorTmdbSetupRequired() {
-        let error = AppError.tmdbSetupRequired(feature: "Search")
-        #expect(error.requiresTMDBSetupAction == true)
+        let error = AppError.metadataSetupRequired(feature: "Search")
+        #expect(error.requiresMetadataSetupAction == true)
     }
 
-    @Test("AppError requiresTMDBSetupAction false for other errors")
+    @Test("AppError requiresMetadataSetupAction false for other errors")
     func appErrorRequiresTMDBFalse() {
-        #expect(AppError.unknown("generic error").requiresTMDBSetupAction == false)
-        #expect(AppError.network(.unauthorized).requiresTMDBSetupAction == false)
+        #expect(AppError.unknown("generic error").requiresMetadataSetupAction == false)
+        #expect(AppError.network(.unauthorized).requiresMetadataSetupAction == false)
     }
 
     @Test("AppError recoverySuggestion for unknown")

@@ -432,7 +432,7 @@ struct ComponentConstructionTests {
             SeriesDetailLayout(
                 viewModel: viewModel,
                 title: "The Expanse",
-                tmdbApiKey: "test-key",
+                metadataApiKey: "test-key",
                 mediaType: .series,
                 streamResultsAnchor: "streams",
                 shareItem: "The Expanse",
@@ -502,7 +502,7 @@ struct ComponentConstructionTests {
             SeriesDetailLayout(
                 viewModel: viewModel,
                 title: movie.title,
-                tmdbApiKey: "test-key",
+                metadataApiKey: "test-key",
                 mediaType: .movie,
                 streamResultsAnchor: "streams",
                 shareItem: movie.title,
@@ -684,28 +684,44 @@ struct ComponentConstructionTests {
 
     @Test
     func asyncStateViewsBuildCommonSurfaces() {
-        _ = LoadingOverlay(title: "Loading", message: "Preparing results").body
-        _ = LoadingOverlay(title: "Loading", message: nil).body
-        _ = InlineLoadingStatusView(title: "Refreshing").body
-        _ = AppErrorInlineView(error: .unknown("Inline failure")).body
+        SwiftUIViewDiagnosticHost.render(
+            LoadingOverlay(title: "Loading", message: "Preparing results"),
+            width: 360,
+            height: 180
+        )
+        SwiftUIViewDiagnosticHost.render(
+            LoadingOverlay(title: "Loading", message: nil),
+            width: 360,
+            height: 160
+        )
+        SwiftUIViewDiagnosticHost.render(
+            InlineLoadingStatusView(title: "Refreshing"),
+            width: 260,
+            height: 100
+        )
+        SwiftUIViewDiagnosticHost.render(
+            AppErrorInlineView(error: .unknown("Inline failure")),
+            width: 360,
+            height: 120
+        )
         SwiftUIViewDiagnosticHost.render(
             SkeletonBlock(width: 120, height: 24, cornerRadius: 8),
             width: 160,
             height: 56
         )
-        _ = DiscoverSkeletonView().body
-        _ = DetailSkeletonView().body
-        _ = LibrarySkeletonView().body
-        _ = SettingsSkeletonView().body
-        _ = ExploreSkeletonView().body
-        _ = PaginationLoadingView().body
+        SwiftUIViewDiagnosticHost.render(DiscoverSkeletonView(), width: 900, height: 860)
+        SwiftUIViewDiagnosticHost.render(DetailSkeletonView(), width: 900, height: 860)
+        SwiftUIViewDiagnosticHost.render(LibrarySkeletonView(), width: 900, height: 860)
+        SwiftUIViewDiagnosticHost.render(SettingsSkeletonView(), width: 900, height: 860)
+        SwiftUIViewDiagnosticHost.render(ExploreSkeletonView(), width: 900, height: 860)
+        SwiftUIViewDiagnosticHost.render(PaginationLoadingView(), width: 260, height: 100)
     }
 
     @Test
     func exploreStateViewsBuildRetrySettingsAndEmptyBodies() {
         var retryCount = 0
         var settingsCount = 0
-        let setupError = AppError.tmdbSetupRequired(feature: "Search")
+        let setupError = AppError.metadataSetupRequired(feature: "Search")
 
         _ = ExploreErrorView(
             error: setupError,
@@ -1175,7 +1191,11 @@ struct ComponentConstructionTests {
     func standaloneSharedViewsBuildBodies() {
         _ = VPMenuBackground().body
         SwiftUIViewDiagnosticHost.render(LaunchScreen(), width: 820, height: 620)
-        _ = DownloadsView().body
+        SwiftUIViewDiagnosticHost.render(
+            DownloadsView().environment(AppState(testHooks: .init())),
+            width: 900,
+            height: 720
+        )
 
         #if os(macOS)
         var selectedTab = SidebarTab.downloads
@@ -1223,7 +1243,7 @@ struct ComponentConstructionTests {
             let view = LibraryEmptyStateView(listType: listType) { action in
                 actions.append(action)
             }
-            _ = view.body
+            SwiftUIViewDiagnosticHost.render(view, width: 520, height: 320)
         }
 
         #expect(actions.isEmpty)
@@ -1665,8 +1685,12 @@ struct ComponentConstructionTests {
             (.detailSeries, "Series Detail", "Episodes grid", "film.stack"),
             (.library, "Library", "Populated library", "books.vertical"),
             (.downloads, "Downloads", "Active downloads", "arrow.down.circle"),
+            (.environmentsTab, "Environments Tab", "Cards + clear state", "mountain.2"),
+            (.environmentPicker, "Environment Picker", "Sheet + imports", "rectangle.grid.2x2"),
+            (.environmentSettings, "Environment Settings", "Presets + playback", "pano"),
             (.player, "Player", "Controls + overlays", "play.circle"),
             (.settings, "Settings", "All categories", "gearshape"),
+            (.setupPreferences, "Setup Preferences", "Wizard source filters", "wand.and.stars"),
         ]
 
         #expect(TestScreen.allCases == expected.map(\.0))
@@ -1686,6 +1710,9 @@ struct ComponentConstructionTests {
         #expect(TestScreenLaunchPolicy.screen(for: "search_results") == .searchResults)
         #expect(TestScreenLaunchPolicy.screen(for: "Search + Results") == .searchResults)
         #expect(TestScreenLaunchPolicy.screen(for: "movie detail") == .detailMovie)
+        #expect(TestScreenLaunchPolicy.screen(for: "environments-tab") == .environmentsTab)
+        #expect(TestScreenLaunchPolicy.screen(for: "Environment Picker") == .environmentPicker)
+        #expect(TestScreenLaunchPolicy.screen(for: "environment settings") == .environmentSettings)
         #expect(TestScreenLaunchPolicy.screen(for: "   ") == nil)
         #expect(TestScreenLaunchPolicy.screen(for: "unknown") == nil)
     }

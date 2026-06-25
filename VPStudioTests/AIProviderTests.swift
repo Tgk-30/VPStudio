@@ -56,6 +56,20 @@ struct AIMovieRecommendationTests {
         let rec = AIMovieRecommendation(title: "Dune", year: 2021, type: .movie, reason: "r", tmdbId: 438631)
         #expect(rec.id == "movie-tmdb-438631")
     }
+
+    @Test func idPrefersImdbIdWhenAvailable() {
+        let rec = AIMovieRecommendation(
+            title: "Dune",
+            year: 2021,
+            type: .movie,
+            reason: "r",
+            imdbId: " TT1160419 ",
+            tmdbId: 438631
+        )
+        #expect(rec.id == "movie-imdb-tt1160419")
+        #expect(rec.toMediaPreview().id == "tt1160419")
+        #expect(rec.toMediaPreview().tmdbId == nil)
+    }
 }
 
 // MARK: - AIAssistantManager Tests

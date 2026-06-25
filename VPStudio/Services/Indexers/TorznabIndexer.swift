@@ -79,15 +79,10 @@ struct TorznabIndexer: TorrentIndexer {
     }
 
     internal var isProwlarrEndpoint: Bool {
-        let basePath = URLComponents(string: baseURL)?.path ?? ""
-        let endpoint = endpointPath.hasPrefix("/") ? endpointPath : "/\(endpointPath)"
-        let composedPath = "\(basePath)\(endpoint)".lowercased()
-        let segments = composedPath.split(separator: "/").filter { !$0.isEmpty }
-        let suffix = segments.suffix(3)
-        return suffix.count == 3
-            && suffix[suffix.startIndex] == "api"
-            && suffix[suffix.startIndex + 1] == "v1"
-            && suffix[suffix.startIndex + 2] == "search"
+        let baseSegments = Self.pathSegments(URLComponents(string: baseURL)?.path ?? "")
+        let endpointSegments = Self.pathSegments(endpointPath)
+        return Self.isProwlarrEndpointPath(baseSegments)
+            || Self.isProwlarrEndpointPath(baseSegments + endpointSegments)
     }
 
     internal func prowlarrSearchType(for type: MediaType) -> String {
@@ -236,18 +231,8 @@ struct TorznabIndexer: TorrentIndexer {
             throw URLError(.badURL)
         }
 
-        let endpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        switch (basePath.isEmpty, endpoint.isEmpty) {
-        case (true, false):
-            components.path = "/\(endpoint)"
-        case (false, true):
-            components.path = "/\(basePath)"
-        case (false, false):
-            components.path = "/\(basePath)/\(endpoint)"
-        default:
-            components.path = ""
-        }
+        let baseSegments = Self.pathSegments(components.path)
+        components.path = Self.path(from: baseSegments + endpointSegments(for: baseSegments))
 
         var merged: [URLQueryItem] = []
         for item in queryItems where item.value != nil {
@@ -279,6 +264,34 @@ struct TorznabIndexer: TorrentIndexer {
             request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
         }
         return request
+    }
+
+    private func endpointSegments(for baseSegments: [String]) -> [String] {
+        let endpointSegments = Self.pathSegments(endpointPath)
+        guard !endpointSegments.isEmpty else { return [] }
+        if baseSegments.suffix(endpointSegments.count) == ArraySlice(endpointSegments) {
+            return []
+        }
+        if Self.isProwlarrEndpointPath(baseSegments), endpointSegments == ["api"] {
+            return []
+        }
+        return endpointSegments
+    }
+
+    private static func pathSegments(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
+    }
+
+    private static func path(from segments: [String]) -> String {
+        segments.isEmpty ? "" : "/" + segments.joined(separator: "/")
+    }
+
+    private static func isProwlarrEndpointPath(_ segments: [String]) -> Bool {
+        let suffix = segments.suffix(3).map { $0.lowercased() }
+        return suffix.count == 3
+            && suffix[0] == "api"
+            && suffix[1] == "v1"
+            && suffix[2] == "search"
     }
 
 }

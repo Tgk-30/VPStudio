@@ -31,17 +31,21 @@ struct PlayerEnvironmentMenuAdditionalPolicyTests {
     }
 
     @Test
-    func activeMenuAssetsAlwaysRenderAsCheckedRegardlessOfSourceType() {
+    func selectedMenuAssetsRenderAsCheckedRegardlessOfSourceType() {
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: true,
+                assetID: "selected",
+                selectedAssetID: "selected",
+                activeEnvironment: .customEnvironment,
                 sourceType: .bundled
             ) == "checkmark"
         )
 
         #expect(
             PlayerEnvironmentMenuPolicy.menuAssetIconName(
-                isActive: true,
+                assetID: "selected",
+                selectedAssetID: "selected",
+                activeEnvironment: .hdriSkybox,
                 sourceType: .imported
             ) == "checkmark"
         )

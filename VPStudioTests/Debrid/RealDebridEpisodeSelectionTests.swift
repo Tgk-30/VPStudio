@@ -15,6 +15,33 @@ struct RealDebridEpisodeSelectionTests {
         RDFile(id: id, path: path, bytes: bytes, selected: 0)
     }
 
+    private func httpBodyString(from request: URLRequest) -> String? {
+        guard let body = request.httpBody ?? readHTTPBodyStream(request.httpBodyStream) else {
+            return nil
+        }
+        return String(data: body, encoding: .utf8)
+    }
+
+    private func readHTTPBodyStream(_ stream: InputStream?) -> Data? {
+        guard let stream else { return nil }
+        stream.open()
+        defer { stream.close() }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count > 0 {
+                data.append(buffer, count: count)
+            } else if count < 0 {
+                return nil
+            } else {
+                break
+            }
+        }
+        return data
+    }
+
     // MARK: - episodeMatchTokens
 
     @Test func episodeMatchTokensGeneratesStandardFormats() async {
@@ -542,7 +569,7 @@ struct RealDebridEpisodeSelectionTests {
                 return (response, Data(body.utf8))
             }
             if url.path.hasSuffix("/unrestrict/link") {
-                state.unrestrictBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+                state.unrestrictBody = httpBodyString(from: request)
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let body = """
                 {"id":"3","filename":"","download":"https://cdn.example/single.bin","filesize":0}
@@ -587,7 +614,7 @@ struct RealDebridEpisodeSelectionTests {
                 return (response, Data(body.utf8))
             }
             if url.path.hasSuffix("/unrestrict/link") {
-                state.unrestrictBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+                state.unrestrictBody = httpBodyString(from: request)
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let body = """
                 {"id":"4","filename":"","download":"https://cdn.example/fallback.mkv","filesize":0}

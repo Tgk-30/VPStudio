@@ -21,7 +21,7 @@ struct WatchProgressResumeBoundaryTests {
                 expected = nil
             } else {
                 let completion = progress / duration
-                if completion >= 0.95 {
+                if completion >= PlayerWatchProgressPolicy.completionThreshold {
                     expected = nil
                 } else {
                     expected = min(progress, max(duration - 5, 0))

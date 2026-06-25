@@ -16,7 +16,7 @@ struct PlayerGesturePolicyDoubleTapTests {
 
     @Test("Double tap seek forward seconds")
     func doubleTapSeekForwardSeconds() {
-        #expect(PlayerGesturePolicy.doubleTapSeekForwardSeconds == 30)
+        #expect(PlayerGesturePolicy.doubleTapSeekForwardSeconds == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test("Double tap zone fraction")
@@ -42,7 +42,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTestsViewsViewsplayergesturepolicyt
     @Test("Tap on far right returns seek forward offset")
     func tapFarRight() {
         let result = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 1000, surfaceWidth: 1000)
-        #expect(result == 30)
+        #expect(result == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test("Tap in center dead zone returns nil")
@@ -60,7 +60,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTestsViewsViewsplayergesturepolicyt
     @Test("Tap at right boundary of right zone")
     func tapAtRightBoundary() {
         let result = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 900, surfaceWidth: 1000)
-        #expect(result == 30)
+        #expect(result == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test("Tap just inside left zone")
@@ -72,7 +72,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTestsViewsViewsplayergesturepolicyt
     @Test("Tap just inside right zone")
     func tapJustInsideRightZone() {
         let result = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 651, surfaceWidth: 1000)
-        #expect(result == 30)
+        #expect(result == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 
     @Test("Zero width returns nil")
@@ -93,7 +93,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTestsViewsViewsplayergesturepolicyt
         #expect(resultLeft == -10)
 
         let resultRight = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 800, surfaceWidth: 800)
-        #expect(resultRight == 30)
+        #expect(resultRight == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
 
         let resultCenter = PlayerGesturePolicy.doubleTapSeekOffset(tapX: 400, surfaceWidth: 800)
         #expect(resultCenter == nil)
@@ -112,7 +112,7 @@ struct PlayerGesturePolicyDoubleTapSeekOffsetTestsViewsViewsplayergesturepolicyt
         #expect(centerResult == nil)
 
         let rightResult = PlayerGesturePolicy.doubleTapSeekOffset(tapX: rightFraction * width + 1, surfaceWidth: width)
-        #expect(rightResult == 30)
+        #expect(rightResult == TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
     }
 }
 

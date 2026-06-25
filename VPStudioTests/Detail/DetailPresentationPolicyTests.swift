@@ -135,7 +135,34 @@ struct DetailPresentationPolicyShareItemTests {
     }
 
     @Test
-    func tmdbMovieLinkUsesPreviewTMDBID() {
+    func compositeImdbLinkUsesIMDbURL() {
+        let result = DetailPresentationPolicy.shareItem(
+            previewID: "movie-imdb-tt1160419",
+            previewTitle: "Dune",
+            previewType: .movie,
+            previewTMDBID: 438631,
+            mediaTitle: nil,
+            mediaTMDBID: nil
+        )
+        #expect(result == "Dune\nhttps://www.imdb.com/title/tt1160419/")
+    }
+
+    @Test
+    func compositeImdbLinkNormalizesUppercaseMediaID() {
+        let result = DetailPresentationPolicy.shareItem(
+            previewID: "local",
+            previewTitle: "Dune",
+            previewType: .movie,
+            previewTMDBID: nil,
+            mediaTitle: "Dune",
+            mediaID: "movie-imdb-TT1160419",
+            mediaTMDBID: nil
+        )
+        #expect(result == "Dune\nhttps://www.imdb.com/title/tt1160419/")
+    }
+
+    @Test
+    func legacyTMDBMovieIDFallsBackToTitleOnly() {
         let result = DetailPresentationPolicy.shareItem(
             previewID: "movie-278",
             previewTitle: "Inception",
@@ -144,11 +171,11 @@ struct DetailPresentationPolicyShareItemTests {
             mediaTitle: nil,
             mediaTMDBID: nil
         )
-        #expect(result == "Inception\nhttps://www.themoviedb.org/movie/27205")
+        #expect(result == "Inception")
     }
 
     @Test
-    func tmdbSeriesLinkUsesPreviewTMDBID() {
+    func legacyTMDBSeriesIDFallsBackToTitleOnly() {
         let result = DetailPresentationPolicy.shareItem(
             previewID: "tv-1396",
             previewTitle: "Breaking Bad",
@@ -157,11 +184,11 @@ struct DetailPresentationPolicyShareItemTests {
             mediaTitle: nil,
             mediaTMDBID: nil
         )
-        #expect(result == "Breaking Bad\nhttps://www.themoviedb.org/tv/1396")
+        #expect(result == "Breaking Bad")
     }
 
     @Test
-    func tmdbLinkPrefersMediaTMDBIDOverPreviewTMDBID() {
+    func mediaTitleStillWinsWhenOnlyLegacyTMDBIDsAreAvailable() {
         let result = DetailPresentationPolicy.shareItem(
             previewID: "tv-9999",
             previewTitle: "Old Title",
@@ -170,11 +197,25 @@ struct DetailPresentationPolicyShareItemTests {
             mediaTitle: "Better Title",
             mediaTMDBID: 1396
         )
-        #expect(result == "Better Title\nhttps://www.themoviedb.org/tv/1396")
+        #expect(result == "Better Title")
     }
 
     @Test
-    func tmdbMovieLinkUsesMediaTMDBIDWhenPreviewTMDBIDIsNil() {
+    func resolvedOMDbMediaIDTakesPrecedenceOverLegacyPreviewTMDBLink() {
+        let result = DetailPresentationPolicy.shareItem(
+            previewID: "movie-tmdb-438631",
+            previewTitle: "Dune",
+            previewType: .movie,
+            previewTMDBID: 438631,
+            mediaTitle: "Dune: Part One",
+            mediaID: "tt1160419",
+            mediaTMDBID: nil
+        )
+        #expect(result == "Dune: Part One\nhttps://www.imdb.com/title/tt1160419/")
+    }
+
+    @Test
+    func legacyMediaTMDBIDWithoutIMDbFallsBackToTitleOnly() {
         let result = DetailPresentationPolicy.shareItem(
             previewID: "local",
             previewTitle: "Local Movie",
@@ -183,7 +224,7 @@ struct DetailPresentationPolicyShareItemTests {
             mediaTitle: "Local Movie",
             mediaTMDBID: 12345
         )
-        #expect(result == "Local Movie\nhttps://www.themoviedb.org/movie/12345")
+        #expect(result == "Local Movie")
     }
 
     @Test
@@ -213,7 +254,7 @@ struct DetailPresentationPolicyShareItemTests {
     }
 
     @Test
-    func mediaTitleFallsBackToPreviewTitleForTmdbLink() {
+    func titleFallbackUsesPreviewTitleWhenOnlyLegacyTMDBIDExists() {
         let result = DetailPresentationPolicy.shareItem(
             previewID: "movie-278",
             previewTitle: "Fallback Title",
@@ -222,7 +263,7 @@ struct DetailPresentationPolicyShareItemTests {
             mediaTitle: nil,
             mediaTMDBID: nil
         )
-        #expect(result == "Fallback Title\nhttps://www.themoviedb.org/movie/278")
+        #expect(result == "Fallback Title")
     }
 }
 

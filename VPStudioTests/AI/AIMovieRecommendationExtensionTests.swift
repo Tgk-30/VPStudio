@@ -5,6 +5,25 @@ import Foundation
 @Suite("AIMovieRecommendation Extension")
 struct AIMovieRecommendationExtensionTests {
 
+    @Test("toMediaPreview with imdbId")
+    func toMediaPreviewWithImdbId() {
+        let recommendation = AIMovieRecommendation(
+            title: "Dune",
+            year: 2021,
+            type: .movie,
+            reason: "Great visual effects",
+            imdbId: "tt1160419",
+            tmdbId: 438631,
+            score: 0.95
+        )
+
+        let mediaPreview = recommendation.toMediaPreview()
+
+        #expect(recommendation.id == "movie-imdb-tt1160419")
+        #expect(mediaPreview.id == "tt1160419")
+        #expect(mediaPreview.tmdbId == nil)
+    }
+
     @Test("toMediaPreview with tmdbId")
     func toMediaPreviewWithTmdbId() {
         let recommendation = AIMovieRecommendation(

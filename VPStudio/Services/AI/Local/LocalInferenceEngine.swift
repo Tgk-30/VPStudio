@@ -22,6 +22,12 @@ actor LocalInferenceEngine {
     private var lastUsed: Date?
     private var idleUnloadTask: Task<Void, Never>?
 
+    /// Serializes `generate` so a second call can't reuse the same loaded model
+    /// (which is `@unchecked Sendable` and not proven thread-safe) while the first
+    /// is still streaming. The actor only guarantees mutual exclusion between
+    /// suspension points; this flag enforces it across the awaits in `generate`.
+    private var isGenerating = false
+
     private static let idleTimeout: Duration = .seconds(300)       // 5 minutes
     private static let warmWindow: TimeInterval = 120              // keep warm if used in last 2 min
     private static let generationTimeout: Duration = .seconds(300) // 5 min max per generation (excludes load time)
@@ -172,6 +178,15 @@ actor LocalInferenceEngine {
         userMessage: String,
         maxTokens: Int = 4096
     ) async throws -> LocalGenerationResult {
+        // Reject overlapping generations. The check-and-set runs with no `await`
+        // in between, so the actor executes it atomically: a reentrant call that
+        // slips in while the first is suspended will observe `isGenerating == true`.
+        guard !isGenerating else {
+            throw LocalInferenceError.busy
+        }
+        isGenerating = true
+        defer { isGenerating = false }
+
         // Load model separately — not subject to generation timeout.
         // First load mmaps weights from disk which can take 30-60s.
         if loadedModelID != modelID {
@@ -239,6 +254,7 @@ enum LocalInferenceError: LocalizedError, Equatable {
     case modelNotDownloaded
     case insufficientMemory(availableMB: Int, requiredMB: Int)
     case generationTimeout
+    case busy
     case inferenceError(String)
 
     var errorDescription: String? {
@@ -249,6 +265,8 @@ enum LocalInferenceError: LocalizedError, Equatable {
             return "Insufficient memory: \(avail)MB available, \(req)MB required."
         case .generationTimeout:
             return "Generation timed out."
+        case .busy:
+            return "A local generation is already in progress. Try again when it finishes."
         case .inferenceError(let msg):
             return msg
         }

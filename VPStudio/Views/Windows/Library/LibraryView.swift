@@ -5,6 +5,7 @@ enum LibraryLayoutPolicy {
     static let rootPinsContentToTop = true
     static let emptyStatePinsContentToTop = true
     static let emptyStateTopPadding: CGFloat = 20
+    static let topTabMaxWidth: CGFloat = 720
 
     static func showsEmptyState(for selectedList: UserLibraryEntry.ListType, entryCount: Int, historyCount: Int) -> Bool {
         switch selectedList {
@@ -331,26 +332,27 @@ enum LibraryMetadataHydrationPolicy {
             guard let item = mediaItems[requestedID] else { return nil }
             guard !item.hasArtwork else { return nil }
 
-            if let tmdbID = item.tmdbId {
+            if let imdbID = IMDbIdentifierPolicy.firstID(in: item.id) {
                 return Candidate(
                     requestedID: requestedID,
-                    detailID: String(tmdbID),
+                    detailID: imdbID,
                     type: item.type
                 )
             }
 
-            if item.id.hasPrefix("tt") {
+            if let imdbID = IMDbIdentifierPolicy.firstID(in: requestedID) {
                 return Candidate(
                     requestedID: requestedID,
-                    detailID: item.id,
+                    detailID: imdbID,
                     type: item.type
                 )
             }
 
-            if requestedID.hasPrefix("tt") {
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
                 return Candidate(
                     requestedID: requestedID,
-                    detailID: requestedID,
+                    detailID: title,
                     type: item.type
                 )
             }
@@ -552,7 +554,7 @@ struct LibraryView: View {
                             ForEach(displayedHistoryMediaIDs, id: \.self) { mediaId in
                                 if let preview = historyPreview(for: mediaId) {
                                     Button { appState.libraryDetailSelection = preview } label: {
-                                        MediaCardView(item: preview, userRating: userRatings[preview.id])
+                                        MediaCardView(item: preview, userRating: userRating(for: preview, storedMediaID: mediaId))
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -561,7 +563,7 @@ struct LibraryView: View {
                             ForEach(entries, id: \.id) { entry in
                                 if let preview = preview(for: entry.mediaId) {
                                     Button { appState.libraryDetailSelection = preview } label: {
-                                        MediaCardView(item: preview, userRating: userRatings[entry.mediaId])
+                                        MediaCardView(item: preview, userRating: userRating(for: preview, storedMediaID: entry.mediaId))
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu {
@@ -590,7 +592,8 @@ struct LibraryView: View {
                         }
                     }
                     .padding(.horizontal, LibraryGridPolicy.horizontalPadding)
-                    .padding(.vertical)
+                    .padding(.top, LibraryGridPolicy.topContentPadding)
+                    .padding(.bottom, LibraryGridPolicy.bottomContentPadding)
                 }
             }
         }
@@ -607,7 +610,11 @@ struct LibraryView: View {
                     .ignoresSafeArea()
             }
         }
-        .navigationTitle("Library")
+        .navigationTitle(useObsidianGlass ? "" : "Library")
+        #if !os(macOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
         .navigationDestination(item: librarySelection) { item in
             DetailView(preview: item)
         }
@@ -724,8 +731,8 @@ struct LibraryView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
                     // Stable title — the active list name already shows in the picker below,
                     // so mirroring it here printed e.g. "Watchlist" twice.
@@ -735,14 +742,15 @@ struct LibraryView: View {
                     GlassTag(text: "\(titleCount) titles", symbol: "film")
                 }
                 Spacer(minLength: 20)
-            }
 
-            actionRow
+                actionRow
+            }
 
             GlassPillPicker(
                 options: UserLibraryEntry.ListType.libraryTopTabs,
                 selection: $selectedList
             )
+            .frame(maxWidth: LibraryLayoutPolicy.topTabMaxWidth, alignment: .leading)
 
             if selectedList.supportsFolders {
                 folderControls
@@ -820,6 +828,33 @@ struct LibraryView: View {
 
     private var folderControls: some View {
         HStack(spacing: 12) {
+            Button {
+                createFolderListType = selectedList
+                isShowingCreateFolderSheet = true
+            } label: {
+                actionCapsuleLabel(
+                    title: "New Folder",
+                    systemImage: "folder.badge.plus",
+                    tint: VPColor.accent
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Create Folder")
+
+            if let selectedManualFolder {
+                Button(role: .destructive) {
+                    folderPendingDeletion = selectedManualFolder
+                } label: {
+                    actionCapsuleLabel(
+                        title: "Delete",
+                        systemImage: "trash",
+                        tint: .red
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete Selected Folder")
+            }
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     folderChip(title: "All", isSelected: selectedFolderID == nil) {
@@ -858,21 +893,6 @@ struct LibraryView: View {
                     }
                 }
             }
-
-            GlassIconButton(icon: "plus", size: 28) {
-                createFolderListType = selectedList
-                isShowingCreateFolderSheet = true
-            }
-            .accessibilityLabel("Create Folder")
-            .padding(.vertical, 2)
-
-            if let selectedManualFolder {
-                GlassIconButton(icon: "trash", tint: .red, size: 28) {
-                    folderPendingDeletion = selectedManualFolder
-                }
-                .accessibilityLabel("Delete Selected Folder")
-                .padding(.vertical, 2)
-            }
         }
     }
 
@@ -900,6 +920,7 @@ struct LibraryView: View {
             .labelStyle(.titleAndIcon)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            .frame(minHeight: 44)
             .contentShape(Capsule())
             .background(.regularMaterial, in: Capsule())
             .overlay {
@@ -924,12 +945,17 @@ struct LibraryView: View {
                     .frame(minHeight: VPSpace.minTapTarget)
                     // Selected state stays glass with an accent ring + glow — never an opaque red slab.
                     .glassSurface(isSelected ? .hero : .rest, cornerRadius: VPSpace.minTapTarget / 2)
-                    .overlay {
+                    .background {
                         if isSelected {
-                            Capsule().strokeBorder(VPColor.accent, lineWidth: 1.5)
+                            Capsule().fill(VPColor.accent.opacity(0.20))
                         }
                     }
-                    .shadow(color: isSelected ? VPColor.accentGlow : .clear, radius: 8)
+                    .overlay {
+                        if isSelected {
+                            Capsule().strokeBorder(VPColor.accent, lineWidth: 2)
+                        }
+                    }
+                    .shadow(color: isSelected ? VPColor.accentGlow : .clear, radius: 12)
             } else {
                 Text(title)
                     .font(.caption.weight(.semibold))
@@ -1103,14 +1129,18 @@ struct LibraryView: View {
     @MainActor
     private func loadUserRatings() async {
         let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
-        var dict: [String: TasteEvent] = [:]
-        for event in events {
-            if let mediaId = event.mediaId {
-                dict[mediaId] = event
-            }
-        }
         guard !Task.isCancelled else { return }
-        userRatings = dict
+        userRatings = TasteRatingLookupPolicy.lookup(from: events)
+    }
+
+    private func userRating(for preview: MediaPreview, storedMediaID: String) -> TasteEvent? {
+        TasteRatingLookupPolicy.rating(
+            in: userRatings,
+            mediaId: storedMediaID,
+            type: preview.type,
+            tmdbId: preview.tmdbId,
+            resolvedMediaId: mediaItems[storedMediaID]?.id ?? preview.id
+        )
     }
 
     private func preview(for mediaID: String) -> MediaPreview? {
@@ -1160,7 +1190,7 @@ struct LibraryView: View {
         }
 
         metadataHydrationTask = Task {
-            let apiKey = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+            let apiKey = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
             let normalizedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !normalizedAPIKey.isEmpty else {
                 await MainActor.run {

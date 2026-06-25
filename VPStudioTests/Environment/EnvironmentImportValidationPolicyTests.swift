@@ -18,6 +18,11 @@ struct EnvironmentImportValidationPolicySupportTests {
         #expect(EnvironmentImportValidationPolicy.isSupportedExtension("jpeg"))
     }
 
+    @Test func supportedExtensionOrderMatchesAcceptedExtensionSet() {
+        #expect(Set(EnvironmentImportValidationPolicy.supportedExtensionOrder) == EnvironmentImportValidationPolicy.supportedExtensions)
+        #expect(EnvironmentImportValidationPolicy.supportedExtensionOrder == ["hdr", "exr", "png", "jpg", "jpeg", "usdz", "reality"])
+    }
+
     @Test func supportCheckIsCaseInsensitiveAndDotTolerant() {
         #expect(EnvironmentImportValidationPolicy.isSupportedExtension("HDR"))
         #expect(EnvironmentImportValidationPolicy.isSupportedExtension("UsDz"))
@@ -93,5 +98,21 @@ struct EnvironmentImportValidationPolicySizeTests {
 
     @Test func maxFileSizeConstantIsPositive() {
         #expect(EnvironmentImportValidationPolicy.maxFileSizeBytes > 0)
+    }
+}
+
+@Suite("EnvironmentImportValidationPolicy panorama geometry")
+struct EnvironmentImportValidationPolicyPanoramaGeometryTests {
+
+    @Test func panoramaAspectRatioAcceptsEquirectangularImages() {
+        #expect(EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 4096, height: 2048))
+        #expect(EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 3840, height: 1920))
+    }
+
+    @Test func panoramaAspectRatioRejectsRegularPhotosAndInvalidDimensions() {
+        #expect(!EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 2048, height: 2048))
+        #expect(!EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 1080, height: 1920))
+        #expect(!EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 0, height: 2048))
+        #expect(!EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 4096, height: 0))
     }
 }

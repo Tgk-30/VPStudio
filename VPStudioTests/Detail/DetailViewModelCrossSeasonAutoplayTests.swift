@@ -17,6 +17,8 @@ struct DetailViewModelCrossSeasonAutoplayTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem {
             MediaItem(id: id, type: type, title: "Stub Series", tmdbId: tmdbId)
         }
+        func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasons }
+        func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
         func getSeasons(tmdbId: Int) async throws -> [Season] { seasons }
         func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
     }

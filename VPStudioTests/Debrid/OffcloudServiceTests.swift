@@ -243,7 +243,7 @@ struct OffcloudServiceTests {
         }
 
         let service = OffcloudService(apiToken: "valid_token", session: session)
-        try await service.selectMatchingEpisodeFile(torrentId: "abc", seasonNumber: 1, episodeNumber: 1, resolvedFileNameHint: nil, resolvedFileSizeHint: nil)
+        _ = try await service.selectMatchingEpisodeFile(torrentId: "abc", seasonNumber: 1, episodeNumber: 1, resolvedFileNameHint: nil, resolvedFileSizeHint: nil)
         let stream = try await service.getStreamURL(torrentId: "abc")
 
         #expect(stream.streamURL.absoluteString == "https://offcloud.example/Show.S01E01.mkv")
@@ -271,7 +271,7 @@ struct OffcloudServiceTests {
         }
 
         let service = OffcloudService(apiToken: "valid_token", session: session)
-        try await service.selectMatchingEpisodeFile(torrentId: "def", seasonNumber: 1, episodeNumber: 1, resolvedFileNameHint: nil, resolvedFileSizeHint: nil)
+        _ = try await service.selectMatchingEpisodeFile(torrentId: "def", seasonNumber: 1, episodeNumber: 1, resolvedFileNameHint: nil, resolvedFileSizeHint: nil)
         let stream = try await service.getStreamURL(torrentId: "def")
 
         #expect(stream.streamURL.absoluteString == "https://offcloud.example/Show.S01E01.mkv?size=980")
@@ -299,7 +299,7 @@ struct OffcloudServiceTests {
         }
 
         let service = OffcloudService(apiToken: "valid_token", session: session)
-        try await service.selectMatchingEpisodeFile(
+        _ = try await service.selectMatchingEpisodeFile(
             torrentId: "exact-size",
             seasonNumber: 1,
             episodeNumber: 2,
@@ -328,7 +328,7 @@ struct OffcloudServiceTests {
         }
 
         let service = OffcloudService(apiToken: "valid_token", session: session)
-        try await service.selectMatchingEpisodeFile(torrentId: "ghi", seasonNumber: 1, episodeNumber: 1, resolvedFileNameHint: nil, resolvedFileSizeHint: nil)
+        _ = try await service.selectMatchingEpisodeFile(torrentId: "ghi", seasonNumber: 1, episodeNumber: 1, resolvedFileNameHint: nil, resolvedFileSizeHint: nil)
         let stream = try await service.getStreamURL(torrentId: "ghi")
 
         #expect(stream.streamURL.absoluteString == "https://offcloud.example/extras/show.s02e99.mkv")
@@ -352,7 +352,7 @@ struct OffcloudServiceTests {
         }
 
         let service = OffcloudService(apiToken: "valid_token", session: session)
-        try await service.selectMatchingEpisodeFile(
+        _ = try await service.selectMatchingEpisodeFile(
             torrentId: "jkl",
             seasonNumber: 1,
             episodeNumber: 1,
@@ -382,7 +382,7 @@ struct OffcloudServiceTests {
         }
 
         let service = OffcloudService(apiToken: "valid_token", session: session)
-        try await service.selectMatchingEpisodeFile(
+        _ = try await service.selectMatchingEpisodeFile(
             torrentId: "mno",
             seasonNumber: 1,
             episodeNumber: 1,

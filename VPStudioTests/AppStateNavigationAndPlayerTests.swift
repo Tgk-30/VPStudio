@@ -3,6 +3,53 @@ import AVFoundation
 import Testing
 @testable import VPStudio
 
+private func makeAppStatePlayerTestDatabase(named name: String) async throws -> DatabaseManager {
+    let database = try DatabaseManager(inMemoryNamed: "\(name)-\(UUID().uuidString)")
+    try await database.migrate()
+    return database
+}
+
+private actor AppStateResumeDebridService: DebridServiceProtocol {
+    let serviceType: DebridServiceType = .realDebrid
+
+    private let stream: StreamInfo
+
+    init(stream: StreamInfo) {
+        self.stream = stream
+    }
+
+    func validateToken() async throws -> Bool { true }
+
+    func getAccountInfo() async throws -> DebridAccountInfo {
+        DebridAccountInfo(username: "resume-test", email: nil, premiumExpiry: nil, isPremium: true)
+    }
+
+    func checkCache(hashes: [String]) async throws -> [String: CacheStatus] {
+        hashes.reduce(into: [String: CacheStatus]()) { result, hash in
+            result[hash] = .cached(fileId: nil, fileName: stream.fileName, fileSize: stream.sizeBytes)
+        }
+    }
+
+    func addMagnet(hash: String) async throws -> String {
+        "torrent-\(hash)"
+    }
+
+    func selectFiles(torrentId: String, fileIds: [Int]) async throws {
+        _ = torrentId
+        _ = fileIds
+    }
+
+    func getStreamURL(torrentId: String) async throws -> StreamInfo {
+        _ = torrentId
+        return stream
+    }
+
+    func unrestrict(link: String) async throws -> URL {
+        _ = link
+        return stream.streamURL
+    }
+}
+
 // MARK: - AppState Navigation State
 
 @Suite("AppState - Navigation State", .serialized)
@@ -199,6 +246,128 @@ struct AppStatePlayerSessionStateTests {
         #expect(appState.fullscreenBySessionID[staleSessionID] == nil)
         #expect(appState.isMainWindowSuppressedForPlayer)
     }
+
+    @Test @MainActor
+    func metadataEpisodeLookupIDPrefersOMDbIMDbIdentifiersBeforeLegacyTMDBFallback() {
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "series-imdb-tt0944947",
+                previewId: "series-tmdb-1399",
+                tmdbId: 1399
+            ) == "tt0944947"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "tmdb-1399",
+                previewId: "tt0944947",
+                tmdbId: 1399
+            ) == "tt0944947"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                mediaTitle: " Legacy Show ",
+                tmdbId: 1399
+            ) == "Legacy Show"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                tmdbId: 1399
+            ) == "tmdb-1399"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                tmdbId: nil
+            ) == "legacy-local-id"
+        )
+    }
+
+    @Test @MainActor
+    func resolveContinueWatchingSessionCanonicalizesLegacyTMDBMediaIDThroughCachedOMDbAlias() async throws {
+        let database = try await makeAppStatePlayerTestDatabase(named: "continue-watch-omdb-alias")
+        let secretStore = TestSecretStore()
+        let secretKey = SecretKey.debridToken(service: .realDebrid, configId: "rd-resume")
+        try await secretStore.setSecret("token", for: secretKey)
+        try await database.saveDebridConfig(DebridConfig(
+            id: "rd-resume",
+            serviceType: .realDebrid,
+            apiTokenRef: SecretReference.encode(key: secretKey),
+            isActive: true,
+            priority: 0,
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+        try await database.saveMediaItem(MediaItem(
+            id: "tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: "https://img.omdbapi.com/dune.jpg",
+            backdropPath: nil,
+            overview: nil,
+            genres: [],
+            imdbRating: 8.0,
+            runtime: 155,
+            status: nil,
+            tmdbId: 438_631
+        ))
+
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/dune.mkv",
+            fileName: "Dune.2021.2160p.mkv"
+        )
+        let debridManager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { _, _ in AppStateResumeDebridService(stream: stream) }
+        )
+        let appState = AppState(
+            database: database,
+            secretStore: secretStore,
+            debridManager: debridManager
+        )
+        let context = try #require(StreamRecoveryContext(
+            infoHash: "abcdef1234567890abcdef1234567890abcdef12",
+            preferredService: .realDebrid,
+            resolvedDebridService: DebridServiceType.realDebrid.rawValue
+        ))
+        let contextJSON = String(data: try JSONEncoder().encode(context), encoding: .utf8)
+        let history = WatchHistory(
+            id: "history-1",
+            mediaId: "movie-tmdb-438631",
+            title: "Dune",
+            progress: 120,
+            duration: 9_300,
+            recoveryContextJSON: contextJSON,
+            watchedAt: Date(),
+            isCompleted: false
+        )
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        let request = try #require(await appState.resolveContinueWatchingSession(
+            history: history,
+            preview: preview
+        ))
+
+        #expect(request.mediaId == "tt1160419")
+        #expect(request.imdbId == "tt1160419")
+        #expect(request.tmdbId == 438_631)
+        #expect(request.stream.streamURL.absoluteString == "https://cdn.example.com/dune.mkv")
+    }
 }
 
 // MARK: - AppState Immersive Dismiss Reason Coverage
@@ -275,7 +444,11 @@ struct AppStateImmersiveDismissReasonTests {
 struct AppStateActivateEnvironmentAssetTests {
 
     @Test @MainActor
-    func activateEnvironmentAssetUpdatesSelectedAsset() async {
+    func activateEnvironmentAssetUpdatesSelectedAssetAfterCatalogActivation() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "activate-environment-\(UUID().uuidString)")
+        try await database.migrate()
+        let settings = SettingsManager(database: database, secretStore: TestSecretStore())
+        let manager = EnvironmentCatalogManager(database: database)
         let asset = EnvironmentAsset(
             id: "env-test",
             name: "Test Environment",
@@ -283,13 +456,147 @@ struct AppStateActivateEnvironmentAssetTests {
             assetPath: "test.hdr",
             isActive: false
         )
+        try await database.saveEnvironmentAsset(asset)
 
-        // Use a real EnvironmentCatalogManager backed by an in-memory DB
-        // We only test that selectedEnvironmentAsset is updated (fire-and-forget for persistence)
-        let appState = AppState()
-        await appState.activateEnvironmentAsset(asset)
+        let appState = AppState(
+            database: database,
+            settingsManager: settings,
+            environmentCatalogManager: manager
+        )
+        let didActivate = await appState.activateEnvironmentAsset(asset)
 
+        #expect(didActivate)
         #expect(appState.selectedEnvironmentAsset?.id == "env-test")
+        #expect(appState.selectedEnvironmentAsset?.isActive == true)
+        #expect(try await manager.activeAsset()?.id == "env-test")
+        #expect(try await manager.activeAsset()?.isActive == true)
+        #expect(try await database.getSetting(key: SettingsKeys.preferredEnvironment) == "env-test")
+    }
+
+    @Test @MainActor
+    func activateEnvironmentAssetDoesNotDisplayStaleAssetWhenCatalogActivationFails() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "activate-stale-environment-\(UUID().uuidString)")
+        try await database.migrate()
+        let settings = SettingsManager(database: database, secretStore: TestSecretStore())
+        let manager = EnvironmentCatalogManager(database: database)
+        let active = EnvironmentAsset(
+            id: "active-env",
+            name: "Active Environment",
+            sourceType: .imported,
+            assetPath: "active.hdr",
+            isActive: false
+        )
+        let stale = EnvironmentAsset(
+            id: "stale-env",
+            name: "Deleted Environment",
+            sourceType: .imported,
+            assetPath: "stale.hdr",
+            isActive: false
+        )
+        try await database.saveEnvironmentAsset(active)
+
+        let appState = AppState(
+            database: database,
+            settingsManager: settings,
+            environmentCatalogManager: manager
+        )
+        let didActivateCurrent = await appState.activateEnvironmentAsset(active)
+        let didActivateStale = await appState.activateEnvironmentAsset(stale)
+
+        #expect(didActivateCurrent)
+        #expect(!didActivateStale)
+        #expect(appState.selectedEnvironmentAsset?.id == "active-env")
+        #expect(try await manager.activeAsset()?.id == "active-env")
+        #expect(try await database.getSetting(key: SettingsKeys.preferredEnvironment) == "active-env")
+    }
+
+    @Test @MainActor
+    func selectSuggestedEnvironmentAssetPersistsOnlyAfterCatalogActivation() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "suggested-environment-\(UUID().uuidString)")
+        try await database.migrate()
+        let settings = SettingsManager(database: database, secretStore: TestSecretStore())
+        let manager = EnvironmentCatalogManager(database: database)
+        try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: "manual-env")
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: "1")
+
+        let active = EnvironmentAsset(
+            id: "active-env",
+            name: "Active Environment",
+            sourceType: .bundled,
+            assetPath: "bundle://active.usdz",
+            isActive: false
+        )
+        let suggestion = EnvironmentAsset(
+            id: "suggested-env",
+            name: "Suggested Environment",
+            sourceType: .bundled,
+            assetPath: "bundle://suggested.usdz",
+            environmentTag: "horror",
+            isActive: false
+        )
+        let staleSuggestion = EnvironmentAsset(
+            id: "missing-suggested-env",
+            name: "Missing Suggested Environment",
+            sourceType: .bundled,
+            assetPath: "bundle://missing.usdz",
+            environmentTag: "scifi",
+            isActive: false
+        )
+        try await database.saveEnvironmentAsset(active)
+        try await database.saveEnvironmentAsset(suggestion)
+
+        let appState = AppState(
+            database: database,
+            settingsManager: settings,
+            environmentCatalogManager: manager
+        )
+        let didActivateCurrent = await appState.activateEnvironmentAsset(active)
+        let didActivateSuggestion = await appState.selectSuggestedEnvironmentAsset(suggestion)
+        let didActivateStaleSuggestion = await appState.selectSuggestedEnvironmentAsset(staleSuggestion)
+
+        #expect(didActivateCurrent)
+        #expect(didActivateSuggestion)
+        #expect(!didActivateStaleSuggestion)
+        #expect(appState.selectedEnvironmentAsset?.id == "suggested-env")
+        #expect(try await manager.activeAsset()?.id == "suggested-env")
+        #expect(try await database.getSetting(key: SettingsKeys.preferredEnvironment) == "suggested-env")
+        #expect(try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared) == nil)
+    }
+
+    @Test @MainActor
+    func clearEnvironmentSelectionClearsSelectedAndActiveEnvironment() async {
+        let appState = AppState()
+        appState.activeEnvironment = .customEnvironment
+        appState.selectedEnvironmentAsset = EnvironmentAsset(
+            id: "env-test",
+            name: "Test Environment",
+            sourceType: .imported,
+            assetPath: "test.hdr",
+            isActive: true
+        )
+
+        await appState.clearEnvironmentSelection()
+
+        #expect(appState.activeEnvironment == nil)
+        #expect(appState.selectedEnvironmentAsset == nil)
+    }
+
+    @Test @MainActor
+    func clearEnvironmentSelectionIfCurrentDoesNotWipeNewerSelection() async {
+        let appState = AppState()
+        appState.activeEnvironment = .customEnvironment
+        appState.selectedEnvironmentAsset = EnvironmentAsset(
+            id: "newer-env",
+            name: "Newer Environment",
+            sourceType: .imported,
+            assetPath: "newer.hdr",
+            isActive: true
+        )
+
+        await appState.clearEnvironmentSelectionIfCurrent(assetID: "stale-env")
+
+        #expect(appState.activeEnvironment == .customEnvironment)
+        #expect(appState.selectedEnvironmentAsset?.id == "newer-env")
     }
 }
 

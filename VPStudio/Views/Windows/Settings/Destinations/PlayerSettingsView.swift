@@ -2,156 +2,6 @@ import SwiftUI
 
 // MARK: - Player Settings
 
-enum PlayerSettingsPolicy {
-    struct LoadedSettings: Equatable {
-        let preferredQuality: VideoQuality
-        let autoPlay: Bool
-        let hardwareDecoding: Bool
-        let playerEngineStrategy: PlayerEngineStrategy
-        let externalPlayerTemplate: String
-        let preferCached: Bool
-        let preferAtmos: Bool
-        let hdrPreference: HDRPreference
-        let runtimeDiagnosticsEnabled: Bool
-        let navigationLayout: NavigationLayout
-    }
-
-    enum PersistenceWrite: Equatable {
-        case bool(key: String, value: Bool)
-        case string(key: String, value: String?)
-    }
-
-    enum AppStateMirrorUpdate: Equatable {
-        case runtimeDiagnosticsEnabled(Bool)
-        case navigationLayout(NavigationLayout)
-    }
-
-    static func resolvedEngineStrategy(rawValue: String?) -> PlayerEngineStrategy {
-        guard let rawValue else { return .compatibility }
-        return PlayerEngineStrategy(rawValue: rawValue) ?? .compatibility
-    }
-
-    static func resolvedPreferredQuality(rawValue: String?) -> VideoQuality {
-        guard let rawValue else { return .hd1080p }
-        return VideoQuality(rawValue: rawValue) ?? .hd1080p
-    }
-
-    static func resolvedHDRPreference(rawValue: String?) -> HDRPreference {
-        guard let rawValue else { return .auto }
-        return HDRPreference(rawValue: rawValue) ?? .auto
-    }
-
-    static func resolvedNavigationLayout(rawValue: String?, fallback: NavigationLayout) -> NavigationLayout {
-        guard let rawValue else { return fallback }
-        return NavigationLayout(rawValue: rawValue) ?? fallback
-    }
-
-    static func resolvedToggle(storedValue: Bool?, fallback: Bool) -> Bool {
-        storedValue ?? fallback
-    }
-
-    static func resolvedRuntimeDiagnosticsEnabled(storedValue: Bool?, fallback: Bool) -> Bool {
-        resolvedToggle(storedValue: storedValue, fallback: fallback)
-    }
-
-    static func normalizedExternalPlayerTemplate(_ template: String?) -> String {
-        ExternalPlayerRouting.normalizedCustomTemplate(template) ?? ""
-    }
-
-    static func loadedSettings(
-        preferredQualityRawValue: String?,
-        autoPlayStoredValue: Bool?,
-        hardwareDecodingStoredValue: Bool?,
-        playerEngineStrategyRawValue: String?,
-        externalPlayerTemplateRawValue: String?,
-        preferCachedStoredValue: Bool?,
-        preferAtmosStoredValue: Bool?,
-        hdrPreferenceRawValue: String?,
-        runtimeDiagnosticsStoredValue: Bool?,
-        runtimeDiagnosticsFallback: Bool,
-        navigationLayoutRawValue: String?,
-        navigationFallback: NavigationLayout
-    ) -> LoadedSettings {
-        LoadedSettings(
-            preferredQuality: resolvedPreferredQuality(rawValue: preferredQualityRawValue),
-            autoPlay: resolvedToggle(storedValue: autoPlayStoredValue, fallback: true),
-            hardwareDecoding: resolvedToggle(storedValue: hardwareDecodingStoredValue, fallback: true),
-            playerEngineStrategy: resolvedEngineStrategy(rawValue: playerEngineStrategyRawValue),
-            externalPlayerTemplate: normalizedExternalPlayerTemplate(externalPlayerTemplateRawValue),
-            preferCached: resolvedToggle(storedValue: preferCachedStoredValue, fallback: true),
-            preferAtmos: resolvedToggle(storedValue: preferAtmosStoredValue, fallback: true),
-            hdrPreference: resolvedHDRPreference(rawValue: hdrPreferenceRawValue),
-            runtimeDiagnosticsEnabled: resolvedRuntimeDiagnosticsEnabled(
-                storedValue: runtimeDiagnosticsStoredValue,
-                fallback: runtimeDiagnosticsFallback
-            ),
-            navigationLayout: resolvedNavigationLayout(
-                rawValue: navigationLayoutRawValue,
-                fallback: navigationFallback
-            )
-        )
-    }
-
-    static func preferredQualityWrite(_ value: VideoQuality) -> PersistenceWrite {
-        .string(key: SettingsKeys.preferredQuality, value: value.rawValue)
-    }
-
-    static func autoPlayWrite(_ value: Bool) -> PersistenceWrite {
-        .bool(key: SettingsKeys.autoPlayNext, value: value)
-    }
-
-    static func hardwareDecodingWrite(_ value: Bool) -> PersistenceWrite {
-        .bool(key: SettingsKeys.hardwareDecoding, value: value)
-    }
-
-    static func playerEngineStrategyWrite(_ value: PlayerEngineStrategy) -> PersistenceWrite {
-        .string(key: SettingsKeys.playerEngineStrategy, value: value.rawValue)
-    }
-
-    static func externalPlayerAppWrite(_ value: ExternalPlayerApp) -> PersistenceWrite {
-        .string(key: SettingsKeys.externalPlayerApp, value: value.rawValue)
-    }
-
-    static func externalPlayerTemplateWrite(_ value: String) -> PersistenceWrite {
-        .string(
-            key: SettingsKeys.externalPlayerURLTemplate,
-            value: ExternalPlayerRouting.normalizedCustomTemplate(value)
-        )
-    }
-
-    static func preferCachedWrite(_ value: Bool) -> PersistenceWrite {
-        .bool(key: SettingsKeys.preferCachedStreams, value: value)
-    }
-
-    static func preferAtmosWrite(_ value: Bool) -> PersistenceWrite {
-        .bool(key: SettingsKeys.preferAtmosAudio, value: value)
-    }
-
-    static func hdrPreferenceWrite(_ value: HDRPreference) -> PersistenceWrite {
-        .string(key: SettingsKeys.preferredHDRFormat, value: value.rawValue)
-    }
-
-    static func runtimeDiagnosticsWrite(_ value: Bool) -> PersistenceWrite {
-        .bool(key: SettingsKeys.runtimeDiagnosticsEnabled, value: value)
-    }
-
-    static func navigationLayoutWrite(_ value: NavigationLayout) -> PersistenceWrite {
-        .string(key: SettingsKeys.navigationLayout, value: value.rawValue)
-    }
-
-    static func appStateMirrorUpdate(for write: PersistenceWrite) -> AppStateMirrorUpdate? {
-        switch write {
-        case .bool(let key, let value) where key == SettingsKeys.runtimeDiagnosticsEnabled:
-            return .runtimeDiagnosticsEnabled(value)
-        case .string(let key, let value) where key == SettingsKeys.navigationLayout:
-            guard let value, let navigationLayout = NavigationLayout(rawValue: value) else { return nil }
-            return .navigationLayout(navigationLayout)
-        default:
-            return nil
-        }
-    }
-}
-
 struct PlayerSettingsView: View {
     @Environment(AppState.self) private var appState
     @State private var preferredQuality: VideoQuality = .hd1080p
@@ -163,7 +13,14 @@ struct PlayerSettingsView: View {
     @State private var preferCached = true
     @State private var preferAtmos = true
     @State private var hdrPreference: HDRPreference = .auto
+    @State private var sourceFilterPreset: SourceFilterPreset = .balanced
+    @State private var sourceFilterHideDownloads = false
+    @State private var sourceFilterHideCam = true
+    @State private var sourceFilterMinimumSeeders = 0
+    @State private var sourceFilterMaximumSizeGB: Double = 0
+    @State private var sourceFilterMinimumQuality: VideoQuality = .unknown
     @State private var runtimeDiagnosticsEnabled = false
+    @State private var guestModeEnabled = false
     @State private var navigationLayout: NavigationLayout = .bottomTabBar
     @State private var surfaceError: AppError?
     private let disablesAutomaticTasks: Bool
@@ -213,6 +70,8 @@ struct PlayerSettingsView: View {
             engineSection
             playerAppSection
             highFidelitySection
+            sourceFiltersSection
+            privacySection
             diagnosticsSection
         }
         .navigationTitle("Playback")
@@ -247,8 +106,30 @@ struct PlayerSettingsView: View {
         .onChange(of: hdrPreference) { _, newValue in
             saveHDRPreference(newValue)
         }
+        .onChange(of: sourceFilterPreset) { _, newValue in
+            applySourceFilterPreset(newValue)
+            saveSourceFilterPreset(newValue)
+        }
+        .onChange(of: sourceFilterHideDownloads) { _, newValue in
+            saveSourceFilterHideDownloads(newValue)
+        }
+        .onChange(of: sourceFilterHideCam) { _, newValue in
+            saveSourceFilterHideCam(newValue)
+        }
+        .onChange(of: sourceFilterMinimumSeeders) { _, newValue in
+            saveSourceFilterMinimumSeeders(newValue)
+        }
+        .onChange(of: sourceFilterMaximumSizeGB) { _, newValue in
+            saveSourceFilterMaximumSize(newValue)
+        }
+        .onChange(of: sourceFilterMinimumQuality) { _, newValue in
+            saveSourceFilterMinimumQuality(newValue == .unknown ? nil : newValue)
+        }
         .onChange(of: runtimeDiagnosticsEnabled) { _, newValue in
             saveRuntimeDiagnosticsEnabled(newValue)
+        }
+        .onChange(of: guestModeEnabled) { _, newValue in
+            saveGuestModeEnabled(newValue)
         }
         .onChange(of: navigationLayout) { _, newValue in
             saveNavigationLayout(newValue)
@@ -374,10 +255,69 @@ struct PlayerSettingsView: View {
         }
     }
 
+    private var sourceFiltersSection: some View {
+        Section("Source Filters") {
+            Picker("Filter Preset", selection: $sourceFilterPreset) {
+                ForEach(SourceFilterPreset.allCases) { preset in
+                    Text(preset.displayName).tag(preset)
+                }
+            }
+
+            Text(sourceFilterPreset.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if sourceFilterPreset == .custom {
+                Toggle("Hide Confirmed Downloads", isOn: $sourceFilterHideDownloads)
+                Toggle("Hide CAM Sources", isOn: $sourceFilterHideCam)
+
+                Stepper(
+                    "Minimum Seeders: \(sourceFilterMinimumSeeders)",
+                    value: $sourceFilterMinimumSeeders,
+                    in: 0...500,
+                    step: 5
+                )
+
+                HStack {
+                    Text("Maximum Size")
+                    Spacer()
+                    Text(sourceFilterMaximumSizeGB <= 0 ? "Off" : "\(Int(sourceFilterMaximumSizeGB)) GB")
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $sourceFilterMaximumSizeGB, in: 0...SourceFilterOptions.maximumSizeLimitGB, step: 1)
+                    .accessibilityLabel("Maximum source size")
+                    .accessibilityValue(sourceFilterMaximumSizeGB <= 0 ? "Off" : "\(Int(sourceFilterMaximumSizeGB)) gigabytes")
+
+                Picker("Minimum Quality", selection: $sourceFilterMinimumQuality) {
+                    Text("Any").tag(VideoQuality.unknown)
+                    Text("720p").tag(VideoQuality.hd720p)
+                    Text("1080p").tag(VideoQuality.hd1080p)
+                    Text("4K").tag(VideoQuality.uhd4k)
+                }
+            } else {
+                let activeDescriptions = sourceFilterPreset.defaultOptions.activeDescriptions
+                if !activeDescriptions.isEmpty {
+                    Text(activeDescriptions.joined(separator: " • "))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
     private var diagnosticsSection: some View {
         Section("Diagnostics") {
             Toggle("Enable Runtime Diagnostics", isOn: $runtimeDiagnosticsEnabled)
             Text("When enabled, the app logs resident-memory snapshots around tab switches, library reloads, and player lifecycle transitions.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var privacySection: some View {
+        Section("Privacy") {
+            Toggle("Guest Mode", isOn: $guestModeEnabled)
+            Text("Guest Mode pauses local watch-progress saves and Trakt scrobbling for playback sessions.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -394,11 +334,33 @@ struct PlayerSettingsView: View {
             preferCachedStoredValue: try? await appState.settingsManager.getBool(key: SettingsKeys.preferCachedStreams, default: true),
             preferAtmosStoredValue: try? await appState.settingsManager.getBool(key: SettingsKeys.preferAtmosAudio, default: true),
             hdrPreferenceRawValue: try? await appState.settingsManager.getString(key: SettingsKeys.preferredHDRFormat),
+            sourceFilterPresetRawValue: try? await appState.settingsManager.getString(key: SettingsKeys.sourceFilterPreset),
+            sourceFilterHideDownloadsStoredValue: try? await appState.settingsManager.getBool(
+                key: SettingsKeys.sourceFilterHideDownloads,
+                default: false
+            ),
+            sourceFilterHideCamStoredValue: try? await appState.settingsManager.getBool(
+                key: SettingsKeys.sourceFilterHideCam,
+                default: true
+            ),
+            sourceFilterMinimumSeedersRawValue: try? await appState.settingsManager.getString(
+                key: SettingsKeys.sourceFilterMinimumSeeders
+            ),
+            sourceFilterMaximumSizeGBRawValue: try? await appState.settingsManager.getString(
+                key: SettingsKeys.sourceFilterMaximumSizeGB
+            ),
+            sourceFilterMinimumQualityRawValue: try? await appState.settingsManager.getString(
+                key: SettingsKeys.sourceFilterMinimumQuality
+            ),
             runtimeDiagnosticsStoredValue: try? await appState.settingsManager.getBool(
                 key: SettingsKeys.runtimeDiagnosticsEnabled,
                 default: false
             ),
             runtimeDiagnosticsFallback: appState.runtimeDiagnosticsEnabled,
+            guestModeStoredValue: try? await appState.settingsManager.getBool(
+                key: SettingsKeys.guestModeEnabled,
+                default: false
+            ),
             navigationLayoutRawValue: try? await appState.settingsManager.getString(key: SettingsKeys.navigationLayout),
             navigationFallback: appState.navigationLayout
         )
@@ -412,7 +374,14 @@ struct PlayerSettingsView: View {
         preferCached = loadedSettings.preferCached
         preferAtmos = loadedSettings.preferAtmos
         hdrPreference = loadedSettings.hdrPreference
+        sourceFilterPreset = loadedSettings.sourceFilterOptions.preset
+        sourceFilterHideDownloads = loadedSettings.sourceFilterOptions.hideConfirmedDownloads
+        sourceFilterHideCam = loadedSettings.sourceFilterOptions.hideCamSources
+        sourceFilterMinimumSeeders = loadedSettings.sourceFilterOptions.minimumSeeders
+        sourceFilterMaximumSizeGB = loadedSettings.sourceFilterOptions.maximumSizeGB ?? 0
+        sourceFilterMinimumQuality = loadedSettings.sourceFilterOptions.minimumQuality ?? .unknown
         runtimeDiagnosticsEnabled = loadedSettings.runtimeDiagnosticsEnabled
+        guestModeEnabled = loadedSettings.guestModeEnabled
         appState.runtimeDiagnosticsEnabled = runtimeDiagnosticsEnabled
         navigationLayout = loadedSettings.navigationLayout
         appState.navigationLayout = navigationLayout
@@ -454,8 +423,46 @@ struct PlayerSettingsView: View {
         persist(PlayerSettingsPolicy.hdrPreferenceWrite(value))
     }
 
+    private func saveSourceFilterPreset(_ value: SourceFilterPreset) {
+        persist(PlayerSettingsPolicy.sourceFilterPresetWrite(value))
+    }
+
+    private func saveSourceFilterHideDownloads(_ value: Bool) {
+        persist(PlayerSettingsPolicy.sourceFilterHideDownloadsWrite(value))
+    }
+
+    private func saveSourceFilterHideCam(_ value: Bool) {
+        persist(PlayerSettingsPolicy.sourceFilterHideCamWrite(value))
+    }
+
+    private func saveSourceFilterMinimumSeeders(_ value: Int) {
+        persist(PlayerSettingsPolicy.sourceFilterMinimumSeedersWrite(value))
+    }
+
+    private func saveSourceFilterMaximumSize(_ value: Double) {
+        persist(PlayerSettingsPolicy.sourceFilterMaximumSizeWrite(value))
+    }
+
+    private func saveSourceFilterMinimumQuality(_ value: VideoQuality?) {
+        persist(PlayerSettingsPolicy.sourceFilterMinimumQualityWrite(value))
+    }
+
+    private func applySourceFilterPreset(_ preset: SourceFilterPreset) {
+        guard preset != .custom else { return }
+        let options = preset.defaultOptions
+        sourceFilterHideDownloads = options.hideConfirmedDownloads
+        sourceFilterHideCam = options.hideCamSources
+        sourceFilterMinimumSeeders = options.minimumSeeders
+        sourceFilterMaximumSizeGB = options.maximumSizeGB ?? 0
+        sourceFilterMinimumQuality = options.minimumQuality ?? .unknown
+    }
+
     private func saveRuntimeDiagnosticsEnabled(_ value: Bool) {
         persist(PlayerSettingsPolicy.runtimeDiagnosticsWrite(value))
+    }
+
+    private func saveGuestModeEnabled(_ value: Bool) {
+        persist(PlayerSettingsPolicy.guestModeWrite(value))
     }
 
     private func saveNavigationLayout(_ value: NavigationLayout) {

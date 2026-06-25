@@ -6,6 +6,14 @@ import Testing
 @MainActor
 struct PlayerAutoPlayNextPromptViewTests {
     @Test
+    func resolvingStateDimsPromptActions() {
+        #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: false) == 1.0)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: true) < 1.0)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonBackgroundOpacity(isResolving: true) < 1.0)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.secondaryButtonOpacity(isResolving: true) < 1.0)
+    }
+
+    @Test
     func promptRendersCountdownAndResolvingStatesWithoutTriggeringActions() {
         let nextEpisode = PlayerSessionRequest.NextEpisodeCandidate(
             episodeId: "next-episode",

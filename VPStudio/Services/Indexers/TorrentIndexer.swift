@@ -240,8 +240,9 @@ actor IndexerManager {
     }
 
     func search(imdbId: String, type: MediaType, season: Int? = nil, episode: Int? = nil) async throws -> [TorrentResult] {
+        let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) ?? imdbId
         return try await runConcurrentSearch { indexer in
-            let results = try await indexer.search(imdbId: imdbId, type: type, season: season, episode: episode)
+            let results = try await indexer.search(imdbId: normalizedIMDbID, type: type, season: season, episode: episode)
             if type == .series, let season, let episode {
                 return results.filter {
                     EpisodeTokenMatcher.matchesIfPresent(title: $0.title, season: season, episode: episode)

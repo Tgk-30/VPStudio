@@ -58,6 +58,7 @@ struct VPChromeSurfaceModifier: ViewModifier {
                         shape.fill(VPColor.contentPlane)
                     } else {
                         shape.fill(elevation.material)
+                        shape.fill(Color.black.opacity(0.36))
                         shape.fill(elevation.tint)
                     }
                 }
@@ -101,7 +102,7 @@ enum VPNavForeground {
     /// Glyph + label tint for the selected nav item.
     static let selected: Color = .white
     /// Glyph + label tint for an unselected nav item (0.60 — the minimum contrast floor).
-    static let unselected: Color = VPColor.textTertiary
+    static let unselected: Color = .white.opacity(0.74)
 
     /// Convenience selector.
     static func tint(isSelected: Bool) -> Color { isSelected ? selected : unselected }

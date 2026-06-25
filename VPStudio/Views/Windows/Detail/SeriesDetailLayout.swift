@@ -44,7 +44,7 @@ enum SeriesPrimaryPlayPolicy {
         hasSelectedEpisode: Bool
     ) -> String {
         if mediaType == .series && !hasSelectedEpisode {
-            return "Choose an episode before loading streams."
+            return "Moves to episode choices before loading streams."
         }
         return "Searches for streams if needed and opens the first available result."
     }
@@ -211,7 +211,7 @@ enum SeriesRateControlPolicy {
 struct SeriesDetailLayout: View {
     let viewModel: DetailViewModel
     let title: String
-    let tmdbApiKey: String
+    let metadataApiKey: String
     let mediaType: MediaType
     let streamResultsAnchor: String
     let shareItem: String
@@ -226,6 +226,9 @@ struct SeriesDetailLayout: View {
     
     @Environment(\.dismiss) private var dismiss
     @State private var isPlayButtonLoading = false
+    @State private var episodeScrollRequest = 0
+
+    private let episodesSectionID = "episodes-section"
 
     private var isPrimaryPlayBusy: Bool {
         SeriesPrimaryPlayPolicy.isBusy(
@@ -262,80 +265,89 @@ struct SeriesDetailLayout: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // MARK: - Hero Image
-                heroImage
-                    // Bias the fill toward the top so character heads clip less than a
-                    // centered crop would.
-                    .frame(height: 380, alignment: .top)
-                    .clipped()
-                    .overlay(heroOverlay)
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // MARK: - Hero Image
+                    heroImage
+                        // Bias the fill toward the top so character heads clip less than a
+                        // centered crop would.
+                        .frame(height: 380, alignment: .top)
+                        .clipped()
+                        .overlay(heroOverlay)
 
-                // MARK: - Main Content
-                VStack(alignment: .leading, spacing: 20) {
-                    // Title now lives on the hero artwork (see heroOverlay).
-                    // Metadata row
-                    metadataRow
+                    // MARK: - Main Content
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Title now lives on the hero artwork (see heroOverlay).
+                        // Metadata row
+                        metadataRow
 
-                    // Play button
-                    playButtonRow
+                        // Play button
+                        playButtonRow
 
-                    if mediaType != .series {
-                        watchStateRow
+                        if mediaType != .series {
+                            watchStateRow
+                        }
+
+                        // Current episode info
+                        currentEpisodeRow
+
+                        // Only surface the press-and-hold hint when episodes are actually
+                        // shown below, so the tip sits near what it describes.
+                        if mediaType == .series, shouldShowEpisodesSection {
+                            seriesTrackingRow
+                        }
+
+                        // Synopsis
+                        if let overview = viewModel.mediaItem?.overview, !overview.isEmpty {
+                            Text(overview)
+                                .font(.body)
+                                .foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(4)
+                                .padding(.top, 4)
+                        }
+
+                        // AI Analysis
+                        DetailAIAnalysis(viewModel: viewModel)
+                            .padding(.top, 16)
+
+                        if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
+                            genrePills(genres)
+                        }
+
+                        if let status = viewModel.libraryStatusMessage {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.68))
+                        }
+
+                        // Seasons
+                        if !viewModel.seasons.isEmpty {
+                            seasonsSection
+                        }
+
+                        // Episodes
+                        if shouldShowEpisodesSection {
+                            episodesSection()
+                                .id(episodesSectionID)
+                        }
+
+                        // Torrents
+                        if shouldShowTorrentsSection {
+                            torrentsSection
+                        }
+
+                        Spacer(minLength: 128)
                     }
-
-                    // Current episode info
-                    currentEpisodeRow
-
-                    // Only surface the press-and-hold hint when episodes are actually
-                    // shown below, so the tip sits near what it describes.
-                    if mediaType == .series, shouldShowEpisodesSection {
-                        seriesTrackingRow
-                    }
-
-                    // Synopsis
-                    if let overview = viewModel.mediaItem?.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.body)
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(4)
-                            .padding(.top, 4)
-                    }
-
-                    // AI Analysis
-                    DetailAIAnalysis(viewModel: viewModel)
-                        .padding(.top, 16)
-
-                    if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
-                        genrePills(genres)
-                    }
-
-                    if let status = viewModel.libraryStatusMessage {
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.68))
-                    }
-
-                    // Seasons
-                    if !viewModel.seasons.isEmpty {
-                        seasonsSection
-                    }
-
-                    // Episodes
-                    if shouldShowEpisodesSection {
-                        episodesSection()
-                    }
-
-                    // Torrents
-                    if shouldShowTorrentsSection {
-                        torrentsSection
-                    }
-
-                    Spacer(minLength: 60)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 20)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
+            }
+            .onChange(of: episodeScrollRequest) { _, _ in
+                guard shouldShowEpisodesSection else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    scrollProxy.scrollTo(episodesSectionID, anchor: .top)
+                }
             }
         }
         .background(Color.black)
@@ -366,8 +378,8 @@ struct SeriesDetailLayout: View {
     
     private var heroImage: some View {
         Group {
-            if let backdropURL = viewModel.mediaItem?.backdropURL {
-                AsyncImage(url: backdropURL) { phase in
+            if let artworkURL = viewModel.mediaItem?.backdropURL ?? viewModel.mediaItem?.posterURL {
+                AsyncImage(url: artworkURL) { phase in
                     switch phase {
                     case .success(let image):
                         image
@@ -591,6 +603,11 @@ struct SeriesDetailLayout: View {
         // reads as a lone full-width web-form button.
         HStack(spacing: 12) {
             Button {
+                if mediaType == .series, viewModel.selectedEpisode == nil {
+                    episodeScrollRequest += 1
+                    return
+                }
+
                 guard isPrimaryPlayEnabled else { return }
                 playerOpeningError = nil
                 isPlayButtonLoading = true
@@ -637,7 +654,7 @@ struct SeriesDetailLayout: View {
                 .frame(width: 220)
             }
             .buttonStyle(VPButtonStyle(kind: .primary))
-            .disabled(!isPrimaryPlayEnabled)
+            .disabled(isPrimaryPlayBusy)
             .accessibilityHint(
                 SeriesPrimaryPlayPolicy.accessibilityHint(
                     mediaType: mediaType,
@@ -859,7 +876,7 @@ struct SeriesDetailLayout: View {
         
         return Button {
             Task {
-                await viewModel.loadSeason(season.seasonNumber, apiKey: tmdbApiKey)
+                await viewModel.loadSeason(season.seasonNumber, apiKey: metadataApiKey)
             }
         } label: {
             // Season tabs are a selection control (>=44 dense target), so identity reads
@@ -919,7 +936,7 @@ struct SeriesDetailLayout: View {
     
     private func episodeCard(episode: Episode) -> some View {
         let isSelected = viewModel.selectedEpisode?.id == episode.id
-        let watchState = viewModel.episodeWatchStates[episode.id]
+        let watchState = viewModel.watchHistory(for: episode)
         let isWatched = watchState?.isCompleted == true
         let progress = watchState?.progress ?? 0
         
@@ -1092,7 +1109,7 @@ struct SeriesDetailLayout: View {
         }
         return SeriesDetailPresentationPolicy.selectedEpisodeWatchState(
             hasSelectedEpisode: true,
-            isSelectedEpisodeCompleted: viewModel.episodeWatchStates[selectedEpisode.id]?.isCompleted == true
+            isSelectedEpisodeCompleted: viewModel.isEpisodeWatched(selectedEpisode)
         )
     }
 

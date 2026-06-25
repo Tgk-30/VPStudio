@@ -17,8 +17,14 @@ struct SettingsSearchPolicyTests {
 
     @Test
     func suggestionsTrimWhitespaceAndIgnoreCase() {
-        let suggestions = SettingsSearchPolicy.suggestions(for: "  TM ")
-        #expect(suggestions == ["tmdb"])
+        let suggestions = SettingsSearchPolicy.suggestions(for: "  OM ")
+        #expect(suggestions == ["omdb"])
+    }
+
+    @Test
+    func suggestionsDoNotAdvertiseLegacyTMDBProvider() {
+        let suggestions = SettingsSearchPolicy.suggestions(for: "tm")
+        #expect(!suggestions.contains("tmdb"))
     }
 
     @Test
@@ -29,8 +35,8 @@ struct SettingsSearchPolicyTests {
 
     @Test
     func resultsSummarySingularFormatting() {
-        let summary = SettingsSearchPolicy.resultsSummary(count: 1, query: "tmdb")
-        #expect(summary == "1 result for \"tmdb\"")
+        let summary = SettingsSearchPolicy.resultsSummary(count: 1, query: "omdb")
+        #expect(summary == "1 result for \"omdb\"")
     }
 
     @Test

@@ -146,6 +146,60 @@ struct EnvironmentAssetModelTests {
     }
 }
 
+@Suite("Environment URL Policy")
+struct EnvironmentURLPolicyTests {
+    @Test func attributionLinksOnlyAllowWebSchemes() {
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/source")?.scheme == "https")
+        #expect(EnvironmentURLPolicy.webURL(from: "http://example.com/source")?.scheme == "http")
+        #expect(EnvironmentURLPolicy.webURL(from: "file:///etc/passwd") == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "javascript:alert(1)") == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "data:text/plain,hello") == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://user:password@example.com/source") == nil)
+    }
+
+    @Test func presetDownloadsRequireHTTPS() {
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/sky.hdr", requiresHTTPS: true) != nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "http://example.com/sky.hdr", requiresHTTPS: true) == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://token@example.com/sky.hdr", requiresHTTPS: true) == nil)
+    }
+
+    @Test func storedPreviewPathsRequireAbsoluteLocalFiles() {
+        #expect(EnvironmentURLPolicy.absoluteFileURL(fromStoredPath: "/tmp/sky.hdr")?.isFileURL == true)
+        #expect(EnvironmentURLPolicy.absoluteFileURL(fromStoredPath: "relative/sky.hdr") == nil)
+        #expect(EnvironmentURLPolicy.absoluteFileURL(fromStoredPath: "bundle://SkyDomePreview.png") == nil)
+    }
+
+    @Test func fileURLInsideDirectoryUsesPathComponents() {
+        let root = URL(fileURLWithPath: "/tmp/vpstudio/env", isDirectory: true)
+        #expect(EnvironmentURLPolicy.fileURL(URL(fileURLWithPath: "/tmp/vpstudio/env/sky.hdr"), isInside: root))
+        #expect(!EnvironmentURLPolicy.fileURL(URL(fileURLWithPath: "/tmp/vpstudio/env2/sky.hdr"), isInside: root))
+        #expect(!EnvironmentURLPolicy.fileURL(URL(fileURLWithPath: "/tmp/vpstudio/env"), isInside: root))
+    }
+
+    @Test func fileURLInsideDirectoryRejectsSymlinkEscapes() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vpstudio-env-policy-\(UUID().uuidString)", isDirectory: true)
+        let managedRoot = tempRoot.appendingPathComponent("managed", isDirectory: true)
+        let outsideRoot = tempRoot.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: managedRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let outsideFile = outsideRoot.appendingPathComponent("escape.hdr")
+        _ = FileManager.default.createFile(atPath: outsideFile.path, contents: Data())
+        let symlink = managedRoot.appendingPathComponent("escape.hdr")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: outsideFile)
+
+        #expect(!EnvironmentURLPolicy.fileURL(symlink, isInside: managedRoot))
+    }
+
+    @Test func bundleResourcePathsRejectTraversalComponents() {
+        #expect(EnvironmentURLPolicy.bundleResourceURL(relativePath: "../SkyDomePreview.png", in: .main) == nil)
+        #expect(EnvironmentURLPolicy.bundleResourceURL(relativePath: "Environments/../SkyDomePreview.png", in: .main) == nil)
+        #expect(EnvironmentURLPolicy.bundleResourceURL(relativePath: "Environments\\SkyDomePreview.png", in: .main) == nil)
+    }
+}
+
 // MARK: - CuratedEnvironmentPreset Model Tests
 
 @Suite
@@ -293,7 +347,7 @@ struct EnvironmentCatalogManagerBehaviorTests {
         #expect(skyDome?.environmentTag == GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey)
     }
 
-    @Test func bootstrapActivatesSkyDomeWhenNothingElseActive() async throws {
+    @Test func bootstrapSeedsSkyDomeWithoutSelectingItWhenNothingElseActive() async throws {
         let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-active.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -304,8 +358,103 @@ struct EnvironmentCatalogManagerBehaviorTests {
         try await manager.bootstrapCuratedAssets()
 
         let active = try await manager.activeAsset()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        let fallback = try await manager.asset(matchingTag: GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey)
+        #expect(active == nil)
+        #expect(preferred == nil)
+        #expect(fallback?.id == EnvironmentCatalogManager.bundledSkyDomeID)
+    }
+
+    @Test func bootstrapClearsLegacyImplicitSkyDomeSelectionWithoutPreferredEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-legacy-default.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        try await database.saveEnvironmentAsset(EnvironmentAsset(
+            id: EnvironmentCatalogManager.bundledSkyDomeID,
+            name: "Sky Dome",
+            sourceType: .bundled,
+            assetPath: EnvironmentCatalogManager.bundledSkyDomeAssetPath,
+            isActive: true
+        ))
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        try await manager.bootstrapCuratedAssets()
+
+        let active = try await manager.activeAsset()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+        #expect(active == nil)
+        #expect(preferred == nil)
+        #expect(cleared == nil)
+    }
+
+    @Test func bootstrapPreservesExplicitPreferredSkyDomeSelection() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-preferred-default.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        try await database.saveEnvironmentAsset(EnvironmentAsset(
+            id: EnvironmentCatalogManager.bundledSkyDomeID,
+            name: "Sky Dome",
+            sourceType: .bundled,
+            assetPath: EnvironmentCatalogManager.bundledSkyDomeAssetPath,
+            isActive: true
+        ))
+        try await database.setSetting(
+            key: SettingsKeys.preferredEnvironment,
+            value: EnvironmentCatalogManager.bundledSkyDomeID
+        )
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        try await manager.bootstrapCuratedAssets()
+
+        let active = try await manager.activeAsset()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
         #expect(active?.id == EnvironmentCatalogManager.bundledSkyDomeID)
-        #expect(active?.isActive == true)
+        #expect(preferred == EnvironmentCatalogManager.bundledSkyDomeID)
+    }
+
+    @Test func bootstrapRespectsExplicitlyClearedActiveSelection() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-cleared-active.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        try await manager.bootstrapCuratedAssets()
+        try await manager.clearActiveAsset()
+        try await manager.bootstrapCuratedAssets()
+
+        let active = try await manager.activeAsset()
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+        #expect(active == nil)
+        #expect(cleared == "1")
+    }
+
+    @Test func activatingAssetClearsExplicitStandardRoomSelection() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-activate-after-clear.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        try await manager.bootstrapCuratedAssets()
+        try await manager.clearActiveAsset()
+        try await manager.activateAsset(id: EnvironmentCatalogManager.bundledSkyDomeID)
+
+        let active = try await manager.activeAsset()
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        #expect(active?.id == EnvironmentCatalogManager.bundledSkyDomeID)
+        #expect(cleared == nil)
+        #expect(preferred == EnvironmentCatalogManager.bundledSkyDomeID)
     }
 
     @Test func bootstrapIsIdempotentForSkyDome() async throws {
@@ -425,8 +574,10 @@ struct EnvironmentCatalogManagerBehaviorTests {
         let (database, rootDir) = try await makeDatabase(named: "manager-resolved-existing.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = EnvironmentCatalogManager(database: database)
-        let file = rootDir.appendingPathComponent("existing.hdr")
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        let file = envDir.appendingPathComponent("existing.hdr")
         try Data("hdr".utf8).write(to: file)
 
         let asset = EnvironmentAsset(id: "e", name: "E", sourceType: .imported, assetPath: file.path)
@@ -438,8 +589,9 @@ struct EnvironmentCatalogManagerBehaviorTests {
         let (database, rootDir) = try await makeDatabase(named: "manager-resolved-missing.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = EnvironmentCatalogManager(database: database)
-        let missingPath = rootDir.appendingPathComponent("missing.hdr").path
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        let missingPath = envDir.appendingPathComponent("missing.hdr").path
         let asset = EnvironmentAsset(id: "m", name: "M", sourceType: .imported, assetPath: missingPath)
         let url = await manager.resolvedAssetURL(for: asset)
         #expect(url == nil)
@@ -473,13 +625,29 @@ struct EnvironmentCatalogManagerBehaviorTests {
         let (database, rootDir) = try await makeDatabase(named: "manager-resolved-no-prefix.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = EnvironmentCatalogManager(database: database)
-        let file = rootDir.appendingPathComponent("real.hdr")
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        let file = envDir.appendingPathComponent("real.hdr")
         try Data("hdr".utf8).write(to: file)
 
         let asset = EnvironmentAsset(id: "np", name: "NP", sourceType: .imported, assetPath: file.path)
         let url = await manager.resolvedAssetURL(for: asset)
         #expect(url == file)
+    }
+
+    @Test func resolvedAssetURLRejectsImportedPathOutsideManagedDirectory() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-resolved-external.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        let file = rootDir.appendingPathComponent("external.hdr")
+        try Data("hdr".utf8).write(to: file)
+
+        let asset = EnvironmentAsset(id: "external", name: "External", sourceType: .imported, assetPath: file.path)
+        let url = await manager.resolvedAssetURL(for: asset)
+        #expect(url == nil)
     }
 
     @Test func immersiveSpaceIDForBundledWithUnknownExtension() async throws {
@@ -791,6 +959,28 @@ struct EnvironmentCatalogManagerBehaviorTests {
         #expect(try await manager.fetchAssets().isEmpty)
     }
 
+    @Test func deleteAssetDoesNotRemoveExternalImportedPath() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-delete-external.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let externalFile = rootDir.appendingPathComponent("external.hdr")
+        try Data("do-not-delete".utf8).write(to: externalFile)
+        let asset = EnvironmentAsset(
+            id: "external",
+            name: "External",
+            sourceType: .imported,
+            assetPath: externalFile.path
+        )
+        try await database.saveEnvironmentAsset(asset)
+
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        try await manager.deleteAsset(id: asset.id)
+
+        #expect(FileManager.default.fileExists(atPath: externalFile.path))
+        #expect(try await manager.fetchAssets().isEmpty)
+    }
+
     @Test func fetchAssetsReturnsEmptyInitially() async throws {
         let (database, rootDir) = try await makeDatabase(named: "manager-fetch-empty.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -847,6 +1037,40 @@ struct EnvironmentCatalogManagerBehaviorTests {
 
         let assets = try await manager.fetchAssets()
         #expect(!assets.contains(where: { $0.id == "orphan" }))
+    }
+
+    @Test func bootstrapPrunesActiveOrphanAndClearsPreferredEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-bootstrap-active-orphan.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let orphan = EnvironmentAsset(
+            id: "active-orphan",
+            name: "Deleted Panorama",
+            sourceType: .imported,
+            assetPath: rootDir.appendingPathComponent("missing.hdr").path,
+            isActive: true
+        )
+        try await database.saveEnvironmentAsset(orphan)
+        try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: orphan.id)
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: nil)
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+
+        try await manager.bootstrapCuratedAssets()
+
+        let assets = try await manager.fetchAssets()
+        let active = try await manager.activeAsset()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+
+        #expect(!assets.contains(where: { $0.id == orphan.id }))
+        #expect(assets.contains(where: { $0.id == EnvironmentCatalogManager.bundledSkyDomeID }))
+        #expect(active == nil)
+        #expect(preferred == nil)
+        #expect(cleared == "1")
     }
 
     @Test func missingResolvedAssetURLDoesNotCrash() async throws {
@@ -910,6 +1134,24 @@ struct EnvironmentCatalogManagerBehaviorTests {
         try Data("fake-png".utf8).write(to: source)
         let imported = try await manager.importEnvironment(from: source)
         #expect(imported.assetPath.hasSuffix(".png"))
+    }
+
+    @Test func importEnvironmentNormalizesUppercasePanoramaExtensionAndYawOffset() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-import-uppercase-png.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true }
+        )
+        let source = rootDir.appendingPathComponent("PANO.PNG")
+        try Data("fake-png".utf8).write(to: source)
+
+        let imported = try await manager.importEnvironment(from: source)
+
+        #expect(imported.assetPath.hasSuffix(".png"))
+        #expect(imported.hdriYawOffset == 0)
     }
 
     @Test func importEnvironmentStillRejectsTXTAfterRefactor() async throws {
@@ -992,6 +1234,33 @@ struct EnvironmentCatalogManagerBehaviorTests {
         defer { NotificationCenter.default.removeObserver(token) }
 
         try await manager.activateAsset(id: imported.id)
+
+        // Give the internal Task a moment to post.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(received == true)
+    }
+
+    @MainActor
+    @Test func clearActiveAssetPostsEnvironmentsDidChangeNotification() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-clear-notification.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+
+        var received = false
+        let token = NotificationCenter.default.addObserver(
+            forName: .environmentsDidChange,
+            object: nil,
+            queue: .main
+        ) { _ in
+            received = true
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        try await manager.clearActiveAsset()
 
         // Give the internal Task a moment to post.
         try await Task.sleep(nanoseconds: 100_000_000)

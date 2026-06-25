@@ -119,7 +119,7 @@ struct SeriesPrimaryPlayPolicyTests {
     @Test func accessibilityHintForSeriesWithoutSelection() {
         #expect(
             SeriesPrimaryPlayPolicy.accessibilityHint(mediaType: .series, hasSelectedEpisode: false)
-            == "Choose an episode before loading streams."
+            == "Moves to episode choices before loading streams."
         )
     }
 

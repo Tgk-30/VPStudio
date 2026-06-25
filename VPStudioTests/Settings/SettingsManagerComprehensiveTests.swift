@@ -184,6 +184,7 @@ struct SettingsManagerComprehensiveTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let secretKeyList = [
+            SettingsKeys.omdbApiKey,
             SettingsKeys.tmdbApiKey,
             SettingsKeys.openSubtitlesApiKey,
             SettingsKeys.openAIApiKey,
@@ -328,6 +329,26 @@ struct SettingsManagerComprehensiveTests {
         #expect(fetched == nil)
     }
 
+    @Test func getMetadataApiKeyUsesOMDbKey() async throws {
+        let (manager, _, _, tempDir) = try await makeTempSettingsManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await manager.setValue("omdb-key-123", forKey: SettingsKeys.omdbApiKey)
+
+        let fetched = try await manager.getMetadataApiKey()
+        #expect(fetched == "omdb-key-123")
+    }
+
+    @Test func getMetadataApiKeyDoesNotFallbackToLegacyTMDBKey() async throws {
+        let (manager, _, _, tempDir) = try await makeTempSettingsManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await manager.setValue("legacy-tmdb-key", forKey: SettingsKeys.tmdbApiKey)
+
+        let fetched = try await manager.getMetadataApiKey()
+        #expect(fetched == nil)
+    }
+
     @Test func getPreferredQualityDefaultsTo1080p() async throws {
         let (manager, _, _, tempDir) = try await makeTempSettingsManager()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -468,6 +489,7 @@ struct SettingsManagerComprehensiveTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let allSecretKeys = [
+            SettingsKeys.omdbApiKey,
             SettingsKeys.tmdbApiKey,
             SettingsKeys.openSubtitlesApiKey,
             SettingsKeys.openAIApiKey,

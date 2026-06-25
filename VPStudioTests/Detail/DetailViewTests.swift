@@ -312,7 +312,7 @@ final class DetailViewTests {
             #expect(result.contains("imdb.com"))
         }
 
-        @Test func shareItemWithTMDBMovie() {
+        @Test func shareItemWithLegacyTMDBMovieFallsBackToTitle() {
             let result = DetailPresentationPolicy.shareItem(
                 previewID: "local-123",
                 previewTitle: "Inception",
@@ -321,12 +321,10 @@ final class DetailViewTests {
                 mediaTitle: nil,
                 mediaTMDBID: nil
             )
-            #expect(result.contains("themoviedb.org"))
-            #expect(result.contains("movie"))
-            #expect(result.contains("27205"))
+            #expect(result == "Inception")
         }
 
-        @Test func shareItemWithTMDbSeries() {
+        @Test func shareItemWithLegacyTMDBSeriesFallsBackToTitle() {
             let result = DetailPresentationPolicy.shareItem(
                 previewID: "local-456",
                 previewTitle: "Breaking Bad",
@@ -335,9 +333,7 @@ final class DetailViewTests {
                 mediaTitle: nil,
                 mediaTMDBID: nil
             )
-            #expect(result.contains("themoviedb.org"))
-            #expect(result.contains("tv"))
-            #expect(result.contains("1396"))
+            #expect(result == "Breaking Bad")
         }
 
         @Test func shareItemPrefersMediaTitleOverPreview() {

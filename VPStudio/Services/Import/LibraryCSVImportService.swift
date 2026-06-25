@@ -753,15 +753,7 @@ actor LibraryCSVImportService {
     }
 
     private static func parseIMDbID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        if let directMatch = raw.range(of: "tt\\d+", options: .regularExpression) {
-            return String(raw[directMatch]).lowercased()
-        }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("tt"), trimmed.dropFirst(2).allSatisfy(\.isNumber) {
-            return trimmed.lowercased()
-        }
-        return nil
+        IMDbIdentifierPolicy.firstID(in: raw)
     }
 
     private static func parseMediaType(_ raw: String?) -> MediaType {

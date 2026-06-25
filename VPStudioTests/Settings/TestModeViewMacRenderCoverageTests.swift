@@ -17,6 +17,8 @@ struct TestModeViewMacRenderCoverageTests {
         #expect(TestScreenLaunchPolicy.screen(for: "Movie Detail") == .detailMovie)
         #expect(TestScreenLaunchPolicy.screen(for: "detail_series") == .detailSeries)
         #expect(TestScreenLaunchPolicy.screen(for: "DOWNLOADS") == .downloads)
+        #expect(TestScreenLaunchPolicy.screen(for: "environment-picker") == .environmentPicker)
+        #expect(TestScreenLaunchPolicy.screen(for: "Environment Settings") == .environmentSettings)
     }
 
     @Test
@@ -29,8 +31,12 @@ struct TestModeViewMacRenderCoverageTests {
             "detailSeries",
             "library",
             "downloads",
+            "environmentsTab",
+            "environmentPicker",
+            "environmentSettings",
             "player",
             "settings",
+            "setupPreferences",
         ])
         #expect(TestScreen.allCases.allSatisfy { !$0.title.isEmpty })
         #expect(TestScreen.allCases.allSatisfy { !$0.subtitle.isEmpty })

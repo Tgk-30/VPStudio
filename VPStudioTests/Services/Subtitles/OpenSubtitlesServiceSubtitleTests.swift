@@ -805,6 +805,72 @@ struct OpenSubtitlesServiceDownloadHandlingTests {
         #expect(!result.url.isEmpty)
     }
 
+    @Test func downloadFirstMatchCanSearchWithIMDbBackedLookupIDs() async throws {
+        let searchResponse = """
+        {
+            "data": [{
+                "id": 501,
+                "attributes": {
+                    "language": "en",
+                    "release": "Dune.2021",
+                    "ratings": 8.0,
+                    "download_count": 100,
+                    "hearing_impaired": false,
+                    "files": [{"file_id": 502, "file_name": "Dune.2021.srt"}]
+                }
+            }]
+        }
+        """
+        let fileURLResponse = #"{"link":"https://cdn.example.com/Dune.2021.srt"}"#
+        let subtitleContent = "1\n00:00:01,000 --> 00:00:02,000\nDownloaded\n"
+
+        final class QueryRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _subtitleQueryItems: [URLQueryItem] = []
+            var subtitleQueryItems: [URLQueryItem] {
+                lock.lock(); defer { lock.unlock() }
+                return _subtitleQueryItems
+            }
+            func record(_ items: [URLQueryItem]) {
+                lock.lock(); defer { lock.unlock() }
+                _subtitleQueryItems = items
+            }
+        }
+        let recorder = QueryRecorder()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            if url.path.contains("/subtitles") {
+                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                recorder.record(components?.queryItems ?? [])
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (response, Data(searchResponse.utf8))
+            }
+            if url.path.contains("/download") {
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (response, Data(fileURLResponse.utf8))
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(subtitleContent.utf8))
+        }
+
+        let service = OpenSubtitlesService(apiKey: "key", session: session)
+        let result = try await service.downloadFirstMatch(
+            imdbId: "movie-imdb-TT1160419",
+            tmdbId: nil,
+            query: "Dune 2021",
+            languages: ["en"],
+            season: nil,
+            episode: nil
+        )
+
+        let values = Dictionary(uniqueKeysWithValues: recorder.subtitleQueryItems.map { ($0.name, $0.value ?? "") })
+        #expect(values["imdb_id"] == "1160419")
+        #expect(values["tmdb_id"] == nil)
+        #expect(values["query"] == "Dune 2021")
+        #expect(result.fileName == "Dune.2021.srt")
+    }
+
     @Test func downloadFirstMatchThrowsNoSubtitlesFoundWhenEmpty() async {
         let session = makeStubSession { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!

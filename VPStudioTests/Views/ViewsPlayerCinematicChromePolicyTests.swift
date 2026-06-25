@@ -66,7 +66,7 @@ struct PlayerCinematicChromePolicyTestsViewsViewsplayercinematicchromepolicytest
 
     @Test("Controls dock bottom padding")
     func controlsDockBottomPadding() {
-        #expect(PlayerCinematicChromePolicy.controlsDockBottomPadding == 18)
+        #expect(PlayerCinematicChromePolicy.controlsDockBottomPadding == 56)
     }
 
     @Test("Transport card horizontal padding")

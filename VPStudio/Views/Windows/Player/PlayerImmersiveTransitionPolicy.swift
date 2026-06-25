@@ -1,6 +1,27 @@
 import Foundation
 
 enum PlayerImmersiveTransitionPolicy {
+    static let transitionBusyMessage = "Finish the current environment transition before changing rooms."
+    static let cinemaAlreadyOpenMessage = "Cinema Environment is already open."
+
+    static func missingAssetMessage(assetName: String) -> String {
+        let trimmedName = assetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmedName.isEmpty ? "this environment" : "\"\(trimmedName)\""
+        return "Environment file missing for \(displayName). Re-import it from Settings."
+    }
+
+    static func environmentAlreadyOpenMessage(assetName: String) -> String {
+        let trimmedName = assetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmedName.isEmpty ? "Environment" : "\"\(trimmedName)\""
+        return "\(displayName) is already open."
+    }
+
+    static func openFailedMessage(assetName: String) -> String {
+        let trimmedName = assetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmedName.isEmpty ? "this environment" : "\"\(trimmedName)\""
+        return "Could not open \(displayName). Try another environment or re-import it from Settings."
+    }
+
     enum EnvironmentOpenPlan: Equatable {
         case alreadyOpen
         case switchAndOpen
@@ -35,9 +56,22 @@ enum PlayerImmersiveTransitionPolicy {
     static func environmentOpenPlan(
         requestedAssetID: String,
         selectedAssetID: String?,
+        activeEnvironment: EnvironmentType?,
         isImmersiveSpaceOpen: Bool
     ) -> EnvironmentOpenPlan {
-        requestedAssetID == selectedAssetID && isImmersiveSpaceOpen ? .alreadyOpen : .switchAndOpen
+        let normalizedRequestedAssetID = normalizedID(requestedAssetID)
+        guard !normalizedRequestedAssetID.isEmpty,
+              normalizedRequestedAssetID == normalizedID(selectedAssetID),
+              isImmersiveSpaceOpen else {
+            return .switchAndOpen
+        }
+
+        switch activeEnvironment {
+        case .customEnvironment, .hdriSkybox:
+            return .alreadyOpen
+        case .cinemaEnvironment, nil:
+            return .switchAndOpen
+        }
     }
 
     static func cinemaOpenPlan(
@@ -85,5 +119,9 @@ enum PlayerImmersiveTransitionPolicy {
             message: "Memory pressure detected. Closed immersive space to stabilize playback.",
             reason: .memoryPressure
         )
+    }
+
+    private static func normalizedID(_ id: String?) -> String {
+        id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }

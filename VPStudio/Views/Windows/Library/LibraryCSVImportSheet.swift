@@ -365,9 +365,12 @@ struct LibraryCSVImportSheet: View {
                 guard !disablesAutomaticTasks else { return }
                 Task { await refreshExistingFolderOptions() }
             }
+            .onAppear {
+                guard enablesRuntimeImportControls else { return }
+                onRuntimeImportControlsReady?()
+            }
             .modifier(LibraryCSVImportControlHandlers(
                 isEnabled: enablesRuntimeImportControls,
-                onReady: onRuntimeImportControlsReady,
                 onImportFiles: { urls in
                     Task { await importCSVFiles(.success(urls)) }
                 },
@@ -755,16 +758,11 @@ struct LibraryCSVImportSheet: View {
 
 private struct LibraryCSVImportControlHandlers: ViewModifier {
     let isEnabled: Bool
-    let onReady: (@MainActor () -> Void)?
     let onImportFiles: ([URL]) -> Void
     let onImportFolder: (URL) -> Void
 
     func body(content: Content) -> some View {
         content
-            .onAppear {
-                guard isEnabled else { return }
-                onReady?()
-            }
             .onReceive(NotificationCenter.default.publisher(for: .libraryCSVImportControlImportFiles)) { notification in
                 guard isEnabled, let urls = notification.object as? [URL] else { return }
                 onImportFiles(urls)

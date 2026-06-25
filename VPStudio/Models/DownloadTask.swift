@@ -71,8 +71,7 @@ struct DownloadTask: Codable, Sendable, Identifiable, Equatable, FetchableRecord
     }
 
     var posterURL: URL? {
-        guard let path = posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w342\(path)")
+        MediaArtworkURLPolicy.url(for: posterPath, legacyTMDBSizePath: "w342")
     }
 
     var episodeSortKey: Int {

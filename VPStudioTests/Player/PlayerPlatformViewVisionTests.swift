@@ -344,7 +344,9 @@ struct PlayerPlatformViewVisionTests {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
             #expect(hostedOverlay.host.view.bounds.size == CGSize(width: 320, height: 180), "\(name) should lay out")
-            #expect(hostedOverlay.host.view.subviews.isEmpty == false, "\(name) should render a host subtree")
+            #expect(hostedOverlay.host.view.window === window, "\(name) should attach to the visible test window")
+            #expect(hostedOverlay.host.view.isHidden == false, "\(name) should keep the hosted view visible")
+            #expect(hostedOverlay.host.view.alpha > 0, "\(name) should keep the hosted view opaque")
             tearDownWindow(window)
         }
     }

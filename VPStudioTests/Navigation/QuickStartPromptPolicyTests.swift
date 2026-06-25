@@ -63,6 +63,14 @@ struct QuickStartPromptPolicyTests {
                 promptSuppressed: true
             ) == false
         )
+        #expect(
+            QuickStartPromptPolicy.shouldShowPrompt(
+                setupRecommendationNeeded: true,
+                promptDismissed: false,
+                selectedTab: .discover,
+                visualSetupSurfaceAvailable: true
+            ) == false
+        )
     }
 }
 

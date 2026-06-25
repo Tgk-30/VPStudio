@@ -10,6 +10,12 @@ enum NavigationChromePolicy {
     }
 }
 
+enum BottomTabOrnamentPolicy {
+    static let visionYOffset: CGFloat = 8
+    static let visionRegularChromeScale: CGFloat = 1.14
+    static let visionCompactChromeScale: CGFloat = 1.08
+}
+
 enum BottomTabAction: Equatable {
     case select(SidebarTab)
     case openEnvironmentPicker
@@ -68,9 +74,14 @@ enum QuickStartPromptPolicy {
         setupRecommendationNeeded: Bool,
         promptDismissed: Bool,
         selectedTab: SidebarTab,
-        promptSuppressed: Bool = false
+        promptSuppressed: Bool = false,
+        visualSetupSurfaceAvailable: Bool = false
     ) -> Bool {
-        setupRecommendationNeeded && !promptDismissed && !promptSuppressed && selectedTab == .discover
+        setupRecommendationNeeded
+            && !promptDismissed
+            && !promptSuppressed
+            && !visualSetupSurfaceAvailable
+            && selectedTab == .discover
     }
 }
 
@@ -82,6 +93,37 @@ enum RootLaunchOverlayPolicy {
         isBootstrapping && TestScreenLaunchPolicy.screen(for: qaTestScreenRawValue) == nil
     }
 }
+
+#if os(macOS)
+private struct QATestScreenPresentationModifier: ViewModifier {
+    @Binding var screen: TestScreen?
+    let appState: AppState
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $screen) { screen in
+                TestScreenSheet(screen: screen)
+                    .environment(appState)
+                    .frame(minWidth: 900, minHeight: 600)
+        }
+    }
+}
+#elseif os(visionOS)
+private struct QATestScreenPresentationModifier: ViewModifier {
+    @Binding var screen: TestScreen?
+    let appState: AppState
+
+    func body(content: Content) -> some View {
+        content
+            .fullScreenCover(item: $screen) { screen in
+                TestScreenSheet(screen: screen)
+                    .environment(appState)
+        }
+    }
+}
+#else
+#error("QATestScreenPresentationModifier supports macOS and visionOS only.")
+#endif
 
 #if os(macOS) || os(visionOS)
 private struct MainWindowPlayerTerminationModifier: ViewModifier {
@@ -134,6 +176,7 @@ struct ContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @State private var isShowingEnvironmentPicker = false
+    @State private var environmentPickerError: String?
     #endif
 
     @MainActor
@@ -203,12 +246,12 @@ struct ContentView: View {
         .sheet(isPresented: $state.isShowingSetup) {
             SetupWizardView()
         }
-        // QA visual screens render full-window (not a narrow sheet) so previews match
-        // the production presentation and screenshots aren't clipped by sheet insets.
-        .fullScreenCover(item: $qaPresentedTestScreen) { screen in
-            TestScreenSheet(screen: screen)
-                .environment(appState)
-        }
+        // QA visual screens render full-window where the API is available; macOS
+        // package builds use a sheet because fullScreenCover(item:) is unavailable.
+        .modifier(QATestScreenPresentationModifier(
+            screen: $qaPresentedTestScreen,
+            appState: appState
+        ))
         .overlay(alignment: .top) {
             if isShowingQuickStartPrompt, state.selectedTab == .discover {
                 QuickStartPromptView(
@@ -265,6 +308,12 @@ struct ContentView: View {
                let layout = NavigationLayout(rawValue: savedLayout) {
                 appState.navigationLayout = layout
             }
+            if let qaSelectedTab = QARuntimeOptions.selectedTab {
+                appState.selectedTab = qaSelectedTab
+            }
+            if let qaNavigationLayout = QARuntimeOptions.navigationLayout {
+                appState.navigationLayout = qaNavigationLayout
+            }
             await refreshRootBadgeCounts()
             await appState.runQATraktRefreshIfRequested()
             RuntimeMemoryDiagnostics.capture(
@@ -276,7 +325,8 @@ struct ContentView: View {
                 setupRecommendationNeeded: appState.setupRecommendationNeeded,
                 promptDismissed: softSetupPromptDismissed,
                 selectedTab: state.selectedTab,
-                promptSuppressed: QARuntimeOptions.suppressQuickStartPrompt
+                promptSuppressed: QARuntimeOptions.suppressQuickStartPrompt,
+                visualSetupSurfaceAvailable: true
             ) {
                 isShowingQuickStartPrompt = true
             }
@@ -289,7 +339,8 @@ struct ContentView: View {
                     setupRecommendationNeeded: appState.setupRecommendationNeeded,
                     promptDismissed: softSetupPromptDismissed,
                     selectedTab: state.selectedTab,
-                    promptSuppressed: QARuntimeOptions.suppressQuickStartPrompt
+                    promptSuppressed: QARuntimeOptions.suppressQuickStartPrompt,
+                    visualSetupSurfaceAvailable: true
                 )
             }
             await refreshRootBadgeCounts()
@@ -309,7 +360,7 @@ struct ContentView: View {
             guard !disablesAutomaticTasks else { return }
             scheduleDownloadBadgeRefresh()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
             guard !disablesAutomaticTasks else { return }
             scheduleSettingsBadgeRefresh()
         }
@@ -348,6 +399,7 @@ struct ContentView: View {
                     settingsWarningCount: settingsWarningCount
                 )
                 .environment(appState)
+                .offset(y: BottomTabOrnamentPolicy.visionYOffset)
             }
         }
         .ornament(attachmentAnchor: .scene(.leading), contentAlignment: .trailing) {
@@ -369,13 +421,34 @@ struct ContentView: View {
                     Task { await openEnvironment(asset) }
                 },
                 onDismiss: {
-                    Task { await dismissEnvironmentIfNeeded(reason: .userInitiated) }
+                    Task {
+                        guard await dismissEnvironmentIfNeeded(reason: .userInitiated) else {
+                            environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                            return
+                        }
+                    }
                 },
                 onSelectCinema: {
                     Task { await openCinemaEnvironment() }
+                },
+                onClear: {
+                    Task { await clearEnvironmentSelection() }
                 }
             )
             .environment(appState)
+        }
+        .alert(
+            "Environment Error",
+            isPresented: Binding(
+                get: { environmentPickerError != nil },
+                set: { isPresented in
+                    if !isPresented { environmentPickerError = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(environmentPickerError ?? "Unknown error")
         }
         #else
         .safeAreaInset(edge: .bottom) {
@@ -562,7 +635,8 @@ struct ContentView: View {
             snapshot.activeIndexerCount = configs.filter(\.isActive).count
         }
 
-        snapshot.hasTMDBKey = await hasNonEmptyString(for: SettingsKeys.tmdbApiKey)
+        let metadataApiKey = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
+        snapshot.hasMetadataKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         snapshot.hasOpenSubtitlesKey = await hasNonEmptyString(for: SettingsKeys.openSubtitlesApiKey)
 
         if let assets = try? await appState.environmentCatalogManager.fetchAssets() {
@@ -612,12 +686,21 @@ struct ContentView: View {
     #if os(visionOS)
     private func openCinemaEnvironment() async {
         if appState.activeEnvironment == .cinemaEnvironment, appState.isImmersiveSpaceOpen {
-            await dismissEnvironmentIfNeeded(reason: .userInitiated)
+            guard await dismissEnvironmentIfNeeded(reason: .userInitiated) else {
+                environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
             return
         }
 
-        await dismissEnvironmentIfNeeded(reason: .switchingEnvironment)
-        guard appState.beginImmersiveTransition() else { return }
+        guard await dismissEnvironmentIfNeeded(reason: .switchingEnvironment) else {
+            environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            return
+        }
+        guard appState.beginImmersiveTransition() else {
+            environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            return
+        }
         let result = await openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)
         switch result {
         case .opened:
@@ -631,14 +714,31 @@ struct ContentView: View {
 
     private func openEnvironment(_ asset: EnvironmentAsset) async {
         if asset.id == appState.selectedEnvironmentAsset?.id, appState.isImmersiveSpaceOpen {
-            await dismissEnvironmentIfNeeded(reason: .userInitiated)
+            guard await dismissEnvironmentIfNeeded(reason: .userInitiated) else {
+                environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
             return
         }
 
-        await dismissEnvironmentIfNeeded(reason: .switchingEnvironment)
-        await appState.activateEnvironmentAsset(asset)
+        guard await ensureImportedEnvironmentAssetExists(asset) else {
+            environmentPickerError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+            return
+        }
+        guard await dismissEnvironmentIfNeeded(reason: .switchingEnvironment) else {
+            environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            return
+        }
+        guard await appState.activateEnvironmentAsset(asset) else {
+            environmentPickerError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+            return
+        }
 
-        guard appState.beginImmersiveTransition() else { return }
+        guard appState.beginImmersiveTransition() else {
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+            environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            return
+        }
         let spaceID = await appState.environmentCatalogManager.immersiveSpaceID(for: asset)
         let result = await openImmersiveSpace(id: spaceID)
         switch result {
@@ -646,16 +746,42 @@ struct ContentView: View {
             break
         case .error, .userCancelled:
             appState.cancelImmersiveTransition()
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+            environmentPickerError = PlayerImmersiveTransitionPolicy.openFailedMessage(assetName: asset.name)
         @unknown default:
             appState.cancelImmersiveTransition()
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+            environmentPickerError = PlayerImmersiveTransitionPolicy.openFailedMessage(assetName: asset.name)
         }
     }
 
-    private func dismissEnvironmentIfNeeded(reason: ImmersiveDismissReason) async {
-        guard appState.isImmersiveSpaceOpen else { return }
-        guard appState.beginImmersiveTransition() else { return }
+    private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
+        guard asset.sourceType == .imported else { return true }
+        if await appState.environmentCatalogManager.resolvedAssetURL(for: asset) != nil {
+            return true
+        }
+
+        try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
+        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        return false
+    }
+
+    @discardableResult
+    private func dismissEnvironmentIfNeeded(reason: ImmersiveDismissReason) async -> Bool {
+        guard appState.isImmersiveSpaceOpen else { return true }
+        guard appState.beginImmersiveTransition() else { return false }
         appState.stageImmersiveDismiss(reason: reason)
         await dismissImmersiveSpace()
+        appState.completeImmersiveDismissIfStillPending()
+        return true
+    }
+
+    private func clearEnvironmentSelection() async {
+        guard await dismissEnvironmentIfNeeded(reason: .userInitiated) else {
+            environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            return
+        }
+        await appState.clearEnvironmentSelection()
     }
     #endif
 }
@@ -669,19 +795,20 @@ private struct QuickStartPromptView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "sparkles")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.vpRed)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Quick Start")
                         .font(.headline)
                     Text(QuickStartPromptPolicy.bodyCopy)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.76))
                 }
                 Spacer(minLength: 0)
                 Button(action: onDismiss) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
+                        .font(.title2)
+                        .foregroundStyle(.white.opacity(0.72))
                         .accessibilityLabel("Dismiss quick start")
                 }
                 .buttonStyle(.plain)
@@ -701,12 +828,39 @@ private struct QuickStartPromptView: View {
                 .buttonStyle(.bordered)
             }
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(.white.opacity(0.12))
+        .foregroundStyle(.white)
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.12),
+                            Color.vpRed.opacity(0.08),
+                            Color.black.opacity(0.14),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.30),
+                            Color.vpRed.opacity(0.18),
+                            Color.white.opacity(0.08),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        }
+        .glassShadow()
         .frame(maxWidth: 760)
     }
 
@@ -733,13 +887,13 @@ struct VPBottomTabBar: View {
     /// while regular layouts keep the current 25% upscale from production.
     private var chromeScale: CGFloat {
         if QARuntimeOptions.forceCompactNavScale {
-            return 1.1
+            return BottomTabOrnamentPolicy.visionCompactChromeScale
         }
 
         if horizontalSizeClass == .compact || verticalSizeClass == .compact {
-            return 1.1
+            return BottomTabOrnamentPolicy.visionCompactChromeScale
         }
-        return 1.25
+        return BottomTabOrnamentPolicy.visionRegularChromeScale
     }
     #else
     private var chromeScale: CGFloat { 1 }
@@ -858,7 +1012,10 @@ struct EnvironmentsTabView: View {
     @State private var environments: [EnvironmentAsset] = []
     @State private var isLoading = true
     @State private var environmentLoadTask: Task<Void, Never>?
+    @State private var installingPresetIDs: Set<String> = []
+    @State private var environmentError: String?
     private let disablesAutomaticTasks: Bool
+    private let onlinePresets = EnvironmentCatalogManager.onlinePresets
 
     init(
         initialEnvironments: [EnvironmentAsset] = [],
@@ -872,10 +1029,8 @@ struct EnvironmentsTabView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Text("Choose an immersive environment to enhance your viewing experience.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 18) {
+                environmentHeader
 
                 if isLoading {
                     LoadingOverlay(
@@ -885,41 +1040,28 @@ struct EnvironmentsTabView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
                 } else {
-                    let columns = [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 16)]
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        CinemaEnvironmentPreviewCard(
-                            isActive: appState.activeEnvironment == .cinemaEnvironment,
-                            isImmersiveOpen: appState.isImmersiveSpaceOpen,
-                            onSelect: { Task { await selectCinemaEnvironment() } }
-                        )
-
-                        ForEach(environments) { asset in
-                            EnvironmentPreviewCard(
-                                asset: asset,
-                                isActive: asset.id == appState.selectedEnvironmentAsset?.id,
-                                isImmersiveOpen: appState.isImmersiveSpaceOpen,
-                                onSelect: { Task { await selectEnvironment(asset) } }
-                            )
-                        }
-                    }
+                    environmentGrid
 
                     if environments.isEmpty {
                         importPrompt
                     }
 
-                    if appState.isImmersiveSpaceOpen {
-                        Button(role: .destructive) {
-                            Task { await exitEnvironment() }
-                        } label: {
-                            Label("Exit Environment", systemImage: "xmark.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
+                    environmentStatusPanel
+                    onlinePresetsSection
+
+                    if let environmentError {
+                        environmentErrorBanner(environmentError)
                     }
                 }
             }
-            .padding(24)
+            .frame(maxWidth: 1040, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 128)
+        }
+        .background {
+            VPBackground()
+                .ignoresSafeArea()
         }
         .navigationTitle("Environments")
         .task {
@@ -936,20 +1078,270 @@ struct EnvironmentsTabView: View {
         }
     }
 
+    private var environmentHeader: some View {
+        HStack(alignment: .center, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Playback Room")
+                    .font(.title2.weight(.semibold))
+                Text("Pick the room before playback, or leave it on the standard windowed room.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 16)
+
+            VPBadge(
+                text: environmentStatusBadgeText,
+                systemImage: environmentStatusIconName,
+                tint: appState.isImmersiveSpaceOpen ? .green : VPColor.textSecondary
+            )
+        }
+    }
+
+    private var environmentGrid: some View {
+        let columns = [GridItem(.adaptive(minimum: 286, maximum: 340), spacing: 18)]
+        return LazyVGrid(columns: columns, spacing: 18) {
+            NoEnvironmentPreviewCard(
+                status: EnvironmentPreviewRowPolicy.standardRoomStatus(
+                    selectedAssetID: appState.selectedEnvironmentAsset?.id,
+                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                ),
+                onSelect: { Task { await clearEnvironmentSelection() } }
+            )
+
+            CinemaEnvironmentPreviewCard(
+                status: EnvironmentPreviewRowPolicy.cinemaStatus(
+                    activeEnvironment: appState.activeEnvironment,
+                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                ),
+                onSelect: { Task { await selectCinemaEnvironment() } }
+            )
+
+            ForEach(environments) { asset in
+                EnvironmentPreviewCard(
+                    asset: asset,
+                    status: EnvironmentPreviewRowPolicy.assetStatus(
+                        assetID: asset.id,
+                        selectedAssetID: appState.selectedEnvironmentAsset?.id,
+                        activeEnvironment: appState.activeEnvironment,
+                        isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                    ),
+                    managedImportedAssetDirectory: appState.environmentCatalogManager.managedImportedAssetsDirectory,
+                    onSelect: { Task { await selectEnvironment(asset) } }
+                )
+            }
+        }
+    }
+
+    private var environmentStatusPanel: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: environmentStatusIconName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(appState.isImmersiveSpaceOpen ? .green : VPColor.textSecondary)
+                .frame(width: 42, height: 42)
+                .background(.white.opacity(0.06), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(environmentStatusTitle)
+                    .font(.headline)
+                Text(environmentStatusDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 12)
+
+            if appState.isImmersiveSpaceOpen || appState.selectedEnvironmentAsset != nil {
+                Button(role: appState.isImmersiveSpaceOpen ? .destructive : nil) {
+                    Task { await clearEnvironmentSelection() }
+                } label: {
+                    Label(
+                        appState.isImmersiveSpaceOpen ? "Exit Environment" : "Standard Room",
+                        systemImage: appState.isImmersiveSpaceOpen ? "xmark.circle" : "rectangle.dashed"
+                    )
+                }
+                .buttonStyle(VPButtonStyle(kind: appState.isImmersiveSpaceOpen ? .destructive : .secondary))
+            }
+        }
+        .padding(16)
+        .glassSurface(.raised, cornerRadius: 18)
+    }
+
+    @ViewBuilder
+    private var onlinePresetsSection: some View {
+        if !onlinePresets.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("More Environments")
+                        .font(.headline)
+                    Text("Add curated HDRI rooms, then select the card above before playback.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(onlinePresets) { preset in
+                    onlinePresetRow(preset)
+                }
+            }
+        }
+    }
+
+    private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View {
+        let isInstalled = isPresetInstalled(preset)
+        let isInstalling = installingPresetIDs.contains(preset.id)
+
+        return HStack(alignment: .center, spacing: 14) {
+            Image(systemName: preset.provider == .polyHaven ? "pano" : "shippingbox")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 38, height: 38)
+                .background(.white.opacity(0.06), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(preset.name)
+                    .font(.subheadline.weight(.semibold))
+                Text(preset.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text("\(preset.provider.displayName) • \(preset.licenseName)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 12)
+
+            if isInstalled {
+                Label("Added", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.green.opacity(0.12), in: Capsule())
+            } else {
+                Button {
+                    Task { await installPreset(preset) }
+                } label: {
+                    if isInstalling {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Adding")
+                        }
+                    } else {
+                        Label("Add", systemImage: "arrow.down.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(minWidth: 82)
+                .disabled(isInstalling)
+            }
+        }
+        .padding(14)
+        .glassSurface(.raised, cornerRadius: 14)
+    }
+
+    private func environmentErrorBanner(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            Spacer(minLength: 12)
+            Button("Dismiss") { environmentError = nil }
+                .font(.caption)
+        }
+        .padding(12)
+        .glassSurface(.raised, cornerRadius: 12)
+    }
+
+    private var environmentStatusTitle: String {
+        if appState.isImmersiveSpaceOpen {
+            if appState.activeEnvironment == .cinemaEnvironment {
+                return "Cinema Environment is active"
+            }
+            if let selected = appState.selectedEnvironmentAsset {
+                return "\(selected.name) is active"
+            }
+            return "Environment is active"
+        }
+
+        if let selected = appState.selectedEnvironmentAsset {
+            return "\(selected.name) is selected"
+        }
+
+        return "Standard Room"
+    }
+
+    private var environmentStatusDescription: String {
+        if appState.isImmersiveSpaceOpen {
+            return "This room is currently open. Exit it before switching back to the standard room."
+        }
+
+        if appState.selectedEnvironmentAsset != nil {
+            return "The selected room will open when playback starts."
+        }
+
+        return "No immersive environment is selected."
+    }
+
+    private var environmentStatusBadgeText: String {
+        if appState.isImmersiveSpaceOpen {
+            return "Active"
+        }
+
+        if appState.selectedEnvironmentAsset != nil {
+            return "Selected"
+        }
+
+        return "Standard"
+    }
+
+    private var environmentStatusIconName: String {
+        if appState.activeEnvironment == .cinemaEnvironment {
+            return "theatermasks"
+        }
+        if appState.selectedEnvironmentAsset != nil {
+            return "mountain.2"
+        }
+        return "rectangle.dashed"
+    }
+
     private var importPrompt: some View {
-        VStack(spacing: 12) {
+        HStack(spacing: 16) {
             Image(systemName: "mountain.2")
-                .font(.system(size: 34))
+                .font(.system(size: 30, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text("No imported environments")
-                .font(.headline)
-            Text("Download environments from Settings to use them here.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("No imported environments")
+                    .font(.headline)
+                Text("Add a curated room below, or import your own files from Settings.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 16)
+
+            Button {
+                appState.selectedTab = .settings
+            } label: {
+                Label("Open Settings", systemImage: "slider.horizontal.3")
+            }
+            .buttonStyle(VPButtonStyle(kind: .secondary))
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        .padding(18)
+        .glassSurface(.raised, cornerRadius: 18)
     }
 
     @MainActor
@@ -973,51 +1365,144 @@ struct EnvironmentsTabView: View {
         isLoading = false
     }
 
+    private func isPresetInstalled(_ preset: CuratedEnvironmentPreset) -> Bool {
+        environments.contains { environment in
+            environment.sourceType == .imported
+                && environment.name == preset.name
+                && environment.sourceAttributionURL == preset.sourceAttributionURL
+        }
+    }
+
+    @MainActor
+    private func installPreset(_ preset: CuratedEnvironmentPreset) async {
+        guard !isPresetInstalled(preset),
+              !installingPresetIDs.contains(preset.id) else {
+            return
+        }
+
+        environmentError = nil
+        installingPresetIDs.insert(preset.id)
+        defer { installingPresetIDs.remove(preset.id) }
+
+        do {
+            _ = try await appState.environmentCatalogManager.importCuratedPreset(preset)
+            await coalescedLoadEnvironments()
+        } catch {
+            environmentError = error.localizedDescription
+        }
+    }
+
     private func selectEnvironment(_ asset: EnvironmentAsset) async {
         if asset.id == appState.selectedEnvironmentAsset?.id, appState.isImmersiveSpaceOpen {
-            await exitEnvironment()
+            guard await exitEnvironment() else {
+                environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
+            return
+        }
+        guard await ensureImportedEnvironmentAssetExists(asset) else {
+            environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+            await coalescedLoadEnvironments()
             return
         }
         if appState.isImmersiveSpaceOpen {
-            guard appState.beginImmersiveTransition() else { return }
+            guard appState.beginImmersiveTransition() else {
+                environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
             appState.stageImmersiveDismiss(reason: .switchingEnvironment)
             await dismissImmersiveSpace()
+            appState.completeImmersiveDismissIfStillPending()
         }
-        await appState.activateEnvironmentAsset(asset)
-        guard appState.beginImmersiveTransition() else { return }
+        guard await appState.activateEnvironmentAsset(asset) else {
+            environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+            await coalescedLoadEnvironments()
+            return
+        }
+        guard appState.beginImmersiveTransition() else {
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+            environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            await coalescedLoadEnvironments()
+            return
+        }
         let spaceID = await appState.environmentCatalogManager.immersiveSpaceID(for: asset)
         let result = await openImmersiveSpace(id: spaceID)
         switch result {
         case .opened: break
-        case .error, .userCancelled: appState.cancelImmersiveTransition()
-        @unknown default: appState.cancelImmersiveTransition()
+        case .error, .userCancelled:
+            appState.cancelImmersiveTransition()
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+            environmentError = PlayerImmersiveTransitionPolicy.openFailedMessage(assetName: asset.name)
+            await coalescedLoadEnvironments()
+        @unknown default:
+            appState.cancelImmersiveTransition()
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+            environmentError = PlayerImmersiveTransitionPolicy.openFailedMessage(assetName: asset.name)
+            await coalescedLoadEnvironments()
         }
+    }
+
+    private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
+        guard asset.sourceType == .imported else { return true }
+        if await appState.environmentCatalogManager.resolvedAssetURL(for: asset) != nil {
+            return true
+        }
+
+        try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
+        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        return false
     }
 
     private func selectCinemaEnvironment() async {
         if appState.activeEnvironment == .cinemaEnvironment, appState.isImmersiveSpaceOpen {
-            await exitEnvironment()
+            guard await exitEnvironment() else {
+                environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
             return
         }
         if appState.isImmersiveSpaceOpen {
-            guard appState.beginImmersiveTransition() else { return }
+            guard appState.beginImmersiveTransition() else {
+                environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
             appState.stageImmersiveDismiss(reason: .switchingEnvironment)
             await dismissImmersiveSpace()
+            appState.completeImmersiveDismissIfStillPending()
         }
-        guard appState.beginImmersiveTransition() else { return }
+        guard appState.beginImmersiveTransition() else {
+            environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+            return
+        }
         let result = await openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)
         switch result {
         case .opened: break
-        case .error, .userCancelled: appState.cancelImmersiveTransition()
-        @unknown default: appState.cancelImmersiveTransition()
+        case .error, .userCancelled:
+            appState.cancelImmersiveTransition()
+        @unknown default:
+            appState.cancelImmersiveTransition()
         }
     }
 
-    private func exitEnvironment() async {
-        guard appState.isImmersiveSpaceOpen else { return }
-        guard appState.beginImmersiveTransition() else { return }
+    @discardableResult
+    private func exitEnvironment() async -> Bool {
+        guard appState.isImmersiveSpaceOpen else { return true }
+        guard appState.beginImmersiveTransition() else { return false }
         appState.stageImmersiveDismiss(reason: .userInitiated)
         await dismissImmersiveSpace()
+        appState.completeImmersiveDismissIfStillPending()
+        return true
+    }
+
+    private func clearEnvironmentSelection() async {
+        if appState.isImmersiveSpaceOpen {
+            guard await exitEnvironment() else {
+                environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
+                return
+            }
+        }
+        await appState.clearEnvironmentSelection()
+        await coalescedLoadEnvironments()
     }
 }
 #else

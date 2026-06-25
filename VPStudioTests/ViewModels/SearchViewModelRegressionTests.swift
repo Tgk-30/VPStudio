@@ -537,9 +537,8 @@ struct SearchViewModelRegressionTests {
         timeout: Duration = .milliseconds(2000),
         _ condition: @MainActor () -> Bool
     ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        try await Self.waitUntil(timeout: timeout) {
-            await condition()
+        try await Self.waitUntil(timeout: timeout) { () async -> Bool in
+            condition()
         }
     }
 
@@ -616,6 +615,8 @@ struct SearchViewModelRegressionTests {
         let initialGeneration = viewModel.searchGeneration
 
         viewModel.configure(apiKey: "   ")
+        #expect(viewModel.searchGeneration == initialGeneration)
+
         viewModel.query = "no-op"
         viewModel.search()
 
@@ -627,7 +628,7 @@ struct SearchViewModelRegressionTests {
         }
 
         #expect(await trackingStub.getSearchCallCount() == 1)
-        #expect(viewModel.searchGeneration == initialGeneration)
+        #expect(viewModel.searchGeneration == initialGeneration + 1)
     }
 
     @Test
@@ -672,7 +673,7 @@ struct SearchViewModelRegressionTests {
 
         viewModel.search()
         #expect(viewModel.searchGeneration == generationAfterSearch + 1)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(await service.getSearchCalls().count == 1)
     }
 
@@ -991,7 +992,7 @@ struct SearchViewModelRegressionTests {
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
         viewModel.clearAllFilters()
 
-        #expect(viewModel.searchGeneration == 3)
+        #expect(viewModel.searchGeneration == 4)
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.query == "apollo")
 
@@ -1204,15 +1205,17 @@ struct SearchViewModelRegressionTests {
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.query == "apollo")
         #expect(viewModel.currentPage == 1)
-        #expect(viewModel.totalPages == 3)
+        #expect(viewModel.totalPages == 1)
 
         try await Self.waitUntil {
-            await stub.getSearchCalls().count == 2 && viewModel.results.map(\.id) == ["search-page-1"]
+            let calls = await stub.getSearchCalls()
+            return calls.count == 3 && viewModel.results.map(\.id) == ["search-page-1"]
         }
 
         let calls = await stub.getSearchCalls()
-        #expect(calls.count == 2)
-        #expect(calls.map { $0.page } == [1, 1])
+        #expect(calls.count == 3)
+        #expect(calls.map { $0.page } == [1, 2, 1])
+        #expect(viewModel.totalPages == 3)
     }
 
     @Test
@@ -1253,7 +1256,7 @@ struct SearchViewModelRegressionTests {
 
         #expect(viewModel.currentPage == 1)
         #expect(viewModel.totalPages == 3)
-        #expect(viewModel.searchGeneration == 1)
+        #expect(viewModel.searchGeneration == 2)
 
         viewModel.loadMore()
         #expect(viewModel.isLoadingMore == true)
@@ -1263,21 +1266,23 @@ struct SearchViewModelRegressionTests {
             viewModel.isLoadingMore == false
         }
 
-        #expect(viewModel.searchGeneration == 3)
+        #expect(viewModel.searchGeneration == 4)
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.activeMoodCard == nil)
         #expect(viewModel.query == "apollo")
         #expect(viewModel.currentPage == 1)
 
         try await Self.waitUntil {
-            await stub.getSearchCalls().count == 2 && viewModel.results.map(\.id) == ["genre-search-page-1"]
+            let calls = await stub.getSearchCalls()
+            return calls.count == 3 && viewModel.results.map(\.id) == ["genre-search-page-1"]
         }
 
         let calls = await stub.getSearchCalls()
-        #expect(calls.count == 2)
+        #expect(calls.count == 3)
         #expect(calls[0].query == "apollo")
         #expect(calls[1].query == "apollo")
-        #expect(calls.map { $0.page } == [1, 1])
+        #expect(calls[2].query == "apollo")
+        #expect(calls.map { $0.page } == [1, 2, 1])
     }
 
     @Test
@@ -1341,7 +1346,7 @@ struct SearchViewModelRegressionTests {
         #expect(await stub.getGenreLoadCalls().count == 1)
 
         viewModel.clear()
-        #expect(viewModel.searchGeneration == initialGeneration + 1)
+        #expect(viewModel.searchGeneration == initialGeneration + 2)
         #expect(viewModel.query.isEmpty)
         #expect(viewModel.queryDraft.isEmpty)
         #expect(viewModel.results.isEmpty)
@@ -1676,7 +1681,8 @@ struct SearchViewModelRegressionTests {
 
         viewModel.loadMore()
         try await Self.waitUntil {
-            await stub.getSearchCalls().count == 2 && viewModel.currentPage == 2
+            let calls = await stub.getSearchCalls()
+            return calls.count == 2 && viewModel.currentPage == 2
         }
 
         #expect(viewModel.results.map(\.id) == ["apollo-page-1-year-2024", "apollo-page-2-year-2024"])
@@ -1739,14 +1745,14 @@ struct SearchViewModelRegressionTests {
             discoverCalls = await stub.getDiscoverCalls()
         }
         #expect(discoverCalls.count == 1)
-        #expect(viewModel.results.map(\.id) == ["genre-page-1"])
+        #expect(viewModel.results.isEmpty)
         #expect(viewModel.selectedGenre == genre)
 
         viewModel.queryDraft = "   "
 
         discoverCalls = await stub.getDiscoverCalls()
         for _ in 0..<80 {
-            if discoverCalls.count == 2 {
+            if discoverCalls.count > 1 {
                 break
             }
             try await Task.sleep(for: .milliseconds(25))
@@ -1754,8 +1760,9 @@ struct SearchViewModelRegressionTests {
         }
 
         #expect(viewModel.selectedGenre == genre)
-        #expect(discoverCalls.count == 2)
-        #expect(viewModel.results.map(\.id) == ["genre-page-1"])
+        #expect(discoverCalls.count == 1)
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.queryDraft == "   ")
     }
 
     @Test
@@ -1802,7 +1809,8 @@ struct SearchViewModelRegressionTests {
         viewModel.loadMore()
 
         try await Self.waitUntil {
-            await stub.getSearchCalls().count == 2 && viewModel.currentPage == 2
+            let calls = await stub.getSearchCalls()
+            return calls.count == 2 && viewModel.currentPage == 2
         }
 
         #expect(viewModel.results.map(\.id) == ["orion-page-1-year-2024", "orion-page-2-year-2023"])
@@ -1847,7 +1855,8 @@ struct SearchViewModelRegressionTests {
         viewModel.loadMore()
 
         try await Self.waitUntil {
-            await stub.getSearchCalls().count == 2 && viewModel.currentPage == 2
+            let calls = await stub.getSearchCalls()
+            return calls.count == 2 && viewModel.currentPage == 2
         }
 
         #expect(viewModel.results.map(\.id) == ["omega-page-1-a", "omega-page-1-b", "omega-page-2-c"])
@@ -1875,15 +1884,9 @@ struct SearchViewModelRegressionTests {
 
         viewModel.queryDraft = "   "
 
+        try await Task.sleep(for: .milliseconds(80))
         discoverCalls = await stub.getDiscoverCalls()
-        for _ in 0..<80 {
-            if discoverCalls.count == 2 {
-                break
-            }
-            try await Task.sleep(for: .milliseconds(20))
-            discoverCalls = await stub.getDiscoverCalls()
-        }
-        #expect(discoverCalls.count == 2)
+        #expect(discoverCalls.count == 1)
 
         viewModel.clearAllFilters()
 
@@ -1892,11 +1895,11 @@ struct SearchViewModelRegressionTests {
 
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.query.isEmpty)
-        #expect(viewModel.queryDraft.isEmpty)
+        #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.yearFilter == nil)
         #expect(viewModel.languageFilters == ["en-US"])
         #expect(viewModel.sortOption == .popularityDesc)
-        #expect(discoverCalls.count == 2)
+        #expect(discoverCalls.count == 1)
     }
 }

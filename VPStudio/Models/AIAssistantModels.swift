@@ -26,7 +26,12 @@ enum AIProviderKind: String, Codable, CaseIterable, Sendable, Identifiable, Hash
 }
 
 struct AIMovieRecommendation: Codable, Sendable, Equatable, Identifiable {
+    var canonicalIMDbID: String? {
+        IMDbIdentifierPolicy.normalizedID(from: imdbId)
+    }
+
     var id: String {
+        if let imdbId = canonicalIMDbID { return "\(type.rawValue)-imdb-\(imdbId)" }
         if let tmdbId { return "\(type.rawValue)-tmdb-\(tmdbId)" }
         return "\(title.lowercased())-\(year ?? 0)-\(type.rawValue)"
     }
@@ -35,6 +40,7 @@ struct AIMovieRecommendation: Codable, Sendable, Equatable, Identifiable {
     var year: Int?
     var type: MediaType
     var reason: String
+    var imdbId: String?
     var tmdbId: Int?
     var score: Double?
 }
@@ -56,10 +62,16 @@ struct AICompareResult: Sendable {
 extension AIMovieRecommendation {
     func toMediaPreview() -> MediaPreview {
         let id: String
-        if let tmdbId {
+        let resolvedTMDBID: Int?
+        if let imdbId = canonicalIMDbID {
+            id = imdbId
+            resolvedTMDBID = nil
+        } else if let tmdbId {
             id = "\(type.rawValue)-tmdb-\(tmdbId)"
+            resolvedTMDBID = tmdbId
         } else {
             id = "\(title.lowercased().replacingOccurrences(of: " ", with: "-"))-\(year ?? 0)-\(type.rawValue)"
+            resolvedTMDBID = nil
         }
         return MediaPreview(
             id: id,
@@ -68,7 +80,7 @@ extension AIMovieRecommendation {
             year: year,
             posterPath: nil,
             imdbRating: nil,
-            tmdbId: tmdbId
+            tmdbId: resolvedTMDBID
         )
     }
 }

@@ -512,7 +512,7 @@ struct SearchViewModelPerformanceTests {
 
         #expect(viewModel.hasAttemptedTextSearch == false)
         #expect(viewModel.submittedQuery.isEmpty)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.explorePhase == .error)
     }
 

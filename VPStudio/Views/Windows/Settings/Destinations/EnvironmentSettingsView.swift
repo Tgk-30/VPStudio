@@ -5,15 +5,20 @@ import UniformTypeIdentifiers
 
 struct EnvironmentSettingsView: View {
     @Environment(AppState.self) private var appState
+    #if os(visionOS)
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    #endif
     @State private var assets: [EnvironmentAsset] = []
     @State private var isImporting = false
-    @State private var isImportingSkybox = false
+    @State private var isImportingEnvironment = false
     @State private var environmentError: String?
     @State private var installingPresetIDs: Set<String> = []
+    @State private var deletingAssetIDs: Set<String> = []
     @State private var autoOpenEnvironment = true
     @State private var autoSuggestEnvironmentByGenre = true
     @State private var assetLoadTask: Task<Void, Never>?
     @State private var pendingDeletion: PendingDeletion?
+    private let disablesAutomaticTasks: Bool
 
     private let onlinePresets = EnvironmentCatalogManager.onlinePresets
 
@@ -22,14 +27,27 @@ struct EnvironmentSettingsView: View {
         let name: String
     }
 
+    init(
+        initialAssets: [EnvironmentAsset] = [],
+        initialAutoOpenEnvironment: Bool = true,
+        initialAutoSuggestEnvironmentByGenre: Bool = true,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _assets = State(initialValue: initialAssets)
+        _autoOpenEnvironment = State(initialValue: initialAutoOpenEnvironment)
+        _autoSuggestEnvironmentByGenre = State(initialValue: initialAutoSuggestEnvironmentByGenre)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
+
     var body: some View {
         List {
             Section("Curated Environments") {
+                standardRoomRow
                 builtInCinemaRow
 
                 let bundled = assets.filter { $0.sourceType == .bundled }
                 if bundled.isEmpty {
-                    Text("Import a .hdr, .exr, .usdz, or .reality asset to add custom environments.")
+                    Text("Import \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList) files to add custom environments.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(bundled) { asset in
@@ -58,21 +76,29 @@ struct EnvironmentSettingsView: View {
                     }
                 }
 
-                Button("Import Environment (.hdr / .exr / .usdz / .reality)", systemImage: "square.and.arrow.down") {
+                Button {
                     isImporting = true
+                } label: {
+                    if isImportingEnvironment {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Importing")
+                        }
+                    } else {
+                        Label("Import Environment", systemImage: "square.and.arrow.down")
+                    }
                 }
+                .disabled(isImportingEnvironment)
 
-                Button("Import 360 Skybox (HDR/EXR/PNG/JPG)", systemImage: "pano") {
-                    isImportingSkybox = true
-                }
-                Text("360 skyboxes wrap around your space. HDR/EXR give true high-dynamic-range lighting; PNG/JPG import as standard (LDR) panoramas.")
+                Text("Supports \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList). HDR/EXR provide high-dynamic-range skyboxes, PNG/JPG/JPEG import as standard panoramas, and USDZ/Reality files import as scenes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Playback") {
                 Toggle("Auto-open environment on playback", isOn: $autoOpenEnvironment)
-                Text("When enabled, the active environment opens automatically when you start a video.")
+                Text("When enabled, the selected environment opens automatically when you start a video.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -83,13 +109,19 @@ struct EnvironmentSettingsView: View {
             }
 
             Section {
-                Text("Active environment is applied when opening immersive playback.")
+                Text("Selected environments open when immersive playback starts; Active means the room is currently open.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background {
+            VPMenuBackground()
+                .ignoresSafeArea()
+        }
         .navigationTitle("Environments")
         .task {
+            guard !disablesAutomaticTasks else { return }
             await coalescedLoadAssets()
             autoOpenEnvironment = (try? await appState.settingsManager.getBool(
                 key: SettingsKeys.autoOpenEnvironment, default: true
@@ -99,15 +131,19 @@ struct EnvironmentSettingsView: View {
             )) ?? true
         }
         .refreshable {
+            guard !disablesAutomaticTasks else { return }
             await coalescedLoadAssets()
         }
         .onChange(of: autoOpenEnvironment) { _, newValue in
+            guard !disablesAutomaticTasks else { return }
             saveAutoOpenEnvironment(newValue)
         }
         .onChange(of: autoSuggestEnvironmentByGenre) { _, newValue in
+            guard !disablesAutomaticTasks else { return }
             saveAutoSuggestEnvironmentByGenre(newValue)
         }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleAssetLoad()
         }
         .onDisappear {
@@ -119,44 +155,7 @@ struct EnvironmentSettingsView: View {
             allowedContentTypes: supportedEnvironmentTypes,
             allowsMultipleSelection: false
         ) { result in
-            Task {
-                do {
-                    let urls = try result.get()
-                    guard let url = urls.first else { return }
-                    let hasSecurityScope = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if hasSecurityScope {
-                            url.stopAccessingSecurityScopedResource()
-                        }
-                    }
-                    _ = try await appState.environmentCatalogManager.importEnvironment(from: url)
-                    await coalescedLoadAssets()
-                } catch {
-                    environmentError = error.localizedDescription
-                }
-            }
-        }
-        .fileImporter(
-            isPresented: $isImportingSkybox,
-            allowedContentTypes: supportedSkyboxTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            Task {
-                do {
-                    let urls = try result.get()
-                    guard let url = urls.first else { return }
-                    let hasSecurityScope = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if hasSecurityScope {
-                            url.stopAccessingSecurityScopedResource()
-                        }
-                    }
-                    _ = try await appState.environmentCatalogManager.importEnvironment(from: url)
-                    await coalescedLoadAssets()
-                } catch {
-                    environmentError = error.localizedDescription
-                }
-            }
+            Task { await handleFileImport(result) }
         }
         .alert(
             "Environment Error",
@@ -181,12 +180,46 @@ struct EnvironmentSettingsView: View {
             presenting: pendingDeletion
         ) { deletion in
             Button("Delete", role: .destructive) {
+                pendingDeletion = nil
                 Task { await deleteImportedEnvironment(id: deletion.id) }
             }
             Button("Cancel", role: .cancel) {}
         } message: { deletion in
             Text("Delete \(deletion.name)? This removes the imported environment from disk.")
         }
+    }
+
+    @ViewBuilder
+    private var standardRoomRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "rectangle.dashed")
+                .font(.title3)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Standard Room")
+                    .font(.headline)
+                Text("No immersive environment")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Use the default windowed playback space.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            let status = standardRoomStatus
+            if status.isHighlighted {
+                EnvironmentSettingsStatusLabel(status: status)
+            } else {
+                Button("Use") {
+                    Task { await clearActiveEnvironment() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -209,11 +242,9 @@ struct EnvironmentSettingsView: View {
 
             Spacer()
 
-            if appState.activeEnvironment == .cinemaEnvironment,
-               appState.isImmersiveSpaceOpen {
-                Label("Active", systemImage: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
+            let status = cinemaEnvironmentStatus
+            if status.isHighlighted {
+                EnvironmentSettingsStatusLabel(status: status)
             }
         }
         .padding(.vertical, 4)
@@ -221,11 +252,7 @@ struct EnvironmentSettingsView: View {
 
     @ViewBuilder
     private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View {
-        let isInstalled = assets.contains(where: {
-            $0.sourceType == .imported
-                && $0.name == preset.name
-                && $0.sourceAttributionURL == preset.sourceAttributionURL
-        })
+        let isInstalled = isPresetInstalled(preset)
         let isInstalling = installingPresetIDs.contains(preset.id)
 
         VStack(alignment: .leading, spacing: 8) {
@@ -244,7 +271,7 @@ struct EnvironmentSettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
 
-                    if let sourceURL = URL(string: preset.sourceAttributionURL) {
+                    if let sourceURL = EnvironmentURLPolicy.webURL(from: preset.sourceAttributionURL) {
                         Link("Source", destination: sourceURL)
                             .font(.caption2)
                     }
@@ -261,13 +288,17 @@ struct EnvironmentSettingsView: View {
                         Task { await installPreset(preset) }
                     } label: {
                         if isInstalling {
-                            ProgressView()
-                                .controlSize(.small)
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Adding")
+                            }
                         } else {
                             Label("Add", systemImage: "arrow.down.circle")
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .frame(minWidth: 92)
                     .disabled(isInstalling)
                 }
             }
@@ -277,8 +308,11 @@ struct EnvironmentSettingsView: View {
 
     @ViewBuilder
     private func environmentRow(_ asset: EnvironmentAsset) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
+        let status = environmentStatus(for: asset)
+        let isDeleting = isDeletingAsset(asset)
+
+        HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: asset.sourceType == .bundled ? "sparkles" : "square.and.arrow.down")
                     .font(.title3)
                     .frame(width: 24)
@@ -290,7 +324,7 @@ struct EnvironmentSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if asset.sourceType == .imported {
-                        Text(asset.assetPath)
+                        Text(EnvironmentPreviewRowPolicy.assetDetailLabel(for: asset))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
@@ -300,31 +334,51 @@ struct EnvironmentSettingsView: View {
                             .foregroundStyle(.tertiary)
                     }
 
-                    if let source = asset.sourceAttributionURL,
-                       let sourceURL = URL(string: source) {
+                    if let sourceURL = EnvironmentURLPolicy.webURL(from: asset.sourceAttributionURL) {
                         Link("Source", destination: sourceURL)
                             .font(.caption2)
                     }
                 }
 
-                Spacer()
-
-                if asset.isActive {
-                    Label("Active", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                }
+                Spacer(minLength: 12)
             }
+            .layoutPriority(1)
 
-            HStack(spacing: 8) {
-                if !asset.isActive {
+            VStack(alignment: .trailing, spacing: 8) {
+                if isDeleting {
+                    Label("Deleting", systemImage: "hourglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ProgressView()
+                        .controlSize(.small)
+                } else if status.isHighlighted {
+                    EnvironmentSettingsStatusLabel(status: status)
+
+                    Button(environmentActionTitle(for: status)) {
+                        Task { await clearActiveEnvironment() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
                     Button("Activate") {
                         Task {
-                            await appState.activateEnvironmentAsset(asset)
+                            guard await ensureImportedEnvironmentAssetExists(asset) else {
+                                environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+                                await coalescedLoadAssets()
+                                return
+                            }
+                            guard await appState.activateEnvironmentAsset(asset) else {
+                                environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+                                await coalescedLoadAssets()
+                                return
+                            }
                             await coalescedLoadAssets()
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isDeleting)
                 }
 
                 if asset.sourceType == .imported {
@@ -334,38 +388,119 @@ struct EnvironmentSettingsView: View {
                         Label("Delete", systemImage: "trash")
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isDeleting)
                 }
-
-                Spacer()
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+
+    private var standardRoomStatus: EnvironmentPreviewCardStatus {
+        EnvironmentPreviewRowPolicy.standardRoomStatus(
+            selectedAssetID: effectiveSelectedAssetID,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        )
+    }
+
+    private var cinemaEnvironmentStatus: EnvironmentPreviewCardStatus {
+        EnvironmentPreviewRowPolicy.cinemaStatus(
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        )
+    }
+
+    private func environmentStatus(for asset: EnvironmentAsset) -> EnvironmentPreviewCardStatus {
+        EnvironmentPreviewRowPolicy.assetStatus(
+            assetID: asset.id,
+            selectedAssetID: effectiveSelectedAssetID,
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        )
+    }
+
+    private var effectiveSelectedAssetID: String? {
+        EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: appState.selectedEnvironmentAsset?.id,
+            assets: assets
+        )
+    }
+
+    private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
+        guard asset.sourceType == .imported else { return true }
+        if await appState.environmentCatalogManager.resolvedAssetURL(for: asset) != nil {
+            return true
+        }
+
+        try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
+        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        return false
+    }
+
+    private func environmentActionTitle(for status: EnvironmentPreviewCardStatus) -> String {
+        status == .active ? "Exit" : "Clear"
+    }
+
+    private func isDeletingAsset(_ asset: EnvironmentAsset) -> Bool {
+        deletingAssetIDs.contains(normalizedAssetID(asset.id))
+    }
+
+    private func normalizedAssetID(_ id: String) -> String {
+        id.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isPresetInstalled(_ preset: CuratedEnvironmentPreset) -> Bool {
+        assets.contains { asset in
+            asset.sourceType == .imported
+                && asset.name == preset.name
+                && asset.sourceAttributionURL == preset.sourceAttributionURL
+        }
     }
 
     private var supportedEnvironmentTypes: [UTType] {
-        let types = [
-            UTType(filenameExtension: "usdz"),
-            UTType(filenameExtension: "reality"),
-            UTType(filenameExtension: "hdr"),
-            UTType(filenameExtension: "exr"),
-        ].compactMap { $0 }
-        return types.isEmpty ? [.data] : types
-    }
-
-    private var supportedSkyboxTypes: [UTType] {
-        let types = [
-            UTType(filenameExtension: "hdr"),
-            UTType(filenameExtension: "exr"),
-            UTType(filenameExtension: "png"),
-            UTType(filenameExtension: "jpg"),
-            UTType(filenameExtension: "jpeg"),
-        ].compactMap { $0 }
+        let types = EnvironmentImportValidationPolicy.supportedExtensionOrder
+            .compactMap { UTType(filenameExtension: $0) }
         return types.isEmpty ? [.data] : types
     }
 
     @MainActor
+    private func handleFileImport(_ result: Result<[URL], Error>) async {
+        guard !isImportingEnvironment else { return }
+        environmentError = nil
+
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            isImportingEnvironment = true
+            defer { isImportingEnvironment = false }
+
+            let hasSecurityScope = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasSecurityScope {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            do {
+                _ = try await appState.environmentCatalogManager.importEnvironment(from: url)
+                await coalescedLoadAssets()
+            } catch {
+                environmentError = error.localizedDescription
+            }
+
+        case .failure(let error):
+            environmentError = error.localizedDescription
+        }
+    }
+
+    @MainActor
     private func installPreset(_ preset: CuratedEnvironmentPreset) async {
-        guard !installingPresetIDs.contains(preset.id) else { return }
+        guard !isPresetInstalled(preset),
+              !installingPresetIDs.contains(preset.id) else {
+            return
+        }
+
+        environmentError = nil
         installingPresetIDs.insert(preset.id)
         defer { installingPresetIDs.remove(preset.id) }
 
@@ -377,10 +512,48 @@ struct EnvironmentSettingsView: View {
         }
     }
 
+    @discardableResult
+    @MainActor
+    private func clearActiveEnvironment() async -> Bool {
+        #if os(visionOS)
+        if appState.isImmersiveSpaceOpen {
+            guard appState.beginImmersiveTransition() else { return false }
+            appState.stageImmersiveDismiss(reason: .userInitiated)
+            await dismissImmersiveSpace()
+            appState.completeImmersiveDismissIfStillPending()
+        }
+        #endif
+
+        await appState.clearEnvironmentSelection()
+        await coalescedLoadAssets()
+        return true
+    }
+
     @MainActor
     private func deleteImportedEnvironment(id: String) async {
+        let normalizedID = normalizedAssetID(id)
+        guard !normalizedID.isEmpty,
+              !deletingAssetIDs.contains(normalizedID) else {
+            return
+        }
+
+        environmentError = nil
+        deletingAssetIDs.insert(normalizedID)
+        defer { deletingAssetIDs.remove(normalizedID) }
+
         do {
-            try await appState.environmentCatalogManager.deleteAsset(id: id)
+            let isActiveSelection = EnvironmentPreviewRowPolicy.shouldClearActiveSelection(
+                deleting: normalizedID,
+                selectedAssetID: appState.selectedEnvironmentAsset?.id,
+                assets: assets
+            )
+            if isActiveSelection {
+                guard await clearActiveEnvironment() else {
+                    environmentError = "Finish the current environment transition before deleting this environment."
+                    return
+                }
+            }
+            try await appState.environmentCatalogManager.deleteAsset(id: normalizedID)
             await coalescedLoadAssets()
         } catch {
             environmentError = error.localizedDescription
@@ -440,5 +613,21 @@ struct EnvironmentSettingsView: View {
                 }
             }
         }
+    }
+}
+
+private struct EnvironmentSettingsStatusLabel: View {
+    let status: EnvironmentPreviewCardStatus
+
+    var body: some View {
+        if let chip = status.chip {
+            Label(chip.title, systemImage: chip.systemImage)
+                .font(.caption)
+                .foregroundStyle(tint)
+        }
+    }
+
+    private var tint: Color {
+        status == .active ? .green : .blue
     }
 }

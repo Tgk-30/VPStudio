@@ -485,6 +485,7 @@ struct DetailScrollRegressionTests {
             ),
             apiKey: ""
         )
+        await metadata.resetFailure()
 
         await viewModel.loadSeason(2, apiKey: "")
         #expect(viewModel.error != nil)
@@ -526,6 +527,8 @@ private actor ScrollRegressionMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
 }
@@ -552,7 +555,15 @@ private actor DelayedScrollRegressionMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
+
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+        if season == delayedSeason {
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+        return episodesBySeason[season] ?? []
+    }
 
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] {
         if season == delayedSeason {
@@ -582,7 +593,16 @@ private actor FlakySeasonMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
+
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+        if season == failingSeason, failedOnce == false {
+            failedOnce = true
+            throw URLError(.cannotLoadFromNetwork)
+        }
+        return episodesBySeason[season] ?? []
+    }
 
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] {
         if season == failingSeason, failedOnce == false {
@@ -590,6 +610,10 @@ private actor FlakySeasonMetadataProvider: DetailMetadataProviding {
             throw URLError(.cannotLoadFromNetwork)
         }
         return episodesBySeason[season] ?? []
+    }
+
+    func resetFailure() {
+        failedOnce = false
     }
 }
 
@@ -608,6 +632,17 @@ private actor ScrollRegressionIndexerManager: DetailIndexerManaging {
     }
 
     func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
-        []
+        guard type == .series,
+              let episodeToken = query
+                  .split(separator: " ")
+                  .last?
+                  .uppercased(),
+              episodeToken.hasPrefix("S"),
+              let episodeMarker = episodeToken.firstIndex(of: "E"),
+              let season = Int(episodeToken[episodeToken.index(after: episodeToken.startIndex)..<episodeMarker]),
+              let episode = Int(episodeToken[episodeToken.index(after: episodeMarker)...]) else {
+            return resultsByContext["default"] ?? []
+        }
+        return resultsByContext["s\(season)e\(episode)"] ?? []
     }
 }

@@ -261,10 +261,11 @@ struct LibraryImportOutcomePolicyTests {
 @Suite("Library Metadata Hydration Policy")
 struct LibraryMetadataHydrationPolicyTests {
     @Test
-    func candidatesDeduplicateRequestedIDsAndPreferTMDBIDs() {
+    func candidatesDeduplicateRequestedIDsAndUseTitleForLegacyTMDBOnlyItems() {
         let movie = mediaItem(
             id: "movie-local",
             type: .movie,
+            title: "Fight Club",
             tmdbId: 550
         )
 
@@ -274,7 +275,26 @@ struct LibraryMetadataHydrationPolicyTests {
         )
 
         #expect(candidates == [
-            .init(requestedID: "movie-local", detailID: "550", type: .movie),
+            .init(requestedID: "movie-local", detailID: "Fight Club", type: .movie),
+        ])
+    }
+
+    @Test
+    func candidatesPreferEmbeddedIMDbIDOverTitleAndTMDBID() {
+        let movie = mediaItem(
+            id: "movie-imdb-tt0133093",
+            type: .movie,
+            title: "The Matrix",
+            tmdbId: 603
+        )
+
+        let candidates = LibraryMetadataHydrationPolicy.candidates(
+            for: ["local-matrix"],
+            mediaItems: ["local-matrix": movie]
+        )
+
+        #expect(candidates == [
+            .init(requestedID: "local-matrix", detailID: "tt0133093", type: .movie),
         ])
     }
 
@@ -303,7 +323,7 @@ struct LibraryMetadataHydrationPolicyTests {
     }
 
     @Test
-    func candidatesFallbackToIMDbItemIDThenRequestedID() {
+    func candidatesFallbackToIMDbItemIDThenRequestedIDThenTitle() {
         let imdbItem = mediaItem(id: "tt0133093", type: .movie)
         let aliasItem = mediaItem(id: "local-alias", type: .series)
 
@@ -317,13 +337,15 @@ struct LibraryMetadataHydrationPolicyTests {
 
         #expect(candidates == [
             .init(requestedID: "tt0133093", detailID: "tt0133093", type: .movie),
-            .init(requestedID: "tt-series-alias", detailID: "tt-series-alias", type: .series),
+            .init(requestedID: "tt-series-alias", detailID: "Title local-alias", type: .series),
         ])
     }
 
     @Test
     func candidatesIgnoreMissingAndUnresolvableItems() {
-        let localItem = mediaItem(id: "local-only", type: .movie)
+        // Genuinely unresolvable: no IMDb/TMDb id AND no title to search by
+        // (a title is itself a resolution path — see candidatesFallbackTo…Title).
+        let localItem = mediaItem(id: "local-only", type: .movie, title: "")
 
         let candidates = LibraryMetadataHydrationPolicy.candidates(
             for: ["missing", "local-only"],
@@ -336,6 +358,7 @@ struct LibraryMetadataHydrationPolicyTests {
     private func mediaItem(
         id: String,
         type: MediaType = .movie,
+        title: String? = nil,
         posterPath: String? = nil,
         backdropPath: String? = nil,
         tmdbId: Int? = nil
@@ -343,7 +366,7 @@ struct LibraryMetadataHydrationPolicyTests {
         MediaItem(
             id: id,
             type: type,
-            title: "Title \(id)",
+            title: title ?? "Title \(id)",
             posterPath: posterPath,
             backdropPath: backdropPath,
             tmdbId: tmdbId

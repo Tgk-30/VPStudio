@@ -23,7 +23,7 @@ struct DetailSeriesContentCoverageTests {
         #expect(SeriesPrimaryPlayPolicy.title(mediaType: .series, hasSelectedEpisode: true) == "Play")
         #expect(SeriesPrimaryPlayPolicy.title(mediaType: .movie, hasSelectedEpisode: false) == "Play")
 
-        #expect(SeriesPrimaryPlayPolicy.accessibilityHint(mediaType: .series, hasSelectedEpisode: false) == "Choose an episode before loading streams.")
+        #expect(SeriesPrimaryPlayPolicy.accessibilityHint(mediaType: .series, hasSelectedEpisode: false) == "Moves to episode choices before loading streams.")
         #expect(SeriesPrimaryPlayPolicy.accessibilityHint(mediaType: .movie, hasSelectedEpisode: false) == "Searches for streams if needed and opens the first available result.")
     }
 

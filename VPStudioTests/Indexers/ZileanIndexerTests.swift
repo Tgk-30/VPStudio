@@ -113,6 +113,36 @@ struct ZileanIndexerTests {
         #expect(state.path == "/root/custom/dmm/search")
     }
 
+    @Test func baseURLWithApiPathAndEmptyEndpointDoesNotDuplicateApiSegment() async throws {
+        let state = URLProtocolState()
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try #require(request.url)
+            state.path = url.path
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"[{"info_hash":"hash"}]"#.utf8))
+        }
+
+        let indexer = ZileanIndexer(baseURL: "https://zilean.example/api", endpointPath: "", session: session)
+        _ = try await indexer.searchByQuery(query: "Movie", type: MediaType.movie)
+
+        #expect(state.path == "/api/dmm/search")
+    }
+
+    @Test func baseURLWithApiPathAndEmptyEndpointDoesNotDuplicateApiSegmentForIMDbSearch() async throws {
+        let state = URLProtocolState()
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try #require(request.url)
+            state.path = url.path
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"[{"info_hash":"hash"}]"#.utf8))
+        }
+
+        let indexer = ZileanIndexer(baseURL: "https://zilean.example/api", endpointPath: "", session: session)
+        _ = try await indexer.search(imdbId: "tt123", type: MediaType.movie, season: nil, episode: nil)
+
+        #expect(state.path == "/api/dmm/filtered")
+    }
+
     @Test func emptyEndpointPathDefaultsToApiForIMDbSearch() async throws {
         let state = URLProtocolState()
         let session = URLProtocolHarness.makeSession { request in

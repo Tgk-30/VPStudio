@@ -41,12 +41,18 @@ public struct CinemaSettingsPanel: View {
                 .fontWeight(.semibold)
 
             Picker("Preset", selection: $settings.activePreset) {
-                ForEach(CinemaPreset.allCases) { preset in
+                ForEach(CinemaPreset.selectablePresets) { preset in
                     Text(preset.title)
                         .tag(preset)
                 }
             }
             .pickerStyle(.segmented)
+
+            if settings.activePreset == .custom {
+                Label("Custom settings", systemImage: "slider.horizontal.3")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -185,6 +191,8 @@ public struct CinemaSettingsPanel: View {
                 .fontWeight(.semibold)
 
             VStack(alignment: .leading, spacing: 10) {
+                let activePreset = settings.activePreset
+
                 Button {
                     settings.load()
                 } label: {
@@ -200,14 +208,16 @@ public struct CinemaSettingsPanel: View {
                 .buttonStyle(.borderedProminent)
 
                 Button {
+                    guard CinemaPreset.selectablePresets.contains(activePreset) else { return }
                     settings.apply(
-                        preset: settings.activePreset,
+                        preset: activePreset,
                         baseAspectRatio: settings.videoAspectRatio
                     )
                 } label: {
                     Label("Reset to Preset", systemImage: "slider.horizontal.below.rectangle")
                 }
                 .buttonStyle(.bordered)
+                .disabled(!CinemaPreset.selectablePresets.contains(activePreset))
             }
         }
     }

@@ -253,7 +253,7 @@ struct SettingsView: View {
         .onChange(of: query) { _, newValue in
             persistedSearchQuery = newValue
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
             Task { await refreshStatuses() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .indexersDidChange)) { _ in
@@ -503,6 +503,8 @@ struct SettingsView: View {
         switch destination {
         case .debrid:
             DebridSettingsView()
+        case .debridCloud:
+            DebridCloudView()
         case .indexers:
             IndexerSettingsView()
         case .metadata:
@@ -584,7 +586,8 @@ struct SettingsView: View {
             snapshot.activeIndexerCount = configs.filter(\.isActive).count
         }
 
-        snapshot.hasTMDBKey = await hasNonEmptyString(for: SettingsKeys.tmdbApiKey)
+        let metadataApiKey = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
+        snapshot.hasMetadataKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         snapshot.hasOpenSubtitlesKey = await hasNonEmptyString(for: SettingsKeys.openSubtitlesApiKey)
 
         if let assets = try? await appState.environmentCatalogManager.fetchAssets() {

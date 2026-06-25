@@ -60,6 +60,26 @@ struct AIMovieRecommendationCodableTests {
         #expect(decoded.id == "movie-tmdb-27205")
     }
 
+    @Test("AIMovieRecommendation id prefers imdbId when both ids are available")
+    func aimovieRecommendationIdPrefersImdbId() throws {
+        let original = AIMovieRecommendation(
+            title: "Dune",
+            year: 2021,
+            type: .movie,
+            reason: "Great",
+            imdbId: "tt1160419",
+            tmdbId: 438631
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AIMovieRecommendation.self, from: encoded)
+        let preview = decoded.toMediaPreview()
+
+        #expect(decoded.id == "movie-imdb-tt1160419")
+        #expect(preview.id == "tt1160419")
+        #expect(preview.tmdbId == nil)
+    }
+
     @Test("AIMovieRecommendation id falls back to title-year when no tmdbId")
     func aimovieRecommendationIdFallback() throws {
         let original = AIMovieRecommendation(

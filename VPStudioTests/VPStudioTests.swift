@@ -2320,7 +2320,7 @@ struct VPStudioTests {
     @Test func offcloudSelectFilesUsesRequestedFileId() async throws {
         let session = makeStubSession { request in
             let url = request.url ?? URL(string: "https://offcloud.com/api")!
-            if url.path == "/cloud/status" {
+            if url.path == "/api/cloud/status" {
                 let body = """
                 {"requestId":"req-123","fileName":"show.mkv","status":"downloaded"}
                 """

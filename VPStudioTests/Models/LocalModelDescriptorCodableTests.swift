@@ -129,6 +129,7 @@ struct LocalModelDescriptorCodableTests {
     func localModelDescriptorCanTransitionCombinations() {
         let validTransitions: [(LocalModelStatus, LocalModelStatus)] = [
             (.available, .downloading),
+            (.available, .failed),
             (.downloading, .downloaded),
             (.downloading, .paused),
             (.downloading, .failed),
@@ -144,7 +145,6 @@ struct LocalModelDescriptorCodableTests {
 
         let invalidTransitions: [(LocalModelStatus, LocalModelStatus)] = [
             (.available, .paused),
-            (.available, .failed),
             (.downloading, .available),
             (.paused, .downloaded),
             (.downloaded, .available),

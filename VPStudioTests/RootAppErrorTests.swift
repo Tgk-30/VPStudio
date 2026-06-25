@@ -144,6 +144,38 @@ struct AppErrorInitMappingTestsRootapperrortests {
         #expect(mapped == .network(.server(statusCode: 500, message: "Internal Server Error")))
     }
 
+    @Test func omdbErrorUnauthorizedMapped() {
+        let mapped = AppError(OMDbError.unauthorized)
+        #expect(mapped == .network(.unauthorized))
+    }
+
+    @Test func omdbErrorInvalidURLAndInvalidResponseMapped() {
+        #expect(AppError(OMDbError.invalidURL) == .network(.invalidURL("https://www.omdbapi.com/")))
+        #expect(AppError(OMDbError.invalidResponse) == .network(.invalidResponse))
+    }
+
+    @Test func omdbErrorNotFoundAndRateLimitMapped() {
+        #expect(AppError(OMDbError.notFound) == .network(.notFound("OMDb title")))
+        #expect(AppError(OMDbError.apiError("Request limit reached!")) == .network(.rateLimited))
+    }
+
+    @Test func omdbErrorHttpStatusMapped() {
+        #expect(AppError(OMDbError.httpError(401, "Unauthorized")) == .network(.unauthorized))
+        #expect(AppError(OMDbError.httpError(404, "Missing")) == .network(.notFound("Missing")))
+        #expect(AppError(OMDbError.httpError(429, "Too Many Requests")) == .network(.rateLimited))
+        #expect(AppError(OMDbError.httpError(500, "Internal Server Error")) == .network(.server(statusCode: 500, message: "Internal Server Error")))
+    }
+
+    @Test func omdbUnsupportedErrorStaysReadable() {
+        let mapped = AppError(OMDbError.unsupported("OMDb season lookup requires an IMDb ID."))
+        #expect(mapped == .unknown("OMDb season lookup requires an IMDb ID."))
+    }
+
+    @Test func metadataProviderUnsupportedIdentifierMappedToNotFound() {
+        let mapped = AppError(MetadataProviderError.unsupportedIdentifier("movie-imdb-not-valid"))
+        #expect(mapped == .network(.notFound("movie-imdb-not-valid")))
+    }
+
     @Test func unknownErrorWithFallbackUsesFallback() {
         struct Mystery: Error, LocalizedError {
             var errorDescription: String? { nil }
@@ -169,15 +201,15 @@ struct AppErrorInitMappingTestsRootapperrortests {
         #expect(mapped == .unknown("named error"))
     }
 
-    @Test func tmdbSetupRequiredMarksActionableSetupErrorsOnly() {
-        let setup = AppError.tmdbSetupRequired(feature: "Search")
-        let plain = AppError.unknown("Search needs a TMDB API key.")
+    @Test func metadataSetupRequiredMarksActionableSetupErrorsOnly() {
+        let setup = AppError.metadataSetupRequired(feature: "Search")
+        let plain = AppError.unknown("Search needs an OMDb API key.")
         let network = AppError.network(.unauthorized)
 
-        #expect(setup.requiresTMDBSetupAction)
-        #expect(setup.errorDescription?.contains("Search needs a TMDB API key") == true)
-        #expect(!plain.requiresTMDBSetupAction)
-        #expect(!network.requiresTMDBSetupAction)
+        #expect(setup.requiresMetadataSetupAction)
+        #expect(setup.errorDescription?.contains("Search needs an OMDb API key") == true)
+        #expect(!plain.requiresMetadataSetupAction)
+        #expect(!network.requiresMetadataSetupAction)
     }
 }
 

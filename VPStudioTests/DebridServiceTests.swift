@@ -654,7 +654,7 @@ struct RealDebridServiceTests {
         #expect(state.capturedBody == "files=2")
     }
 
-    @Test func selectMatchingEpisodeFilePrefersResolvedExactSizeAndFallsBackToSingleVideo() async throws {
+    @Test func selectMatchingEpisodeFilePrefersResolvedExactSizeAndRejectsUnmatchedSingleVideo() async throws {
         final class State: @unchecked Sendable {
             var requestCount = 0
             var capturedBodies: [String] = []
@@ -695,8 +695,8 @@ struct RealDebridServiceTests {
         )
 
         #expect(exact)
-        #expect(single)
-        #expect(state.capturedBodies == ["files=2", "files=7"])
+        #expect(!single)
+        #expect(state.capturedBodies == ["files=2"])
     }
 
     @Test func selectMatchingEpisodeFileReturnsFalseWhenNoVideoMatchExists() async throws {

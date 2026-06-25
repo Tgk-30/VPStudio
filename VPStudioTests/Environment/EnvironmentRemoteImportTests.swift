@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import VPStudio
 
@@ -38,6 +39,72 @@ struct EnvironmentRemoteImportTests {
     }
 
     @Test
+    func importEnvironmentFromRemoteInfersExtensionlessHDRDownloadFromContentType() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-extensionless-hdr.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "image/vnd.radiance"]
+                )!
+                return (Data("HDR DATA".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/download?asset=cinema")!
+        )
+
+        #expect(result.assetPath.hasSuffix(".hdr"))
+        #expect(FileManager.default.fileExists(atPath: result.assetPath))
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsUnsupportedContentTypeBeforeValidation() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-spoofed-content-type.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let validatorCallCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validatorCallCount.withLock { $0 += 1 }
+                return true
+            },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "text/plain"]
+                )!
+                return (Data("not an hdr".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/spoofed.hdr")!
+            )
+            Issue.record("Expected unsupported file type for mismatched remote content type")
+        } catch EnvironmentCatalogError.unsupportedFileType {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(validatorCallCount.withLock { $0 } == 0)
+    }
+
+    @Test
     func importEnvironmentFromRemoteWithPreferredName() async throws {
         let (database, rootDir) = try await makeDatabase(named: "remote-import-name.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -58,6 +125,74 @@ struct EnvironmentRemoteImportTests {
         )
 
         #expect(result.name == "My Custom Cinema")
+    }
+
+    @Test
+    func importEnvironmentFromRemoteSanitizesPreferredDisplayName() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-sanitized-name.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/some-path.hdr")!,
+            preferredName: "  Cinema/\nHall\tHDRI:4K  "
+        )
+
+        #expect(result.name == "Cinema Hall HDRI 4K")
+    }
+
+    @Test
+    func importEnvironmentFromRemoteSanitizesEncodedSourceName() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-encoded-source-name.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/Cinema%2FHall%0AName.hdr")!
+        )
+
+        #expect(result.name == "Cinema Hall Name")
+    }
+
+    @Test
+    func importEnvironmentFromRemoteCapsLongPreferredDisplayName() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-long-name.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/very-long.hdr")!,
+            preferredName: String(repeating: "A", count: 120)
+        )
+
+        #expect(result.name.count == 80)
     }
 
     @Test
@@ -83,6 +218,33 @@ struct EnvironmentRemoteImportTests {
 
         #expect(result.licenseName == "CC0 1.0 Universal")
         #expect(result.sourceAttributionURL == "https://polyhaven.com/a/sky")
+    }
+
+    @Test
+    func importEnvironmentFromRemoteSanitizesPersistedMetadata() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-sanitized-metadata.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/env.hdr")!,
+            licenseName: "  CC0  ",
+            sourceAttributionURL: " javascript:alert(1) ",
+            previewImagePath: "/etc/passwd"
+        )
+
+        #expect(result.licenseName == "CC0")
+        #expect(result.sourceAttributionURL == nil)
+        #expect(result.previewImagePath == nil)
     }
 
     @Test
@@ -159,6 +321,145 @@ struct EnvironmentRemoteImportTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsOversizeContentLength() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-oversize-content-length.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Content-Length": "\(EnvironmentImportValidationPolicy.maxFileSizeBytes + 1)"
+                    ]
+                )!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/huge.hdr")!
+            )
+            Issue.record("Expected unsupported file type error")
+        } catch EnvironmentCatalogError.unsupportedFileType {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsNonHTTPSBeforeFetching() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-non-https.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            remoteDataFetcher: { url in
+                fetchCount.withLock { $0 += 1 }
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        for rawURL in [
+            "http://example.com/insecure.hdr",
+            "file:///tmp/local.hdr",
+            "ftp://example.com/legacy.hdr"
+        ] {
+            do {
+                _ = try await manager.importEnvironment(fromRemote: URL(string: rawURL)!)
+                Issue.record("Expected HTTPS rejection for \(rawURL)")
+            } catch EnvironmentCatalogError.downloadFailed(let reason) {
+                #expect(reason.contains("HTTPS"))
+            } catch {
+                Issue.record("Unexpected error for \(rawURL): \(error)")
+            }
+        }
+
+        #expect(fetchCount.withLock { $0 } == 0)
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsCredentialURLBeforeFetching() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-credentials.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            remoteDataFetcher: { url in
+                fetchCount.withLock { $0 += 1 }
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://user:password@example.com/secret.hdr")!
+            )
+            Issue.record("Expected credential URL rejection")
+        } catch EnvironmentCatalogError.downloadFailed {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(fetchCount.withLock { $0 } == 0)
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsDowngradedFinalResponseURLBeforeValidation() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-downgrade.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let validatorCallCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validatorCallCount.withLock { $0 += 1 }
+                return true
+            },
+            remoteDataFetcher: { _ in
+                fetchCount.withLock { $0 += 1 }
+                let downgradedURL = URL(string: "http://example.com/redirected.hdr")!
+                let response = HTTPURLResponse(
+                    url: downgradedURL,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/start.hdr")!
+            )
+            Issue.record("Expected HTTPS downgrade rejection")
+        } catch EnvironmentCatalogError.downloadFailed(let reason) {
+            #expect(reason.contains("HTTPS"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(fetchCount.withLock { $0 } == 1)
+        #expect(validatorCallCount.withLock { $0 } == 0)
     }
 
     @Test

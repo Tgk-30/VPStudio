@@ -573,7 +573,8 @@ struct SimklURLConstructionAndResponseValidationTests {
 
         #expect(state.url?.scheme == "https")
         #expect(state.url?.host == "proxy.example")
-        #expect(state.url?.path == "/simkl/sync/all-items/")
+        #expect(URLComponents(url: try #require(state.url), resolvingAgainstBaseURL: false)?
+            .percentEncodedPath == "/simkl/sync/all-items/")
         #expect(URLComponents(url: try #require(state.url), resolvingAgainstBaseURL: false)?
             .queryItems?
             .contains(URLQueryItem(name: "episode_watched_at", value: "yes")) == true)
@@ -581,11 +582,13 @@ struct SimklURLConstructionAndResponseValidationTests {
 
     @Test func getWatchlistJoinsBasePathWithoutTrailingSlash() async throws {
         final class CaptureState: @unchecked Sendable {
-            var path: String?
+            var percentEncodedPath: String?
         }
         let state = CaptureState()
         let session = makeSimklStubSession { request in
-            state.path = request.url?.path
+            state.percentEncodedPath = request.url.flatMap {
+                URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedPath
+            }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data(#"{"movies":[],"shows":[]}"#.utf8))
         }
@@ -599,7 +602,7 @@ struct SimklURLConstructionAndResponseValidationTests {
         await service.setTokens(access: "token", refresh: nil)
         _ = try await service.getWatchlist()
 
-        #expect(state.path == "/simkl/sync/all-items/")
+        #expect(state.percentEncodedPath == "/simkl/sync/all-items/")
     }
 
     @Test(arguments: [

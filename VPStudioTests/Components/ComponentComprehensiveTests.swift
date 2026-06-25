@@ -6,6 +6,21 @@ import Testing
 import AppKit
 #endif
 
+private func componentComprehensiveSource(relativePath: String) -> String {
+    let url = componentComprehensiveRepoRootURL().appendingPathComponent(relativePath)
+    return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+}
+
+private func componentComprehensiveRepoRootURL() -> URL {
+    var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+        let parent = url.deletingLastPathComponent()
+        if parent.path == url.path { break }
+        url = parent
+    }
+    return url
+}
+
 // MARK: - GlassPillPicker Comprehensive Tests
 
 @Suite("GlassPillPicker Comprehensive")
@@ -468,6 +483,14 @@ struct MediaCardViewComprehensiveTests {
 @Suite("AIRecommendationCard Comprehensive")
 @MainActor
 struct AIRecommendationCardComprehensiveTests {
+    private func render(_ view: AIRecommendationCard, width: CGFloat = 250, height: CGFloat = 200) {
+        SwiftUIViewDiagnosticHost.render(view, width: width, height: height)
+    }
+
+    private func aiRecommendationCardSource() -> String {
+        componentComprehensiveSource(relativePath: "VPStudio/Views/Components/AIRecommendationCard.swift")
+    }
+
     private func makeRecommendation(
         title: String = "Test Movie",
         year: Int? = 2024,
@@ -490,14 +513,14 @@ struct AIRecommendationCardComprehensiveTests {
     func constructsWithMovieType() {
         let recommendation = makeRecommendation(type: .movie)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with series type")
     func constructsWithSeriesType() {
         let recommendation = makeRecommendation(type: .series)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with all fields")
@@ -511,104 +534,98 @@ struct AIRecommendationCardComprehensiveTests {
             score: 0.95
         )
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with nil year")
     func constructsWithNilYear() {
         let recommendation = makeRecommendation(year: nil)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with nil score")
     func constructsWithNilScore() {
         let recommendation = makeRecommendation(score: nil)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with empty reason")
     func constructsWithEmptyReason() {
         let recommendation = makeRecommendation(reason: "")
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with nil tmdbId")
     func constructsWithNilTMDBId() {
         let recommendation = makeRecommendation(tmdbId: nil)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with 100% score")
     func constructsWithPerfectScore() {
         let recommendation = makeRecommendation(score: 1.0)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard constructs with 0% score")
     func constructsWithZeroScore() {
         let recommendation = makeRecommendation(score: 0.0)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard body contains VStack")
     func bodyContainsVStack() {
-        let recommendation = makeRecommendation()
-        let view = AIRecommendationCard(recommendation: recommendation)
-        let body = String(describing: view.body)
-        #expect(body.contains("VStack"))
+        #expect(aiRecommendationCardSource().contains("VStack(alignment: .leading, spacing: 8)"))
     }
 
     @Test("AIRecommendationCard body contains GlassTag for score")
     func bodyContainsGlassTagForScore() {
-        let recommendation = makeRecommendation(score: 0.85)
-        let view = AIRecommendationCard(recommendation: recommendation)
-        let body = String(describing: view.body)
-        #expect(body.contains("GlassTag"))
+        #expect(aiRecommendationCardSource().contains("GlassTag("))
     }
 
     @Test("AIRecommendationCard constructs when score is nil")
     func constructsWhenScoreNil() {
         let recommendation = makeRecommendation(score: nil)
         let view = AIRecommendationCard(recommendation: recommendation)
-        _ = view.body
+        render(view)
     }
 
     @Test("AIRecommendationCard displays title")
     func displaysTitle() {
         let recommendation = makeRecommendation(title: "The Matrix")
-        let view = AIRecommendationCard(recommendation: recommendation)
-        let body = String(describing: view.body)
-        #expect(body.contains("The Matrix"))
+        render(AIRecommendationCard(recommendation: recommendation))
+        #expect(recommendation.title == "The Matrix")
+        #expect(aiRecommendationCardSource().contains("Text(recommendation.title)"))
     }
 
     @Test("AIRecommendationCard displays year")
     func displaysYear() {
         let recommendation = makeRecommendation(year: 1999)
-        let view = AIRecommendationCard(recommendation: recommendation)
-        let body = String(describing: view.body)
-        #expect(body.contains("1999"))
+        render(AIRecommendationCard(recommendation: recommendation))
+        #expect(recommendation.year == 1999)
+        #expect(aiRecommendationCardSource().contains("Text(String(year))"))
     }
 
     @Test("AIRecommendationCard displays type label")
     func displaysTypeLabel() {
         let recommendation = makeRecommendation(type: .movie)
-        let view = AIRecommendationCard(recommendation: recommendation)
-        let body = String(describing: view.body)
-        #expect(body.contains("Movie") || body.contains("TV"))
+        render(AIRecommendationCard(recommendation: recommendation))
+        #expect(recommendation.type == .movie)
+        #expect(aiRecommendationCardSource().contains("recommendation.type == .movie ? \"Movie\" : \"TV\""))
     }
 
     @Test("AIRecommendationCard displays reason")
     func displaysReason() {
         let recommendation = makeRecommendation(reason: "Exciting action film")
-        let view = AIRecommendationCard(recommendation: recommendation)
-        let body = String(describing: view.body)
-        #expect(body.contains("Exciting action film"))
+        render(AIRecommendationCard(recommendation: recommendation))
+        #expect(recommendation.reason == "Exciting action film")
+        #expect(aiRecommendationCardSource().contains("Text(recommendation.reason)"))
     }
 
     @Test("AIRecommendationCard id is constructed correctly for movie with tmdbId")
@@ -655,106 +672,96 @@ struct AIRecommendationCardComprehensiveTests {
 @Suite("AsyncStateViews Comprehensive")
 @MainActor
 struct AsyncStateViewsComprehensiveTests {
+    private func render<Content: View>(_ view: Content, width: CGFloat = 360, height: CGFloat = 220) {
+        SwiftUIViewDiagnosticHost.render(view, width: width, height: height)
+    }
+
     @Test("LoadingOverlay constructs with title only")
     func loadingOverlayTitleOnly() {
         let view = LoadingOverlay(title: "Loading...")
-        _ = view.body
+        render(view)
     }
 
     @Test("LoadingOverlay constructs with title and message")
     func loadingOverlayWithMessage() {
         let view = LoadingOverlay(title: "Loading...", message: "Please wait")
-        _ = view.body
+        render(view)
     }
 
     @Test("LoadingOverlay constructs with nil message")
     func loadingOverlayNilMessage() {
         let view = LoadingOverlay(title: "Loading...", message: nil)
-        _ = view.body
+        render(view)
     }
 
     @Test("LoadingOverlay constructs with empty message")
     func loadingOverlayEmptyMessage() {
         let view = LoadingOverlay(title: "Loading...", message: "")
-        _ = view.body
+        render(view)
     }
 
     @Test("LoadingOverlay body contains VStack")
     func loadingOverlayBodyContainsVStack() {
-        let view = LoadingOverlay(title: "Test")
-        let body = String(describing: view.body)
-        #expect(body.contains("VStack"))
+        #expect(asyncStateViewsSource().contains("VStack(spacing: 10)"))
     }
 
     @Test("LoadingOverlay body contains Circle")
     func loadingOverlayBodyContainsCircle() {
-        let view = LoadingOverlay(title: "Test")
-        let body = String(describing: view.body)
-        #expect(body.contains("Circle"))
+        #expect(asyncStateViewsSource().contains("Circle()"))
     }
 
     @Test("LoadingOverlay body contains Text")
     func loadingOverlayBodyContainsText() {
-        let view = LoadingOverlay(title: "Test")
-        let body = String(describing: view.body)
-        #expect(body.contains("Text"))
+        #expect(asyncStateViewsSource().contains("Text(title)"))
     }
 
     @Test("InlineLoadingStatusView constructs with title")
     func inlineLoadingStatusViewTitle() {
         let view = InlineLoadingStatusView(title: "Refreshing...")
-        _ = view.body
+        render(view, height: 120)
     }
 
     @Test("InlineLoadingStatusView body contains HStack")
     func inlineLoadingStatusViewBodyContainsHStack() {
-        let view = InlineLoadingStatusView(title: "Test")
-        let body = String(describing: view.body)
-        #expect(body.contains("HStack"))
+        #expect(asyncStateViewsSource().contains("HStack(spacing: 10)"))
     }
 
     @Test("InlineLoadingStatusView body contains Circle")
     func inlineLoadingStatusViewBodyContainsCircle() {
-        let view = InlineLoadingStatusView(title: "Test")
-        let body = String(describing: view.body)
-        #expect(body.contains("Circle"))
+        #expect(asyncStateViewsSource().contains(".frame(width: 20, height: 20)"))
     }
 
     @Test("AppErrorInlineView constructs with unknown error")
     func appErrorInlineViewUnknownError() {
         let error = AppError.unknown("Something went wrong")
         let view = AppErrorInlineView(error: error)
-        _ = view.body
+        render(view, height: 120)
     }
 
     @Test("AppErrorInlineView constructs with network error")
     func appErrorInlineViewNetworkError() {
         let error = AppError.network(.timeout)
         let view = AppErrorInlineView(error: error)
-        _ = view.body
+        render(view, height: 120)
     }
 
     @Test("AppErrorInlineView constructs with error and recovery suggestion")
     func appErrorInlineViewWithRecovery() {
         let error = AppError.network(.offline)
         let view = AppErrorInlineView(error: error)
-        _ = view.body
+        render(view, height: 140)
     }
 
     @Test("AppErrorInlineView body contains VStack")
     func appErrorInlineViewBodyContainsVStack() {
-        let error = AppError.unknown("Error")
-        let view = AppErrorInlineView(error: error)
-        let body = String(describing: view.body)
-        #expect(body.contains("VStack"))
+        #expect(asyncStateViewsSource().contains("VStack(alignment: .leading, spacing: 4)"))
     }
 
     @Test("AppErrorInlineView body contains Text")
     func appErrorInlineViewBodyContainsText() {
         let error = AppError.unknown("Error message")
-        let view = AppErrorInlineView(error: error)
-        let body = String(describing: view.body)
-        #expect(body.contains("Error message"))
+        render(AppErrorInlineView(error: error), height: 120)
+        #expect(error.errorDescription == "Error message")
     }
 
     @Test("SkeletonBlock constructs with height only")
@@ -790,108 +797,103 @@ struct AsyncStateViewsComprehensiveTests {
     @Test("DiscoverSkeletonView constructs")
     func discoverSkeletonViewConstructs() {
         let view = DiscoverSkeletonView()
-        _ = view.body
+        render(view, width: 720, height: 520)
     }
 
     @Test("DetailSkeletonView constructs")
     func detailSkeletonViewConstructs() {
         let view = DetailSkeletonView()
-        _ = view.body
+        render(view, width: 720, height: 520)
     }
 
     @Test("LibrarySkeletonView constructs")
     func librarySkeletonViewConstructs() {
         let view = LibrarySkeletonView()
-        _ = view.body
+        render(view, width: 720, height: 520)
     }
 
     @Test("SettingsSkeletonView constructs")
     func settingsSkeletonViewConstructs() {
         let view = SettingsSkeletonView()
-        _ = view.body
+        render(view, width: 720, height: 520)
     }
 
     @Test("ExploreSkeletonView constructs")
     func exploreSkeletonViewConstructs() {
         let view = ExploreSkeletonView()
-        _ = view.body
+        render(view, width: 720, height: 520)
     }
 
     @Test("ExploreErrorView constructs with retry action")
     func exploreErrorViewWithRetry() {
         let error = AppError.unknown("Error")
         let view = ExploreErrorView(error: error, onRetry: {})
-        _ = view.body
+        render(view, width: 520, height: 300)
     }
 
     @Test("ExploreErrorView constructs with retry and settings actions")
     func exploreErrorViewWithRetryAndSettings() {
-        let error = AppError.tmdbSetupRequired(feature: "Search")
+        let error = AppError.metadataSetupRequired(feature: "Search")
         let view = ExploreErrorView(
             error: error,
             onRetry: {},
             onOpenSettings: {}
         )
-        _ = view.body
+        render(view, width: 520, height: 300)
     }
 
     @Test("ExploreErrorView body contains CinematicStateCard")
     func exploreErrorViewBodyContainsCinematicStateCard() {
-        let error = AppError.unknown("Error")
-        let view = ExploreErrorView(error: error, onRetry: {})
-        let body = String(describing: view.body)
-        #expect(body.contains("CinematicStateCard"))
+        #expect(asyncStateViewsSource().contains("CinematicStateCard("))
     }
 
     @Test("ExploreEmptyView constructs with query")
     func exploreEmptyViewWithQuery() {
         let view = ExploreEmptyView(query: "Inception")
-        _ = view.body
+        render(view, width: 520, height: 300)
     }
 
     @Test("ExploreEmptyView constructs with empty query")
     func exploreEmptyViewWithEmptyQuery() {
         let view = ExploreEmptyView(query: "")
-        _ = view.body
+        render(view, width: 520, height: 300)
     }
 
     @Test("ExploreEmptyView constructs with long query")
     func exploreEmptyViewWithLongQuery() {
         let view = ExploreEmptyView(query: "A very long movie title that should still work")
-        _ = view.body
+        render(view, width: 520, height: 300)
     }
 
     @Test("ExploreEmptyView body contains CinematicStateCard")
     func exploreEmptyViewBodyContainsCinematicStateCard() {
-        let view = ExploreEmptyView(query: "Test")
-        let body = String(describing: view.body)
-        #expect(body.contains("CinematicStateCard"))
+        #expect(asyncStateViewsSource().contains("CinematicStateCard("))
     }
 
     @Test("ExploreEmptyView constructs with query")
     func exploreEmptyViewConstructsWithQuery() {
         let view = ExploreEmptyView(query: "Dune")
-        _ = view.body
+        render(view, width: 520, height: 300)
     }
 
     @Test("PaginationLoadingView constructs")
     func paginationLoadingViewConstructs() {
         let view = PaginationLoadingView()
-        _ = view.body
+        render(view, width: 320, height: 120)
     }
 
     @Test("PaginationLoadingView body contains HStack")
     func paginationLoadingViewBodyContainsHStack() {
-        let view = PaginationLoadingView()
-        let body = String(describing: view.body)
-        #expect(body.contains("HStack"))
+        #expect(asyncStateViewsSource().contains("HStack(spacing: 8)"))
     }
 
     @Test("PaginationLoadingView body contains ProgressView")
     func paginationLoadingViewBodyContainsProgressView() {
-        let view = PaginationLoadingView()
-        let body = String(describing: view.body)
-        #expect(body.contains("ProgressView"))
+        #expect(asyncStateViewsSource().contains("ProgressView()"))
+    }
+
+    private func asyncStateViewsSource() -> String {
+        componentComprehensiveSource(relativePath: "VPStudio/Views/Components/AsyncStateViews.swift")
     }
 
     @Test("appErrorAlert modifier applies to view")

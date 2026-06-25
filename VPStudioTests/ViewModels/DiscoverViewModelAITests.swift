@@ -191,9 +191,31 @@ struct DiscoverViewModelAITests {
         year: Int? = 2024,
         type: MediaType = .movie,
         reason: String = "Great",
+        imdbId: String? = nil,
         tmdbId: Int? = 123
     ) -> AIMovieRecommendation {
-        AIMovieRecommendation(title: title, year: year, type: type, reason: reason, tmdbId: tmdbId)
+        AIMovieRecommendation(
+            title: title,
+            year: year,
+            type: type,
+            reason: reason,
+            imdbId: imdbId,
+            tmdbId: tmdbId
+        )
+    }
+
+    @Test
+    func getRecommendationsNormalizesEmbeddedIMDbIDsFromProviderOutput() async throws {
+        let deps = try await Self.makeDependencies(jsonResponse: """
+        [{"title":"Dune","year":2021,"type":"movie","reason":"Epic scale","imdbId":"https://www.imdb.com/title/TT1160419/","tmdbId":438631}]
+        """)
+
+        let recommendations = try await deps.aiManager.getRecommendations(context: AssistantContext())
+
+        let recommendation = try #require(recommendations.first)
+        #expect(recommendation.imdbId == "tt1160419")
+        #expect(recommendation.tmdbId == nil)
+        #expect(recommendation.id == "movie-imdb-tt1160419")
     }
 
     // MARK: - Initial State
@@ -485,6 +507,39 @@ struct DiscoverViewModelAITests {
 
     @Test
     @MainActor
+    func filterRemovesOMDbLibraryItemByResolvedIMDbCacheTitle() async throws {
+        let json = """
+        [{"title":"The Matrix","year":1999,"type":"movie","reason":"Essential sci-fi"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt0133093",
+                type: .movie,
+                title: "The Matrix",
+                year: 1999
+            )
+        )
+        try await deps.db.addToLibrary(
+            UserLibraryEntry(
+                id: "matrix-omdb-watchlist",
+                mediaId: "movie-omdb-tt0133093",
+                folderId: "",
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Resolved OMDb/IMDb title should filter library items")
+    }
+
+    @Test
+    @MainActor
     func filterKeepsItemsNotInLibrary() async throws {
         let json = """
         [{"title":"Arrival","year":2016,"type":"movie","reason":"Thoughtful","tmdbId":329865},
@@ -567,6 +622,109 @@ struct DiscoverViewModelAITests {
 
         #expect(vm.aiRecommendations.count == 1, "Only Movie C should survive filtering")
         #expect(vm.aiRecommendations.first?.title == "Movie C")
+    }
+
+    @Test
+    @MainActor
+    func filterRemovesIMDbRecommendationWhenLegacyTMDBRatingResolvesThroughCache() async throws {
+        let json = """
+        [{"title":"Dune","year":2021,"type":"movie","reason":"Epic scale","imdbId":"tt1160419"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438631
+            )
+        )
+        try await deps.db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "movie-tmdb-438631",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 8
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Legacy TMDb ratings should suppress IMDb/OMDb recommendations for the same cached item")
+    }
+
+    @Test
+    @MainActor
+    func filterRemovesIMDbRecommendationWhenLegacyTMDBLibraryEntryResolvesThroughCache() async throws {
+        let json = """
+        [{"title":"Dune: Part One","year":2021,"type":"movie","reason":"Epic scale","imdbId":"tt1160419"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438631
+            )
+        )
+        try await deps.db.addToLibrary(
+            UserLibraryEntry(
+                id: "dune-legacy-watchlist",
+                mediaId: "movie-tmdb-438631",
+                folderId: "",
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Legacy TMDb library entries should suppress IMDb/OMDb recommendations for the same cached item")
+    }
+
+    @Test
+    @MainActor
+    func filterRemovesIMDbRecommendationWhenLegacyTMDBWatchHistoryResolvesThroughCache() async throws {
+        let json = """
+        [{"title":"Dune: Part One","year":2021,"type":"movie","reason":"Epic scale","imdbId":"tt1160419"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438631
+            )
+        )
+        try await deps.db.saveWatchHistory(
+            WatchHistory(
+                id: "dune-legacy-watch",
+                mediaId: "movie-tmdb-438631",
+                title: "Legacy Cached Title",
+                progress: 7200,
+                duration: 7200,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Legacy TMDb watch history should suppress IMDb/OMDb recommendations for the same cached item")
     }
 
     @Test

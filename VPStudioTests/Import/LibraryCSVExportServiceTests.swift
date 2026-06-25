@@ -124,13 +124,13 @@ struct CSVExportIntegrationTests {
 
         // Seed a media item and watchlist entry
         let item = MediaItem(
-            id: "tt1234567", type: .movie, title: "Test Movie",
+            id: "movie-imdb-tt1234567", type: .movie, title: "Test Movie",
             year: 2024, genres: ["Action", "Sci-Fi"],
             imdbRating: 7.5, runtime: 120
         )
         try await db.saveMediaItem(item)
         let entry = UserLibraryEntry(
-            id: "tt1234567-watchlist", mediaId: "tt1234567",
+            id: "tt1234567-watchlist", mediaId: "movie-imdb-tt1234567",
             folderId: LibraryFolder.systemFolderID(for: .watchlist),
             listType: .watchlist, addedAt: Date()
         )
@@ -191,6 +191,49 @@ struct CSVExportIntegrationTests {
         #expect(csvContent.contains("9"))
 
         try? FileManager.default.removeItem(at: dirURL)
+    }
+
+    @Test func exportPreservesOMDbIMDbAliasMetadataAndRatings() async throws {
+        let db = try await makeTempDatabase()
+
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                genres: ["Adventure", "Sci-Fi"],
+                imdbRating: 8.0,
+                runtime: 155
+            )
+        )
+        try await db.addToLibrary(
+            UserLibraryEntry(
+                id: "dune-watchlist",
+                mediaId: "movie-imdb-tt1160419",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+        )
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "tt1160419",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 8
+            )
+        )
+
+        let service = LibraryCSVExportService(database: db)
+        let (csv, itemCount) = try await service.exportFolder(listType: .watchlist, folderId: nil)
+
+        #expect(itemCount == 1)
+        #expect(csv.contains("Your Rating"))
+        #expect(csv.contains("tt1160419"))
+        #expect(csv.contains("Dune"))
+        #expect(csv.contains("\"Adventure, Sci-Fi\""))
+        #expect(csv.contains(",8,"))
     }
 
     @Test func exportCustomFolderCreatesNamedFile() async throws {

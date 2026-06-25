@@ -693,7 +693,7 @@ struct SearchViewModelBugCoverageTests {
             searchCallCount += 1
 
             if let delay = searchDelayByPage[page] {
-                try await Task.sleep(for: delay)
+                try? await Task.sleep(for: delay)
             }
             if let remainingFailures = searchFailureByPage[page], remainingFailures > 0 {
                 searchFailureByPage[page] = remainingFailures - 1
@@ -728,7 +728,7 @@ struct SearchViewModelBugCoverageTests {
 
             let page = filters.page
             if let delay = discoverDelayByPage[page] {
-                try await Task.sleep(for: delay)
+                try? await Task.sleep(for: delay)
             }
 
             if let remainingFailures = discoverFailureByPage[page], remainingFailures > 0 {
@@ -1295,6 +1295,9 @@ struct SearchViewModelBugCoverageTests {
         viewModel.selectedGenre = Genre(id: 18, name: "Drama")
         let specialCard = ExploreGenreCatalog.cards.first(where: { $0.isSpecialCard })!
         viewModel.selectMoodCard(specialCard)
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            !viewModel.isSearching
+        }
         viewModel.results = [Fixtures.mediaPreview(id: "stale-result")]
         viewModel.loadGenres()
         try await Task.sleep(for: .milliseconds(40))
@@ -1373,6 +1376,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.search()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 2
+                && viewModel.results.map(\.id) == ["apollo-page-1"]
         }
         #expect(viewModel.results.map(\.id) == ["apollo-page-1"])
     }
@@ -1657,7 +1661,10 @@ struct SearchViewModelBugCoverageTests {
         viewModel.requery()
 
         #expect(viewModel.activeMoodCard?.id == regularMoodCard.id)
-        #expect(viewModel.selectedGenre == nil)
+        // A regular genre mood card sets the genre filter (see the sibling
+        // `requeryFromRegularMoodWithQueryReissuesSearchPath`); requery with an
+        // empty query must not reissue a network request, but the genre stays set.
+        #expect(viewModel.selectedGenre != nil)
         #expect(await stub.getDiscoverCallCount() == 1)
         #expect(await stub.getSearchCallCount() == 0)
     }
@@ -1951,7 +1958,6 @@ struct SearchViewModelBugCoverageTests {
     @Test
     @MainActor
     func clearAllFiltersFromMixedRegularAndSpecialContextPreservesSpecialBrowseAndDoesNotLeakRegularBrowseFailure() async throws {
-        let regularGenreCard = Genre(id: 28, name: "Action")
         let regularMoodCard = ExploreGenreCatalog.cards.first(where: { !$0.isSpecialCard })!
         let specialCard = ExploreGenreCatalog.cards.first(where: { $0.isSpecialCard })!
 
@@ -1981,13 +1987,16 @@ struct SearchViewModelBugCoverageTests {
             await stub.getDiscoverCallCount() == 1
         }
         #expect(viewModel.activeMoodCard?.id == regularMoodCard.id)
-        #expect(viewModel.selectedGenre?.id == regularGenreCard.id)
+        #expect(viewModel.selectedGenre?.id == regularMoodCard.movieGenreId)
         #expect(viewModel.results.map(\.id) == ["regular-browse-page-1"])
 
         viewModel.selectMoodCard(specialCard)
-        viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 2
+        }
+        viewModel.loadMore()
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 3
         }
 
         await stub.setDiscoverResult(
@@ -2014,8 +2023,9 @@ struct SearchViewModelBugCoverageTests {
             let discoverCallCount = await stub.getDiscoverCallCount()
             return viewModel.activeMoodCard?.id == specialCard.id
                 && viewModel.selectedGenre == nil
-                && discoverCallCount == 3
+                && discoverCallCount == 4
                 && viewModel.error == nil
+                && viewModel.results.map(\.id) == ["special-browse-page-1"]
         }
         #expect(viewModel.results.map(\.id) == ["special-browse-page-1"])
         #expect(viewModel.currentPage == 1)
@@ -2023,13 +2033,13 @@ struct SearchViewModelBugCoverageTests {
         #expect(viewModel.error == nil)
 
         try await Task.sleep(for: .milliseconds(260))
-        #expect(await stub.getDiscoverCallCount() == 3)
+        #expect(await stub.getDiscoverCallCount() == 4)
         #expect(viewModel.currentPage == 1)
         #expect(viewModel.error == nil)
 
         viewModel.loadMore()
         try await Self.waitUntil {
-            await stub.getDiscoverCallCount() == 4
+            await stub.getDiscoverCallCount() == 5
                 && viewModel.currentPage == 2
         }
         #expect(viewModel.results.map(\.id) == ["special-browse-page-1", "special-browse-page-2"])
@@ -2394,12 +2404,12 @@ struct SearchViewModelBugCoverageTests {
         #expect(viewModel.selectedGenre?.id == 28)
         #expect(viewModel.results.map(\.id) == ["genre-page-1"])
 
-        viewModel.query = "apollo"
         viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 2
         }
 
+        viewModel.query = "apollo"
         viewModel.selectedType = .series
         viewModel.handleSelectedTypeChange()
         #expect(viewModel.selectedGenre == nil)
@@ -2461,12 +2471,12 @@ struct SearchViewModelBugCoverageTests {
         #expect(viewModel.activeMoodCard?.id == regularMoodCard.id)
         #expect(viewModel.results.map(\.id) == ["regular-mood-page-1"])
 
-        viewModel.query = "apollo"
         viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 2
         }
 
+        viewModel.query = "apollo"
         viewModel.selectedType = .series
         viewModel.handleSelectedTypeChange()
         #expect(viewModel.selectedGenre == nil)
@@ -2889,6 +2899,10 @@ struct SearchViewModelBugCoverageTests {
         let viewModel = SearchViewModel(metadataService: stub)
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
+        let discoverCountBeforeClear = await stub.getDiscoverCallCount()
         viewModel.queryDraft = "  dune  "
 
         #expect(await stub.getSearchCallCount() == 0)
@@ -2902,7 +2916,7 @@ struct SearchViewModelBugCoverageTests {
         #expect(viewModel.sortOption == .popularityDesc)
         #expect(viewModel.query == "dune")
         #expect(viewModel.submittedQuery == "dune")
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == discoverCountBeforeClear)
     }
 
     @Test
@@ -3259,11 +3273,13 @@ struct SearchViewModelBugCoverageTests {
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 2
         }
-        #expect(viewModel.currentPage == 2)
+        #expect(viewModel.currentPage == 1)
 
         viewModel.search()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 3
+                && viewModel.currentPage == 1
+                && viewModel.results.map(\.id) == ["apollo-page-1"]
         }
 
         #expect(await stub.getSearchCallCount() >= 3)
@@ -3344,7 +3360,7 @@ struct SearchViewModelBugCoverageTests {
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 2
         }
-        #expect(viewModel.currentPage == 2)
+        #expect(viewModel.currentPage == 1)
 
         viewModel.selectedGenre = nil
         #expect(viewModel.currentPage == 1)
@@ -3397,6 +3413,7 @@ struct SearchViewModelBugCoverageTests {
 
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getGenresCallCount() == 1
+                && viewModel.genres.map(\.id) == [28]
         }
         #expect(viewModel.genres.map(\.id) == [28])
 
@@ -3427,6 +3444,7 @@ struct SearchViewModelBugCoverageTests {
 
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getGenresCallCount() == 2
+                && viewModel.genres.map(\.id) == [16]
         }
         #expect(viewModel.genres.map(\.id) == [16])
 
@@ -3464,6 +3482,9 @@ struct SearchViewModelBugCoverageTests {
         )
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.query = "apollo"
         viewModel.search()
 
@@ -3471,17 +3492,20 @@ struct SearchViewModelBugCoverageTests {
             await stub.getSearchCallCount() == 1
         }
         #expect(viewModel.results.map(\.id) == ["genre-query-page-1"])
+        let discoverCountBeforeClear = await stub.getDiscoverCallCount()
 
         viewModel.queryDraft = "   "
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 1
+            await stub.getDiscoverCallCount() == discoverCountBeforeClear + 1
+                && viewModel.results.map(\.id) == ["genre-browse-page-1"]
         }
         #expect(viewModel.results.map(\.id) == ["genre-browse-page-1"])
         #expect(viewModel.currentPage == 1)
 
         viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 2
+            await stub.getDiscoverCallCount() == discoverCountBeforeClear + 2
+                && viewModel.currentPage == 2
         }
 
         #expect(viewModel.currentPage == 2)
@@ -3716,6 +3740,46 @@ struct SearchViewModelBugCoverageTests {
         #expect(filters[1].genreId == 28)
         #expect(filters[1].language == "fr-FR")
         #expect(filters[1].page == 1)
+        #expect(viewModel.results.map(\.id) == ["genre-page-1"])
+    }
+
+    @Test
+    @MainActor
+    func applyFilterDraftWithSameGenreAndChangedLanguageReissuesDiscover() async throws {
+        let stub = MoodLoadMoreMetadataStub(resultByPage: [
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-page-1")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+        let viewModel = SearchViewModel(metadataService: stub)
+        let genre = Genre(id: 28, name: "Action")
+
+        viewModel.selectGenre(genre)
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
+
+        let draft = SearchFilterDraft(
+            sortOption: viewModel.sortOption,
+            selectedYear: nil,
+            selectedLanguages: ["fr-FR"],
+            selectedGenre: genre
+        )
+        viewModel.applyFilterDraft(draft)
+
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 2
+        }
+
+        let filters = await stub.getDiscoverFilters()
+        #expect(filters[1].genreId == 28)
+        #expect(filters[1].language == "fr-FR")
+        #expect(filters[1].page == 1)
+        #expect(viewModel.selectedGenre == genre)
+        #expect(viewModel.languageFilters == ["fr-FR"])
         #expect(viewModel.results.map(\.id) == ["genre-page-1"])
     }
 
@@ -4036,7 +4100,7 @@ struct SearchViewModelBugCoverageTests {
         try await Task.sleep(for: .milliseconds(220))
         #expect(await stub.getDiscoverCallCount() == 2)
         #expect(viewModel.currentPage == 1)
-        #expect(viewModel.results.map(\.id) == ["genre-page-1"])
+        #expect(viewModel.results.isEmpty)
         #expect(viewModel.error == nil)
     }
 
@@ -4138,6 +4202,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.search()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 1
+                && viewModel.results.map(\.id) == ["search-page-1"]
         }
         #expect(viewModel.results.map(\.id) == ["search-page-1"])
 
@@ -4312,6 +4377,9 @@ struct SearchViewModelBugCoverageTests {
 
         let viewModel = SearchViewModel(metadataService: stub)
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.query = "apollo"
         viewModel.search()
 
@@ -4330,14 +4398,17 @@ struct SearchViewModelBugCoverageTests {
 
         // Clearing the draft should restore genre browse context and allow pagination
         // through discover on the next request.
+        let discoverCountBeforeClear = await stub.getDiscoverCallCount()
         viewModel.queryDraft = ""
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 1
+            await stub.getDiscoverCallCount() == discoverCountBeforeClear + 1
+                && viewModel.results.map(\.id) == ["genre-browse-page-1"]
         }
 
         viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 2
+            await stub.getDiscoverCallCount() == discoverCountBeforeClear + 2
+                && viewModel.currentPage == 2
         }
 
         #expect(viewModel.results.map(\.id) == ["genre-browse-page-1", "genre-browse-page-2"])
@@ -4455,6 +4526,9 @@ struct SearchViewModelBugCoverageTests {
 
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.currentPage = 499
         viewModel.totalPages = 600
 
@@ -4463,9 +4537,10 @@ struct SearchViewModelBugCoverageTests {
         viewModel.loadMore()
 
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 1
+            await stub.getDiscoverCallCount() == 2
+                && viewModel.currentPage == 500
         }
-        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(await stub.getDiscoverCallCount() == 2)
         #expect(viewModel.currentPage == 500)
         #expect(viewModel.results.map(\.id) == ["genre-browse-page-500"])
         #expect(viewModel.hasMore == false)
@@ -4473,7 +4548,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.loadMore()
         try await Task.sleep(for: .milliseconds(120))
 
-        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(await stub.getDiscoverCallCount() == 2)
         #expect(viewModel.currentPage == 500)
         #expect(viewModel.results.map(\.id) == ["genre-browse-page-500"])
     }
@@ -4849,7 +4924,8 @@ struct SearchViewModelBugCoverageTests {
         viewModel.query = "apollo"
         viewModel.search()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getSearchCallCount() == 2
+            await stub.getSearchCallCount() == 3
+                && viewModel.results.map(\.id) == ["search-page-1"]
         }
         #expect(viewModel.currentPage == 1)
         #expect(viewModel.results.map(\.id) == ["search-page-1"])
@@ -4887,10 +4963,14 @@ struct SearchViewModelBugCoverageTests {
 
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.search(queryText: "apollo")
 
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 1
+                && viewModel.results.map(\.id) == ["genre-search-page-1"]
         }
         #expect(viewModel.results.map(\.id) == ["genre-search-page-1"])
         #expect(viewModel.isGenreBrowsing == false)
@@ -4923,11 +5003,12 @@ struct SearchViewModelBugCoverageTests {
         viewModel.query = "apollo"
         viewModel.search()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getSearchCallCount() == 2
+            await stub.getSearchCallCount() == 3
+                && viewModel.results.map(\.id) == ["genre-search-page-1"]
         }
         #expect(viewModel.currentPage == 1)
         #expect(viewModel.results.map(\.id) == ["genre-search-page-1"])
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 1)
     }
 
     @Test
@@ -5138,7 +5219,7 @@ struct SearchViewModelBugCoverageTests {
     @MainActor
     func searchWhitespaceInGenreBrowseContextDoesNotSwitchToSearchPath() async throws {
         let stub = SearchAndDiscoverCaptureMetadataStub(
-            searchResultByPage: [
+            discoverResultByPage: [
                 1: MetadataSearchResult(
                     items: [Fixtures.mediaPreview(id: "genre-page-1")],
                     page: 1,
@@ -5402,7 +5483,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.queryDraft = "   "
         viewModel.clearAllFilters()
 
-        try await Task.yield()
+        await Task.yield()
         #expect(viewModel.queryDraft == "   ")
         #expect(viewModel.hasQueryText == false)
         #expect(await stub.getSearchCallCount() == 0)
@@ -5592,6 +5673,15 @@ struct SearchViewModelBugCoverageTests {
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 1
         }
+        await stub.setDiscoverResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-page-1")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            ),
+            for: 1
+        )
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
         #expect(viewModel.selectedGenre?.id == 28)
@@ -5612,6 +5702,8 @@ struct SearchViewModelBugCoverageTests {
         #expect(viewModel.queryDraft.isEmpty)
         #expect(viewModel.selectedGenre?.id == 28)
         #expect(viewModel.activeMoodCard?.id == specialCard.id)
+        let discoverCalls = await stub.getDiscoverCalls()
+        #expect(discoverCalls.last?.genreId == 28)
         #expect(viewModel.results.map(\.id) == ["genre-page-1"])
     }
 
@@ -6040,7 +6132,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.debouncedSearch(queryText: "dune")
         try await Task.sleep(for: .milliseconds(220))
 
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.query == "apollo")
         #expect(viewModel.queryDraft == "apollo")
         #expect(viewModel.submittedQuery.isEmpty)
@@ -6054,7 +6146,7 @@ struct SearchViewModelBugCoverageTests {
         let viewModel = SearchViewModel()
         viewModel.search(queryText: "   dune  ")
 
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.query == "dune")
         #expect(viewModel.queryDraft == "dune")
         #expect(viewModel.submittedQuery == "dune")
@@ -6102,6 +6194,7 @@ struct SearchViewModelBugCoverageTests {
 
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 2
+                && viewModel.results.map(\.id) == ["dune-page-1"]
         }
         #expect(await stub.getSearchCalls().map(\.query) == ["apollo", "dune"])
         #expect(viewModel.results.map(\.id) == ["dune-page-1"])
@@ -6117,7 +6210,7 @@ struct SearchViewModelBugCoverageTests {
         let stub = SearchAndDiscoverCaptureMetadataStub(
             searchResultByPage: [
                 1: MetadataSearchResult(
-                    items: [Fixtures.mediaPreview(id: "search-page-1")],
+                    items: [Fixtures.mediaPreview(id: "search-page-1", year: 2025)],
                     page: 1,
                     totalPages: 1,
                     totalResults: 1
@@ -6180,6 +6273,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.search()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getSearchCallCount() == 2
+                && viewModel.results.map(\.id) == ["search-page-1"]
         }
         #expect(viewModel.sortOption == .popularityDesc)
         #expect(viewModel.yearFilter == nil)
@@ -7279,6 +7373,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 4
+                && viewModel.currentPage == 2
         }
         #expect(viewModel.currentPage == 2)
         #expect(viewModel.results.map(\.id) == ["special-browse-page-1", "special-browse-page-2"])
@@ -7663,6 +7758,7 @@ struct SearchViewModelBugCoverageTests {
         viewModel.loadMore()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
             await stub.getDiscoverCallCount() == 4
+                && viewModel.currentPage == 2
         }
         #expect(viewModel.currentPage == 2)
         #expect(viewModel.results.map(\.id) == ["special-browse-page-1", "special-browse-page-2"])
@@ -8002,7 +8098,7 @@ struct SearchViewModelBugCoverageTests {
 
         viewModel.browseGenre(Genre(id: 28, name: "Action"))
 
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.isSearching == false)
         #expect(viewModel.isGenreBrowsing == true)
         #expect(viewModel.currentPage == 1)
@@ -8092,6 +8188,9 @@ struct SearchViewModelBugCoverageTests {
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
         #expect(viewModel.selectedGenre?.id == 28)
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
 
         viewModel.selectedType = .series
         viewModel.loadGenres()
@@ -8103,10 +8202,11 @@ struct SearchViewModelBugCoverageTests {
 
         viewModel.handleSelectedTypeChange()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 1
+            await stub.getDiscoverCallCount() == 2
+                && viewModel.selectedGenre?.id == 99
         }
 
-        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(await stub.getDiscoverCallCount() == 2)
         #expect(viewModel.selectedGenre?.id == 99)
         #expect(viewModel.selectedGenre?.name == "Action")
         #expect(viewModel.results.map(\.id) == ["series-genre-page-1"])
@@ -8123,7 +8223,11 @@ struct SearchViewModelBugCoverageTests {
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.results = [Fixtures.mediaPreview(id: "stale-result")]
+        let discoverCountBeforeTypeChange = await stub.getDiscoverCallCount()
         viewModel.selectedType = .series
         viewModel.loadGenres()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
@@ -8135,7 +8239,7 @@ struct SearchViewModelBugCoverageTests {
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.activeMoodCard == nil)
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == discoverCountBeforeTypeChange)
         #expect(await stub.getSearchCallCount() == 0)
     }
 
@@ -8166,6 +8270,10 @@ struct SearchViewModelBugCoverageTests {
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
 
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
+        let discoverCountBeforeTypeChange = await stub.getDiscoverCallCount()
         viewModel.query = "apollo"
         viewModel.selectedType = .series
         viewModel.loadGenres()
@@ -8178,7 +8286,7 @@ struct SearchViewModelBugCoverageTests {
             await stub.getSearchCallCount() == 1
         }
 
-        #expect(await stub.getDiscoverCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == discoverCountBeforeTypeChange)
         #expect(await stub.getSearchCallCount() == 1)
         #expect(viewModel.selectedGenre == nil)
         #expect(viewModel.results.map(\.id) == ["search-page-1"])
@@ -8248,6 +8356,9 @@ struct SearchViewModelBugCoverageTests {
         let viewModel = SearchViewModel(metadataService: stub, paginationCooldown: .milliseconds(0))
 
         viewModel.selectedGenre = Genre(id: 28, name: "action")
+        try await Self.waitUntil(timeout: .milliseconds(1000)) {
+            await stub.getDiscoverCallCount() == 1
+        }
         viewModel.selectedType = .series
         viewModel.loadGenres()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
@@ -8256,9 +8367,10 @@ struct SearchViewModelBugCoverageTests {
 
         viewModel.handleSelectedTypeChange()
         try await Self.waitUntil(timeout: .milliseconds(1000)) {
-            await stub.getDiscoverCallCount() == 1
+            await stub.getDiscoverCallCount() == 2
+                && viewModel.selectedGenre?.id == 99
         }
-        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(await stub.getDiscoverCallCount() == 2)
         #expect(viewModel.selectedGenre?.id == 99)
         #expect(viewModel.selectedGenre?.name == "Action")
         #expect(viewModel.results.map(\.id) == ["series-page-1"])

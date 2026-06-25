@@ -3,8 +3,8 @@ import Foundation
 /// Realistic mock content for visual QA of the **real** Downloads surface (`DownloadsView`).
 ///
 /// Builds two in-flight downloads (one downloading, one resolving) plus one completed item,
-/// grouped the way `DownloadsViewModel` groups them, using the shared TMDB-seeded artwork (the
-/// `image.tmdb.org` CDN requires no API key). Wired into Test Mode via a seeded
+/// grouped the way `DownloadsViewModel` groups them, using the shared IMDb-keyed artwork seed.
+/// Wired into Test Mode via a seeded
 /// `DownloadsViewModel` rendered behind `DownloadsView(viewModel:disablesAutomaticTasks: true)`,
 /// mirroring [`DiscoverPreviewSeed`] / [`DetailPreviewSeed`].
 enum DownloadsPreviewSeed {
@@ -17,7 +17,7 @@ enum DownloadsPreviewSeed {
 
         let downloading = DownloadTask(
             id: "seed-dl-dune",
-            mediaId: "seed-\(dune.tmdbId)",
+            mediaId: dune.imdbId,
             fileName: "Dune.Part.Two.2024.2160p.HDR.mkv",
             status: .downloading,
             progress: 0.62,
@@ -32,8 +32,8 @@ enum DownloadsPreviewSeed {
         )
         let resolving = DownloadTask(
             id: "seed-dl-severance",
-            mediaId: "seed-\(severance.tmdbId)",
-            episodeId: "seed-\(severance.tmdbId)-s2e1",
+            mediaId: severance.imdbId,
+            episodeId: "\(severance.imdbId)-s2e1",
             fileName: "Severance.S02E01.1080p.mkv",
             status: .resolving,
             progress: 0,
@@ -49,7 +49,7 @@ enum DownloadsPreviewSeed {
         )
         let completed = DownloadTask(
             id: "seed-dl-oppenheimer",
-            mediaId: "seed-\(oppenheimer.tmdbId)",
+            mediaId: oppenheimer.imdbId,
             fileName: "Oppenheimer.2023.2160p.mkv",
             status: .completed,
             progress: 1,

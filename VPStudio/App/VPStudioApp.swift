@@ -5,10 +5,6 @@ import RealityKit
 #if os(macOS)
 import AppKit
 #endif
-#if !os(macOS)
-import AVFoundation
-#endif
-import os
 
 // MARK: - macOS App Delegate
 
@@ -26,8 +22,6 @@ final class VPStudioAppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 struct VPStudioApp: App {
-    private static let logger = Logger(subsystem: "com.vpstudio", category: "app")
-
     #if os(macOS)
     @NSApplicationDelegateAdaptor(VPStudioAppDelegate.self) private var appDelegate
     #endif
@@ -35,16 +29,7 @@ struct VPStudioApp: App {
     init() {
         // Configure audio session for media playback, allowing it to mix or route properly
         #if !os(macOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
-            if #available(iOS 15.0, tvOS 15.0, visionOS 1.0, *) {
-                try session.setSupportsMultichannelContent(true)
-            }
-            try session.setActive(true)
-        } catch {
-            Self.logger.error("Failed to configure AVAudioSession: \(error.localizedDescription, privacy: .public)")
-        }
+        AudioSessionConfigurator.configurePlaybackAsync(policy: .longFormVideo)
         #endif
 
         // Large shared image/data cache so posters & backdrops load from disk (~1ms) instead of
@@ -90,6 +75,7 @@ struct VPStudioApp: App {
                     availableStreams: resolved.availableStreams,
                     mediaTitle: resolved.mediaTitle,
                     mediaId: resolved.mediaId,
+                    imdbId: resolved.imdbId,
                     tmdbId: resolved.tmdbId,
                     episodeId: resolved.episodeId,
                     nextEpisode: resolved.nextEpisode,

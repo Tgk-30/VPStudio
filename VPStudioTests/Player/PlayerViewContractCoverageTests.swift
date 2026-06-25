@@ -5,6 +5,39 @@ import Testing
 @Suite("Player View Contract Coverage - Runtime Wrappers")
 struct PlayerViewRuntimeWrapperCoverageTests {
     @Test
+    func playerStageFallbackKeepsStableGradientBehindAsyncArtwork() throws {
+        let source = try playerViewSource()
+        // The async backdrop artwork was extracted into `playerStageBackdropImage`;
+        // the fallback composes the gradient behind it in a ZStack.
+        let fallbackBody = try section(
+            from: "private var playerStageFallback: some View {",
+            to: "private func playerStageBackdropImage(",
+            in: source
+        )
+        let gradientRange = try requiredRange(of: "playerStageGradient", in: fallbackBody)
+        let artworkRange = try requiredRange(of: "playerStageBackdropImage(", in: fallbackBody)
+        // Gradient sits behind the artwork so loading never flashes the stage.
+        #expect(gradientRange.lowerBound < artworkRange.lowerBound)
+
+        // The backdrop AsyncImage fades in on success and clears (Color.clear) on
+        // empty/failure/unknown so the stable gradient shows through instead of
+        // re-flashing — and it never re-renders the gradient itself.
+        let backdropBody = try section(
+            from: "private func playerStageBackdropImage(",
+            to: "private func playerStagePosterCard(",
+            in: source
+        )
+        let transitionRange = try requiredRange(of: ".transition(.opacity)", in: backdropBody)
+        let emptyClearRange = try requiredRange(of: "case .empty, .failure:", in: backdropBody)
+        let unknownClearRange = try requiredRange(of: "@unknown default:", in: backdropBody)
+
+        #expect(transitionRange.lowerBound < emptyClearRange.lowerBound)
+        #expect(unknownClearRange.lowerBound > emptyClearRange.lowerBound)
+        #expect(backdropBody.contains("Color.clear"))
+        #expect(!backdropBody.contains("playerStageGradient"))
+    }
+
+    @Test
     func subtitleMutationOnlyRunsForTheActiveStream() {
         #expect(PlayerView.subtitleMutationShouldRun(requestedStreamID: "stream-1", currentStreamID: "stream-1"))
         #expect(!PlayerView.subtitleMutationShouldRun(requestedStreamID: "stream-1", currentStreamID: "stream-2"))
@@ -418,6 +451,151 @@ struct PlayerViewCleanupAndPerformanceContractCoverageTests {
     }
 
     @Test
+    func alreadyOpenEnvironmentActionsShowTransientFeedbackBeforeReturning() throws {
+        let source = try playerViewSource()
+        let environmentBody = try section(
+            from: "private func openEnvironment(_ asset: EnvironmentAsset) async {",
+            to: "private func environmentAssetIcon(_ asset: EnvironmentAsset) -> String {",
+            in: source
+        )
+        let cinemaBody = try functionBody(named: "openCinemaEnvironment", in: source)
+
+        let environmentAlreadyOpenBlock = try section(
+            from: "if plan == .alreadyOpen {",
+            to: "guard await ensureEnvironmentAssetCanOpen(asset) else {",
+            in: environmentBody
+        )
+        #expect(environmentAlreadyOpenBlock.contains(
+            "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.environmentAlreadyOpenMessage(assetName: asset.name))"
+        ))
+        let environmentMessageRange = try requiredRange(
+            of: "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.environmentAlreadyOpenMessage(assetName: asset.name))",
+            in: environmentAlreadyOpenBlock
+        )
+        let environmentReturnRange = try requiredRange(of: "return", in: environmentAlreadyOpenBlock)
+        #expect(environmentMessageRange.lowerBound < environmentReturnRange.lowerBound)
+
+        let activationGuardRange = try requiredRange(
+            of: "guard await appState.activateEnvironmentAsset(asset) else {",
+            in: environmentBody
+        )
+        let openCustomRange = try requiredRange(of: "await openImmersiveSpaceIfPossible(for: asset)", in: environmentBody)
+        #expect(activationGuardRange.lowerBound < openCustomRange.lowerBound)
+        #expect(environmentBody.contains("await loadEnvironmentAssets()"))
+        #expect(environmentBody.contains(
+            "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name))"
+        ))
+
+        let cinemaAlreadyOpenBlock = try section(
+            from: "case .alreadyOpen:",
+            to: "case .open:",
+            in: cinemaBody
+        )
+        #expect(cinemaAlreadyOpenBlock.contains(
+            "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.cinemaAlreadyOpenMessage)"
+        ))
+        let cinemaMessageRange = try requiredRange(
+            of: "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.cinemaAlreadyOpenMessage)",
+            in: cinemaAlreadyOpenBlock
+        )
+        let cinemaReturnRange = try requiredRange(of: "return", in: cinemaAlreadyOpenBlock)
+        #expect(cinemaMessageRange.lowerBound < cinemaReturnRange.lowerBound)
+    }
+
+    @Test
+    func playbackInterruptionsRestoreControlsAndClearPendingAutoHide() throws {
+        let source = try playerViewSource()
+
+        #expect(source.contains(".onChange(of: playbackState)"))
+        #expect(source.contains(".onChange(of: isCurrentlyPlaying)"))
+
+        let toggleBody = try functionBody(named: "toggleControlsVisibility", in: source)
+        #expect(toggleBody.contains("playbackState: playbackState"))
+        #expect(toggleBody.contains("isPlaying: isCurrentlyPlaying"))
+        #expect(toggleBody.contains("case .keepVisibleAndCancelScheduledHide:"))
+        #expect(toggleBody.contains("restoreControlsForNonInteractivePlaybackIfNeeded()"))
+
+        let restoreBody = try functionBody(named: "restoreControlsForNonInteractivePlaybackIfNeeded", in: source)
+        #expect(restoreBody.contains("PlayerViewStatePolicy.shouldAutoHideControls"))
+        #expect(restoreBody.contains("controlsHideTask?.cancel()"))
+        #expect(restoreBody.contains("controlsHideTask = nil"))
+        #expect(restoreBody.contains("isShowingControls = true"))
+
+        let scheduleBody = try functionBody(named: "scheduleControlsHide", in: source)
+        #expect(scheduleBody.contains("controlsHideTask = nil"))
+        #expect(scheduleBody.contains("return"))
+    }
+
+    @Test
+    func autoSuggestedEnvironmentMustPersistBeforeOpeningImmersiveSpace() throws {
+        let source = try playerViewSource()
+        let autoOpenBody = try functionBody(named: "autoOpenEnvironmentIfNeeded", in: source)
+
+        #expect(autoOpenBody.contains("guard await appState.selectSuggestedEnvironmentAsset(match) else { return }"))
+        let suggestRange = try requiredRange(
+            of: "guard await appState.selectSuggestedEnvironmentAsset(match) else { return }",
+            in: autoOpenBody
+        )
+        let fallbackRange = try requiredRange(
+            of: "guard await appState.selectSuggestedEnvironmentAsset(fallback) else { return }",
+            in: autoOpenBody
+        )
+        let openRange = try requiredRange(of: "await openImmersiveSpaceIfPossible(for: asset)", in: autoOpenBody)
+        #expect(suggestRange.lowerBound < openRange.lowerBound)
+        #expect(fallbackRange.lowerBound < openRange.lowerBound)
+        #expect(autoOpenBody.contains("let fallback = await defaultEnvironmentAssetForAutoOpen()"))
+        #expect(!autoOpenBody.contains("appState.selectSuggestedEnvironmentAsset(match)\n"))
+
+        #expect(source.contains("private func defaultEnvironmentAssetForAutoOpen() async -> EnvironmentAsset?"))
+        #expect(source.contains("GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey"))
+    }
+
+    @Test
+    func customEnvironmentOpenFailureRollsBackPersistedSelection() throws {
+        let body = try functionBody(named: "openImmersiveSpaceIfPossible", in: try playerViewSource())
+
+        #expect(body.contains("await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)"))
+        #expect(body.contains("PlayerImmersiveTransitionPolicy.openFailedMessage(assetName: asset.name)"))
+
+        let cancelRange = try requiredRange(of: "appState.cancelImmersiveTransition()", in: body)
+        let clearRange = try requiredRange(
+            of: "await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)",
+            in: body
+        )
+        let messageRange = try requiredRange(
+            of: "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.openFailedMessage(assetName: asset.name))",
+            in: body
+        )
+        #expect(cancelRange.lowerBound < clearRange.lowerBound)
+        #expect(clearRange.lowerBound < messageRange.lowerBound)
+    }
+
+    @Test
+    func missingImportedEnvironmentAssetClearsPersistedSelectionThroughAppState() throws {
+        let body = try functionBody(named: "ensureEnvironmentAssetCanOpen", in: try playerViewSource())
+
+        #expect(body.contains("resolvedAssetURL(for: asset)"))
+        #expect(body.contains("asset.sourceType == .imported"))
+        #expect(body.contains("deleteAsset(id: asset.id)"))
+        #expect(body.contains("await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)"))
+        #expect(!body.contains("selectedEnvironmentAsset = nil"))
+
+        let deleteRange = try requiredRange(of: "deleteAsset(id: asset.id)", in: body)
+        let clearRange = try requiredRange(
+            of: "await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)",
+            in: body
+        )
+        let reloadRange = try requiredRange(of: "await loadEnvironmentAssets()", in: body)
+        let messageRange = try requiredRange(
+            of: "showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name))",
+            in: body
+        )
+        #expect(deleteRange.lowerBound < clearRange.lowerBound)
+        #expect(clearRange.lowerBound < reloadRange.lowerBound)
+        #expect(reloadRange.lowerBound < messageRange.lowerBound)
+    }
+
+    @Test
     func immersiveDismissActionsAreTrackedAndCanceledOnTeardown() throws {
         let source = try playerViewSource()
 
@@ -443,11 +621,13 @@ struct PlayerViewCleanupAndPerformanceContractCoverageTests {
         #expect(scheduleBody.contains("guard !Task.isCancelled else { return }"))
         #expect(scheduleBody.contains("await dismissImmersiveIfNeeded(reason: reason)"))
         #expect(scheduleBody.contains("if restoresMainWindow"))
+        #expect(!scheduleBody.contains("didDismiss"))
+        #expect(!scheduleBody.contains("restoresMainWindow &&"))
         #expect(scheduleBody.contains("scheduleMainWindowRestoreIfNeeded()"))
 
         let closePlayerBody = try functionBody(named: "closePlayer", in: source)
         #expect(closePlayerBody.contains("cancelVisionLifecycleTasksOnClose()"))
-        #expect(closePlayerBody.contains("scheduleImmersiveDismiss(reason: .playerClosed)"))
+        #expect(closePlayerBody.contains("scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)"))
         #expect(!closePlayerBody.contains("Task {\n            await dismissImmersiveIfNeeded(reason: .playerClosed)"))
 
         let closeCleanupBody = try functionBody(named: "cancelVisionLifecycleTasksOnClose", in: source)

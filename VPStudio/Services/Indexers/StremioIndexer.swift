@@ -567,16 +567,15 @@ struct StremioIndexer: TorrentIndexer {
             let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
 
-            let tracker: String
+            let rawTracker: String
             if trimmed.lowercased().hasPrefix("tracker:") {
-                tracker = String(trimmed.dropFirst("tracker:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            } else if Self.isLikelyHTTPSTracker(trimmed) {
-                tracker = trimmed
+                rawTracker = String(trimmed.dropFirst("tracker:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             } else {
-                continue
+                rawTracker = trimmed
             }
+            let tracker = rawTracker.removingPercentEncoding ?? rawTracker
 
-            guard !tracker.isEmpty else {
+            guard !tracker.isEmpty, Self.isLikelyHTTPSTracker(tracker) else {
                 continue
             }
 

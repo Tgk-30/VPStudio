@@ -38,7 +38,10 @@ struct PlayerSessionRequestModelTests {
             availableStreams: availableStreams,
             mediaTitle: "Test Movie",
             mediaId: "media-123",
+            imdbId: "https://www.imdb.com/title/TT1160419/",
             tmdbId: 42_424,
+            posterPath: "/poster.jpg",
+            backdropPath: "/backdrop.jpg",
             episodeId: "episode-456"
         )
 
@@ -47,7 +50,10 @@ struct PlayerSessionRequestModelTests {
         #expect(request.availableStreams == availableStreams)
         #expect(request.mediaTitle == "Test Movie")
         #expect(request.mediaId == "media-123")
+        #expect(request.imdbId == "tt1160419")
         #expect(request.tmdbId == 42_424)
+        #expect(request.posterPath == "/poster.jpg")
+        #expect(request.backdropPath == "/backdrop.jpg")
         #expect(request.episodeId == "episode-456")
     }
 
@@ -100,6 +106,29 @@ struct PlayerSessionRequestModelTests {
         )
 
         #expect(request.episodeId == nil)
+    }
+
+    @Test("IMDb ID falls back to media ID when not supplied")
+    func imdbIDFallsBackToMediaID() {
+        let stream = StreamInfo(
+            streamURL: URL(string: "https://example.com/stream.mp4")!,
+            quality: .hd1080p,
+            codec: .h264,
+            audio: .aac,
+            source: .webDL,
+            hdr: .sdr,
+            fileName: "stream.mp4",
+            sizeBytes: 1024,
+            debridService: "debrid-id"
+        )
+
+        let request = PlayerSessionRequest(
+            stream: stream,
+            mediaTitle: "Test Movie",
+            mediaId: "movie-imdb-tt2543164"
+        )
+
+        #expect(request.imdbId == "tt2543164")
     }
 }
 
@@ -381,7 +410,10 @@ struct PlayerSessionRequestModelCodableTests {
             availableStreams: availableStreams,
             mediaTitle: "Test Movie",
             mediaId: "media-123",
+            imdbId: "tt1160419",
             tmdbId: 42_424,
+            posterPath: "/poster.jpg",
+            backdropPath: "/backdrop.jpg",
             episodeId: "episode-456"
         )
 
@@ -395,7 +427,10 @@ struct PlayerSessionRequestModelCodableTests {
         #expect(decodedRequest.availableStreams == originalRequest.availableStreams)
         #expect(decodedRequest.mediaTitle == originalRequest.mediaTitle)
         #expect(decodedRequest.mediaId == originalRequest.mediaId)
+        #expect(decodedRequest.imdbId == originalRequest.imdbId)
         #expect(decodedRequest.tmdbId == originalRequest.tmdbId)
+        #expect(decodedRequest.posterPath == originalRequest.posterPath)
+        #expect(decodedRequest.backdropPath == originalRequest.backdropPath)
         #expect(decodedRequest.episodeId == originalRequest.episodeId)
     }
 

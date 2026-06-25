@@ -344,6 +344,73 @@ struct TorrentResultComputedPropertiesTests {
         #expect(TorrentResult.normalizedDirectStreamURLString(nil) == nil)
     }
 
+    @Test func normalizedDirectStreamURLRejectsPrivateAndLoopbackHosts() {
+        // Loopback / LAN / link-local / cloud-metadata must never be reachable via
+        // an untrusted addon-provided stream URL (SSRF guard).
+        for blocked in [
+            "http://127.0.0.1/file.mkv",
+            "https://localhost/file.mkv",
+            "http://192.168.1.10:8096/file.mkv",
+            "http://10.0.0.5/file.mkv",
+            "http://172.16.4.4/file.mkv",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]:8080/file.mkv",
+            "https://nas.local/file.mkv",
+            "http://router/file.mkv",
+            "http://0.0.0.0/file.mkv",
+        ] {
+            #expect(TorrentResult.normalizedDirectStreamURLString(blocked) == nil, "expected \(blocked) to be rejected")
+        }
+
+        // Genuine public CDN hosts (including public IP literals) still pass.
+        #expect(TorrentResult.normalizedDirectStreamURLString("https://cdn.example.com/file.mkv") == "https://cdn.example.com/file.mkv")
+        #expect(TorrentResult.normalizedDirectStreamURLString("https://8.8.8.8/file.mkv") == "https://8.8.8.8/file.mkv")
+    }
+
+    @Test func privateNetworkHostPolicyClassifiesHosts() {
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "127.0.0.1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "10.255.255.255"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "172.31.0.1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "192.168.0.1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "169.254.10.10"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "fd12:3456::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "fe80::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "::ffff:127.0.0.1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "localhost"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "intranet"))
+
+        #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "cdn.example.com"))
+        #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "8.8.8.8"))
+        #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "172.32.0.1"))
+        #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "100.128.0.1"))
+    }
+
+    @Test func privateNetworkHostPolicyBlocksNonCanonicalLiteralBypasses() {
+        // Non-canonical numeric IPv4 spellings of loopback/private addresses must
+        // fail closed — either the resolver maps them to the private address, or
+        // the numeric-literal guard rejects the disguised form (these previously
+        // failed open via inet_aton's octal interpretation).
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "010.0.0.1"))    // decimal 10.0.0.1
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "0x7f.0.0.1"))   // hex 127
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "127.1"))        // short form
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2130706433"))   // 32-bit integer
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "0x7f000001"))   // hex integer
+
+        // Expanded / alternate IPv6 spellings of loopback & IPv4-mapped private.
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "0:0:0:0:0:0:0:1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "::ffff:7f00:1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "::ffff:192.168.1.1"))
+
+        // Trailing root dot must not bypass the local-suffix checks.
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "localhost."))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "nas.local."))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "router.home.arpa."))
+
+        // A public FQDN with a trailing root dot is still public.
+        #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "cdn.example.com."))
+    }
+
     @Test func stremioResolverHostVariantsRespectResolvePaths() throws {
         let torrentioMirror = try #require(URL(string: "https://rd.strem.fun/resolve/rd/hash/file.mkv"))
         let torrentioCatalog = try #require(URL(string: "https://rd.strem.fun/catalog/movie/top.json"))

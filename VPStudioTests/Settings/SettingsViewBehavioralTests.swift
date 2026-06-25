@@ -668,8 +668,9 @@ struct SettingsViewBehavioralTests {
         }
 
         @Test
-        func tmdbApiKeyIsStoredAsSecret() {
+        func metadataApiKeysAreStoredAsSecrets() {
             let secretKeys: [String] = [
+                SettingsKeys.omdbApiKey,
                 SettingsKeys.tmdbApiKey,
                 SettingsKeys.openSubtitlesApiKey,
                 SettingsKeys.traktClientId,

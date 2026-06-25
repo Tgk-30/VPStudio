@@ -35,7 +35,7 @@ enum NaturalLanguageSearchPolicy {
     ///
     /// The literal phrase is embedded verbatim so the model answers the user's
     /// actual ask, and the response shape matches `parseRecommendations`
-    /// (JSON array of `{title, year, type, reason, tmdbId}`). Empty/whitespace
+    /// (JSON array of `{title, year, type, reason, imdbId}`). Empty/whitespace
     /// input falls back to a safe generic taste-based prompt.
     static func recommendationPrompt(from query: String, excluding excludedTitles: [String] = []) -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -61,8 +61,8 @@ enum NaturalLanguageSearchPolicy {
         }
 
         parts.append("For each, provide: title, year, type (movie/series), and a brief reason tied to my request and taste.")
-        parts.append("Format as JSON array with keys: title, year, type, reason, tmdbId.")
-        parts.append("Only include tmdbId when you are highly confident it is correct. Otherwise use null.")
+        parts.append("Format as JSON array with keys: title, year, type, reason, imdbId.")
+        parts.append("Include imdbId when you are highly confident it is correct; otherwise use null.")
 
         let exclusions = excludedTitles
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

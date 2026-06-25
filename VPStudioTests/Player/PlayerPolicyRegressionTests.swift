@@ -184,10 +184,12 @@ struct PlayerPolicyRegressionTests {
         let leftBoundary = width * PlayerGesturePolicy.doubleTapZoneFraction
         let rightBoundary = width * (1 - PlayerGesturePolicy.doubleTapZoneFraction)
 
+        // Skip intervals are symmetric 10s each way (see the gobackward.10 /
+        // goforward.10 glyphs and PlayerCinematicChromePolicy.skip*Interval).
         #expect(PlayerGesturePolicy.doubleTapSeekOffset(tapX: leftBoundary, surfaceWidth: width) == -10)
         #expect(PlayerGesturePolicy.doubleTapSeekOffset(tapX: leftBoundary + 0.001, surfaceWidth: width) == nil)
         #expect(PlayerGesturePolicy.doubleTapSeekOffset(tapX: rightBoundary - 0.001, surfaceWidth: width) == nil)
-        #expect(PlayerGesturePolicy.doubleTapSeekOffset(tapX: rightBoundary, surfaceWidth: width) == 30)
+        #expect(PlayerGesturePolicy.doubleTapSeekOffset(tapX: rightBoundary, surfaceWidth: width) == 10)
     }
 
     @Test func doubleTapRejectsInvalidSurfaceWidths() {

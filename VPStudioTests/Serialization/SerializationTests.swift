@@ -757,12 +757,14 @@ struct SerializationTests {
                 availableStreams: [stream],
                 mediaTitle: "Test Movie",
                 mediaId: "tt123",
+                imdbId: "tt0000123",
                 tmdbId: 12_345,
                 episodeId: nil
             )
             let decoded = try roundTrip(original)
             #expect(decoded.mediaTitle == original.mediaTitle)
             #expect(decoded.mediaId == original.mediaId)
+            #expect(decoded.imdbId == original.imdbId)
             #expect(decoded.tmdbId == original.tmdbId)
         }
 
