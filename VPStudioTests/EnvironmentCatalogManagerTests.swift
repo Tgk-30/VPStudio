@@ -151,16 +151,61 @@ struct EnvironmentURLPolicyTests {
     @Test func attributionLinksOnlyAllowWebSchemes() {
         #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/source")?.scheme == "https")
         #expect(EnvironmentURLPolicy.webURL(from: "http://example.com/source")?.scheme == "http")
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/source?asset=cinema")?.scheme == "https")
         #expect(EnvironmentURLPolicy.webURL(from: "file:///etc/passwd") == nil)
         #expect(EnvironmentURLPolicy.webURL(from: "javascript:alert(1)") == nil)
         #expect(EnvironmentURLPolicy.webURL(from: "data:text/plain,hello") == nil)
         #expect(EnvironmentURLPolicy.webURL(from: "https://user:password@example.com/source") == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/source?token=secret") == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/source?APIKey=secret") == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/source?signature=abc") == nil)
     }
 
     @Test func presetDownloadsRequireHTTPS() {
         #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/sky.hdr", requiresHTTPS: true) != nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/download?asset=sky", requiresHTTPS: true) != nil)
         #expect(EnvironmentURLPolicy.webURL(from: "http://example.com/sky.hdr", requiresHTTPS: true) == nil)
         #expect(EnvironmentURLPolicy.webURL(from: "https://token@example.com/sky.hdr", requiresHTTPS: true) == nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/sky.hdr?access_token=secret", requiresHTTPS: true) == nil)
+    }
+
+    @Test func webURLsRejectLocalAndPrivateNetworkHosts() {
+        let blockedHosts = [
+            "localhost",
+            "preview.local",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.10",
+            "172.31.255.1",
+            "192.0.0.8",
+            "192.0.2.10",
+            "192.168.1.2",
+            "169.254.10.20",
+            "2130706433",
+            "0177.0.0.1",
+            "0x7f.0.0.1",
+            "127.1",
+            "0300.0250.01.02",
+            "0xc0a80102",
+            "[::1]",
+            "[0:0:0:0:0:0:0:0]",
+            "[0:0:0:0:0:0:0:1]",
+            "[fd00::1]",
+            "[fe80::1]",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:7f00:1]",
+            "[0:0:0:0:0:ffff:127.0.0.1]",
+            "[0:0:0:0:0:ffff:7f00:1]",
+            "[0:0:0:0:0:0:127.0.0.1]",
+        ]
+
+        for host in blockedHosts {
+            #expect(EnvironmentURLPolicy.webURL(from: "https://\(host)/sky.hdr", requiresHTTPS: true) == nil)
+        }
+
+        #expect(EnvironmentURLPolicy.webURL(from: "https://example.com/sky.hdr", requiresHTTPS: true) != nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://8.8.8.8/sky.hdr", requiresHTTPS: true) != nil)
+        #expect(EnvironmentURLPolicy.webURL(from: "https://192.0.78.9/sky.hdr", requiresHTTPS: true) != nil)
     }
 
     @Test func storedPreviewPathsRequireAbsoluteLocalFiles() {

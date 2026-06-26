@@ -1,6 +1,10 @@
 import SwiftUI
 
 enum PlayerAutoPlayNextPromptStylePolicy {
+    static let promptMaxWidth: CGFloat = 440
+    static let titleColumnMaxWidth: CGFloat = 312
+    static let titleLineLimit = 3
+
     static func primaryButtonOpacity(isResolving: Bool) -> Double {
         isResolving ? 0.52 : 1.0
     }
@@ -40,8 +44,11 @@ struct PlayerAutoPlayNextPromptView: View {
                 Text(nextEpisode.title)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
+                    .lineLimit(PlayerAutoPlayNextPromptStylePolicy.titleLineLimit)
+                    .minimumScaleFactor(0.78)
+                    .allowsTightening(true)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .truncationMode(.tail)
 
                 HStack(spacing: 8) {
                     Button(action: onPlayNow) {
@@ -92,10 +99,11 @@ struct PlayerAutoPlayNextPromptView: View {
                 }
                 .padding(.top, 3)
             }
-            .frame(maxWidth: 260, alignment: .leading)
+            .frame(maxWidth: PlayerAutoPlayNextPromptStylePolicy.titleColumnMaxWidth, alignment: .leading)
+            .layoutPriority(1)
         }
         .padding(16)
-        .frame(maxWidth: 392, alignment: .leading)
+        .frame(maxWidth: PlayerAutoPlayNextPromptStylePolicy.promptMaxWidth, alignment: .leading)
         .background(
             .ultraThinMaterial,
             in: RoundedRectangle(cornerRadius: 22, style: .continuous)

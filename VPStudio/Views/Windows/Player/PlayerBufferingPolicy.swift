@@ -20,6 +20,15 @@ enum PlayerBufferingPolicy {
         return "Rebuffering\u{2026}"
     }
 
+    static func surfaceFeedbackText(
+        playbackState: PlayerPlaybackState,
+        hasPlayedOnce: Bool,
+        bufferedPercent: Double
+    ) -> String? {
+        guard playbackState == .buffering, hasPlayedOnce else { return nil }
+        return rebufferText(bufferedPercent: bufferedPercent)
+    }
+
     // MARK: - Quality Change Toast
 
     /// Duration in seconds the quality-change toast remains visible.

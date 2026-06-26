@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 @preconcurrency import KSPlayer
 
 enum PlayerViewStatePolicy {
@@ -196,9 +197,23 @@ enum PlayerViewStatePolicy {
 
     static func shouldElevatePlayerStageFallback(
         playbackState: PlayerPlaybackState,
-        hasPlayedOnce: Bool
+        hasPlayedOnce: Bool,
+        hasDetectedVideoFrame: Bool = true,
+        hasExhaustedVideoFrameDetection: Bool = false
     ) -> Bool {
-        playbackState == .failed || !hasPlayedOnce
+        if playbackState == .failed || !hasPlayedOnce {
+            return true
+        }
+
+        if hasDetectedVideoFrame {
+            return false
+        }
+
+        if hasExhaustedVideoFrameDetection && playbackState == .playing {
+            return false
+        }
+
+        return true
     }
 
     static func shouldShowTransportDock(
@@ -206,6 +221,42 @@ enum PlayerViewStatePolicy {
         hasPlayedOnce: Bool
     ) -> Bool {
         playbackState == .playing || hasPlayedOnce
+    }
+
+    static func subtitleBottomPadding(
+        isShowingControls: Bool,
+        showsTransportDock: Bool,
+        subtitleFontSize: CGFloat = 24
+    ) -> CGFloat {
+        let dynamicExtra = PlayerCinematicChromePolicy.subtitleDynamicBottomPaddingExtra(
+            fontSize: subtitleFontSize
+        )
+        guard isShowingControls && showsTransportDock else {
+            return PlayerCinematicChromePolicy.subtitleHiddenControlsBottomPadding + dynamicExtra
+        }
+        return PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock + dynamicExtra
+    }
+
+    static func autoPlayNextBottomPadding(
+        isShowingControls: Bool,
+        showsTransportDock: Bool,
+        hasVisibleSubtitles: Bool = false,
+        subtitleFontSize: CGFloat = 24
+    ) -> CGFloat {
+        let subtitleExtra = hasVisibleSubtitles
+            ? PlayerCinematicChromePolicy.subtitleDynamicBottomPaddingExtra(fontSize: subtitleFontSize)
+            : 0
+
+        guard isShowingControls && showsTransportDock else {
+            return hasVisibleSubtitles
+                ? PlayerCinematicChromePolicy.autoPlayHiddenControlsWithSubtitlesBottomPadding + subtitleExtra
+                : PlayerCinematicChromePolicy.autoPlayHiddenControlsBottomPadding
+        }
+
+        let basePadding = PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+        return hasVisibleSubtitles
+            ? basePadding + PlayerCinematicChromePolicy.autoPlaySubtitleSeparation + subtitleExtra
+            : basePadding
     }
 
     static func avPlayerObservedPlaybackState(

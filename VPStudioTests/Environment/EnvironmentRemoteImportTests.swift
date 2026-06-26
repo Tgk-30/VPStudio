@@ -248,6 +248,54 @@ struct EnvironmentRemoteImportTests {
     }
 
     @Test
+    func importEnvironmentFromRemoteDropsInsecureAttributionURL() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-http-attribution.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/env.hdr")!,
+            sourceAttributionURL: "http://example.com/insecure-source"
+        )
+
+        #expect(result.sourceAttributionURL == nil)
+    }
+
+    @Test
+    func importEnvironmentFromRemoteDropsAttributionURLWithSensitiveQuery() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-secret-attribution.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        for parameterName in ["apikey", "api-key", "client_secret", "clientSecret", "secret", "password", "jwt", "refreshToken", "authToken", "session", "x-amz-signature"] {
+            let result = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/env.hdr")!,
+                sourceAttributionURL: "https://example.com/source?\(parameterName)=secret"
+            )
+
+            #expect(result.sourceAttributionURL == nil)
+        }
+    }
+
+    @Test
     func importEnvironmentFromRemoteHTTPError() async throws {
         let (database, rootDir) = try await makeDatabase(named: "remote-http-error.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -421,6 +469,103 @@ struct EnvironmentRemoteImportTests {
     }
 
     @Test
+    func importEnvironmentFromRemoteRejectsSensitiveQueryURLBeforeFetching() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-secret-query.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            remoteDataFetcher: { url in
+                fetchCount.withLock { $0 += 1 }
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        for parameterName in ["token", "client_secret", "clientSecret", "secret", "password", "jwt", "refreshToken", "authToken", "sid", "x-amz-signature"] {
+            do {
+                _ = try await manager.importEnvironment(
+                    fromRemote: URL(string: "https://example.com/secret.hdr?\(parameterName)=secret")!
+                )
+                Issue.record("Expected sensitive query URL rejection for \(parameterName)")
+            } catch EnvironmentCatalogError.downloadFailed {
+                #expect(Bool(true))
+            } catch {
+                Issue.record("Unexpected error for \(parameterName): \(error)")
+            }
+        }
+
+        #expect(fetchCount.withLock { $0 } == 0)
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsPrivateNetworkHostsBeforeFetching() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-private-hosts.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            remoteDataFetcher: { url in
+                fetchCount.withLock { $0 += 1 }
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        for rawURL in [
+            "https://localhost/sky.hdr",
+            "https://127.0.0.1/sky.hdr",
+            "https://10.0.0.8/sky.hdr",
+            "https://172.20.10.4/sky.hdr",
+            "https://192.168.1.2/sky.hdr",
+            "https://[::1]/sky.hdr",
+            "https://[fd00::1]/sky.hdr",
+            "https://preview.local/sky.hdr",
+        ] {
+            do {
+                _ = try await manager.importEnvironment(fromRemote: URL(string: rawURL)!)
+                Issue.record("Expected private host rejection for \(rawURL)")
+            } catch EnvironmentCatalogError.downloadFailed {
+                #expect(Bool(true))
+            } catch {
+                Issue.record("Unexpected error for \(rawURL): \(error)")
+            }
+        }
+
+        #expect(fetchCount.withLock { $0 } == 0)
+    }
+
+    @Test
+    func remoteRedirectPolicyRejectsUnsafeTargetsBeforeFollow() async throws {
+        let safeTargets = [
+            "https://example.com/cinema.hdr",
+            "https://cdn.example.com/download?asset=cinema",
+        ]
+        for rawURL in safeTargets {
+            let request = URLRequest(url: try #require(URL(string: rawURL)))
+            #expect(EnvironmentCatalogManager.validatedRemoteRedirectRequest(request) != nil)
+        }
+
+        let unsafeTargets = [
+            "http://example.com/cinema.hdr",
+            "https://user:password@example.com/cinema.hdr",
+            "https://example.com/cinema.hdr?access_token=secret",
+            "https://127.0.0.1/cinema.hdr",
+            "https://0x7f000001/cinema.hdr",
+            "https://[::ffff:127.0.0.1]/cinema.hdr",
+            "https://example.com/cinema.txt",
+        ]
+        for rawURL in unsafeTargets {
+            let request = URLRequest(url: try #require(URL(string: rawURL)))
+            #expect(EnvironmentCatalogManager.validatedRemoteRedirectRequest(request) == nil)
+        }
+    }
+
+    @Test
     func importEnvironmentFromRemoteRejectsDowngradedFinalResponseURLBeforeValidation() async throws {
         let (database, rootDir) = try await makeDatabase(named: "remote-reject-downgrade.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -454,6 +599,48 @@ struct EnvironmentRemoteImportTests {
             Issue.record("Expected HTTPS downgrade rejection")
         } catch EnvironmentCatalogError.downloadFailed(let reason) {
             #expect(reason.contains("HTTPS"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(fetchCount.withLock { $0 } == 1)
+        #expect(validatorCallCount.withLock { $0 } == 0)
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsSensitiveFinalResponseURLBeforeValidation() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-secret-final-url.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let validatorCallCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validatorCallCount.withLock { $0 += 1 }
+                return true
+            },
+            remoteDataFetcher: { _ in
+                fetchCount.withLock { $0 += 1 }
+                let finalURL = URL(string: "https://example.com/redirected.hdr?access_token=secret")!
+                let response = HTTPURLResponse(
+                    url: finalURL,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/start.hdr")!
+            )
+            Issue.record("Expected sensitive final URL rejection")
+        } catch EnvironmentCatalogError.downloadFailed {
+            #expect(Bool(true))
         } catch {
             Issue.record("Unexpected error: \(error)")
         }

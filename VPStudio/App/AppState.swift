@@ -1182,6 +1182,7 @@ final class AppState {
                 mediaId: identity.mediaId,
                 previewId: preview.id,
                 mediaTitle: preview.title,
+                mediaYear: preview.year,
                 tmdbId: identity.tmdbId,
                 season: context.seasonNumber,
                 episodeNumber: context.episodeNumber
@@ -1257,6 +1258,7 @@ final class AppState {
         mediaId: String,
         previewId: String?,
         mediaTitle: String?,
+        mediaYear: Int?,
         tmdbId: Int?,
         season: Int?,
         episodeNumber: Int?
@@ -1269,6 +1271,7 @@ final class AppState {
             mediaId: mediaId,
             previewId: previewId,
             mediaTitle: mediaTitle,
+            mediaYear: mediaYear,
             tmdbId: tmdbId
         )
         guard let episodes = try? await service.getEpisodes(id: lookupID, type: .series, season: season) else { return nil }
@@ -1288,6 +1291,7 @@ final class AppState {
         mediaId: String,
         previewId: String?,
         mediaTitle: String? = nil,
+        mediaYear: Int? = nil,
         tmdbId: Int?
     ) -> String {
         if let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId)
@@ -1296,12 +1300,16 @@ final class AppState {
         }
         if let title = mediaTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
            !title.isEmpty {
-            return title
+            return metadataTitleLookupID(title: title, year: mediaYear)
         }
         if let tmdbId {
             return "tmdb-\(tmdbId)"
         }
         return mediaId
+    }
+
+    private static func metadataTitleLookupID(title: String, year: Int?) -> String {
+        OMDbTitleLookupPolicy.lookupID(title: title, year: year)
     }
 
     private static func playerSessionIMDbID(mediaId: String, previewId: String?) -> String? {

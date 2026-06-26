@@ -47,7 +47,7 @@ struct DiscoverFilters: Sendable {
 
     // MARK: - Date Helpers
 
-    /// The current date formatted as yyyy-MM-dd, suitable for TMDB date parameters.
+    /// The current date formatted as yyyy-MM-dd, suitable for metadata date parameters.
     static func todayString(now: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"

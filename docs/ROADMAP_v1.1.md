@@ -8,9 +8,9 @@ Goal: pull ratings from multiple services into one taste profile, with Trakt as 
 
 ### High Priority
 
-- [ ] TMDb rating import
-  Method: OAuth user auth + `/account/{id}/rated/movies` and `/account/{id}/rated/tv`.
-  Notes: We already use TMDb for metadata, so this is an extension of existing work.
+- [ ] IMDb rating import polish
+  Method: CSV import and OMDb/IMDb ID reconciliation.
+  Notes: OMDb is the active metadata provider, so rating import should prefer IMDb identifiers and avoid adding a second metadata account dependency.
 
 - [ ] Letterboxd import (CSV)
   Method: Parse `Date,Name,Year,Letterboxd URI,Rating`.
@@ -19,7 +19,7 @@ Goal: pull ratings from multiple services into one taste profile, with Trakt as 
 - [ ] Unified import screen
   Method: One settings page with:
   - Import from IMDb (CSV)
-  - Import from TMDb (connect)
+  - Reconcile OMDb/IMDb IDs
   - Import from Letterboxd (CSV)
 
 ### Medium Priority
@@ -46,7 +46,7 @@ Goal: pull ratings from multiple services into one taste profile, with Trakt as 
 - Normalize all imports to `TasteEvent(eventType: .rated)`.
 - Rating mapping:
   - Letterboxd 0.5-5.0 -> 1-10
-  - TMDb 1-10 -> 1-10
+  - OMDb normalized rating -> 1-10
   - IMDb 1-10 -> 1-10
 - Push ratings through existing `TraktSyncOrchestrator`.
 - Deduplicate by IMDb ID.
@@ -102,7 +102,7 @@ Gemini is already implemented alongside Anthropic, OpenAI, and Ollama, with sett
 
 - [ ] Search initial over-fetch causes lag
 - [ ] Library titles sometimes load late / blank, or require restart
-- [ ] Onboarding text-entry lag + TMDb secret save issue
+- [ ] Onboarding text-entry lag + OMDb secret save issue
 - [ ] Vision Pro onboarding paste buttons are too small
 - [ ] Missing paste button for Trakt Client ID
 - [ ] Onboarding can show error + blank Discover before wizard starts
@@ -167,7 +167,7 @@ Gemini is already implemented alongside Anthropic, OpenAI, and Ollama, with sett
 ### Performance
 
 - [ ] Discover lazy/staggered data loading
-- [ ] TMDb response caching with TTL
+- [ ] OMDb response caching with TTL
 - [ ] Adaptive search debounce tuning
 - [ ] Faster player startup path
 - [ ] Add DB composite indexes for hot queries

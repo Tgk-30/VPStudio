@@ -109,7 +109,8 @@ struct MediaCardView: View {
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.72))
                     }
-                    if let rating = item.imdbRating, rating > 0 {
+                    let ratingText = item.ratingString
+                    if !ratingText.isEmpty {
                         Text("\u{2022}")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.45))
@@ -117,7 +118,7 @@ struct MediaCardView: View {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.white.opacity(0.9))
-                            Text(String(format: "%.1f", rating))
+                            Text(ratingText)
                                 .font(.caption2)
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.white.opacity(0.9))

@@ -96,6 +96,15 @@ struct SearchShellCopyPolicyTests {
 @Suite("Search Results Presentation Policy")
 struct SearchResultsPresentationPolicyTests {
     @Test
+    func bottomPaddingKeepsLastGridRowClearOfVisionWindowChrome() {
+        #expect(SearchResultsPresentationPolicy.standardBottomContentPadding == 132)
+        #expect(SearchResultsPresentationPolicy.bottomTabBarContentPadding == 240)
+        #expect(SearchResultsPresentationPolicy.bottomContentPadding(for: .leftSidebar) == SearchResultsPresentationPolicy.standardBottomContentPadding)
+        #expect(SearchResultsPresentationPolicy.bottomContentPadding(for: .bottomTabBar) == SearchResultsPresentationPolicy.bottomTabBarContentPadding)
+        #expect(SearchResultsPresentationPolicy.bottomTabBarContentPadding > SearchResultsPresentationPolicy.standardBottomContentPadding)
+    }
+
+    @Test
     func typeFilterSectionAppearsForCommittedSearchBrowseContextResultsOrFilters() {
         #expect(!SearchResultsPresentationPolicy.shouldShowTypeFilterSection(
             submittedQuery: "",

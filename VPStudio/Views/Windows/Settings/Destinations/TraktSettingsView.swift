@@ -214,7 +214,7 @@ struct TraktSettingsView: View {
         Section {
             if isConnected {
                 Label("Connected", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(VPColor.success)
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.caption)

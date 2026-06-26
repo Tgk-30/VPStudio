@@ -1402,7 +1402,7 @@ struct AISettingsView: View {
 
                 if state.showsActiveProviderBadge {
                     Label("Active provider", systemImage: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 } else if state.showsUseForRequestsButton {
                     Button {
                         preferredProvider = provider
@@ -1531,7 +1531,7 @@ struct AISettingsView: View {
         case .downloaded:
             Label("Ready", systemImage: "checkmark.circle.fill")
                 .font(.caption)
-                .foregroundStyle(.green)
+                .foregroundStyle(VPColor.success)
         case .downloading:
             VStack(spacing: 4) {
                 ProgressView(value: model.downloadProgress)

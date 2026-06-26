@@ -34,7 +34,7 @@ enum DetailMetadataLookupPolicy {
             return preview.tmdbId.map(String.init) ?? preview.id
         case .imdbOrTitle:
             let title = preview.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            return title.isEmpty ? preview.id : titleLookupID(title: title, year: preview.year)
+            return title.isEmpty ? preview.id : OMDbTitleLookupPolicy.lookupID(title: title, year: preview.year)
         }
     }
 
@@ -51,13 +51,8 @@ enum DetailMetadataLookupPolicy {
             return item.tmdbId.map { "tmdb-\($0)" } ?? item.id
         case .imdbOrTitle:
             let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            return title.isEmpty ? item.id : titleLookupID(title: title, year: item.year)
+            return title.isEmpty ? item.id : OMDbTitleLookupPolicy.lookupID(title: title, year: item.year)
         }
-    }
-
-    private static func titleLookupID(title: String, year: Int?) -> String {
-        guard let year, year > 0 else { return title }
-        return "\(title) (\(year))"
     }
 }
 

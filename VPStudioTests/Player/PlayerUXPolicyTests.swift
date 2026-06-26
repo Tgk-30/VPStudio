@@ -6,6 +6,12 @@ import Testing
 
 @Suite("PlayerArtworkPresentationPolicy")
 struct PlayerArtworkPresentationPolicyTests {
+    @Test func posterCardGeometryIsStableAcrossLoadingStates() {
+        #expect(PlayerArtworkPresentationPolicy.posterCardWidth == 112)
+        #expect(PlayerArtworkPresentationPolicy.posterCardHeight == 168)
+        #expect(PlayerArtworkPresentationPolicy.posterCardCornerRadius == 12)
+    }
+
     @Test func backdropArtworkWinsOverPosterArtwork() {
         let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
             backdropPath: "/backdrop.jpg",
@@ -19,7 +25,7 @@ struct PlayerArtworkPresentationPolicyTests {
     @Test func posterOnlyArtworkUsesPosterCardPresentation() {
         let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
             backdropPath: nil,
-            posterPath: "https://img.omdb.example/poster.jpg"
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
         )
 
         #expect(kind == .posterOnly)

@@ -115,4 +115,13 @@ struct EnvironmentImportValidationPolicyPanoramaGeometryTests {
         #expect(!EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 0, height: 2048))
         #expect(!EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(width: 4096, height: 0))
     }
+
+    @Test func usablePanoramaDimensionsRequireMinimumImmersiveResolution() {
+        #expect(EnvironmentImportValidationPolicy.minimumPanoramaWidth == 2_048)
+        #expect(EnvironmentImportValidationPolicy.minimumPanoramaHeight == 1_024)
+        #expect(EnvironmentImportValidationPolicy.hasUsablePanoramaDimensions(width: 2048, height: 1024))
+        #expect(EnvironmentImportValidationPolicy.hasUsablePanoramaDimensions(width: 4096, height: 2048))
+        #expect(!EnvironmentImportValidationPolicy.hasUsablePanoramaDimensions(width: 1024, height: 512))
+        #expect(!EnvironmentImportValidationPolicy.hasUsablePanoramaDimensions(width: 2048, height: 2048))
+    }
 }

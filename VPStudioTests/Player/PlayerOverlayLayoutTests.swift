@@ -265,16 +265,33 @@ struct PlayerInfoPillsConstructionTests {
     /// Describes the pills that appear in the info row
     enum InfoPillKind: String, CaseIterable {
         case playbackRate
-        case subtitles
-        case audio
-        case qualityBadge
-        case engineLabel
+        case environment
+        case dimPassthrough
+        case stereoContent
     }
 
-    @Test func basePillCountIsFiveWithoutOptional() {
-        // The 5 always-present pills: rate, subtitles, audio, quality, engine
-        let basePills: [InfoPillKind] = [.playbackRate, .subtitles, .audio, .qualityBadge, .engineLabel]
-        #expect(basePills.count == 5)
+    @Test func basePillCountStaysFocusedOnActionableControls() {
+        let basePills: [InfoPillKind] = [.playbackRate, .environment, .dimPassthrough]
+        #expect(basePills.count == 3)
+        #expect(!basePills.contains(.stereoContent))
+    }
+
+    @Test func playerDockDoesNotRenderTechnicalDiagnosticChips() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("VPStudio/Views/Windows/Player/PlayerView.swift"),
+            encoding: .utf8
+        )
+        let row = try #require(source.range(of: "private var infoPillsRow: some View")?.lowerBound)
+        let transport = try #require(source.range(of: "// MARK: - Transport Bar", range: row..<source.endIndex)?.lowerBound)
+        let infoPillsRow = String(source[row..<transport])
+
+        #expect(!infoPillsRow.contains("title: currentStream.quality.rawValue"))
+        #expect(!infoPillsRow.contains("title: \"Direct Play\""))
+        #expect(!infoPillsRow.contains("title: activeEngine.displayName"))
     }
 
     @Test func playbackRateFormattingForDefaultRate() {
@@ -432,11 +449,17 @@ struct PlayerFeatureChipTests {
 struct SubtitleOverlayBottomPaddingTests {
 
     @Test func subtitlePaddingClearsTransportArea() {
-        // Subtitles have .padding(.bottom, 90) to clear the transport bar
-        let subtitleBottomPadding: CGFloat = 90
-        // Transport bar is roughly ~120pt tall (progress + time + buttons + indicator)
-        // Subtitle padding should keep text visible above transport
-        #expect(subtitleBottomPadding > 0)
-        #expect(subtitleBottomPadding >= 60) // Minimum clearance
+        let hiddenPadding = PlayerViewStatePolicy.subtitleBottomPadding(
+            isShowingControls: false,
+            showsTransportDock: true
+        )
+        let dockVisiblePadding = PlayerViewStatePolicy.subtitleBottomPadding(
+            isShowingControls: true,
+            showsTransportDock: true
+        )
+
+        #expect(hiddenPadding == PlayerCinematicChromePolicy.subtitleHiddenControlsBottomPadding)
+        #expect(dockVisiblePadding == PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock)
+        #expect(dockVisiblePadding > PlayerCinematicChromePolicy.estimatedTransportDockHeight)
     }
 }

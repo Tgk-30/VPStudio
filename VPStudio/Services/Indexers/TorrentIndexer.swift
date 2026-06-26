@@ -19,11 +19,6 @@ enum IndexerParseError: LocalizedError, Equatable {
 }
 
 enum IndexerLogSanitizer {
-    private static let sensitiveQueryNames: Set<String> = [
-        "access_token", "api_key", "apikey", "auth", "authorization",
-        "jwt", "key", "pass", "password", "refresh_token", "sig",
-        "signature", "token"
-    ]
     private static let urlPattern = try! NSRegularExpression(
         pattern: #"(https?|magnet):\/\/[^\s"']+|magnet:\?[^\s"']+"#,
         options: [.caseInsensitive]
@@ -87,7 +82,7 @@ enum IndexerLogSanitizer {
     }
 
     private static func shouldRedactQueryItem(named name: String, value: String?) -> Bool {
-        if sensitiveQueryNames.contains(name.lowercased()) {
+        if SensitiveURLQueryPolicy.isSensitiveName(name) {
             return true
         }
         guard let value else { return false }

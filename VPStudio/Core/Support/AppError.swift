@@ -143,7 +143,7 @@ enum AppError: LocalizedError, Equatable, Sendable {
 
     var requiresMetadataSetupAction: Bool {
         guard case .unknown(let message) = self else { return false }
-        return (message.contains("OMDb API key") || message.contains("TMDB API key"))
+        return (message.contains("OMDb API key") || message.contains("metadata API key"))
             && message.contains(Self.metadataSetupGuidance)
     }
 

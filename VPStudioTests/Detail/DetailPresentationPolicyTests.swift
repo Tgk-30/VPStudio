@@ -459,6 +459,13 @@ struct DetailPresentationPolicyMetadataFormattingTests {
     }
 
     @Test
+    func imdbRatingTextReturnsNilForNonFiniteOrOutOfRangeRating() {
+        #expect(DetailPresentationPolicy.imdbRatingText(.nan) == nil)
+        #expect(DetailPresentationPolicy.imdbRatingText(.infinity) == nil)
+        #expect(DetailPresentationPolicy.imdbRatingText(10.1) == nil)
+    }
+
+    @Test
     func imdbRatingTextFormatsPositiveRatingToOneDecimal() {
         #expect(DetailPresentationPolicy.imdbRatingText(7.94) == "7.9")
     }

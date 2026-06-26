@@ -5,6 +5,18 @@ import os
 import RealityKit
 #endif
 
+private final class EnvironmentCatalogRemoteSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(EnvironmentCatalogManager.validatedRemoteRedirectRequest(request))
+    }
+}
+
 enum EnvironmentCatalogError: LocalizedError {
     case unsupportedFileType
     case missingFile
@@ -28,11 +40,16 @@ enum EnvironmentCatalogError: LocalizedError {
 actor EnvironmentCatalogManager {
     typealias RemoteDataFetcher = @Sendable (URL) async throws -> (Data, URLResponse)
     private static let logger = Logger(subsystem: "com.vpstudio", category: "environment-catalog")
+    private static let defaultRemoteSessionDelegate = EnvironmentCatalogRemoteSessionDelegate()
     private static let defaultRemoteSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 300
-        return URLSession(configuration: configuration)
+        return URLSession(
+            configuration: configuration,
+            delegate: defaultRemoteSessionDelegate,
+            delegateQueue: nil
+        )
     }()
 
     private let database: DatabaseManager
@@ -307,6 +324,10 @@ actor EnvironmentCatalogManager {
             throw EnvironmentCatalogError.missingFile
         }
 
+        guard Self.isImportableRegularFile(sourceURL) else {
+            throw EnvironmentCatalogError.missingFile
+        }
+
         let originalExt = sourceURL.pathExtension
         let normalizedExt = originalExt.lowercased()
         try Self.validateExtension(normalizedExt)
@@ -524,7 +545,7 @@ actor EnvironmentCatalogManager {
     }
 
     private static func sanitizedSourceAttributionURL(_ value: String?) -> String? {
-        EnvironmentURLPolicy.webURL(from: value)?.absoluteString
+        EnvironmentURLPolicy.webURL(from: value, requiresHTTPS: true)?.absoluteString
     }
 
     private func sanitizedPreviewImagePath(_ value: String?) -> String? {
@@ -627,6 +648,23 @@ actor EnvironmentCatalogManager {
         return validatedURL
     }
 
+    nonisolated static func validatedRemoteRedirectRequest(_ request: URLRequest) -> URLRequest? {
+        guard let url = request.url,
+              let validatedURL = EnvironmentURLPolicy.webURL(
+                from: url.absoluteString,
+                requiresHTTPS: true
+              ) else {
+            return nil
+        }
+
+        do {
+            try validateRemoteSourceExtensionIfPresent(validatedURL)
+            return request
+        } catch {
+            return nil
+        }
+    }
+
     private static func validateRemoteSourceExtensionIfPresent(_ sourceURL: URL) throws {
         let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !ext.isEmpty else { return }
@@ -679,7 +717,7 @@ actor EnvironmentCatalogManager {
         }
         let width = pixelDimension(properties[kCGImagePropertyPixelWidth])
         let height = pixelDimension(properties[kCGImagePropertyPixelHeight])
-        return EnvironmentImportValidationPolicy.hasPanoramaAspectRatio(
+        return EnvironmentImportValidationPolicy.hasUsablePanoramaDimensions(
             width: width ?? 0,
             height: height ?? 0
         )
@@ -822,6 +860,20 @@ actor EnvironmentCatalogManager {
         guard EnvironmentImportValidationPolicy.isWithinSizeLimit(fileSize) else {
             throw EnvironmentCatalogError.unsupportedFileType
         }
+    }
+
+    private static func isImportableRegularFile(_ url: URL) -> Bool {
+        guard let resourceValues = try? url.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .isDirectoryKey,
+        ]) else {
+            return false
+        }
+
+        return resourceValues.isRegularFile == true
+            && resourceValues.isSymbolicLink != true
+            && resourceValues.isDirectory != true
     }
 
     nonisolated private func notifyEnvironmentsChanged() {

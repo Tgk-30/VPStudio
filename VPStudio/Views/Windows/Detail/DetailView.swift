@@ -166,8 +166,8 @@ enum DetailPresentationPolicy {
     }
 
     static func imdbRatingText(_ rating: Double?) -> String? {
-        guard let rating, rating > 0 else { return nil }
-        return String(format: "%.1f", rating)
+        let text = MediaRatingPolicy.displayText(rating)
+        return text.isEmpty ? nil : text
     }
 
     static func runtimeText(_ runtimeString: String?) -> String? {

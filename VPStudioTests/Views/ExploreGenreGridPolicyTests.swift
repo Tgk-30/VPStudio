@@ -8,24 +8,60 @@ struct ExploreGenreGridPolicyTests {
     @Test
     func tilePolicyBuildsStableImageNamesAndAccessibilityLabels() throws {
         let card = try #require(ExploreGenreCatalog.cards.first(where: { $0.id == "scifi" }))
+        let fallbackCard = ExploreMoodCard(
+            id: "custom",
+            title: "Custom",
+            subtitle: "Fallback",
+            symbol: "sparkles",
+            artImageName: "missing-artwork",
+            color: .cyan,
+            movieGenreId: 1,
+            tvGenreId: 1
+        )
 
-        #expect(ExploreGenreTilePolicy.imageName(for: card) == "genre-ref-scifi")
+        #expect(ExploreGenreTilePolicy.imageName(for: card) == "genre-art-scifi")
+        #expect(ExploreGenreTilePolicy.imageName(for: fallbackCard) == "genre-ref-custom")
         #expect(ExploreGenreTilePolicy.accessibilityLabel(for: card) == "\(card.title), \(card.subtitle)")
         #expect(ExploreGenreTilePolicy.cornerRadius == VPRadius.control)
         #expect(abs(ExploreGenreTilePolicy.referenceAspectRatio - CGFloat(128.0 / 142.0)) < 0.0001)
-        #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.16) < 0.0001)
+        #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.0) < 0.0001)
         #expect(abs(ExploreGenreTilePolicy.tileHeight - (ExploreGenreTilePolicy.tileWidth / ExploreGenreTilePolicy.referenceAspectRatio)) < 0.0001)
     }
 
     @Test
-    func gridColumnPolicyKeepsExpectedFixedLayout() {
+    func gridColumnPolicyUsesAdaptiveLayoutCappedAtSevenColumns() {
         let columns = ExploreGenreTilePolicy.gridColumns()
 
-        #expect(columns.count == ExploreGenreTilePolicy.columns)
-        #expect(ExploreGenreTilePolicy.columns == 6)
-        #expect(ExploreGenreTilePolicy.tileWidth == 152)
-        #expect(ExploreGenreTilePolicy.columnSpacing == 16)
-        #expect(ExploreGenreTilePolicy.rowSpacing == 15)
+        #expect(columns.count == 1)
+        #expect(ExploreGenreTilePolicy.columns == 7)
+        #expect(ExploreGenreTilePolicy.tileWidth == 128)
+        #expect(ExploreGenreTilePolicy.columnSpacing == 14)
+        #expect(ExploreGenreTilePolicy.rowSpacing == 14)
+        #expect(ExploreGenreTilePolicy.maxGridWidth == 980)
+    }
+
+    @Test
+    func fullCatalogFitsInTwoCompleteRowsWhenWideAndWrapsWhenNarrow() {
+        let cardCount = ExploreGenreCatalog.cards.count
+
+        #expect(cardCount == 14)
+        #expect(ExploreGenreTilePolicy.rowCount(for: cardCount) == 2)
+        #expect(ExploreGenreTilePolicy.columnCount(for: ExploreGenreTilePolicy.maxGridWidth, itemCount: cardCount) == 7)
+        #expect(ExploreGenreTilePolicy.columnCount(for: 700, itemCount: cardCount) == 5)
+        #expect(ExploreGenreTilePolicy.rowCount(for: cardCount, availableWidth: 700) == 3)
+        #expect(ExploreGenreTilePolicy.rowCount(for: 0) == 0)
+        #expect(
+            abs(
+                ExploreGenreTilePolicy.gridHeight(for: cardCount)
+                - (ExploreGenreTilePolicy.tileHeight * 2 + ExploreGenreTilePolicy.rowSpacing)
+            ) < 0.0001
+        )
+        #expect(
+            abs(
+                ExploreGenreTilePolicy.gridHeight(for: cardCount, availableWidth: 700)
+                - (ExploreGenreTilePolicy.tileHeight * 3 + ExploreGenreTilePolicy.rowSpacing * 2)
+            ) < 0.0001
+        )
     }
 
     @Test
@@ -54,18 +90,18 @@ struct ExploreGenreGridPolicyTests {
     }
 
     @Test
-    func tileImageScalingUsesSingleFitPolicy() throws {
+    func tileImageScalingUsesFillPolicyWithoutOverscan() throws {
         let source = try sourceContents(of: "VPStudio/Views/Windows/Search/ExploreGenreGrid.swift")
 
-        #expect(source.contains(".scaledToFit()"))
+        #expect(source.contains(".scaledToFill()"))
         #expect(source.contains(".scaleEffect(ExploreGenreTilePolicy.artworkOverscanScale)"))
         #expect(source.contains("height: ExploreGenreTilePolicy.tileHeight"))
-        #expect(!source.contains(".scaledToFill()"))
+        #expect(!source.contains(".scaledToFit()"))
         #expect(!source.contains(".aspectRatio(ExploreGenreTilePolicy.referenceAspectRatio"))
     }
 
     @Test
-    func tileOverscanCropsPastReferenceArtworkRim() {
+    func tileScalingPreservesReferenceArtworkRimAndLabel() {
         let sourceWidthAt3x: CGFloat = 384
         let sourceHeightAt3x: CGFloat = 426
         let visibleSourceWidth = sourceWidthAt3x / ExploreGenreTilePolicy.artworkOverscanScale
@@ -73,20 +109,32 @@ struct ExploreGenreGridPolicyTests {
         let horizontalInset = (sourceWidthAt3x - visibleSourceWidth) / 2
         let verticalInset = (sourceHeightAt3x - visibleSourceHeight) / 2
 
-        #expect(horizontalInset >= 26)
-        #expect(verticalInset >= 29)
-        #expect(horizontalInset < 32)
-        #expect(verticalInset < 36)
+        #expect(horizontalInset == 0)
+        #expect(verticalInset == 0)
     }
 
     @Test
-    func tileImageDoesNotRestrokeFinishedReferenceArtwork() throws {
+    func tileImageUsesSingleNeutralRingInsteadOfNeonRestroke() throws {
         let source = try sourceContents(of: "VPStudio/Views/Windows/Search/ExploreGenreGrid.swift")
         let tileBody = try #require(source.slice(from: "private struct ExploreGenreTile", to: "#if os(visionOS)"))
 
-        #expect(!tileBody.contains(".strokeBorder("))
         #expect(!tileBody.contains(".blendMode(.screen)"))
-        #expect(!tileBody.contains(".shadow("))
+        #expect(!tileBody.contains("card.color.opacity"))
+        #expect(tileBody.contains("ExploreGenreTilePolicy.borderOpacity"))
+        #expect(tileBody.contains("ExploreGenreTilePolicy.borderLineWidth"))
+    }
+
+    @Test
+    func tileRendersOwnLabelAndScrimInsteadOfBakedReferenceText() throws {
+        let source = try sourceContents(of: "VPStudio/Views/Windows/Search/ExploreGenreGrid.swift")
+        let tileBody = try #require(source.slice(from: "private struct ExploreGenreTile", to: "#if os(visionOS)"))
+
+        #expect(tileBody.contains("Text(card.title)"))
+        #expect(tileBody.contains(".minimumScaleFactor(ExploreGenreTilePolicy.labelMinimumScale)"))
+        #expect(tileBody.contains(".padding(.bottom, ExploreGenreTilePolicy.labelBottomPadding)"))
+        #expect(tileBody.contains("ExploreGenreTilePolicy.labelScrimHeightRatio"))
+        #expect(!tileBody.contains("Text(card.subtitle)"))
+        #expect(!tileBody.contains("card.color.opacity"))
     }
 
     private func sourceContents(of relativePath: String) throws -> String {

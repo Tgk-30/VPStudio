@@ -229,7 +229,7 @@ enum QARuntimeOptions {
 
     // QA-only visual/debug helpers for deterministic screenshot capture.
     static let forceCompactNavScale = bool("VPSTUDIO_QA_FORCE_COMPACT_NAV_SCALE")
-    /// Seeds the main-window Discover tab with realistic TMDB artwork (no API key) for visual QA.
+    /// Seeds the main-window Discover tab with realistic metadata artwork (no API key) for visual QA.
     static let seedDiscoverPreview = bool("VPSTUDIO_QA_SEED_DISCOVER")
     static let testScreenRawValue = testScreenRawValue(from: environment)
     static let selectedTab = selectedTab(from: environment)

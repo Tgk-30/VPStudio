@@ -41,6 +41,38 @@ struct PlayerBufferingPolicyBufferingTextTests {
     func rebufferTextTruncatesFractionalPercentTowardZero() {
         #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.999) == "Buffering... 99%")
     }
+
+    @Test
+    func surfaceFeedbackAppearsOnlyForMidPlaybackRebuffering() {
+        #expect(
+            PlayerBufferingPolicy.surfaceFeedbackText(
+                playbackState: .buffering,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.42
+            ) == "Buffering... 42%"
+        )
+        #expect(
+            PlayerBufferingPolicy.surfaceFeedbackText(
+                playbackState: .buffering,
+                hasPlayedOnce: false,
+                bufferedPercent: 0.42
+            ) == nil
+        )
+        #expect(
+            PlayerBufferingPolicy.surfaceFeedbackText(
+                playbackState: .playing,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.42
+            ) == nil
+        )
+        #expect(
+            PlayerBufferingPolicy.surfaceFeedbackText(
+                playbackState: .failed,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.42
+            ) == nil
+        )
+    }
 }
 
 @Suite("PlayerBufferingPolicy - Quality Change Toast")

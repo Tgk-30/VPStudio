@@ -349,6 +349,39 @@ struct RefreshLoadingPolicyTests {
     }
 
     @Test
+    func detailMetadataLookupPolicyIgnoresInvalidOMDbYearsAndAvoidsDoubleAppendingYear() {
+        let invalidYearPreview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 10_000,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+        let alreadyQualifiedPreview = MediaPreview(
+            id: "series-tmdb-57243",
+            type: .series,
+            title: "Doctor Who (2005)",
+            year: 1963,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 57_243
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.detailID(for: invalidYearPreview, preference: .imdbOrTitle)
+                == "Dune"
+        )
+        #expect(
+            DetailMetadataLookupPolicy.detailID(for: alreadyQualifiedPreview, preference: .imdbOrTitle)
+                == "Doctor Who (2005)"
+        )
+    }
+
+    @Test
     func detailMetadataLookupPolicyKeepsLegacyTMDBLookupForTMDBProviders() {
         let preview = MediaPreview(
             id: "movie-tmdb-438631",
@@ -396,6 +429,33 @@ struct RefreshLoadingPolicyTests {
         #expect(
             DetailMetadataLookupPolicy.episodeLookupID(for: item, preference: .imdbOrTitle)
                 == "Game of Thrones"
+        )
+    }
+
+    @Test
+    func detailEpisodeLookupPolicyUsesSharedOMDbTitleYearGuards() {
+        let invalidYearItem = MediaItem(
+            id: "tmdb-1399",
+            type: .series,
+            title: "Game of Thrones",
+            year: 999,
+            tmdbId: 1399
+        )
+        let alreadyQualifiedItem = MediaItem(
+            id: "tmdb-57243",
+            type: .series,
+            title: "Doctor Who (2005)",
+            year: 1963,
+            tmdbId: 57_243
+        )
+
+        #expect(
+            DetailMetadataLookupPolicy.episodeLookupID(for: invalidYearItem, preference: .imdbOrTitle)
+                == "Game of Thrones"
+        )
+        #expect(
+            DetailMetadataLookupPolicy.episodeLookupID(for: alreadyQualifiedItem, preference: .imdbOrTitle)
+                == "Doctor Who (2005)"
         )
     }
 

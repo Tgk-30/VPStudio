@@ -1194,7 +1194,7 @@ struct EnvironmentsTabView: View {
         let isInstalling = installingPresetIDs.contains(preset.id)
 
         return HStack(alignment: .center, spacing: 14) {
-            Image(systemName: preset.provider == .polyHaven ? "pano" : "shippingbox")
+            Image(systemName: EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider))
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 38, height: 38)
@@ -1218,10 +1218,10 @@ struct EnvironmentsTabView: View {
             if isInstalled {
                 Label("Added", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(VPColor.success)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(.green.opacity(0.12), in: Capsule())
+                    .background(VPColor.success.opacity(0.12), in: Capsule())
             } else {
                 Button {
                     Task { await installPreset(preset) }

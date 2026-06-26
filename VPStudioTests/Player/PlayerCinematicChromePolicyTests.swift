@@ -89,6 +89,23 @@ struct PlayerCinematicChromePolicyLayoutTests {
     }
 
     @Test
+    func overlayClearanceIsDerivedFromTransportDockDimensions() {
+        let expectedDockHeight = PlayerCinematicChromePolicy.controlsDockBottomPadding
+            + (PlayerCinematicChromePolicy.transportCardVerticalPadding * 2)
+            + PlayerCinematicChromePolicy.quickActionsEstimatedHeight
+            + PlayerCinematicChromePolicy.progressHitHeight
+            + PlayerCinematicChromePolicy.timeLabelsMinHeight
+            + PlayerCinematicChromePolicy.primaryTransportButtonSize
+            + (PlayerCinematicChromePolicy.transportInternalSpacing * 3)
+
+        #expect(PlayerCinematicChromePolicy.estimatedTransportDockHeight == expectedDockHeight)
+        #expect(
+            PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+                == expectedDockHeight + PlayerCinematicChromePolicy.overlayDockClearance
+        )
+    }
+
+    @Test
     func transportInternalSpacing() {
         #expect(PlayerCinematicChromePolicy.transportInternalSpacing == 10)
     }

@@ -415,13 +415,13 @@ struct CSVHeaderPreviewSheet: View {
                                 if let mapping = detectedMappings[header] {
                                     Text("Auto: \(mapping)")
                                         .font(.caption2)
-                                        .foregroundStyle(.green)
+                                        .foregroundStyle(VPColor.success)
                                 }
 
                                 if let aiMapping = aiSuggestedMappings[header], aiMapping != detectedMappings[header] {
                                     Text("AI: \(aiMapping)")
                                         .font(.caption2)
-                                        .foregroundStyle(.blue)
+                                        .foregroundStyle(VPColor.info)
                                 }
                             }
                         }

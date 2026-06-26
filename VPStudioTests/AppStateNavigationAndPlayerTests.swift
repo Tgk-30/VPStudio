@@ -268,6 +268,43 @@ struct AppStatePlayerSessionStateTests {
                 mediaId: "legacy-local-id",
                 previewId: nil,
                 mediaTitle: " Legacy Show ",
+                mediaYear: 2024,
+                tmdbId: 1399
+            ) == "Legacy Show (2024)"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                mediaTitle: " Legacy Show (2024) ",
+                mediaYear: 2024,
+                tmdbId: 1399
+            ) == "Legacy Show (2024)"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                mediaTitle: " Doctor Who (2005) ",
+                mediaYear: 1963,
+                tmdbId: 1399
+            ) == "Doctor Who (2005)"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                mediaTitle: " Legacy Show ",
+                mediaYear: 999,
+                tmdbId: 1399
+            ) == "Legacy Show"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                mediaTitle: " Legacy Show ",
+                mediaYear: nil,
                 tmdbId: 1399
             ) == "Legacy Show"
         )

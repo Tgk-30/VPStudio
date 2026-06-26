@@ -86,8 +86,10 @@ struct ImmersiveControlsPolicyScrubberGeometryTests {
         #expect(ImmersiveControlsPolicy.scrubberDraggingThumbSize == 20)
         // The thumb must visibly grow while dragging for gaze confirmation.
         #expect(ImmersiveControlsPolicy.scrubberDraggingThumbSize > ImmersiveControlsPolicy.scrubberIdleThumbSize)
-        // visionOS gaze+pinch needs a comfortably large hit region (>= 44pt).
-        #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= 44)
+        // visionOS gaze+pinch needs the same forgiving target as the circular
+        // controls; 44pt is too easy to miss at immersive viewing distance.
+        #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= 58)
+        #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= ImmersiveControlsPolicy.controlButtonDiameter)
     }
 
     @Test

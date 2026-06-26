@@ -17,6 +17,32 @@ enum EnvironmentThumbnailDecodePolicy {
     }
 }
 
+enum EnvironmentPreviewLayoutPolicy {
+    static let cardWidth: CGFloat = 286
+    static let cardHeight: CGFloat = 168
+    static let cardCornerRadius: CGFloat = 16
+    static let gridSpacing: CGFloat = 18
+    static let maximumCenteredColumns = 4
+
+    static func gridColumns() -> [GridItem] {
+        [
+            GridItem(
+                .adaptive(minimum: cardWidth, maximum: cardWidth),
+                spacing: gridSpacing
+            ),
+        ]
+    }
+
+    static func gridContentMaxWidth(itemCount: Int, maximumColumns: Int = maximumCenteredColumns) -> CGFloat {
+        let columnCount = min(max(itemCount, 1), max(maximumColumns, 1))
+        return (CGFloat(columnCount) * cardWidth) + (CGFloat(columnCount - 1) * gridSpacing)
+    }
+
+    static var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+    }
+}
+
 // MARK: - Sheet
 
 /// Full-screen sheet that presents when the environment ornament button is tapped.
@@ -170,14 +196,15 @@ struct EnvironmentPickerSheet: View {
     }
 
     private var environmentGrid: some View {
-        let columns = [
-            GridItem(.adaptive(minimum: 286, maximum: 340), spacing: 18),
-        ]
         let selectedAssetID = EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
             appStateSelectedID: appState.selectedEnvironmentAsset?.id,
             assets: environments
         )
-        return LazyVGrid(columns: columns, spacing: 18) {
+        let itemCount = 2 + environments.count
+        return LazyVGrid(
+            columns: EnvironmentPreviewLayoutPolicy.gridColumns(),
+            spacing: EnvironmentPreviewLayoutPolicy.gridSpacing
+        ) {
             NoEnvironmentPreviewCard(
                 status: EnvironmentPreviewRowPolicy.standardRoomStatus(
                     selectedAssetID: selectedAssetID,
@@ -225,6 +252,8 @@ struct EnvironmentPickerSheet: View {
                 )
             }
         }
+        .frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: itemCount))
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var exitButton: some View {
@@ -341,10 +370,10 @@ struct EnvironmentPickerSheet: View {
             if isInstalled {
                 Label("Added", systemImage: "checkmark.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(VPColor.success)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(.green.opacity(0.12), in: Capsule())
+                    .background(VPColor.success.opacity(0.12), in: Capsule())
             } else {
                 Button {
                     Task { await installPreset(preset) }
@@ -376,7 +405,7 @@ struct EnvironmentPickerSheet: View {
     private func importErrorBanner(_ message: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.yellow)
+                .foregroundStyle(VPColor.warning)
             Text(message)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -531,30 +560,28 @@ struct EnvironmentPreviewCard: View {
     var onDelete: (() -> Void)? = nil
 
     @State private var thumbnailImage: CGImage?
-    @State private var thumbnailImageAssetPath: String?
+    @State private var thumbnailImageSourceID: String?
     @State private var thumbnailFailed = false
     @State private var thumbnailLoadTask: Task<Void, Never>?
-
-    private let cardWidth: CGFloat = 286
-    private let cardHeight: CGFloat = 168
 
     var body: some View {
         Button(action: onSelect) {
             ZStack(alignment: .bottomLeading) {
                 previewBackground
-                    .frame(width: cardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
+                    .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.0),
-                        .init(color: .black.opacity(0.45), location: 0.55),
-                        .init(color: .black.opacity(0.82), location: 1.0),
+                        .init(color: .black.opacity(0.22), location: 0.36),
+                        .init(color: .black.opacity(0.62), location: 0.64),
+                        .init(color: .black.opacity(0.88), location: 1.0),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 5) {
@@ -568,23 +595,19 @@ struct EnvironmentPreviewCard: View {
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.75))
                     }
-                    Text(asset.name)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    EnvironmentPreviewCardTitleText(asset.name)
                 }
                 .padding(16)
             }
-            .frame(width: cardWidth, height: cardHeight)
+            .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
         }
         .buttonStyle(.plain)
         .disabled(isDeleting)
         .overlay {
-            RoundedRectangle(cornerRadius: 16)
+            EnvironmentPreviewLayoutPolicy.cardShape
                 .strokeBorder(
                     LinearGradient(
-                        colors: [activeBorderTop, activeBorderBottom],
+                        colors: status.borderGradientColors,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -595,14 +618,16 @@ struct EnvironmentPreviewCard: View {
             if isDeleting {
                 EnvironmentStatusChip(
                     title: "Deleting",
-                    systemImage: "hourglass"
+                    systemImage: "hourglass",
+                    tint: .secondary
                 )
                 .padding(10)
                 .transition(.scale(0.7).combined(with: .opacity))
             } else if let chip = status.chip {
                 EnvironmentStatusChip(
                     title: chip.title,
-                    systemImage: chip.systemImage
+                    systemImage: chip.systemImage,
+                    tint: chip.tint
                 )
                 .padding(10)
                 .transition(.scale(0.7).combined(with: .opacity))
@@ -617,7 +642,7 @@ struct EnvironmentPreviewCard: View {
             } else if thumbnailFailed && EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: asset.assetPath) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(VPColor.warning)
                     .padding(10)
             }
         }
@@ -631,7 +656,7 @@ struct EnvironmentPreviewCard: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: status)
         .animation(.easeInOut(duration: 0.18), value: isDeleting)
         .hoverEffect(.lift)
-        .task(id: asset.assetPath) {
+        .task(id: EnvironmentPreviewRowPolicy.thumbnailLoadID(for: asset)) {
             thumbnailLoadTask?.cancel()
             thumbnailLoadTask = Task { await loadThumbnail() }
             await thumbnailLoadTask?.value
@@ -665,29 +690,13 @@ struct EnvironmentPreviewCard: View {
     }
 
     private var placeholderGradient: some View {
-        let isHDRI = EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: asset.assetPath)
-        return LinearGradient(
-            colors: isHDRI
-                ? [Color(red: 0.04, green: 0.07, blue: 0.18), Color(red: 0.08, green: 0.18, blue: 0.38)]
-                : [Color(red: 0.06, green: 0.05, blue: 0.12), Color(red: 0.14, green: 0.10, blue: 0.26)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
+        EnvironmentPreviewFallbackArtworkView(
+            kind: EnvironmentPreviewRowPolicy.fallbackArtworkKind(
+                sourceType: asset.sourceType,
+                assetPath: asset.assetPath
+            ),
+            paletteIndex: EnvironmentPreviewRowPolicy.fallbackPaletteIndex(for: asset)
         )
-        .overlay {
-            Image(systemName: isHDRI ? "pano.fill" : "cube.transparent.fill")
-                .font(.system(size: 48, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.20))
-        }
-    }
-
-    // MARK: Helpers
-
-    private var activeBorderTop: Color {
-        status.isHighlighted ? VPColor.accent.opacity(0.95) : .white.opacity(0.18)
-    }
-
-    private var activeBorderBottom: Color {
-        status.isHighlighted ? VPColor.accent.opacity(0.5) : .white.opacity(0.04)
     }
 
     // MARK: Thumbnail
@@ -695,9 +704,10 @@ struct EnvironmentPreviewCard: View {
     private func loadThumbnail() async {
         thumbnailFailed = false
         let paths = EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: asset)
+        let loadID = EnvironmentPreviewRowPolicy.thumbnailLoadID(for: asset)
         guard !paths.isEmpty else {
             thumbnailImage = nil
-            thumbnailImageAssetPath = nil
+            thumbnailImageSourceID = nil
             return
         }
 
@@ -734,11 +744,11 @@ struct EnvironmentPreviewCard: View {
 
         if let image {
             thumbnailImage = image
-            thumbnailImageAssetPath = asset.assetPath
+            thumbnailImageSourceID = loadID
         } else {
-            if thumbnailImageAssetPath != asset.assetPath {
+            if thumbnailImageSourceID != loadID {
                 thumbnailImage = nil
-                thumbnailImageAssetPath = nil
+                thumbnailImageSourceID = nil
             }
             thumbnailFailed = true
         }
@@ -893,16 +903,67 @@ enum EnvironmentPreviewCardStatus: Equatable, Sendable {
         self != .inactive
     }
 
-    var chip: (title: String, systemImage: String)? {
+    var chip: (title: String, systemImage: String, tint: Color)? {
         switch self {
         case .inactive:
             return nil
         case .current:
-            return ("Current", "checkmark.circle.fill")
+            return ("Current", "checkmark.circle.fill", VPColor.accent)
         case .selected:
-            return ("Selected", "checkmark")
+            return ("Selected", "checkmark.circle", VPColor.info)
         case .active:
-            return ("Active", "checkmark.circle.fill")
+            return ("Active", "play.circle.fill", VPColor.success)
+        }
+    }
+
+    var borderGradientColors: [Color] {
+        switch self {
+        case .inactive:
+            return [.white.opacity(0.18), .white.opacity(0.04)]
+        case .current:
+            return [VPColor.accent.opacity(0.95), VPColor.accent.opacity(0.5)]
+        case .selected:
+            return [VPColor.info.opacity(0.95), VPColor.info.opacity(0.46)]
+        case .active:
+            return [VPColor.success.opacity(0.95), VPColor.success.opacity(0.48)]
+        }
+    }
+}
+
+enum EnvironmentPreviewFallbackArtworkKind: Equatable, Sendable {
+    case standardRoom
+    case cinema
+    case bundledEnvironment
+    case panorama
+    case scene
+
+    var iconName: String {
+        switch self {
+        case .standardRoom:
+            return "rectangle.dashed"
+        case .cinema:
+            return "theatermasks.fill"
+        case .bundledEnvironment:
+            return "sparkles"
+        case .panorama:
+            return "pano.fill"
+        case .scene:
+            return "cube.transparent.fill"
+        }
+    }
+
+    var iconOpacity: Double {
+        switch self {
+        case .standardRoom:
+            return 0.64
+        case .cinema:
+            return 0.68
+        case .bundledEnvironment:
+            return 0.70
+        case .panorama:
+            return 0.72
+        case .scene:
+            return 0.68
         }
     }
 }
@@ -987,6 +1048,26 @@ enum EnvironmentPreviewRowPolicy {
         isHDRIAsset(assetPath: assetPath) ? "pano" : "cube.transparent"
     }
 
+    static func fallbackArtworkKind(
+        sourceType: EnvironmentAssetSourceType,
+        assetPath: String
+    ) -> EnvironmentPreviewFallbackArtworkKind {
+        if sourceType == .bundled {
+            return .bundledEnvironment
+        }
+        return isHDRIAsset(assetPath: assetPath) ? .panorama : .scene
+    }
+
+    static func fallbackPaletteIndex(for asset: EnvironmentAsset, paletteCount: Int = 4) -> Int {
+        guard paletteCount > 0 else { return 0 }
+        let seed = "\(asset.id)|\(asset.name)|\(asset.assetPath)"
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in seed.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return Int(hash % UInt64(paletteCount))
+    }
+
     static func assetTypeLabel(sourceType: EnvironmentAssetSourceType, assetPath: String) -> String {
         if sourceType == .bundled {
             return "Built-in"
@@ -1020,14 +1101,29 @@ enum EnvironmentPreviewRowPolicy {
 
     static func thumbnailSourcePaths(for asset: EnvironmentAsset) -> [String] {
         var paths: [String] = []
-        if let previewImagePath = asset.previewImagePath?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !previewImagePath.isEmpty {
-            paths.append(previewImagePath)
-        }
+        appendThumbnailSource(asset.previewImagePath, to: &paths)
+        appendThumbnailSource(asset.thumbnailPath, to: &paths)
         if isHDRIAsset(assetPath: asset.assetPath) {
-            paths.append(asset.assetPath)
+            appendThumbnailSource(asset.assetPath, to: &paths)
         }
         return paths
+    }
+
+    static func thumbnailLoadID(for asset: EnvironmentAsset) -> String {
+        let sources = thumbnailSourcePaths(for: asset)
+        if sources.isEmpty {
+            return asset.assetPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return sources.joined(separator: "\u{1F}")
+    }
+
+    private static func appendThumbnailSource(_ value: String?, to paths: inout [String]) {
+        guard let path = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty,
+              !paths.contains(path) else {
+            return
+        }
+        paths.append(path)
     }
 
     static func shouldClearActiveSelection(
@@ -1056,43 +1152,195 @@ enum EnvironmentPreviewRowPolicy {
     }
 }
 
+private struct EnvironmentPreviewFallbackArtworkView: View {
+    let kind: EnvironmentPreviewFallbackArtworkKind
+    let paletteIndex: Int
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: palette,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            GeometryReader { proxy in
+                ZStack {
+                    spotlight(size: proxy.size)
+                    if showsHorizonGuide {
+                        horizon(size: proxy.size)
+                    }
+                    accentGlyph(size: proxy.size)
+                    foregroundIcon(size: proxy.size)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+            }
+        }
+        .clipped()
+    }
+
+    private var palette: [Color] {
+        palettes[normalizedPaletteIndex]
+    }
+
+    private var accent: Color {
+        switch kind {
+        case .standardRoom:
+            return Color(red: 0.82, green: 0.77, blue: 0.66)
+        case .cinema:
+            return Color(red: 1.00, green: 0.58, blue: 0.38)
+        case .bundledEnvironment:
+            return Color(red: 0.50, green: 0.90, blue: 0.92)
+        case .panorama:
+            return Color(red: 0.36, green: 0.84, blue: 0.74)
+        case .scene:
+            return Color(red: 0.92, green: 0.63, blue: 1.00)
+        }
+    }
+
+    private var normalizedPaletteIndex: Int {
+        guard !palettes.isEmpty else { return 0 }
+        return max(0, paletteIndex) % palettes.count
+    }
+
+    private var showsHorizonGuide: Bool {
+        kind == .bundledEnvironment || kind == .panorama
+    }
+
+    private var palettes: [[Color]] {
+        switch kind {
+        case .standardRoom:
+            return [
+                [Color(red: 0.04, green: 0.045, blue: 0.05), Color(red: 0.14, green: 0.15, blue: 0.15), Color(red: 0.24, green: 0.22, blue: 0.18)],
+            ]
+        case .cinema:
+            return [
+                [Color(red: 0.02, green: 0.02, blue: 0.03), Color(red: 0.24, green: 0.03, blue: 0.08), Color(red: 0.39, green: 0.24, blue: 0.08)],
+            ]
+        case .bundledEnvironment:
+            return [
+                [Color(red: 0.02, green: 0.11, blue: 0.22), Color(red: 0.06, green: 0.24, blue: 0.28), Color(red: 0.16, green: 0.11, blue: 0.34)],
+                [Color(red: 0.11, green: 0.05, blue: 0.23), Color(red: 0.28, green: 0.10, blue: 0.28), Color(red: 0.05, green: 0.20, blue: 0.26)],
+                [Color(red: 0.05, green: 0.13, blue: 0.16), Color(red: 0.13, green: 0.27, blue: 0.20), Color(red: 0.18, green: 0.13, blue: 0.34)],
+                [Color(red: 0.15, green: 0.07, blue: 0.09), Color(red: 0.30, green: 0.16, blue: 0.10), Color(red: 0.07, green: 0.16, blue: 0.24)],
+            ]
+        case .panorama:
+            return [
+                [Color(red: 0.04, green: 0.13, blue: 0.25), Color(red: 0.05, green: 0.29, blue: 0.33), Color(red: 0.06, green: 0.15, blue: 0.34)],
+                [Color(red: 0.11, green: 0.08, blue: 0.24), Color(red: 0.22, green: 0.12, blue: 0.34), Color(red: 0.05, green: 0.24, blue: 0.29)],
+                [Color(red: 0.05, green: 0.18, blue: 0.17), Color(red: 0.12, green: 0.33, blue: 0.24), Color(red: 0.04, green: 0.13, blue: 0.27)],
+                [Color(red: 0.18, green: 0.08, blue: 0.10), Color(red: 0.33, green: 0.18, blue: 0.12), Color(red: 0.07, green: 0.18, blue: 0.24)],
+            ]
+        case .scene:
+            return [
+                [Color(red: 0.12, green: 0.07, blue: 0.24), Color(red: 0.26, green: 0.09, blue: 0.31), Color(red: 0.12, green: 0.16, blue: 0.32)],
+                [Color(red: 0.04, green: 0.12, blue: 0.22), Color(red: 0.10, green: 0.23, blue: 0.31), Color(red: 0.24, green: 0.13, blue: 0.25)],
+                [Color(red: 0.16, green: 0.07, blue: 0.12), Color(red: 0.30, green: 0.16, blue: 0.12), Color(red: 0.12, green: 0.12, blue: 0.27)],
+                [Color(red: 0.06, green: 0.15, blue: 0.12), Color(red: 0.15, green: 0.29, blue: 0.18), Color(red: 0.16, green: 0.10, blue: 0.27)],
+            ]
+        }
+    }
+
+    private func spotlight(size: CGSize) -> some View {
+        Circle()
+            .fill(accent.opacity(0.20))
+            .frame(width: size.width * 0.82, height: size.width * 0.82)
+            .blur(radius: 2)
+            .offset(x: size.width * 0.26, y: -size.height * 0.46)
+    }
+
+    private func horizon(size: CGSize) -> some View {
+        VStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(.white.opacity(kind == .standardRoom ? 0.08 : 0.13))
+                .frame(width: size.width * 0.68, height: 2)
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(.white.opacity(0.09), lineWidth: 1)
+                .frame(width: size.width * 0.76, height: size.height * 0.36)
+        }
+        .offset(y: size.height * 0.12)
+    }
+
+    private func accentGlyph(size: CGSize) -> some View {
+        switch kind {
+        case .cinema:
+            return AnyView(
+                HStack(spacing: size.width * 0.34) {
+                    Capsule()
+                        .fill(accent.opacity(0.16))
+                        .frame(width: size.width * 0.10, height: size.height * 0.78)
+                        .rotationEffect(.degrees(-18))
+                    Capsule()
+                        .fill(accent.opacity(0.16))
+                        .frame(width: size.width * 0.10, height: size.height * 0.78)
+                        .rotationEffect(.degrees(18))
+                }
+                .offset(y: -size.height * 0.04)
+            )
+        case .standardRoom:
+            return AnyView(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.white.opacity(0.14), style: StrokeStyle(lineWidth: 2, dash: [8, 7]))
+                    .frame(width: size.width * 0.24, height: size.height * 0.34)
+                    .offset(y: -size.height * 0.04)
+            )
+        case .bundledEnvironment:
+            return AnyView(
+                Image(systemName: "sparkle")
+                    .font(.system(size: 82, weight: .bold))
+                    .foregroundStyle(accent.opacity(0.16))
+                    .offset(x: size.width * 0.20, y: -size.height * 0.18)
+            )
+        case .panorama:
+            return AnyView(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(accent.opacity(0.20), lineWidth: 2)
+                    .frame(width: size.width * 0.44, height: size.height * 0.30)
+                    .offset(y: -size.height * 0.05)
+            )
+        case .scene:
+            return AnyView(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(accent.opacity(0.15))
+                    .frame(width: size.width * 0.48, height: size.height * 0.18)
+                    .rotationEffect(.degrees(-10))
+                    .offset(y: size.height * 0.12)
+            )
+        }
+    }
+
+    private func foregroundIcon(size: CGSize) -> some View {
+        Image(systemName: kind.iconName)
+            .font(.system(size: 54, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(.white.opacity(kind.iconOpacity))
+            .shadow(color: .black.opacity(0.32), radius: 2, y: 1)
+            .position(x: size.width * 0.58, y: size.height * 0.48)
+    }
+}
+
 struct CinemaEnvironmentPreviewCard: View {
     let status: EnvironmentPreviewCardStatus
     let onSelect: () -> Void
 
-    private let cardWidth: CGFloat = 286
-    private let cardHeight: CGFloat = 168
-
     var body: some View {
         Button(action: onSelect) {
             ZStack(alignment: .bottomLeading) {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.02, green: 0.02, blue: 0.03),
-                        Color(red: 0.16, green: 0.02, blue: 0.07),
-                        Color(red: 0.28, green: 0.22, blue: 0.10),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .overlay {
-                    Image(systemName: "theatermasks.fill")
-                        .font(.system(size: 52, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.22))
-                }
-                .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                EnvironmentPreviewFallbackArtworkView(kind: .cinema, paletteIndex: 0)
+                .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
+                .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.0),
-                        .init(color: .black.opacity(0.45), location: 0.55),
-                        .init(color: .black.opacity(0.82), location: 1.0),
+                        .init(color: .black.opacity(0.22), location: 0.36),
+                        .init(color: .black.opacity(0.62), location: 0.64),
+                        .init(color: .black.opacity(0.88), location: 1.0),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 5) {
@@ -1103,25 +1351,18 @@ struct CinemaEnvironmentPreviewCard: View {
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.75))
                     }
-                    Text("Cinema Environment")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    EnvironmentPreviewCardTitleText("Cinema Environment")
                 }
                 .padding(16)
             }
-            .frame(width: cardWidth, height: cardHeight)
+            .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
         }
         .buttonStyle(.plain)
         .overlay {
-            RoundedRectangle(cornerRadius: 16)
+            EnvironmentPreviewLayoutPolicy.cardShape
                 .strokeBorder(
                     LinearGradient(
-                        colors: [
-                            status.isHighlighted ? VPColor.accent.opacity(0.95) : .white.opacity(0.18),
-                            status.isHighlighted ? VPColor.accent.opacity(0.5) : .white.opacity(0.04),
-                        ],
+                        colors: status.borderGradientColors,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -1132,7 +1373,8 @@ struct CinemaEnvironmentPreviewCard: View {
             if let chip = status.chip {
                 EnvironmentStatusChip(
                     title: chip.title,
-                    systemImage: chip.systemImage
+                    systemImage: chip.systemImage,
+                    tint: chip.tint
                 )
                 .padding(10)
             }
@@ -1146,39 +1388,24 @@ struct NoEnvironmentPreviewCard: View {
     let status: EnvironmentPreviewCardStatus
     let onSelect: () -> Void
 
-    private let cardWidth: CGFloat = 286
-    private let cardHeight: CGFloat = 168
-
     var body: some View {
         Button(action: onSelect) {
             ZStack(alignment: .bottomLeading) {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.04, green: 0.045, blue: 0.05),
-                        Color(red: 0.12, green: 0.13, blue: 0.14),
-                        Color(red: 0.20, green: 0.19, blue: 0.17),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .overlay {
-                    Image(systemName: "rectangle.dashed")
-                        .font(.system(size: 52, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.22))
-                }
-                .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                EnvironmentPreviewFallbackArtworkView(kind: .standardRoom, paletteIndex: 0)
+                .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
+                .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.0),
-                        .init(color: .black.opacity(0.38), location: 0.52),
-                        .init(color: .black.opacity(0.78), location: 1.0),
+                        .init(color: .black.opacity(0.20), location: 0.34),
+                        .init(color: .black.opacity(0.58), location: 0.62),
+                        .init(color: .black.opacity(0.84), location: 1.0),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 5) {
@@ -1189,25 +1416,18 @@ struct NoEnvironmentPreviewCard: View {
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.75))
                     }
-                    Text("Standard Room")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    EnvironmentPreviewCardTitleText("Standard Room")
                 }
                 .padding(16)
             }
-            .frame(width: cardWidth, height: cardHeight)
+            .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
         }
         .buttonStyle(.plain)
         .overlay {
-            RoundedRectangle(cornerRadius: 16)
+            EnvironmentPreviewLayoutPolicy.cardShape
                 .strokeBorder(
                     LinearGradient(
-                        colors: [
-                            status.isHighlighted ? VPColor.accent.opacity(0.95) : .white.opacity(0.18),
-                            status.isHighlighted ? VPColor.accent.opacity(0.5) : .white.opacity(0.04),
-                        ],
+                        colors: status.borderGradientColors,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -1216,7 +1436,7 @@ struct NoEnvironmentPreviewCard: View {
         }
         .overlay(alignment: .topTrailing) {
             if let chip = status.chip {
-                EnvironmentStatusChip(title: chip.title, systemImage: chip.systemImage)
+                EnvironmentStatusChip(title: chip.title, systemImage: chip.systemImage, tint: chip.tint)
                     .padding(10)
             }
         }
@@ -1228,6 +1448,7 @@ struct NoEnvironmentPreviewCard: View {
 private struct EnvironmentStatusChip: View {
     let title: String
     let systemImage: String
+    let tint: Color
 
     var body: some View {
         Label(title, systemImage: systemImage)
@@ -1239,13 +1460,32 @@ private struct EnvironmentStatusChip: View {
             .background {
                 ZStack {
                     Capsule().fill(.regularMaterial)
-                    Capsule().fill(VPColor.accent.opacity(0.18))
+                    Capsule().fill(tint.opacity(0.18))
                 }
             }
             .overlay {
                 Capsule()
-                    .strokeBorder(VPColor.accent.opacity(0.75), lineWidth: 1)
+                    .strokeBorder(tint.opacity(0.75), lineWidth: 1)
             }
+    }
+}
+
+private struct EnvironmentPreviewCardTitleText: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.subheadline)
+            .fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .lineLimit(2)
+            .minimumScaleFactor(0.82)
+            .allowsTightening(true)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 #endif

@@ -244,13 +244,52 @@ struct PlayerViewStatePolicyTests {
         #expect(
             !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
                 playbackState: .playing,
-                hasPlayedOnce: true
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: true
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .playing,
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: false
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .buffering,
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: false
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .preparing,
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: false
+            )
+        )
+        #expect(
+            !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .playing,
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: false,
+                hasExhaustedVideoFrameDetection: true
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .buffering,
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: false,
+                hasExhaustedVideoFrameDetection: true
             )
         )
         #expect(
             !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
                 playbackState: .buffering,
-                hasPlayedOnce: true
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: true
             )
         )
     }
@@ -262,6 +301,83 @@ struct PlayerViewStatePolicyTests {
         #expect(PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .playing, hasPlayedOnce: false))
         #expect(PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .buffering, hasPlayedOnce: true))
         #expect(PlayerViewStatePolicy.shouldShowTransportDock(playbackState: .failed, hasPlayedOnce: true))
+    }
+
+    @Test
+    func subtitlesLiftAboveVisibleTransportDock() {
+        #expect(
+            PlayerViewStatePolicy.subtitleBottomPadding(
+                isShowingControls: false,
+                showsTransportDock: true
+            ) == PlayerCinematicChromePolicy.subtitleHiddenControlsBottomPadding
+        )
+        #expect(
+            PlayerViewStatePolicy.subtitleBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: false
+            ) == PlayerCinematicChromePolicy.subtitleHiddenControlsBottomPadding
+        )
+        #expect(
+            PlayerViewStatePolicy.subtitleBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: true
+            ) == PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+        )
+        #expect(
+            PlayerViewStatePolicy.subtitleBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: true,
+                subtitleFontSize: 42
+            ) == PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+                + PlayerCinematicChromePolicy.subtitleDynamicBottomPaddingExtra(fontSize: 42)
+        )
+    }
+
+    @Test
+    func autoPlayNextPromptLiftsAboveVisibleTransportDock() {
+        #expect(
+            PlayerViewStatePolicy.autoPlayNextBottomPadding(
+                isShowingControls: false,
+                showsTransportDock: true
+            ) == PlayerCinematicChromePolicy.autoPlayHiddenControlsBottomPadding
+        )
+        #expect(
+            PlayerViewStatePolicy.autoPlayNextBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: false
+            ) == PlayerCinematicChromePolicy.autoPlayHiddenControlsBottomPadding
+        )
+        #expect(
+            PlayerViewStatePolicy.autoPlayNextBottomPadding(
+                isShowingControls: false,
+                showsTransportDock: true,
+                hasVisibleSubtitles: true
+            ) == PlayerCinematicChromePolicy.autoPlayHiddenControlsWithSubtitlesBottomPadding
+        )
+        #expect(
+            PlayerViewStatePolicy.autoPlayNextBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: true
+            ) == PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+        )
+        #expect(
+            PlayerViewStatePolicy.autoPlayNextBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: true,
+                hasVisibleSubtitles: true
+            ) == PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+                + PlayerCinematicChromePolicy.autoPlaySubtitleSeparation
+        )
+        #expect(
+            PlayerViewStatePolicy.autoPlayNextBottomPadding(
+                isShowingControls: true,
+                showsTransportDock: true,
+                hasVisibleSubtitles: true,
+                subtitleFontSize: 42
+            ) == PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+                + PlayerCinematicChromePolicy.autoPlaySubtitleSeparation
+                + PlayerCinematicChromePolicy.subtitleDynamicBottomPaddingExtra(fontSize: 42)
+        )
     }
 
     @Test

@@ -7,6 +7,9 @@ import Testing
 struct PlayerAutoPlayNextPromptViewTests {
     @Test
     func resolvingStateDimsPromptActions() {
+        #expect(PlayerAutoPlayNextPromptStylePolicy.promptMaxWidth == 440)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.titleColumnMaxWidth < PlayerAutoPlayNextPromptStylePolicy.promptMaxWidth)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.titleLineLimit == 3)
         #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: false) == 1.0)
         #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: true) < 1.0)
         #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonBackgroundOpacity(isResolving: true) < 1.0)
@@ -48,6 +51,28 @@ struct PlayerAutoPlayNextPromptViewTests {
 
         #expect(playNowCount == 0)
         #expect(cancelCount == 0)
+    }
+
+    @Test
+    func promptRendersLongEpisodeTitleInNarrowSurface() {
+        let nextEpisode = PlayerSessionRequest.NextEpisodeCandidate(
+            episodeId: "next-episode-long-title",
+            seasonNumber: 3,
+            episodeNumber: 12,
+            title: "A Very Long Finale Title With Multiple Clauses And A Year In Parentheses (2026)"
+        )
+
+        let view = PlayerAutoPlayNextPromptView(
+            nextEpisode: nextEpisode,
+            remainingSeconds: 4,
+            isResolving: false,
+            onPlayNow: {},
+            onCancel: {}
+        )
+        .padding()
+        .background(Color.black)
+
+        SwiftUIViewDiagnosticHost.render(view, width: 420, height: 190)
     }
 
     @Test

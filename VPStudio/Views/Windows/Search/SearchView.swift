@@ -99,8 +99,8 @@ enum SearchAutoOpenPolicy {
 }
 
 enum SearchResultsPresentationPolicy {
-    static let standardBottomContentPadding: CGFloat = 112
-    static let bottomTabBarContentPadding: CGFloat = 196
+    static let standardBottomContentPadding: CGFloat = 132
+    static let bottomTabBarContentPadding: CGFloat = 240
 
     static func bottomContentPadding(for layout: NavigationLayout) -> CGFloat {
         switch layout {
@@ -282,6 +282,117 @@ enum SearchQueryBarPolicy {
 
     static func canSubmit(localDraft: String) -> Bool {
         !trimmedDraft(localDraft).isEmpty
+    }
+}
+
+struct ExploreStarterTitle: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let query: String
+    let symbol: String
+}
+
+enum ExploreStarterTitlePolicy {
+    static let chipMinWidth: CGFloat = 150
+    static let chipMaxWidth: CGFloat = 190
+    static let chipMinHeight: CGFloat = 44
+    static let chipSpacing: CGFloat = 10
+    static let titleMinimumScale: CGFloat = 0.82
+
+    static let titles: [ExploreStarterTitle] = [
+        ExploreStarterTitle(id: "dune-part-two", title: "Dune: Part Two", query: "Dune: Part Two", symbol: "film"),
+        ExploreStarterTitle(id: "severance", title: "Severance", query: "Severance", symbol: "tv"),
+        ExploreStarterTitle(id: "oppenheimer", title: "Oppenheimer", query: "Oppenheimer", symbol: "atom"),
+        ExploreStarterTitle(id: "the-bear", title: "The Bear", query: "The Bear", symbol: "play.rectangle"),
+        ExploreStarterTitle(id: "inside-out-2", title: "Inside Out 2", query: "Inside Out 2", symbol: "face.smiling"),
+        ExploreStarterTitle(id: "the-last-of-us", title: "The Last of Us", query: "The Last of Us", symbol: "star"),
+    ]
+
+    static func gridColumns() -> [GridItem] {
+        [
+            GridItem(
+                .adaptive(minimum: chipMinWidth, maximum: chipMaxWidth),
+                spacing: chipSpacing,
+                alignment: .top
+            )
+        ]
+    }
+
+    static func accessibilityLabel(for title: ExploreStarterTitle) -> String {
+        "Search for \(title.title)"
+    }
+}
+
+private struct ExploreStarterTitleShelf: View {
+    let titles: [ExploreStarterTitle]
+    let onSelect: (ExploreStarterTitle) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Starter Titles")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            LazyVGrid(
+                columns: ExploreStarterTitlePolicy.gridColumns(),
+                alignment: .leading,
+                spacing: ExploreStarterTitlePolicy.chipSpacing
+            ) {
+                ForEach(titles) { title in
+                    Button {
+                        onSelect(title)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: title.symbol)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .frame(width: 14, height: 14)
+
+                            Text(title.title)
+                                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.86))
+                                .lineLimit(1)
+                                .minimumScaleFactor(ExploreStarterTitlePolicy.titleMinimumScale)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: ExploreStarterTitlePolicy.chipMinHeight,
+                            alignment: .leading
+                        )
+                        .background {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.07))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(0.07),
+                                                    .clear,
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(.white.opacity(0.11), lineWidth: 0.75)
+                                }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(ExploreStarterTitlePolicy.accessibilityLabel(for: title)))
+                    #if os(visionOS)
+                    .hoverEffect(.highlight)
+                    #endif
+                }
+            }
+        }
+        .frame(maxWidth: ExploreGenreTilePolicy.maxGridWidth, alignment: .leading)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1058,6 +1169,10 @@ struct SearchView: View {
                             viewModel.selectMoodCard(card)
                         }
                     )
+
+                    ExploreStarterTitleShelf(titles: ExploreStarterTitlePolicy.titles) { title in
+                        submitSearch(queryText: title.query)
+                    }
                 }
                 .padding(.top, 12)
                 .padding(.bottom, SearchResultsPresentationPolicy.bottomContentPadding(for: appState.navigationLayout))

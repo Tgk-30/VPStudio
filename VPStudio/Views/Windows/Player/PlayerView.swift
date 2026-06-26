@@ -43,6 +43,10 @@ enum PlayerArtworkPresentationPolicy {
         case none
     }
 
+    static let posterCardWidth: CGFloat = 112
+    static let posterCardHeight: CGFloat = 168
+    static let posterCardCornerRadius: CGFloat = 12
+
     static func stageArtworkKind(backdropPath: String?, posterPath: String?) -> StageArtworkKind {
         if hasRenderableArtworkPath(backdropPath, legacyTMDBSizePath: "w1280") {
             return .backdrop
@@ -827,6 +831,8 @@ struct PlayerView: View {
     @State private var aspectRatioSelection: AspectRatioSelection = .auto
     @State private var detectedVideoRatio: CGFloat?
     @State private var didAttemptVideoRatioDetection = false
+    @State private var didExhaustAVVideoRatioDetection = false
+    @State private var didExhaustKSVideoRatioRetry = false
     @State private var didAttemptHDRMetadataExtraction = false
 
     #if os(macOS)
@@ -1347,7 +1353,9 @@ struct PlayerView: View {
     private var shouldElevatePlayerStageFallback: Bool {
         PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
             playbackState: playbackState,
-            hasPlayedOnce: hasPlayedOnce
+            hasPlayedOnce: hasPlayedOnce,
+            hasDetectedVideoFrame: detectedVideoRatio != nil,
+            hasExhaustedVideoFrameDetection: didExhaustAVVideoRatioDetection || didExhaustKSVideoRatioRetry
         )
     }
 
@@ -1369,6 +1377,14 @@ struct PlayerView: View {
 
     @ViewBuilder
     private var playerSurface: some View {
+        playerSurfaceContent
+            .overlay {
+                playerSurfaceFeedbackOverlay
+            }
+    }
+
+    @ViewBuilder
+    private var playerSurfaceContent: some View {
         if activeEngine == .ksPlayer,
            let coordinator = ksPlayerCoordinator,
            let options = ksOptions {
@@ -1402,6 +1418,21 @@ struct PlayerView: View {
                     toggleControlsVisibility()
                 }
             #endif
+        }
+    }
+
+    @ViewBuilder
+    private var playerSurfaceFeedbackOverlay: some View {
+        if let text = PlayerBufferingPolicy.surfaceFeedbackText(
+            playbackState: playbackState,
+            hasPlayedOnce: hasPlayedOnce,
+            bufferedPercent: engine.bufferedPercent
+        ) {
+            InlineLoadingStatusView(title: text)
+                .padding(.horizontal, 24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .allowsHitTesting(false)
+                .accessibilityLabel(text)
         }
     }
 
@@ -1441,40 +1472,74 @@ struct PlayerView: View {
                         .saturation(0.82)
                 }
             case .none:
-                EmptyView()
+                playerStageNoArtworkBackdrop
             }
 
-            VStack(spacing: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 18 : 14) {
-                if PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind),
-                   let url = sessionPosterURL {
-                    playerStagePosterCard(url: url)
-                }
-
-                Image(systemName: playbackState == .failed ? "exclamationmark.triangle.fill" : "play.rectangle.fill")
-                    .font(.system(size: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 38 : 54, weight: .semibold))
-                    .foregroundStyle(.white.opacity(playbackState == .failed ? 0.9 : 0.58))
-
-                VStack(spacing: 5) {
-                    if !isShowingControls {
-                        Text(resolvedMediaTitle)
-                            .font(.title2.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
+            if playbackState != .failed {
+                VStack(spacing: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 18 : 14) {
+                    if PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind),
+                       let url = sessionPosterURL {
+                        playerStagePosterCard(url: url)
                     }
 
-                    Text(playbackStateTitle)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.74))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(1)
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 38 : 54, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.58))
+
+                    VStack(spacing: 5) {
+                        if !isShowingControls {
+                            Text(resolvedMediaTitle)
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                        }
+
+                        Text(playbackStateTitle)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.74))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(1)
+                    }
                 }
+                .padding(.horizontal, 32)
+                .accessibilityHidden(true)
             }
-            .padding(.horizontal, 32)
-            .accessibilityHidden(true)
         }
         .ignoresSafeArea()
         .clipped()
+    }
+
+    private var playerStageNoArtworkBackdrop: some View {
+        ZStack {
+            RadialGradient(
+                colors: [
+                    Color.white.opacity(0.12),
+                    Color(red: 0.11, green: 0.13, blue: 0.18).opacity(0.50),
+                    Color.clear,
+                ],
+                center: .center,
+                startRadius: 12,
+                endRadius: 560
+            )
+
+            LinearGradient(
+                colors: [
+                    Color(red: 0.20, green: 0.22, blue: 0.28).opacity(0.20),
+                    Color.clear,
+                    Color(red: 0.02, green: 0.02, blue: 0.03).opacity(0.55),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            Image(systemName: "film.stack")
+                .font(.system(size: 150, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.055))
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
+        }
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -1504,21 +1569,54 @@ struct PlayerView: View {
                 image
                     .resizable()
                     .aspectRatio(2 / 3, contentMode: .fill)
-                    .frame(width: 112, height: 168)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .frame(
+                        width: PlayerArtworkPresentationPolicy.posterCardWidth,
+                        height: PlayerArtworkPresentationPolicy.posterCardHeight
+                    )
+                    .clipShape(playerStagePosterCardShape)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        playerStagePosterCardShape
                             .strokeBorder(.white.opacity(0.18), lineWidth: 1)
                     }
                     .shadow(color: .black.opacity(0.38), radius: 18, y: 10)
                     .transition(.opacity)
-            case .empty, .failure:
-                EmptyView()
+            case .empty:
+                playerStagePosterPlaceholder(showsIcon: false)
+            case .failure:
+                playerStagePosterPlaceholder(showsIcon: true)
             @unknown default:
-                EmptyView()
+                playerStagePosterPlaceholder(showsIcon: true)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func playerStagePosterPlaceholder(showsIcon: Bool) -> some View {
+        playerStagePosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: PlayerArtworkPresentationPolicy.posterCardWidth,
+                height: PlayerArtworkPresentationPolicy.posterCardHeight
+            )
+            .overlay {
+                playerStagePosterCardShape
+                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.22), radius: 12, y: 8)
+    }
+
+    private var playerStagePosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: PlayerArtworkPresentationPolicy.posterCardCornerRadius,
+            style: .continuous
+        )
     }
 
     private var playerStageGradient: some View {
@@ -1564,7 +1662,7 @@ struct PlayerView: View {
                             .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
                     }
                     .padding(.horizontal, 40)
-                    .padding(.bottom, 90)
+                    .padding(.bottom, subtitleBottomPadding)
                     .transition(.blurReplace.combined(with: .opacity))
                     .contextMenu {
                         ForEach([18.0, 22.0, 26.0, 30.0, 36.0, 42.0], id: \.self) { size in
@@ -1583,7 +1681,7 @@ struct PlayerView: View {
         if isShowingAutoPlayNextPrompt, let nextEpisode = queuedNextEpisode {
             autoPlayNextPrompt(nextEpisode)
                 .padding(.horizontal, 24)
-                .padding(.bottom, 150)
+                .padding(.bottom, autoPlayNextBottomPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .animation(
@@ -1604,6 +1702,30 @@ struct PlayerView: View {
             isResolving: isResolvingAutoPlayNextEpisode,
             onPlayNow: { playNextEpisodeNow() },
             onCancel: { cancelAutoPlayNextCountdown() }
+        )
+    }
+
+    private var isTransportDockVisible: Bool {
+        PlayerViewStatePolicy.shouldShowTransportDock(
+            playbackState: playbackState,
+            hasPlayedOnce: hasPlayedOnce
+        )
+    }
+
+    private var subtitleBottomPadding: CGFloat {
+        PlayerViewStatePolicy.subtitleBottomPadding(
+            isShowingControls: isShowingControls,
+            showsTransportDock: isTransportDockVisible,
+            subtitleFontSize: subtitleFontSize
+        )
+    }
+
+    private var autoPlayNextBottomPadding: CGFloat {
+        PlayerViewStatePolicy.autoPlayNextBottomPadding(
+            isShowingControls: isShowingControls,
+            showsTransportDock: isTransportDockVisible,
+            hasVisibleSubtitles: engine.currentSubtitleText != nil,
+            subtitleFontSize: subtitleFontSize
         )
     }
 
@@ -1655,10 +1777,7 @@ struct PlayerView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                if PlayerViewStatePolicy.shouldShowTransportDock(
-                    playbackState: playbackState,
-                    hasPlayedOnce: hasPlayedOnce
-                ) {
+                if isTransportDockVisible {
                     VStack(spacing: PlayerCinematicChromePolicy.controlsDockSpacing) {
                         transportBar
                             .compositingGroup()
@@ -1830,7 +1949,11 @@ struct PlayerView: View {
                             PlayerEnvironmentMenuLabel(
                                 spec: .cinema(
                                     activeEnvironment: appState.activeEnvironment,
-                                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen,
+                                    canOpenCinema: PlayerCinemaEnvironmentPolicy.canOpen(
+                                        activeEngine: activeEngine,
+                                        hasAVPlayer: avPlayer != nil
+                                    )
                                 )
                             )
                         }
@@ -2103,27 +2226,12 @@ struct PlayerView: View {
                 .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.2) : nil, value: engine.isDimEnabled)
                 #endif
 
-                // Quality badge pill
-                featureChip(
-                    title: currentStream.quality.rawValue,
-                    symbol: nil,
-                    accessibilityLabel: "Quality \(currentStream.quality.rawValue)"
-                )
-
-                // Direct Play badge — VPStudio always plays streams directly (no
-                // transcode/remux). See DirectPlayPolicy.
-                if currentStream.isDirectPlay {
-                    featureChip(title: "Direct Play", symbol: "bolt.fill")
-                }
-
-                // 3D badge if applicable
+                // Content mode stays visible only when it changes how the user
+                // experiences the player. Quality / direct-play / engine details
+                // remain in playback state and menus, but keeping them out of
+                // the primary dock avoids a debug-looking chip stack.
                 if engine.is3DContent {
                     featureChip(title: "3D", symbol: "cube")
-                }
-
-                // Engine label pill
-                if let activeEngine {
-                    featureChip(title: activeEngine.displayName, symbol: nil)
                 }
             }
             .padding(.horizontal, 2)
@@ -2434,6 +2542,13 @@ struct PlayerView: View {
                         .font(.caption2)
                         .foregroundStyle(.red)
                 }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
             }
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3341,6 +3456,8 @@ struct PlayerView: View {
         engine.bufferedPercent = 0
         detectedVideoRatio = nil
         didAttemptVideoRatioDetection = false
+        didExhaustAVVideoRatioDetection = false
+        didExhaustKSVideoRatioRetry = false
         didAttemptHDRMetadataExtraction = false
         engine.updateStereoMode(
             from: resolvedMediaTitleFrom(activeMediaTitle: activeMediaTitle, streamFileName: stream.fileName),
@@ -3763,6 +3880,7 @@ struct PlayerView: View {
             let size = coordinator.playerLayer?.player.naturalSize ?? .zero
             if let ratio = PlayerAspectRatioPolicy.ratio(from: size) {
                 detectedVideoRatio = ratio
+                didExhaustKSVideoRatioRetry = false
                 engine.videoSize = size
                 // `onChange(of: detectedVideoRatio)` applies geometry on visionOS,
                 // but apply directly too so geometry is requested even if the scene
@@ -3783,6 +3901,8 @@ struct PlayerView: View {
 
         #if os(visionOS)
         scheduleKSWindowGeometryRetry(for: coordinator)
+        #else
+        didExhaustKSVideoRatioRetry = true
         #endif
     }
 
@@ -3793,6 +3913,7 @@ struct PlayerView: View {
     @MainActor
     private func scheduleKSWindowGeometryRetry(for coordinator: KSVideoPlayer.Coordinator) {
         guard !disablesAutomaticTasks else { return }
+        didExhaustKSVideoRatioRetry = false
         ksGeometryRetryTask?.cancel()
         ksGeometryRetryTask = Task { @MainActor in
             defer {
@@ -3810,11 +3931,16 @@ struct PlayerView: View {
                 let size = coordinator.playerLayer?.player.naturalSize ?? .zero
                 if let ratio = PlayerAspectRatioPolicy.ratio(from: size) {
                     detectedVideoRatio = ratio
+                    didExhaustKSVideoRatioRetry = false
                     engine.videoSize = size
                     applyVisionOSWindowGeometry()
                     return
                 }
             }
+            guard !Task.isCancelled,
+                  isCurrentKSPlayerCoordinator(coordinator),
+                  detectedVideoRatio == nil else { return }
+            didExhaustKSVideoRatioRetry = true
         }
     }
     #endif
@@ -3923,6 +4049,7 @@ struct PlayerView: View {
             guard !Task.isCancelled, isCurrentAVPlayer(player), detectedVideoRatio == nil else { return }
             if let ratio = PlayerAspectRatioPolicy.ratio(from: absSize) {
                 detectedVideoRatio = ratio
+                didExhaustAVVideoRatioDetection = false
                 engine.videoSize = absSize
             }
         } catch {
@@ -3938,6 +4065,7 @@ struct PlayerView: View {
             return
         }
         didAttemptVideoRatioDetection = true
+        didExhaustAVVideoRatioDetection = false
         videoRatioDetectionTask = Task { @MainActor in
             defer {
                 if self.isCurrentAVPlayer(player) {
@@ -3946,6 +4074,10 @@ struct PlayerView: View {
             }
             guard !Task.isCancelled, self.isCurrentAVPlayer(player) else { return }
             await detectVideoRatio(from: asset, player: player)
+            guard !Task.isCancelled,
+                  self.isCurrentAVPlayer(player),
+                  detectedVideoRatio == nil else { return }
+            didExhaustAVVideoRatioDetection = true
         }
     }
 
@@ -4108,6 +4240,8 @@ struct PlayerView: View {
         ksGeometryRetryTask = nil
         #endif
         didAttemptVideoRatioDetection = false
+        didExhaustAVVideoRatioDetection = false
+        didExhaustKSVideoRatioRetry = false
         didAttemptHDRMetadataExtraction = false
 
         clearKSSubtitleSelection()

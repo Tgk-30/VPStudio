@@ -386,14 +386,17 @@ struct PlayerViewDeepTeardownAndThrottlingContractTests {
         #expect(source.contains("@State private var videoRatioDetectionTask: Task<Void, Never>?"))
         #expect(source.contains("@State private var hdrMetadataExtractionTask: Task<Void, Never>?"))
         #expect(source.contains("@State private var didAttemptVideoRatioDetection = false"))
+        #expect(source.contains("@State private var didExhaustAVVideoRatioDetection = false"))
         #expect(source.contains("@State private var didAttemptHDRMetadataExtraction = false"))
 
         let ratioBody = try functionBody(named: "scheduleAVVideoRatioDetection", in: source)
         #expect(ratioBody.contains("!didAttemptVideoRatioDetection"))
         #expect(ratioBody.contains("videoRatioDetectionTask == nil"))
         #expect(ratioBody.contains("didAttemptVideoRatioDetection = true"))
+        #expect(ratioBody.contains("didExhaustAVVideoRatioDetection = false"))
         #expect(ratioBody.contains("videoRatioDetectionTask = Task { @MainActor in"))
         #expect(ratioBody.contains("await detectVideoRatio(from: asset, player: player)"))
+        #expect(ratioBody.contains("didExhaustAVVideoRatioDetection = true"))
 
         let hdrBody = try functionBody(named: "scheduleAVHDRMetadataExtraction", in: source)
         #expect(hdrBody.contains("!didAttemptHDRMetadataExtraction"))
@@ -408,6 +411,7 @@ struct PlayerViewDeepTeardownAndThrottlingContractTests {
         #expect(cleanupBody.contains("hdrMetadataExtractionTask?.cancel()"))
         #expect(cleanupBody.contains("hdrMetadataExtractionTask = nil"))
         #expect(cleanupBody.contains("didAttemptVideoRatioDetection = false"))
+        #expect(cleanupBody.contains("didExhaustAVVideoRatioDetection = false"))
         #expect(cleanupBody.contains("didAttemptHDRMetadataExtraction = false"))
     }
 }

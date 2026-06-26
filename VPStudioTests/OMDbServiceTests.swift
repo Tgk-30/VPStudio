@@ -5,6 +5,21 @@ import Testing
 @Suite("OMDbService")
 struct OMDbServiceTests {
     @Test
+    func titleLookupPolicyFormatsAndParsesTitleYearLookupsForOMDb() throws {
+        let lookupID = OMDbTitleLookupPolicy.lookupID(title: " Dune ", year: 2021)
+        let parsed = try Self.require(OMDbTitleLookupPolicy.titleLookup(from: lookupID))
+
+        #expect(lookupID == "Dune (2021)")
+        #expect(parsed.title == "Dune")
+        #expect(parsed.year == 2021)
+        #expect(OMDbTitleLookupPolicy.lookupID(title: "Dune", year: 999) == "Dune")
+        #expect(OMDbTitleLookupPolicy.lookupID(title: "Dune", year: 10_000) == "Dune")
+        #expect(OMDbTitleLookupPolicy.lookupID(title: "Doctor Who (2005)", year: 1963) == "Doctor Who (2005)")
+        #expect(OMDbTitleLookupPolicy.titleLookup(from: "Doctor Who (2005)")?.title == "Doctor Who")
+        #expect(OMDbTitleLookupPolicy.titleLookup(from: "Doctor Who (2005)")?.year == 2005)
+    }
+
+    @Test
     func searchUsesOMDbKeyAndReturnsIMDbBackedPreviews() async throws {
         let capture = RequestCapture()
         let session = URLProtocolHarness.makeSession { request in
@@ -141,6 +156,54 @@ struct OMDbServiceTests {
     }
 
     @Test
+    func detailRejectsMalformedAndOutOfRangeOMDbRatings() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try Self.require(request.url)
+            let rating: String
+            switch Self.queryValue("i", in: url) {
+            case "tt0000001":
+                rating = "8.7"
+            case "tt0000002":
+                rating = "inf"
+            case "tt0000003":
+                rating = "12"
+            case "tt0000004":
+                rating = "8e0"
+            default:
+                rating = "N/A"
+            }
+            return try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Rating Fixture",
+                  "Year": "2024",
+                  "Runtime": "90 min",
+                  "Genre": "Drama",
+                  "Plot": "Rating fixture.",
+                  "Poster": "N/A",
+                  "imdbRating": "\(rating)",
+                  "imdbID": "\(Self.queryValue("i", in: url) ?? "tt0000000")",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let valid = try await service.getDetail(id: "tt0000001", type: .movie)
+        let infinity = try await service.getDetail(id: "tt0000002", type: .movie)
+        let outOfRange = try await service.getDetail(id: "tt0000003", type: .movie)
+        let scientific = try await service.getDetail(id: "tt0000004", type: .movie)
+
+        #expect(valid.imdbRating == 8.7)
+        #expect(infinity.imdbRating == nil)
+        #expect(outOfRange.imdbRating == nil)
+        #expect(scientific.imdbRating == nil)
+    }
+
+    @Test
     func detailPropagatesInvalidOMDbAPIKeyForSettingsValidation() async throws {
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
@@ -157,6 +220,87 @@ struct OMDbServiceTests {
 
         await #expect(throws: OMDbError.unauthorized) {
             _ = try await service.getDetail(id: MetadataSettingsPolicy.validationProbeIMDbID, type: .movie)
+        }
+    }
+
+    @Test
+    func apiErrorsRedactSecretBearingURLsAndAssignments() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Response": "False",
+                  "Error": "Proxy failed https://www.omdbapi.com/?i=tt1234567&apikey=secret-key&token=abcdefghijklmnop&clientSecret=client-secret&secret=bare-secret&x-amz-signature=aws-secret and api_key=plain-secret password=password-secret jwt=jwt-secret idToken=id-secret"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        do {
+            _ = try await service.getDetail(id: "tt1234567", type: .movie)
+            Issue.record("Expected OMDbError.apiError")
+        } catch OMDbError.apiError(let message) {
+            #expect(message.contains("apikey=REDACTED"))
+            #expect(message.contains("token=REDACTED"))
+            #expect(message.contains("clientSecret=REDACTED"))
+            #expect(message.contains("secret=REDACTED"))
+            #expect(message.contains("x-amz-signature=REDACTED"))
+            #expect(message.contains("api_key=REDACTED"))
+            #expect(message.contains("password=REDACTED"))
+            #expect(message.contains("jwt=REDACTED"))
+            #expect(message.contains("idToken=REDACTED"))
+            #expect(!message.contains("secret-key"))
+            #expect(!message.contains("abcdefghijklmnop"))
+            #expect(!message.contains("client-secret"))
+            #expect(!message.contains("bare-secret"))
+            #expect(!message.contains("aws-secret"))
+            #expect(!message.contains("plain-secret"))
+            #expect(!message.contains("password-secret"))
+            #expect(!message.contains("jwt-secret"))
+            #expect(!message.contains("id-secret"))
+        } catch {
+            Issue.record("Expected OMDbError.apiError, got \(error)")
+        }
+    }
+
+    @Test
+    func httpErrorsRedactSecretBearingResponseBodies() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                statusCode: 503,
+                body: """
+                {"error":"failed https://www.omdbapi.com/?apikey=secret-key&signature=signature-secret&refreshToken=refresh-secret&api-key=hyphen-key token=standalone-secret pass=pass-secret session=session-secret sid=sid-secret"}
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        do {
+            _ = try await service.search(query: "Dune", type: .movie)
+            Issue.record("Expected OMDbError.httpError")
+        } catch OMDbError.httpError(let status, let message) {
+            #expect(status == 503)
+            #expect(message.contains("apikey=REDACTED"))
+            #expect(message.contains("signature=REDACTED"))
+            #expect(message.contains("refreshToken=REDACTED"))
+            #expect(message.contains("api-key=REDACTED"))
+            #expect(message.contains("token=REDACTED"))
+            #expect(message.contains("pass=REDACTED"))
+            #expect(message.contains("session=REDACTED"))
+            #expect(message.contains("sid=REDACTED"))
+            #expect(!message.contains("secret-key"))
+            #expect(!message.contains("signature-secret"))
+            #expect(!message.contains("refresh-secret"))
+            #expect(!message.contains("hyphen-key"))
+            #expect(!message.contains("standalone-secret"))
+            #expect(!message.contains("pass-secret"))
+            #expect(!message.contains("session-secret"))
+            #expect(!message.contains("sid-secret"))
+        } catch {
+            Issue.record("Expected OMDbError.httpError, got \(error)")
         }
     }
 
@@ -494,6 +638,48 @@ struct OMDbServiceTests {
                       "Poster": "https://example.com/tracker.jpg"
                     },
                     {
+                      "Title": "Credential Poster",
+                      "Year": "2024",
+                      "imdbID": "tt2222224",
+                      "Type": "movie",
+                      "Poster": "https://token@m.media-amazon.com/images/M/leak.jpg"
+                    },
+                    {
+                      "Title": "Lookalike Host Poster",
+                      "Year": "2024",
+                      "imdbID": "tt2222225",
+                      "Type": "movie",
+                      "Poster": "https://cdn.media-amazon.com/images/M/lookalike.jpg"
+                    },
+                    {
+                      "Title": "OMDb Key Query Poster",
+                      "Year": "2024",
+                      "imdbID": "tt2222226",
+                      "Type": "movie",
+                      "Poster": "https://img.omdbapi.com/?i=tt2222226&h=600&apikey=secret-key"
+                    },
+                    {
+                      "Title": "Token Query Poster",
+                      "Year": "2024",
+                      "imdbID": "tt2222227",
+                      "Type": "movie",
+                      "Poster": "https://m.media-amazon.com/images/M/token.jpg?token=secret"
+                    },
+                    {
+                      "Title": "Password Query Poster",
+                      "Year": "2024",
+                      "imdbID": "tt2222228",
+                      "Type": "movie",
+                      "Poster": "https://m.media-amazon.com/images/M/password.jpg?password=secret"
+                    },
+                    {
+                      "Title": "Secret Query Poster",
+                      "Year": "2024",
+                      "imdbID": "tt2222229",
+                      "Type": "movie",
+                      "Poster": "https://m.media-amazon.com/images/M/secret.jpg?secret=secret"
+                    },
+                    {
                       "Title": "Safe Poster",
                       "Year": "2024",
                       "imdbID": "tt3333333",
@@ -511,7 +697,7 @@ struct OMDbServiceTests {
 
         let result = try await service.search(query: "poster", type: .movie, page: 1)
 
-        #expect(result.items.map(\.posterPath) == [nil, nil, nil, "https://m.media-amazon.com/images/M/safe.jpg"])
+        #expect(result.items.map(\.posterPath) == [nil, nil, nil, nil, nil, nil, nil, nil, nil, "https://m.media-amazon.com/images/M/safe.jpg"])
     }
 
     @Test
@@ -543,6 +729,90 @@ struct OMDbServiceTests {
     }
 
     @Test
+    func detailDropsCredentialBearingOMDbPosterURL() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Credential Detail",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "https://user:password@m.media-amazon.com/images/M/poster.jpg",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555556",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let item = try await service.getDetail(id: "tt5555556", type: .movie)
+
+        #expect(item.posterPath == nil)
+        #expect(item.posterURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test
+    func detailDropsOMDbPosterURLWithSensitiveQuery() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Sensitive Query Detail",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "https://img.omdbapi.com/?i=tt5555557&h=600&apikey=secret-key",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555557",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let item = try await service.getDetail(id: "tt5555557", type: .movie)
+
+        #expect(item.posterPath == nil)
+        #expect(item.posterURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test
+    func detailAcceptsKnownRegionalIMDbAmazonPosterHosts() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Regional Poster Detail",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "https://images-eu.ssl-images-amazon.com/images/M/MV5B._V1_UX300_.jpg",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555558",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let item = try await service.getDetail(id: "tt5555558", type: .movie)
+
+        #expect(item.posterPath == "https://images-eu.ssl-images-amazon.com/images/M/MV5B._V1_QL90_UX600_.jpg")
+        #expect(item.posterURL?.host == "images-eu.ssl-images-amazon.com")
+        #expect(item.hasArtwork == true)
+    }
+
+    @Test
     func detailDropsUnknownHTTPSPosterHostFromOMDbResult() async throws {
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
@@ -568,6 +838,95 @@ struct OMDbServiceTests {
         #expect(item.posterPath == nil)
         #expect(item.posterURL == nil)
         #expect(item.hasArtwork == false)
+    }
+
+    @Test
+    func detailUpgradesLowResolutionAmazonPosterTransformBeforeDisplay() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Poster Quality",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "https://m.media-amazon.com/images/M/MV5Bquality._V1_SX300.jpg",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555558",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let item = try await service.getDetail(id: "tt5555558", type: .movie)
+
+        #expect(item.posterPath == "https://m.media-amazon.com/images/M/MV5Bquality._V1_QL90_UX600_.jpg")
+        #expect(item.posterURL?.absoluteString == item.posterPath)
+    }
+
+    @Test
+    func searchUpgradesLowResolutionAmazonPosterTransformBeforeDisplay() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Search": [
+                    {
+                      "Title": "Poster Search",
+                      "Year": "2024",
+                      "imdbID": "tt5555559",
+                      "Type": "movie",
+                      "Poster": "https://images-na.ssl-images-amazon.com/images/M/MV5Bsearch._V1_UX182_CR0,0,182,268_AL_.jpg"
+                    }
+                  ],
+                  "totalResults": "1",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let result = try await service.search(query: "poster search", type: .movie, page: 1)
+        let preview = try Self.require(result.items.first)
+
+        #expect(preview.posterPath == "https://images-na.ssl-images-amazon.com/images/M/MV5Bsearch._V1_QL90_UX600_.jpg")
+        #expect(preview.posterURL?.absoluteString == preview.posterPath)
+    }
+
+    @Test
+    func searchUpgradesIMDbMediaPosterTransformBeforeDisplay() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Search": [
+                    {
+                      "Title": "IMDb Poster",
+                      "Year": "2024",
+                      "imdbID": "tt5555560",
+                      "Type": "movie",
+                      "Poster": "https://ia.media-imdb.com/images/M/MV5Bsearch._V1_UX182_CR0,0,182,268_AL_.jpg"
+                    }
+                  ],
+                  "totalResults": "1",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let result = try await service.search(query: "imdb poster", type: .movie, page: 1)
+        let preview = try Self.require(result.items.first)
+
+        #expect(preview.posterPath == "https://ia.media-imdb.com/images/M/MV5Bsearch._V1_QL90_UX600_.jpg")
+        #expect(preview.posterURL?.absoluteString == preview.posterPath)
     }
 
     @Test
@@ -907,11 +1266,15 @@ struct OMDbServiceTests {
         #expect(episode.mediaId == "tt7654321")
     }
 
-    private static func jsonResponse(for request: URLRequest, body: String) throws -> (HTTPURLResponse, Data) {
+    private static func jsonResponse(
+        for request: URLRequest,
+        statusCode: Int = 200,
+        body: String
+    ) throws -> (HTTPURLResponse, Data) {
         let url = try Self.require(request.url)
         let response = try Self.require(HTTPURLResponse(
             url: url,
-            statusCode: 200,
+            statusCode: statusCode,
             httpVersion: nil,
             headerFields: ["Content-Type": "application/json"]
         ))

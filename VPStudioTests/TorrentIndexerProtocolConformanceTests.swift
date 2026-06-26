@@ -149,11 +149,13 @@ struct IndexerLogSanitizerTestsTorrentindexerprotocolconformancetests {
         components.queryItems = [
             URLQueryItem(name: "q", value: "movie"),
             URLQueryItem(name: "api_key", value: "secret123"),
+            URLQueryItem(name: "clientSecret", value: "secret456"),
         ]
         let url = components.url!
         let redacted = IndexerLogSanitizer.redactedURL(url)
         #expect(redacted.contains("q=movie"))
         #expect(redacted.contains("api_key=REDACTED"))
+        #expect(redacted.contains("clientSecret=REDACTED"))
     }
 
     @Test func redactedURLStringHandlesURLsWithoutQuery() {

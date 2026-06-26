@@ -42,6 +42,14 @@ struct MediaItemComputedPropertiesTests {
         )
 
         #expect(secure.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
+        #expect(MediaArtworkURLPolicy.url(
+            for: "https://img.omdbapi.com/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        )?.absoluteString == "https://img.omdbapi.com/poster.jpg")
+        #expect(MediaArtworkURLPolicy.url(
+            for: "https://ia.media-imdb.com/images/M/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        )?.absoluteString == "https://ia.media-imdb.com/images/M/poster.jpg")
     }
 
     @Test func artworkURLRejectsUnsafeAbsoluteSchemes() {
@@ -52,6 +60,22 @@ struct MediaItemComputedPropertiesTests {
         #expect(MediaArtworkURLPolicy.url(for: "https:///missing-host.jpg", legacyTMDBSizePath: "w500") == nil)
         #expect(MediaArtworkURLPolicy.url(for: "http:/missing-host.jpg", legacyTMDBSizePath: "w500") == nil)
         #expect(MediaArtworkURLPolicy.url(for: "//m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+    }
+
+    @Test func artworkURLRejectsUntrustedAbsoluteHostsAndSensitiveQueries() {
+        #expect(MediaArtworkURLPolicy.url(for: "https://example.com/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://cdn.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com:444/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?token=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://img.omdbapi.com/?i=tt1234567&apikey=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?client_secret=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?api-key=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?secret=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?password=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?jwt=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?refreshToken=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?authToken=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?x-amz-signature=secret", legacyTMDBSizePath: "w500") == nil)
     }
 
     @Test func artworkURLRejectsCredentialBearingHTTPSURLs() {
@@ -68,6 +92,20 @@ struct MediaItemComputedPropertiesTests {
         #expect(item.posterURL == nil)
         #expect(item.backdropURL == nil)
         #expect(item.hasArtwork == false)
+    }
+
+    @Test func artworkURLAcceptsKnownRegionalIMDbAmazonHosts() throws {
+        let euURL = try #require(MediaArtworkURLPolicy.url(
+            for: "https://images-eu.ssl-images-amazon.com/images/M/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        ))
+        let feURL = try #require(MediaArtworkURLPolicy.url(
+            for: "https://images-fe.ssl-images-amazon.com/images/M/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        ))
+
+        #expect(euURL.host == "images-eu.ssl-images-amazon.com")
+        #expect(feURL.host == "images-fe.ssl-images-amazon.com")
     }
 
     @Test func artworkURLRejectsOMDbPlaceholderPaths() {
@@ -88,6 +126,19 @@ struct MediaItemComputedPropertiesTests {
 
     @Test func artworkURLNormalizesLegacyTMDBPathWithoutLeadingSlash() {
         #expect(MediaArtworkURLPolicy.url(for: "poster.jpg", legacyTMDBSizePath: "w500")?.absoluteString == "https://image.tmdb.org/t/p/w500/poster.jpg")
+    }
+
+    @Test func artworkURLRejectsLegacyRelativePathsWithQueryOrFragment() {
+        #expect(MediaArtworkURLPolicy.url(for: "/poster.jpg?token=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "poster.jpg?apikey=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "/poster.jpg#fragment", legacyTMDBSizePath: "w500") == nil)
+    }
+
+    @Test func artworkURLAllowsLegacyRelativePathWithSpaces() {
+        #expect(MediaArtworkURLPolicy.url(
+            for: "/poster with spaces.jpg",
+            legacyTMDBSizePath: "w500"
+        )?.absoluteString == "https://image.tmdb.org/t/p/w500/poster%20with%20spaces.jpg")
     }
 
     @Test func backdropURLBuildsTMDBW1280() {
@@ -177,6 +228,43 @@ struct MediaItemComputedPropertiesTests {
     @Test func ratingStringReturnsEmptyWhenNil() {
         let item = MediaItem(id: "tt123", type: .movie, title: "Test")
         #expect(item.ratingString == "")
+    }
+
+    @Test func ratingPolicyRejectsNonFiniteAndOutOfRangeValues() {
+        #expect(MediaRatingPolicy.normalizedIMDbRating(.nan) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(.infinity) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(-1) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(0) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(10.1) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(10) == 10)
+    }
+
+    @Test func ratingStringDoesNotRenderInvalidPersistedValues() {
+        #expect(MediaItem(id: "nan", type: .movie, title: "NaN", imdbRating: .nan).ratingString == "")
+        #expect(MediaItem(id: "inf", type: .movie, title: "Inf", imdbRating: .infinity).ratingString == "")
+        #expect(MediaItem(id: "negative", type: .movie, title: "Negative", imdbRating: -2).ratingString == "")
+        #expect(MediaItem(id: "too-high", type: .movie, title: "Too High", imdbRating: 42).ratingString == "")
+    }
+
+    @Test func mediaPreviewRatingStringDoesNotRenderInvalidValues() {
+        #expect(MediaPreview(id: "valid", type: .movie, title: "Valid", imdbRating: 8.94).ratingString == "8.9")
+        #expect(MediaPreview(id: "nan", type: .movie, title: "NaN", imdbRating: .nan).ratingString == "")
+        #expect(MediaPreview(id: "inf", type: .movie, title: "Inf", imdbRating: .infinity).ratingString == "")
+        #expect(MediaPreview(id: "zero", type: .movie, title: "Zero", imdbRating: 0).ratingString == "")
+        #expect(MediaPreview(id: "too-high", type: .movie, title: "Too High", imdbRating: 42).ratingString == "")
+    }
+
+    @Test func omdbRatingParserAcceptsOnlyPlainIMDbScaleDecimals() {
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("8.7") == 8.7)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("10.0") == 10.0)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("N/A") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("nan") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("inf") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("8e0") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("0x1p4") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("8.5/10") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("12") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("0") == nil)
     }
 
     @Test func runtimeStringWithHoursAndMinutes() {

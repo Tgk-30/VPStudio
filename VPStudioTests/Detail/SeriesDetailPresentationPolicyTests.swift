@@ -174,6 +174,12 @@ struct SeriesDetailPresentationPolicyTests {
         #expect(SeriesDetailPresentationPolicy.imdbRatingText(0.0) == nil)
     }
 
+    @Test func imdbRatingTextReturnsNilForNonFiniteOrOutOfRangeValues() {
+        #expect(SeriesDetailPresentationPolicy.imdbRatingText(.nan) == nil)
+        #expect(SeriesDetailPresentationPolicy.imdbRatingText(.infinity) == nil)
+        #expect(SeriesDetailPresentationPolicy.imdbRatingText(10.1) == nil)
+    }
+
     @Test func imdbRatingTextFormatsPositiveValue() {
         #expect(SeriesDetailPresentationPolicy.imdbRatingText(8.5) == "8.5 IMDb")
     }

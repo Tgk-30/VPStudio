@@ -51,6 +51,15 @@ struct EnvironmentImmersiveCoverageTests {
         #expect(source.contains("appState.immersiveSpaceDidAppear(.hdriSkybox)"))
         #expect(source.contains("appState.immersiveSpaceDidDisappear()"))
         #expect(source.contains("renderState.reset()"))
+        #expect(source.contains("var hdriLoadTask: Task<CGImage?, Never>?"))
+        #expect(source.contains("func beginEnvironmentLoad(assetID: String) -> UUID"))
+        #expect(source.contains("func isCurrentEnvironmentLoad(_ loadID: UUID, assetID: String) -> Bool"))
+        #expect(source.contains("hdriLoadTask?.cancel()"))
+        #expect(source.contains("renderState.setHDRILoadTask(hdriLoadTask, for: environmentLoadID)"))
+        #expect(source.contains("guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }"))
+        #expect(source.contains("@MainActor\n    private func setLoadingState(_ state: LoadingState)"))
+        #expect(!source.contains("Task { @MainActor in\n            loadingState = state"))
+        #expect(source.contains(".id(appState.selectedEnvironmentAsset?.id ?? \"no-environment\")"))
     }
 
     @Test
@@ -70,10 +79,16 @@ struct EnvironmentImmersiveCoverageTests {
         let source = try sourceContents(of: "VPStudio/Views/Immersive/CustomEnvironmentView.swift")
 
         #expect(source.contains("guard let selected = appState.selectedEnvironmentAsset else"))
+        #expect(source.contains("let selectedAssetID = selected.id"))
+        #expect(source.contains("guard isCurrentSelection(selectedAssetID) else { return }"))
+        #expect(source.contains("private func isCurrentSelection(_ assetID: String) -> Bool"))
+        #expect(source.contains(".id(appState.selectedEnvironmentAsset?.id ?? \"no-environment\")"))
         #expect(source.contains("setLoadingState(.failed(\"No environment selected. Showing a fallback screen.\"))"))
         #expect(source.contains("setLoadingState(.failed(\"The selected environment file is missing. Showing a fallback screen.\"))"))
         #expect(source.contains("setLoadingState(.failed(\"No screen surface was found in this environment. Showing a fallback screen.\"))"))
         #expect(source.contains("setLoadingState(.failed(\"The environment failed to load. Showing a fallback screen.\"))"))
+        #expect(source.contains("@MainActor\n    private func setLoadingState(_ state: LoadingState)"))
+        #expect(!source.contains("Task { @MainActor in\n            loadingState = state"))
         #expect(source.contains("let keywords = [\"screen\", \"display\", \"tv\", \"monitor\", \"cinema\", \"video\"]"))
         #expect(source.contains("keywords.contains(where: { lowerName.containsStandaloneToken($0) })"))
         #expect(source.contains("screen.name = \"custom-fallback-screen\""))

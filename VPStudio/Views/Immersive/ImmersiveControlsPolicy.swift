@@ -37,8 +37,9 @@ enum ImmersiveControlsPolicy {
     static let scrubberIdleThumbSize: CGFloat = 12
     static let scrubberDraggingThumbSize: CGFloat = 20
     /// Tappable height of the scrub bar. The visible track is only a few points
-    /// tall, but gaze+pinch on visionOS needs a comfortably large hit region.
-    static let scrubberHitTargetHeight: CGFloat = 44
+    /// tall, but gaze+pinch on visionOS needs the same forgiving target as the
+    /// circular controls around it.
+    static let scrubberHitTargetHeight: CGFloat = 58
 
     /// Standard diameter for the circular transport / secondary control buttons.
     /// visionOS gaze targeting is least precise of any Apple input model, so the

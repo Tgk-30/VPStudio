@@ -18,6 +18,11 @@ struct PlayerViewRuntimeWrapperCoverageTests {
         let artworkRange = try requiredRange(of: "playerStageBackdropImage(", in: fallbackBody)
         // Gradient sits behind the artwork so loading never flashes the stage.
         #expect(gradientRange.lowerBound < artworkRange.lowerBound)
+        #expect(fallbackBody.contains("case .none:"))
+        #expect(fallbackBody.contains("playerStageNoArtworkBackdrop"))
+        #expect(fallbackBody.contains("RadialGradient"))
+        #expect(fallbackBody.contains("film.stack"))
+        #expect(!fallbackBody.contains("case .none:\n                EmptyView()"))
 
         // The backdrop AsyncImage fades in on success and clears (Color.clear) on
         // empty/failure/unknown so the stable gradient shows through instead of
@@ -35,6 +40,101 @@ struct PlayerViewRuntimeWrapperCoverageTests {
         #expect(unknownClearRange.lowerBound > emptyClearRange.lowerBound)
         #expect(backdropBody.contains("Color.clear"))
         #expect(!backdropBody.contains("playerStageGradient"))
+    }
+
+    @Test
+    func playerStagePosterCardReservesLayoutWhileArtworkLoadsOrFails() throws {
+        let source = try playerViewSource()
+        let posterBody = try section(
+            from: "private func playerStagePosterCard(",
+            to: "private var playerStageGradient",
+            in: source
+        )
+
+        #expect(posterBody.contains("PlayerArtworkPresentationPolicy.posterCardWidth"))
+        #expect(posterBody.contains("PlayerArtworkPresentationPolicy.posterCardHeight"))
+        #expect(posterBody.contains("playerStagePosterPlaceholder"))
+        #expect(posterBody.contains("playerStagePosterPlaceholder(showsIcon: false)"))
+        #expect(posterBody.contains("playerStagePosterPlaceholder(showsIcon: true)"))
+        #expect(!posterBody.contains("EmptyView()"))
+    }
+
+    @Test
+    func playerSurfaceKeepsRebufferingFeedbackAttachedToTheVideoLayer() throws {
+        let source = try playerViewSource()
+        let surfaceBody = try section(
+            from: "private var playerSurface: some View {",
+            to: "private var playerSurfaceContent: some View {",
+            in: source
+        )
+        let feedbackBody = try section(
+            from: "private var playerSurfaceFeedbackOverlay: some View {",
+            to: "private var sessionBackdropURL",
+            in: source
+        )
+
+        #expect(surfaceBody.contains("playerSurfaceContent"))
+        #expect(surfaceBody.contains("playerSurfaceFeedbackOverlay"))
+        #expect(feedbackBody.contains("PlayerBufferingPolicy.surfaceFeedbackText"))
+        #expect(feedbackBody.contains("InlineLoadingStatusView(title: text)"))
+        #expect(feedbackBody.contains(".allowsHitTesting(false)"))
+    }
+
+    @Test
+    func playerFallbackWaitsForDetectedVideoFrameAndDoesNotDuplicateFailureMessaging() throws {
+        let source = try playerViewSource()
+        let fallbackBody = try section(
+            from: "private var playerStageFallback: some View {",
+            to: "private func playerStageBackdropImage(",
+            in: source
+        )
+        let ksRatioBody = try functionBody(
+            named: "captureKSVideoRatioAndApplyGeometry",
+            in: source
+        )
+        let fallbackPolicyBody = try functionBody(named: "shouldElevatePlayerStageFallback", in: try contents(of: "VPStudio/Views/Windows/Player/PlayerViewStatePolicy.swift"))
+
+        #expect(source.contains("hasDetectedVideoFrame: detectedVideoRatio != nil"))
+        #expect(source.contains("hasExhaustedVideoFrameDetection: didExhaustAVVideoRatioDetection || didExhaustKSVideoRatioRetry"))
+        #expect(source.contains("didExhaustAVVideoRatioDetection = true"))
+        #expect(source.contains("didExhaustKSVideoRatioRetry = true"))
+        #expect(ksRatioBody.contains("#else"))
+        #expect(ksRatioBody.contains("didExhaustKSVideoRatioRetry = true"))
+        #expect(fallbackPolicyBody.contains("hasExhaustedVideoFrameDetection && playbackState == .playing"))
+        #expect(fallbackBody.contains("if playbackState != .failed"))
+        #expect(!fallbackBody.contains("exclamationmark.triangle.fill"))
+    }
+
+    @Test
+    func subtitleOverlayUsesDockAwareBottomPadding() throws {
+        let source = try playerViewSource()
+        let subtitleBody = try section(
+            from: "private var subtitleOverlay: some View {",
+            to: "private var autoPlayNextOverlay: some View {",
+            in: source
+        )
+
+        #expect(subtitleBody.contains(".padding(.bottom, subtitleBottomPadding)"))
+        #expect(source.contains("private var isTransportDockVisible: Bool"))
+        #expect(source.contains("PlayerViewStatePolicy.subtitleBottomPadding("))
+        #expect(source.contains("subtitleFontSize: subtitleFontSize"))
+    }
+
+    @Test
+    func autoplayPromptUsesDockAwareBottomPadding() throws {
+        let source = try playerViewSource()
+        let promptBody = try section(
+            from: "private var autoPlayNextOverlay: some View {",
+            to: "private func autoPlayNextPrompt(",
+            in: source
+        )
+
+        #expect(promptBody.contains(".padding(.bottom, autoPlayNextBottomPadding)"))
+        #expect(!promptBody.contains(".padding(.bottom, 150)"))
+        #expect(source.contains("private var autoPlayNextBottomPadding: CGFloat"))
+        #expect(source.contains("PlayerViewStatePolicy.autoPlayNextBottomPadding("))
+        #expect(source.contains("hasVisibleSubtitles: engine.currentSubtitleText != nil"))
+        #expect(source.contains("subtitleFontSize: subtitleFontSize"))
     }
 
     @Test

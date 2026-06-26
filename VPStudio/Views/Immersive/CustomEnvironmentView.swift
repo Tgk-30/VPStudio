@@ -77,8 +77,10 @@ struct CustomEnvironmentView: View {
                 setLoadingState(.failed("No environment selected. Showing a fallback screen."))
                 return
             }
+            let selectedAssetID = selected.id
 
             guard let url = await appState.environmentCatalogManager.resolvedAssetURL(for: selected) else {
+                guard isCurrentSelection(selectedAssetID) else { return }
                 logger.warning("resolvedAssetURL returned nil for asset — file missing?")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
@@ -86,9 +88,11 @@ struct CustomEnvironmentView: View {
                 setLoadingState(.failed("The selected environment file is missing. Showing a fallback screen."))
                 return
             }
+            guard isCurrentSelection(selectedAssetID) else { return }
 
             do {
                 let entity = try await Entity(contentsOf: url)
+                guard isCurrentSelection(selectedAssetID) else { return }
                 content.add(entity)
                 if let screen = findScreenEntity(in: entity) {
                     renderState.cinemaScreen = screen
@@ -101,6 +105,7 @@ struct CustomEnvironmentView: View {
                     setLoadingState(.failed("No screen surface was found in this environment. Showing a fallback screen."))
                 }
             } catch {
+                guard isCurrentSelection(selectedAssetID) else { return }
                 logger.error("Entity(contentsOf:) failed — \(error.localizedDescription, privacy: .public)")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
@@ -221,6 +226,7 @@ struct CustomEnvironmentView: View {
                     NotificationCenter.default.post(name: .immersiveTapCatcherDidFire, object: nil)
                 }
         )
+        .id(appState.selectedEnvironmentAsset?.id ?? "no-environment")
         .preferredSurroundingsEffect(.systemDark)
         .onReceive(NotificationCenter.default.publisher(for: .immersiveTapCatcherDidFire)) { _ in
             performOptionalAnimation(.easeInOut(duration: 0.25)) {
@@ -272,11 +278,14 @@ struct CustomEnvironmentView: View {
         }
     }
 
+    @MainActor
     private func setLoadingState(_ state: LoadingState) {
         guard loadingState != state else { return }
-        Task { @MainActor in
-            loadingState = state
-        }
+        loadingState = state
+    }
+
+    private func isCurrentSelection(_ assetID: String) -> Bool {
+        appState.selectedEnvironmentAsset?.id == assetID
     }
 
     private func performOptionalAnimation(_ animation: Animation, updates: () -> Void) {

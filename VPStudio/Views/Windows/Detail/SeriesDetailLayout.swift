@@ -11,6 +11,36 @@ private enum SeriesDetailQAScrollDebug {
     }
 }
 
+enum DetailHeroArtworkPresentationPolicy {
+    enum HeroArtworkKind: Equatable {
+        case backdrop
+        case posterOnly
+        case none
+    }
+
+    static let posterCardWidth: CGFloat = 132
+    static let posterCardHeight: CGFloat = 198
+    static let posterCardCornerRadius: CGFloat = 14
+
+    static func heroArtworkKind(backdropPath: String?, posterPath: String?) -> HeroArtworkKind {
+        if hasRenderableArtworkPath(backdropPath, legacyTMDBSizePath: "w1280") {
+            return .backdrop
+        }
+        if hasRenderableArtworkPath(posterPath, legacyTMDBSizePath: "w500") {
+            return .posterOnly
+        }
+        return .none
+    }
+
+    static func showsPosterCard(for kind: HeroArtworkKind) -> Bool {
+        kind == .posterOnly
+    }
+
+    private static func hasRenderableArtworkPath(_ value: String?, legacyTMDBSizePath: String) -> Bool {
+        MediaArtworkURLPolicy.url(for: value, legacyTMDBSizePath: legacyTMDBSizePath) != nil
+    }
+}
+
 enum SeriesPrimaryPlayPolicy {
     static let noStreamsMessage = "No streams found for this episode. Try another episode or result."
     static let selectEpisodeLabel = "Select Episode"
@@ -109,8 +139,8 @@ enum SeriesDetailPresentationPolicy {
     }
 
     static func imdbRatingText(_ rating: Double?) -> String? {
-        guard let rating, rating > 0 else { return nil }
-        return String(format: "%.1f IMDb", rating)
+        let text = MediaRatingPolicy.displayText(rating)
+        return text.isEmpty ? nil : "\(text) IMDb"
     }
 
     static func episodeContextText(season: Int, episodeNumber: Int) -> String {
@@ -378,38 +408,64 @@ struct SeriesDetailLayout: View {
     
     private var heroImage: some View {
         Group {
-            if let artworkURL = viewModel.mediaItem?.backdropURL ?? viewModel.mediaItem?.posterURL {
-                AsyncImage(url: artworkURL) { phase in
+            if detailHeroArtworkKind == .backdrop, let detailHeroBackdropURL {
+                AsyncImage(url: detailHeroBackdropURL) { phase in
                     switch phase {
                     case .success(let image):
                         image
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                    default:
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.gray.opacity(0.3), .gray.opacity(0.1)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
+                    case .empty, .failure:
+                        detailHeroPlaceholder
+                    @unknown default:
+                        detailHeroPlaceholder
                     }
                 }
+                .id(detailHeroArtworkLoadID)
             } else {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.gray.opacity(0.3), .gray.opacity(0.1)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                detailHeroPlaceholder
             }
         }
     }
+
+    private var detailHeroArtworkKind: DetailHeroArtworkPresentationPolicy.HeroArtworkKind {
+        DetailHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: viewModel.mediaItem?.backdropPath,
+            posterPath: viewModel.mediaItem?.posterPath
+        )
+    }
+
+    private var detailHeroBackdropURL: URL? {
+        MediaArtworkURLPolicy.url(for: viewModel.mediaItem?.backdropPath, legacyTMDBSizePath: "w1280")
+    }
+
+    private var detailHeroPosterURL: URL? {
+        MediaArtworkURLPolicy.url(for: viewModel.mediaItem?.posterPath, legacyTMDBSizePath: "w500")
+    }
+
+    private var detailHeroArtworkLoadID: String {
+        let mediaID = viewModel.mediaItem?.id ?? "none"
+        return "\(mediaID)-detail-\(detailHeroArtworkKind)-\(detailHeroBackdropURL?.absoluteString ?? detailHeroPosterURL?.absoluteString ?? "none")"
+    }
+
+    private var detailHeroPlaceholder: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [.gray.opacity(0.3), .gray.opacity(0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+    }
     
     private var heroOverlay: some View {
+        GeometryReader { proxy in
+            heroOverlayBody(availableWidth: proxy.size.width)
+        }
+    }
+
+    private func heroOverlayBody(availableWidth: CGFloat) -> some View {
         ZStack(alignment: .top) {
             // Cinematic scrim: subtle darkening up top for the back/utility controls,
             // strong fade to near-black at the bottom so the title reads on the artwork.
@@ -425,6 +481,14 @@ struct SeriesDetailLayout: View {
                 endPoint: .bottom
             )
 
+            if showsDetailHeroPosterCard(availableWidth: availableWidth),
+               let detailHeroPosterURL {
+                detailHeroPosterCard(url: detailHeroPosterURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 32)
+                    .accessibilityHidden(true)
+            }
+
             // Title overlaid on the bottom of the artwork (Apple TV+ / Netflix pattern).
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
@@ -438,7 +502,8 @@ struct SeriesDetailLayout: View {
                         .accessibilityAddTraits(.isHeader)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 24)
+                .padding(.leading, 24)
+                .padding(.trailing, detailHeroTitleTrailingPadding(availableWidth: availableWidth))
                 .padding(.bottom, 18)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -499,6 +564,73 @@ struct SeriesDetailLayout: View {
             .padding(.horizontal, 20)
             .padding(.top, 20)
         }
+    }
+
+    private func showsDetailHeroPosterCard(availableWidth: CGFloat) -> Bool {
+        DetailHeroArtworkPresentationPolicy.showsPosterCard(for: detailHeroArtworkKind) && availableWidth >= 680
+    }
+
+    private func detailHeroTitleTrailingPadding(availableWidth: CGFloat) -> CGFloat {
+        guard showsDetailHeroPosterCard(availableWidth: availableWidth) else { return 24 }
+        return min(204, max(24, availableWidth * 0.30))
+    }
+
+    @ViewBuilder
+    private func detailHeroPosterCard(url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(
+                        width: DetailHeroArtworkPresentationPolicy.posterCardWidth,
+                        height: DetailHeroArtworkPresentationPolicy.posterCardHeight
+                    )
+                    .clipShape(detailHeroPosterCardShape)
+                    .overlay {
+                        detailHeroPosterCardShape
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.38), radius: 18, y: 10)
+            case .empty:
+                detailHeroPosterPlaceholder(showsIcon: false)
+            case .failure:
+                detailHeroPosterPlaceholder(showsIcon: true)
+            @unknown default:
+                detailHeroPosterPlaceholder(showsIcon: true)
+            }
+        }
+        .id(detailHeroArtworkLoadID)
+        .allowsHitTesting(false)
+    }
+
+    private func detailHeroPosterPlaceholder(showsIcon: Bool) -> some View {
+        detailHeroPosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: DetailHeroArtworkPresentationPolicy.posterCardWidth,
+                height: DetailHeroArtworkPresentationPolicy.posterCardHeight
+            )
+            .overlay {
+                detailHeroPosterCardShape
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.24), radius: 14, y: 8)
+    }
+
+    private var detailHeroPosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: DetailHeroArtworkPresentationPolicy.posterCardCornerRadius,
+            style: .continuous
+        )
     }
     
     private var metadataRow: some View {

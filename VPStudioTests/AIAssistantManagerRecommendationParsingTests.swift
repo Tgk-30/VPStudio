@@ -575,6 +575,33 @@ struct AIAssistantManagerRecommendationParsingTests {
     }
 
     @Test
+    func deduplicatesMixedIMDbAndTMDbRowsByTitleYearAndTypePreferringIMDb() async throws {
+        let manager = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: manager.tempDir) }
+
+        let response = AIProviderResponse(
+            provider: .openAI,
+            content: #"[{"title":"Dune","year":2021,"type":"movie","reason":"Legacy","tmdbId":438631},{"title":" dune ","year":2021,"type":"movie","reason":"IMDb","imdbId":"TT1160419"}]"#,
+            model: "stub",
+            inputTokens: 1,
+            outputTokens: 1
+        )
+        await manager.instance.registerProvider(
+            kind: .openAI,
+            provider: StubAIProvider(providerKind: .openAI, result: .success(response))
+        )
+
+        let recommendations = try await manager.instance.getRecommendations(context: AssistantContext(), provider: .openAI)
+
+        #expect(recommendations.count == 1)
+        #expect(recommendations[0].title == "Dune")
+        #expect(recommendations[0].reason == "Legacy")
+        #expect(recommendations[0].imdbId == "tt1160419")
+        #expect(recommendations[0].tmdbId == nil)
+        #expect(recommendations[0].id == "movie-imdb-tt1160419")
+    }
+
+    @Test
     func parsesReasonAsArray() async throws {
         let manager = try await makeManager()
         defer { try? FileManager.default.removeItem(at: manager.tempDir) }

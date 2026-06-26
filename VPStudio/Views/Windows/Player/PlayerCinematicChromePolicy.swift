@@ -26,6 +26,14 @@ enum PlayerCinematicChromePolicy {
     static let transportCardVerticalPadding: CGFloat = 12
 
     static let transportInternalSpacing: CGFloat = 10
+    static let quickActionsEstimatedHeight: CGFloat = 32
+    static let progressHitHeight: CGFloat = 22
+    static let timeLabelsMinHeight: CGFloat = 18
+    static let subtitleHiddenControlsBottomPadding: CGFloat = 90
+    static let autoPlayHiddenControlsBottomPadding: CGFloat = 150
+    static let autoPlayHiddenControlsWithSubtitlesBottomPadding: CGFloat = 224
+    static let overlayDockClearance: CGFloat = 32
+    static let autoPlaySubtitleSeparation: CGFloat = 94
     static let skipBackInterval: Int = 10
     static let skipForwardInterval: Int = 10
 
@@ -34,4 +42,22 @@ enum PlayerCinematicChromePolicy {
 
     static let windowCornerRadius: CGFloat = 28
 
+    static var estimatedTransportDockHeight: CGFloat {
+        controlsDockBottomPadding
+            + (transportCardVerticalPadding * 2)
+            + quickActionsEstimatedHeight
+            + progressHitHeight
+            + timeLabelsMinHeight
+            + primaryTransportButtonSize
+            + (transportInternalSpacing * 3)
+    }
+
+    static var overlayBottomPaddingAboveTransportDock: CGFloat {
+        estimatedTransportDockHeight + overlayDockClearance
+    }
+
+    static func subtitleDynamicBottomPaddingExtra(fontSize: CGFloat) -> CGFloat {
+        guard fontSize.isFinite else { return 0 }
+        return max(0, fontSize - 24) * 1.4
+    }
 }

@@ -14,6 +14,8 @@ struct EnvironmentSettingsStatusContractTests {
         #expect(source.contains("EnvironmentPreviewRowPolicy.assetStatus("))
         #expect(source.contains("private var effectiveSelectedAssetID: String?"))
         #expect(source.contains("EnvironmentPreviewRowPolicy.effectiveSelectedAssetID("))
+        #expect(source.contains("EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider)"))
+        #expect(source.contains("apple.logo") == false)
         #expect(source.contains("selectedAssetID: effectiveSelectedAssetID"))
         #expect(source.contains("selected environment opens automatically"))
         #expect(source.contains("Active means the room is currently open"))
@@ -37,6 +39,15 @@ struct EnvironmentSettingsStatusContractTests {
         #expect(source.contains(".disabled(isDeleting)"))
         #expect(source.contains("private func isPresetInstalled(_ preset: CuratedEnvironmentPreset) -> Bool"))
         #expect(source.contains("let isInstalled = isPresetInstalled(preset)"))
+        #expect(source.contains(".foregroundStyle(VPColor.success)"))
+        #expect(source.contains("private func environmentMetadataText(_ value: String) -> some View"))
+        #expect(source.contains(".foregroundStyle(VPColor.textSecondary)"))
+        #expect(source.contains("private func environmentSourceLink(_ sourceURL: URL) -> some View"))
+        #expect(source.contains("Label(\"Source\", systemImage: \"arrow.up.right\")"))
+        #expect(source.contains(".foregroundStyle(VPColor.info)"))
+        #expect(source.contains("Link(\"Source\", destination:") == false)
+        #expect(source.contains(".foregroundStyle(.tertiary)") == false)
+        #expect(source.contains(".foregroundStyle(.green)") == false)
         #expect(source.contains("Text(\"Adding\")"))
         #expect(source.contains(".disabled(isInstalling)"))
         #expect(normalized.contains("Button(\"Delete\",role:.destructive){pendingDeletion=nilTask{awaitdeleteImportedEnvironment(id:deletion.id)}}"))
@@ -74,6 +85,22 @@ struct EnvironmentSettingsStatusContractTests {
         #expect(source.contains("let selectedAssetID = EnvironmentPreviewRowPolicy.effectiveSelectedAssetID("))
         #expect(normalized.contains("guard!isDeletingelse{return}"))
         #expect(normalized.contains("guard!isPresetInstalled(preset),!installingPresetIDs.contains(preset.id)else{return}"))
+    }
+
+    @Test
+    func legacyEnvironmentPresetRowsUseSharedProviderIcons() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        let rowStart = try #require(source.range(of: "private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View"))
+        let rowEnd = try #require(source.range(of: "private func isPresetInstalled(_ preset: CuratedEnvironmentPreset)", range: rowStart.upperBound..<source.endIndex))
+        let rowSource = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
+
+        #expect(rowSource.contains("EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider)"))
+        #expect(rowSource.contains("preset.provider == .polyHaven") == false)
+        #expect(rowSource.contains("apple.logo") == false)
+        #expect(rowSource.contains(".foregroundStyle(VPColor.success)"))
+        #expect(rowSource.contains(".background(VPColor.success.opacity(0.12), in: Capsule())"))
+        #expect(rowSource.contains(".foregroundStyle(.green)") == false)
+        #expect(rowSource.contains(".background(.green") == false)
     }
 
     private func contents(of relativePath: String) throws -> String {

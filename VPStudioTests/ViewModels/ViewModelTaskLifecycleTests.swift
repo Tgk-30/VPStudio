@@ -328,12 +328,49 @@ struct ViewModelTaskLifecycleTests {
     }
 
     @Test
-    func seriesDetailHeroUsesPosterWhenBackdropIsUnavailable() throws {
+    func detailHeroArtworkPolicyUsesPosterCardForPosterOnlyArtwork() {
+        #expect(DetailHeroArtworkPresentationPolicy.posterCardWidth == 132)
+        #expect(DetailHeroArtworkPresentationPolicy.posterCardHeight == 198)
+        #expect(DetailHeroArtworkPresentationPolicy.posterCardCornerRadius == 14)
+
+        let backdropKind = DetailHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: "/series-backdrop.jpg",
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+        #expect(backdropKind == .backdrop)
+        #expect(!DetailHeroArtworkPresentationPolicy.showsPosterCard(for: backdropKind))
+
+        let posterOnlyKind = DetailHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: nil,
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+        #expect(posterOnlyKind == .posterOnly)
+        #expect(DetailHeroArtworkPresentationPolicy.showsPosterCard(for: posterOnlyKind))
+
+        let emptyKind = DetailHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: " ",
+            posterPath: "javascript:alert(1)"
+        )
+        #expect(emptyKind == .none)
+    }
+
+    @Test
+    func seriesDetailHeroDoesNotFallbackPosterIntoBackdropLayer() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Detail/SeriesDetailLayout.swift")
         let heroImage = try functionBody(containing: "private var heroImage: some View", in: source)
+        let heroOverlay = try functionBody(containing: "private var heroOverlay: some View", in: source)
+        let heroOverlayBody = try functionBody(containing: "private func heroOverlayBody", in: source)
 
-        #expect(heroImage.contains("viewModel.mediaItem?.backdropURL ?? viewModel.mediaItem?.posterURL"))
-        #expect(heroImage.contains("AsyncImage(url: artworkURL)"))
+        #expect(!heroImage.contains("viewModel.mediaItem?.backdropURL ?? viewModel.mediaItem?.posterURL"))
+        #expect(heroImage.contains("detailHeroArtworkKind == .backdrop"))
+        #expect(heroImage.contains("AsyncImage(url: detailHeroBackdropURL)"))
+        #expect(heroOverlay.contains("heroOverlayBody(availableWidth: proxy.size.width)"))
+        #expect(source.contains("showsDetailHeroPosterCard(availableWidth: CGFloat)"))
+        #expect(source.contains("availableWidth >= 680"))
+        #expect(heroOverlayBody.contains("detailHeroPosterCard(url: detailHeroPosterURL)"))
+        #expect(heroOverlayBody.contains("detailHeroTitleTrailingPadding(availableWidth: availableWidth)"))
+        #expect(source.contains("detailHeroPosterPlaceholder(showsIcon: false)"))
+        #expect(source.contains("detailHeroPosterPlaceholder(showsIcon: true)"))
     }
 
     @Test

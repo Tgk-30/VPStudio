@@ -146,6 +146,68 @@ struct EnvironmentCatalogManagerValidationTests {
     }
 
     @Test
+    func importRejectsSymbolicLinkBeforeValidation() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-symlink-source.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let validationCalls = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validationCalls.withLock { $0 += 1 }
+                return true
+            }
+        )
+        let outside = rootDir.appendingPathComponent("outside.hdr")
+        try Data("hdr".utf8).write(to: outside)
+        let symlink = rootDir.appendingPathComponent("linked.hdr")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: outside)
+
+        do {
+            _ = try await manager.importEnvironment(from: symlink)
+            Issue.record("Expected symbolic link import rejection")
+        } catch EnvironmentCatalogError.missingFile {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(validationCalls.withLock { $0 } == 0)
+        #expect(try await manager.fetchAssets().isEmpty)
+    }
+
+    @Test
+    func importRejectsDirectoryBeforeValidation() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-directory-source.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let validationCalls = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validationCalls.withLock { $0 += 1 }
+                return true
+            }
+        )
+        let directory = rootDir.appendingPathComponent("folder.hdr", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        do {
+            _ = try await manager.importEnvironment(from: directory)
+            Issue.record("Expected directory import rejection")
+        } catch EnvironmentCatalogError.missingFile {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(validationCalls.withLock { $0 } == 0)
+        #expect(try await manager.fetchAssets().isEmpty)
+    }
+
+    @Test
     func importRejectsNonFileURLEvenWhenPathExistsLocally() async throws {
         let (database, rootDir) = try await makeDatabase(named: "validation-non-file-url.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -207,7 +269,11 @@ struct EnvironmentCatalogManagerValidationTests {
             environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
         )
         let source = rootDir.appendingPathComponent("panorama.png")
-        try writeSolidPNG(width: 20, height: 10, to: source)
+        try writeSolidPNG(
+            width: EnvironmentImportValidationPolicy.minimumPanoramaWidth,
+            height: EnvironmentImportValidationPolicy.minimumPanoramaHeight,
+            to: source
+        )
 
         let imported = try await manager.importEnvironment(from: source)
 
@@ -248,6 +314,28 @@ struct EnvironmentCatalogManagerValidationTests {
         )
         let source = rootDir.appendingPathComponent("square.png")
         try writeSolidPNG(width: 12, height: 12, to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset error")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func defaultValidatorRejectsLowResolutionPanoramaPNGEnvironment() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-low-resolution-png.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+        let source = rootDir.appendingPathComponent("tiny-panorama.png")
+        try writeSolidPNG(width: 512, height: 256, to: source)
 
         do {
             _ = try await manager.importEnvironment(from: source)

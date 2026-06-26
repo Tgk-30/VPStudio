@@ -12,6 +12,7 @@ struct ImmersivePlayerControlsView: View {
     let showsScreenSizeControl: Bool
 
     @State private var isDraggingScrubber = false
+    @State private var isScrubberHovered = false
     @State private var scrubPercent: Double = 0
 
     init(showsScreenSizeControl: Bool = true) {
@@ -100,7 +101,8 @@ struct ImmersivePlayerControlsView: View {
             let width = geo.size.width
             let displayPercent = isDraggingScrubber ? scrubPercent : engine.progressPercent
             let clampedDisplayPercent = max(0, min(1, displayPercent))
-            let thumbSize = isDraggingScrubber
+            let thumbIsExpanded = isDraggingScrubber || isScrubberHovered
+            let thumbSize = thumbIsExpanded
                 ? ImmersiveControlsPolicy.scrubberDraggingThumbSize
                 : ImmersiveControlsPolicy.scrubberIdleThumbSize
 
@@ -135,7 +137,12 @@ struct ImmersivePlayerControlsView: View {
                 Circle()
                     .fill(.white)
                     .frame(width: thumbSize, height: thumbSize)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white.opacity(thumbIsExpanded ? 0.36 : 0), lineWidth: 2)
+                    }
                     .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                    .shadow(color: .white.opacity(thumbIsExpanded ? 0.20 : 0), radius: 8)
                     .position(
                         x: ImmersiveControlsPolicy.scrubberMarkerX(
                             percent: clampedDisplayPercent,
@@ -144,9 +151,10 @@ struct ImmersivePlayerControlsView: View {
                         ),
                         y: geo.size.height / 2
                     )
-                    .animation(accessibilityReduceMotion ? nil : .easeOut(duration: 0.15), value: isDraggingScrubber)
+                    .animation(accessibilityReduceMotion ? nil : .easeOut(duration: 0.15), value: thumbIsExpanded)
             }
             .contentShape(Rectangle())
+            .onHover { isScrubberHovered = $0 }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Playback position")
             .accessibilityValue(scrubberAccessibilityValue)
@@ -272,7 +280,7 @@ struct ImmersivePlayerControlsView: View {
     // MARK: - Secondary Controls
 
     private var secondaryControlsRow: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 12) {
             // Playback speed — tinted when running at a non-1.0 rate.
             Button {
                 NotificationCenter.default.post(name: .immersiveControlCycleRate, object: nil)
@@ -296,7 +304,7 @@ struct ImmersivePlayerControlsView: View {
             .accessibilityValue(rateLabel)
             .accessibilityHint("Double-tap to cycle playback speed")
 
-            Spacer(minLength: 8)
+            secondaryGroupDivider
 
             // Subtitles — on/off toggle with a brighter surface when enabled.
             toggleControl(
@@ -331,29 +339,41 @@ struct ImmersivePlayerControlsView: View {
             .accessibilityLabel("Change environment")
             .accessibilityHint("Opens the environment picker")
 
-            Spacer(minLength: 8)
+            secondaryGroupDivider
 
             // Exit immersive — higher-consequence action gets a distinct, warm-tinted
-            // surface so it is never confused with the neutral playback controls.
-            Button {
-                NotificationCenter.default.post(name: .immersiveControlDismiss, object: nil)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(.callout, design: .default).weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(
-                        width: ImmersiveControlsPolicy.controlButtonDiameter,
-                        height: ImmersiveControlsPolicy.controlButtonDiameter
-                    )
-                    .background(.red.opacity(0.55), in: Circle())
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .hoverEffect(.highlight)
-            .accessibilityLabel("Exit immersive space")
-            .accessibilityHint("Closes the cinema environment and returns to the window")
+            // labeled surface so it is never confused with neutral playback controls.
+            exitImmersiveButton
         }
         .foregroundStyle(.white.opacity(0.9))
+    }
+
+    private var secondaryGroupDivider: some View {
+        Rectangle()
+            .fill(.white.opacity(0.16))
+            .frame(width: 1, height: 26)
+            .accessibilityHidden(true)
+    }
+
+    private var exitImmersiveButton: some View {
+        Button {
+            NotificationCenter.default.post(name: .immersiveControlDismiss, object: nil)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "xmark")
+                Text("Exit")
+            }
+            .font(.system(.caption, design: .default).weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: ImmersiveControlsPolicy.controlButtonDiameter)
+            .background(.red.opacity(0.55), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        .accessibilityLabel("Exit immersive space")
+        .accessibilityHint("Closes the cinema environment and returns to the window")
     }
 
     private var isCustomRate: Bool {

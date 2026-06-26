@@ -49,6 +49,12 @@ enum EnvironmentImportValidationPolicy {
     /// would visibly stretch across the immersive skybox.
     static let panoramaAspectRatioRange: ClosedRange<Double> = 1.75...2.25
 
+    /// Minimum decoded panorama dimensions for immersive use. Smaller images can
+    /// pass format validation but look visibly pixelated when wrapped around the
+    /// viewer in a skybox.
+    static let minimumPanoramaWidth = 2_048
+    static let minimumPanoramaHeight = 1_024
+
     /// Lowercases and trims a raw extension (handles leading dots and whitespace).
     static func normalizedExtension(for raw: String) -> String {
         var ext = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -96,5 +102,13 @@ enum EnvironmentImportValidationPolicy {
         guard width > 0, height > 0 else { return false }
         let ratio = Double(width) / Double(height)
         return panoramaAspectRatioRange.contains(ratio)
+    }
+
+    /// Whether decoded image dimensions are both equirectangular and high enough
+    /// resolution for a presentable immersive environment.
+    static func hasUsablePanoramaDimensions(width: Int, height: Int) -> Bool {
+        hasPanoramaAspectRatio(width: width, height: height)
+            && width >= minimumPanoramaWidth
+            && height >= minimumPanoramaHeight
     }
 }

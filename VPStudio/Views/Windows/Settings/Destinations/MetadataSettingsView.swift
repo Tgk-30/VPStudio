@@ -127,7 +127,7 @@ struct MetadataSettingsView: View {
 
                 if isSaved {
                     Label("Saved", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 }
 
                 if let notice {

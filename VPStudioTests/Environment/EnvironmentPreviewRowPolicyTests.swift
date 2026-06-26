@@ -60,6 +60,63 @@ struct EnvironmentPreviewRowPolicyTests {
     }
 
     @Test
+    func fallbackArtworkIconsStayVisibleOnDarkEnvironmentCards() throws {
+        #expect(EnvironmentPreviewFallbackArtworkKind.standardRoom.iconName == "rectangle.dashed")
+        #expect(EnvironmentPreviewFallbackArtworkKind.cinema.iconName == "theatermasks.fill")
+        #expect(EnvironmentPreviewFallbackArtworkKind.bundledEnvironment.iconName == "sparkles")
+        #expect(EnvironmentPreviewFallbackArtworkKind.panorama.iconName == "pano.fill")
+        #expect(EnvironmentPreviewFallbackArtworkKind.scene.iconName == "cube.transparent.fill")
+        #expect(EnvironmentPreviewFallbackArtworkKind.standardRoom.iconOpacity >= 0.62)
+        #expect(EnvironmentPreviewFallbackArtworkKind.cinema.iconOpacity >= 0.66)
+        #expect(EnvironmentPreviewFallbackArtworkKind.bundledEnvironment.iconOpacity >= 0.68)
+        #expect(EnvironmentPreviewFallbackArtworkKind.panorama.iconOpacity >= 0.70)
+        #expect(EnvironmentPreviewFallbackArtworkKind.scene.iconOpacity >= 0.66)
+
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        #expect(source.contains(".shadow(color: .black.opacity(0.32), radius: 2, y: 1)"))
+        #expect(!source.contains(".shadow(color: accent.opacity(0.26), radius: 16"))
+    }
+
+    @Test
+    func fallbackArtworkDifferentiatesBuiltInPanoramaAndSceneCards() throws {
+        #expect(
+            EnvironmentPreviewRowPolicy.fallbackArtworkKind(
+                sourceType: .bundled,
+                assetPath: "/assets/anything.usdz"
+            ) == .bundledEnvironment
+        )
+        #expect(
+            EnvironmentPreviewRowPolicy.fallbackArtworkKind(
+                sourceType: .imported,
+                assetPath: "/assets/sky.hdr"
+            ) == .panorama
+        )
+        #expect(
+            EnvironmentPreviewRowPolicy.fallbackArtworkKind(
+                sourceType: .imported,
+                assetPath: "/assets/room.usdz"
+            ) == .scene
+        )
+
+        let asset = EnvironmentAsset(
+            id: "asset-a",
+            name: "Starlight Cinema",
+            sourceType: .bundled,
+            assetPath: "bundle://Starlight.usdz"
+        )
+        let paletteIndex = EnvironmentPreviewRowPolicy.fallbackPaletteIndex(for: asset, paletteCount: 4)
+        #expect(paletteIndex >= 0)
+        #expect(paletteIndex < 4)
+        #expect(paletteIndex == EnvironmentPreviewRowPolicy.fallbackPaletteIndex(for: asset, paletteCount: 4))
+        #expect(EnvironmentPreviewRowPolicy.fallbackPaletteIndex(for: asset, paletteCount: 0) == 0)
+
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        #expect(source.contains("EnvironmentPreviewFallbackArtworkView(kind: .standardRoom"))
+        #expect(source.contains("EnvironmentPreviewFallbackArtworkView(kind: .cinema"))
+        #expect(source.contains("EnvironmentPreviewRowPolicy.fallbackArtworkKind("))
+    }
+
+    @Test
     func labelsBundledAssetsAsBuiltInRegardlessOfExtension() {
         #expect(
             EnvironmentPreviewRowPolicy.assetTypeLabel(
@@ -290,7 +347,27 @@ struct EnvironmentPreviewRowPolicyTests {
     }
 
     @Test
-    func thumbnailSourcesPreferExplicitPreviewThenDecodablePanorama() {
+    func statusChipsDistinguishCurrentSelectedAndActiveStates() throws {
+        #expect(EnvironmentPreviewCardStatus.inactive.chip?.title == nil)
+        #expect(EnvironmentPreviewCardStatus.current.chip?.title == "Current")
+        #expect(EnvironmentPreviewCardStatus.current.chip?.systemImage == "checkmark.circle.fill")
+        #expect(EnvironmentPreviewCardStatus.selected.chip?.title == "Selected")
+        #expect(EnvironmentPreviewCardStatus.selected.chip?.systemImage == "checkmark.circle")
+        #expect(EnvironmentPreviewCardStatus.active.chip?.title == "Active")
+        #expect(EnvironmentPreviewCardStatus.active.chip?.systemImage == "play.circle.fill")
+
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let statusStart = try #require(source.range(of: "enum EnvironmentPreviewCardStatus"))
+        let statusEnd = try #require(source.range(of: "enum EnvironmentPreviewFallbackArtworkKind", range: statusStart.upperBound..<source.endIndex))
+        let statusSource = String(source[statusStart.lowerBound..<statusEnd.lowerBound])
+        #expect(statusSource.contains("VPColor.info"))
+        #expect(statusSource.contains("VPColor.success"))
+        #expect(!statusSource.contains(".blue"))
+        #expect(!statusSource.contains(".green"))
+    }
+
+    @Test
+    func thumbnailSourcesPreferExplicitPreviewThenThumbnailThenDecodablePanorama() {
         let bundled = EnvironmentAsset(
             id: "builtin",
             name: "Built In",
@@ -302,18 +379,68 @@ struct EnvironmentPreviewRowPolicyTests {
             id: "pano",
             name: "Imported",
             sourceType: .imported,
-            assetPath: "/tmp/pano.jpg"
+            assetPath: "/tmp/pano.jpg",
+            thumbnailPath: "/tmp/pano-thumb.jpg",
+            previewImagePath: "/tmp/pano-preview.jpg"
         )
         let importedScene = EnvironmentAsset(
             id: "scene",
             name: "Scene",
             sourceType: .imported,
-            assetPath: "/tmp/scene.usdz"
+            assetPath: "/tmp/scene.usdz",
+            thumbnailPath: "/tmp/scene-thumb.jpg"
+        )
+        let duplicatedSources = EnvironmentAsset(
+            id: "duplicate",
+            name: "Duplicate",
+            sourceType: .imported,
+            assetPath: "/tmp/duplicate.jpg",
+            thumbnailPath: " /tmp/duplicate.jpg ",
+            previewImagePath: "/tmp/duplicate.jpg"
         )
 
         #expect(EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: bundled) == ["bundle://SkyDomePreview.png"])
-        #expect(EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: importedPanorama) == ["/tmp/pano.jpg"])
-        #expect(EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: importedScene).isEmpty)
+        #expect(EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: importedPanorama) == [
+            "/tmp/pano-preview.jpg",
+            "/tmp/pano-thumb.jpg",
+            "/tmp/pano.jpg",
+        ])
+        #expect(EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: importedScene) == ["/tmp/scene-thumb.jpg"])
+        #expect(EnvironmentPreviewRowPolicy.thumbnailSourcePaths(for: duplicatedSources) == ["/tmp/duplicate.jpg"])
+    }
+
+    @Test
+    func thumbnailLoadIdentityTracksPreviewThumbnailAndAssetSources() {
+        let withPreview = EnvironmentAsset(
+            id: "pano",
+            name: "Imported",
+            sourceType: .imported,
+            assetPath: "/tmp/pano.jpg",
+            thumbnailPath: "/tmp/pano-thumb.jpg",
+            previewImagePath: "/tmp/pano-preview.jpg"
+        )
+        let updatedPreview = EnvironmentAsset(
+            id: "pano",
+            name: "Imported",
+            sourceType: .imported,
+            assetPath: "/tmp/pano.jpg",
+            thumbnailPath: "/tmp/pano-thumb.jpg",
+            previewImagePath: "/tmp/pano-preview-v2.jpg"
+        )
+        let sceneWithoutThumbnail = EnvironmentAsset(
+            id: "scene",
+            name: "Scene",
+            sourceType: .imported,
+            assetPath: " /tmp/scene.usdz "
+        )
+
+        #expect(EnvironmentPreviewRowPolicy.thumbnailLoadID(for: withPreview) == [
+            "/tmp/pano-preview.jpg",
+            "/tmp/pano-thumb.jpg",
+            "/tmp/pano.jpg",
+        ].joined(separator: "\u{1F}"))
+        #expect(EnvironmentPreviewRowPolicy.thumbnailLoadID(for: withPreview) != EnvironmentPreviewRowPolicy.thumbnailLoadID(for: updatedPreview))
+        #expect(EnvironmentPreviewRowPolicy.thumbnailLoadID(for: sceneWithoutThumbnail) == "/tmp/scene.usdz")
     }
 
     @Test
@@ -429,9 +556,50 @@ struct EnvironmentPreviewRowPolicyTests {
         #expect(!cardSource.contains(".onHover"))
         #expect(!cardSource.contains(".scaleEffect(isHovered"))
         #expect(cardSource.contains(".hoverEffect(.lift)"))
-        #expect(cardSource.contains("@State private var thumbnailImageAssetPath: String?"))
-        #expect(cardSource.contains("if thumbnailImageAssetPath != asset.assetPath"))
+        #expect(cardSource.contains("@State private var thumbnailImageSourceID: String?"))
+        #expect(cardSource.contains(".task(id: EnvironmentPreviewRowPolicy.thumbnailLoadID(for: asset))"))
+        #expect(cardSource.contains("let loadID = EnvironmentPreviewRowPolicy.thumbnailLoadID(for: asset)"))
+        #expect(cardSource.contains("if thumbnailImageSourceID != loadID"))
+        #expect(!cardSource.contains(".task(id: asset.assetPath)"))
         #expect(!cardSource.contains("thumbnailImage = nil\n        thumbnailFailed = false"))
+    }
+
+    @Test
+    func environmentCardTitlesWrapInsteadOfHardTruncatingImportedNames() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let titleStart = try #require(source.range(of: "struct EnvironmentPreviewCardTitleText: View {"))
+        let titleSource = String(source[titleStart.lowerBound..<source.endIndex])
+
+        #expect(source.contains("EnvironmentPreviewCardTitleText(asset.name)"))
+        #expect(source.contains("EnvironmentPreviewCardTitleText(\"Cinema Environment\")"))
+        #expect(source.contains("EnvironmentPreviewCardTitleText(\"Standard Room\")"))
+        #expect(titleSource.contains(".lineLimit(2)"))
+        #expect(titleSource.contains(".minimumScaleFactor(0.82)"))
+        #expect(titleSource.contains(".allowsTightening(true)"))
+        #expect(titleSource.contains(".fixedSize(horizontal: false, vertical: true)"))
+        #expect(source.contains(".init(color: .black.opacity(0.62), location: 0.64)"))
+        #expect(source.contains(".init(color: .black.opacity(0.88), location: 1.0)"))
+        #expect(!source.contains("Text(asset.name)\n                        .font(.subheadline)"))
+    }
+
+    @Test
+    func environmentPreviewGridCellsDoNotStretchBeyondCardWidth() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+
+        #expect(EnvironmentPreviewLayoutPolicy.cardWidth == 286)
+        #expect(EnvironmentPreviewLayoutPolicy.cardHeight == 168)
+        #expect(EnvironmentPreviewLayoutPolicy.gridSpacing == 18)
+        #expect(EnvironmentPreviewLayoutPolicy.maximumCenteredColumns == 4)
+        #expect(EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 1) == 286)
+        #expect(EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 4) == 1_198)
+        #expect(EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 8) == 1_198)
+        #expect(source.contains(".adaptive(minimum: cardWidth, maximum: cardWidth)"))
+        #expect(source.contains("columns: EnvironmentPreviewLayoutPolicy.gridColumns()"))
+        #expect(source.contains(".frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: itemCount))"))
+        #expect(source.contains(".frame(maxWidth: .infinity, alignment: .center)"))
+        #expect(!source.contains(".adaptive(minimum: 286, maximum: 340)"))
+        #expect(!source.contains("private let cardWidth: CGFloat = 286"))
+        #expect(!source.contains("private let cardHeight: CGFloat = 168"))
     }
 
     private func contents(of relativePath: String) throws -> String {

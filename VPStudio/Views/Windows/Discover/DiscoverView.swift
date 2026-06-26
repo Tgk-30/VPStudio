@@ -52,6 +52,39 @@ enum DiscoverHeroPresentationPolicy {
     }
 }
 
+enum DiscoverHeroArtworkPresentationPolicy {
+    enum HeroArtworkKind: Equatable {
+        case backdrop
+        case posterOnly
+        case none
+    }
+
+    static let posterCardWidth: CGFloat = 184
+    static let posterCardHeight: CGFloat = 276
+    static let posterCardCornerRadius: CGFloat = 18
+    static let aiPosterCardWidth: CGFloat = 92
+    static let aiPosterCardHeight: CGFloat = 138
+    static let aiPosterCardCornerRadius: CGFloat = 12
+
+    static func heroArtworkKind(backdropPath: String?, posterPath: String?) -> HeroArtworkKind {
+        if hasRenderableArtworkPath(backdropPath, legacyTMDBSizePath: "w1280") {
+            return .backdrop
+        }
+        if hasRenderableArtworkPath(posterPath, legacyTMDBSizePath: "w500") {
+            return .posterOnly
+        }
+        return .none
+    }
+
+    static func showsPosterCard(for kind: HeroArtworkKind) -> Bool {
+        kind == .posterOnly
+    }
+
+    private static func hasRenderableArtworkPath(_ value: String?, legacyTMDBSizePath: String) -> Bool {
+        MediaArtworkURLPolicy.url(for: value, legacyTMDBSizePath: legacyTMDBSizePath) != nil
+    }
+}
+
 enum DiscoverHierarchyPolicy {
     static let continueWatchingDelay = 0.02
     static let firstCatalogDelay = 0.05
@@ -958,102 +991,8 @@ struct AICuratedHeroCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: preview.backdropURL ?? preview.posterURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    default:
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.12, green: 0.08, blue: 0.22),
-                                Color(red: 0.05, green: 0.04, blue: 0.09),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 236)
-                .clipped()
-
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .black.opacity(0.2), location: 0.32),
-                        .init(color: .black.opacity(0.78), location: 0.68),
-                        .init(color: .black.opacity(0.96), location: 1.0),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
-                        GlassTag(text: "AI PICK", tintColor: .purple.opacity(0.24), symbol: "sparkles")
-
-                        if let score = recommendation.score {
-                            GlassTag(
-                                text: String(format: "%.0f%% match", score * 100),
-                                tintColor: .purple.opacity(0.18),
-                                weight: .bold
-                            )
-                        }
-                    }
-
-                    Text(recommendation.title)
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    HStack(spacing: 10) {
-                        Text(recommendation.type.displayName.uppercased())
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.82))
-
-                        if let year = recommendation.year {
-                            Circle()
-                                .fill(.white.opacity(0.4))
-                                .frame(width: 4, height: 4)
-
-                            Text(String(year))
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.74))
-                        }
-
-                        if let rating = preview.imdbRating, rating > 0 {
-                            Circle()
-                                .fill(.white.opacity(0.4))
-                                .frame(width: 4, height: 4)
-
-                            HStack(spacing: 3) {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                Text(String(format: "%.1f", rating))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.82))
-                            }
-                        }
-                    }
-
-                    Text(recommendation.reason)
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.84))
-                        .lineLimit(3)
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle")
-                            .font(.caption.weight(.semibold))
-                        Text("Open details")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .foregroundStyle(.white.opacity(0.82))
-                }
-                .padding(22)
+            GeometryReader { proxy in
+                aiBody(availableWidth: proxy.size.width)
             }
             .frame(maxWidth: .infinity)
             .frame(height: 236)
@@ -1068,6 +1007,219 @@ struct AICuratedHeroCard: View {
         #if os(visionOS)
         .hoverEffect(.lift)
         #endif
+    }
+
+    private func aiBody(availableWidth: CGFloat) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            aiBackdropLayer
+                .frame(maxWidth: .infinity)
+                .frame(height: 236)
+                .clipped()
+
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black.opacity(0.2), location: 0.32),
+                    .init(color: .black.opacity(0.78), location: 0.68),
+                    .init(color: .black.opacity(0.96), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            if showsAIPosterCard(availableWidth: availableWidth),
+               let posterURL {
+                aiPosterCard(url: posterURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 24)
+                    .accessibilityHidden(true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    GlassTag(text: "AI PICK", tintColor: .purple.opacity(0.24), symbol: "sparkles")
+
+                    if let score = recommendation.score {
+                        GlassTag(
+                            text: String(format: "%.0f%% match", score * 100),
+                            tintColor: .purple.opacity(0.18),
+                            weight: .bold
+                        )
+                    }
+                }
+
+                Text(recommendation.title)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                HStack(spacing: 10) {
+                    Text(recommendation.type.displayName.uppercased())
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+
+                    if let year = recommendation.year {
+                        Circle()
+                            .fill(.white.opacity(0.4))
+                            .frame(width: 4, height: 4)
+
+                        Text(String(year))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.74))
+                    }
+
+                    let ratingText = preview.ratingString
+                    if !ratingText.isEmpty {
+                        Circle()
+                            .fill(.white.opacity(0.4))
+                            .frame(width: 4, height: 4)
+
+                        HStack(spacing: 3) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text(ratingText)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.82))
+                        }
+                    }
+                }
+
+                Text(recommendation.reason)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.84))
+                    .lineLimit(3)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .font(.caption.weight(.semibold))
+                    Text("Open details")
+                        .font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(.white.opacity(0.82))
+            }
+            .padding(.leading, 22)
+            .padding(.trailing, aiContentTrailingPadding(availableWidth: availableWidth))
+            .padding(.vertical, 22)
+        }
+    }
+
+    private var heroArtworkKind: DiscoverHeroArtworkPresentationPolicy.HeroArtworkKind {
+        DiscoverHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: preview.backdropPath,
+            posterPath: preview.posterPath
+        )
+    }
+
+    private var backdropURL: URL? {
+        MediaArtworkURLPolicy.url(for: preview.backdropPath, legacyTMDBSizePath: "w1280")
+    }
+
+    private var posterURL: URL? {
+        MediaArtworkURLPolicy.url(for: preview.posterPath, legacyTMDBSizePath: "w500")
+    }
+
+    private var aiArtworkLoadID: String {
+        "\(preview.id)-ai-\(heroArtworkKind)-\(backdropURL?.absoluteString ?? posterURL?.absoluteString ?? "none")"
+    }
+
+    private func showsAIPosterCard(availableWidth: CGFloat) -> Bool {
+        DiscoverHeroArtworkPresentationPolicy.showsPosterCard(for: heroArtworkKind) && availableWidth >= 520
+    }
+
+    private func aiContentTrailingPadding(availableWidth: CGFloat) -> CGFloat {
+        guard showsAIPosterCard(availableWidth: availableWidth) else { return 22 }
+        return min(146, max(22, availableWidth * 0.28))
+    }
+
+    @ViewBuilder
+    private var aiBackdropLayer: some View {
+        if heroArtworkKind == .backdrop, let backdropURL {
+            AsyncImage(url: backdropURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                case .empty, .failure:
+                    aiArtworkPlaceholder
+                @unknown default:
+                    aiArtworkPlaceholder
+                }
+            }
+            .id(aiArtworkLoadID)
+        } else {
+            aiArtworkPlaceholder
+        }
+    }
+
+    private var aiArtworkPlaceholder: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.12, green: 0.08, blue: 0.22),
+                Color(red: 0.05, green: 0.04, blue: 0.09),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    @ViewBuilder
+    private func aiPosterCard(url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(
+                        width: DiscoverHeroArtworkPresentationPolicy.aiPosterCardWidth,
+                        height: DiscoverHeroArtworkPresentationPolicy.aiPosterCardHeight
+                    )
+                    .clipShape(aiPosterCardShape)
+                    .overlay {
+                        aiPosterCardShape
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 16, y: 8)
+            case .empty:
+                aiPosterPlaceholder(showsIcon: false)
+            case .failure:
+                aiPosterPlaceholder(showsIcon: true)
+            @unknown default:
+                aiPosterPlaceholder(showsIcon: true)
+            }
+        }
+        .id(aiArtworkLoadID)
+        .allowsHitTesting(false)
+    }
+
+    private func aiPosterPlaceholder(showsIcon: Bool) -> some View {
+        aiPosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: DiscoverHeroArtworkPresentationPolicy.aiPosterCardWidth,
+                height: DiscoverHeroArtworkPresentationPolicy.aiPosterCardHeight
+            )
+            .overlay {
+                aiPosterCardShape
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
+    }
+
+    private var aiPosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: DiscoverHeroArtworkPresentationPolicy.aiPosterCardCornerRadius,
+            style: .continuous
+        )
     }
 }
 
@@ -1141,35 +1293,42 @@ struct FeaturedHeroView: View {
     @State private var isHovered = false
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            // Background image — edge-to-edge.
-            // Using .id(item.id) on the content prevents SwiftUI from destroying and
-            // re-fetching the image every time TabView auto-advances to the next hero card.
-            AsyncImage(url: backdropURL, transaction: Transaction(animation: .easeOut(duration: 0.45))) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(16 / 9, contentMode: .fill)
-                        .scaleEffect(isHovered ? 1.04 : 1.0)
-                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isHovered)
-                        .transition(.opacity)
-                default:
-                    Rectangle().fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.08, green: 0.06, blue: 0.14),
-                                Color(red: 0.04, green: 0.03, blue: 0.08),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                }
+        GeometryReader { proxy in
+            heroBody(availableWidth: proxy.size.width)
+        }
+        .frame(height: 540)
+        .clipShape(RoundedRectangle(cornerRadius: 28))
+        .overlay(
+            RoundedRectangle(cornerRadius: 28)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(isHovered ? 0.25 : 0.08),
+                            .white.opacity(isHovered ? 0.06 : 0.01),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: .black.opacity(0.07), radius: 24, y: 0)
+        .shadow(color: .black.opacity(isHovered ? 0.35 : 0.13), radius: isHovered ? 18 : 8, x: 0, y: isHovered ? 10 : 4)
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                isHovered = hovering
             }
-            .id(item.id)
-            .frame(height: 540)
-            .clipped()
+        }
+        #if os(visionOS)
+        .hoverEffect(.lift)
+        #endif
+    }
+
+    private func heroBody(availableWidth: CGFloat) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            heroBackdropLayer
+                .frame(height: 540)
+                .clipped()
 
             // Cinematic gradient fade to dark at bottom
             LinearGradient(
@@ -1182,6 +1341,14 @@ struct FeaturedHeroView: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
+
+            if showsPosterCard(availableWidth: availableWidth),
+               let posterURL {
+                heroPosterCard(url: posterURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 58)
+                    .accessibilityHidden(true)
+            }
 
             // Content overlay
             VStack(alignment: .leading, spacing: 14) {
@@ -1210,7 +1377,8 @@ struct FeaturedHeroView: View {
                             .foregroundStyle(.white.opacity(0.7))
                     }
 
-                    if let rating = item.imdbRating, rating > 0 {
+                    let ratingText = item.ratingString
+                    if !ratingText.isEmpty {
                         Circle()
                             .fill(.white.opacity(0.4))
                             .frame(width: 4, height: 4)
@@ -1222,7 +1390,7 @@ struct FeaturedHeroView: View {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.white.opacity(0.85))
-                            Text(String(format: "%.1f", rating))
+                            Text(ratingText)
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.white.opacity(0.8))
@@ -1293,39 +1461,135 @@ struct FeaturedHeroView: View {
                 }
                 .padding(.top, 10)
             }
-            .padding(36)
+            .padding(.leading, 36)
+            .padding(.trailing, contentTrailingPadding(availableWidth: availableWidth))
+            .padding(.vertical, 36)
         }
-        .frame(height: 540)
-        .clipShape(RoundedRectangle(cornerRadius: 28))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            .white.opacity(isHovered ? 0.25 : 0.08),
-                            .white.opacity(isHovered ? 0.06 : 0.01),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+    }
+
+    private var heroArtworkKind: DiscoverHeroArtworkPresentationPolicy.HeroArtworkKind {
+        DiscoverHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: item.backdropPath,
+            posterPath: item.posterPath
         )
-        .shadow(color: .black.opacity(0.07), radius: 24, y: 0)
-        .shadow(color: .black.opacity(isHovered ? 0.35 : 0.13), radius: isHovered ? 18 : 8, x: 0, y: isHovered ? 10 : 4)
-        .onHover { hovering in
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                isHovered = hovering
-            }
-        }
-        #if os(visionOS)
-        .hoverEffect(.lift)
-        #endif
     }
 
     private var backdropURL: URL? {
-        // Prefer landscape backdrop for cinematic hero; fall back to poster if unavailable
-        MediaArtworkURLPolicy.url(for: item.backdropPath ?? item.posterPath, legacyTMDBSizePath: "w1280")
+        MediaArtworkURLPolicy.url(for: item.backdropPath, legacyTMDBSizePath: "w1280")
+    }
+
+    private var posterURL: URL? {
+        MediaArtworkURLPolicy.url(for: item.posterPath, legacyTMDBSizePath: "w500")
+    }
+
+    private var heroArtworkLoadID: String {
+        "\(item.id)-\(heroArtworkKind)-\(backdropURL?.absoluteString ?? posterURL?.absoluteString ?? "none")"
+    }
+
+    private func showsPosterCard(availableWidth: CGFloat) -> Bool {
+        DiscoverHeroArtworkPresentationPolicy.showsPosterCard(for: heroArtworkKind) && availableWidth >= 760
+    }
+
+    private func contentTrailingPadding(availableWidth: CGFloat) -> CGFloat {
+        guard showsPosterCard(availableWidth: availableWidth) else { return 36 }
+        return min(280, max(36, availableWidth * 0.34))
+    }
+
+    @ViewBuilder
+    private var heroBackdropLayer: some View {
+        if heroArtworkKind == .backdrop, let backdropURL {
+            // Using a stable artwork id prevents stale hero art when metadata changes in place.
+            AsyncImage(url: backdropURL, transaction: Transaction(animation: .easeOut(duration: 0.45))) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(16 / 9, contentMode: .fill)
+                        .scaleEffect(isHovered ? 1.04 : 1.0)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isHovered)
+                        .transition(.opacity)
+                case .empty, .failure:
+                    heroArtworkPlaceholder
+                @unknown default:
+                    heroArtworkPlaceholder
+                }
+            }
+            .id(heroArtworkLoadID)
+        } else {
+            heroArtworkPlaceholder
+        }
+    }
+
+    private var heroArtworkPlaceholder: some View {
+        Rectangle().fill(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.06, blue: 0.14),
+                    Color(red: 0.04, green: 0.03, blue: 0.08),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    @ViewBuilder
+    private func heroPosterCard(url: URL) -> some View {
+        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(
+                        width: DiscoverHeroArtworkPresentationPolicy.posterCardWidth,
+                        height: DiscoverHeroArtworkPresentationPolicy.posterCardHeight
+                    )
+                    .clipShape(heroPosterCardShape)
+                    .overlay {
+                        heroPosterCardShape
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.42), radius: 26, y: 14)
+                    .transition(.opacity)
+            case .empty:
+                heroPosterPlaceholder(showsIcon: false)
+            case .failure:
+                heroPosterPlaceholder(showsIcon: true)
+            @unknown default:
+                heroPosterPlaceholder(showsIcon: true)
+            }
+        }
+        .id(heroArtworkLoadID)
+        .allowsHitTesting(false)
+    }
+
+    private func heroPosterPlaceholder(showsIcon: Bool) -> some View {
+        heroPosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: DiscoverHeroArtworkPresentationPolicy.posterCardWidth,
+                height: DiscoverHeroArtworkPresentationPolicy.posterCardHeight
+            )
+            .overlay {
+                heroPosterCardShape
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.24), radius: 18, y: 10)
+    }
+
+    private var heroPosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: DiscoverHeroArtworkPresentationPolicy.posterCardCornerRadius,
+            style: .continuous
+        )
     }
 }
 

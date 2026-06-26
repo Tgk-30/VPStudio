@@ -189,8 +189,9 @@ actor TraktSyncOrchestrator {
                         localRefreshTargets: localRefreshTargets
                     )
                 }
-                guard let mediaId = extractMediaId(from: item) else { continue }
+                guard let remoteMediaId = extractMediaId(from: item) else { continue }
                 do {
+                    let mediaId = try await canonicalLocalMediaId(for: remoteMediaId)
                     let exists = try await database.isInLibrary(
                         mediaId: mediaId, listType: .watchlist
                     )
@@ -218,7 +219,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     }
-                    errors.append("Pull watchlist entry \(mediaId): \(error.localizedDescription)")
+                    errors.append("Pull watchlist entry \(remoteMediaId): \(error.localizedDescription)")
                 }
             }
         }
@@ -391,10 +392,10 @@ actor TraktSyncOrchestrator {
                             )
                         }
                         guard let identifiers = extractHistoryIdentifiers(from: item) else { continue }
-                        let mediaId = identifiers.mediaId
                         let episodeId = identifiers.episodeId
 
                         do {
+                            let mediaId = try await canonicalLocalMediaId(for: identifiers.mediaId)
                             // Write to WatchHistory table (what the app actually displays)
                             let watchedAt = parseHistoryDate(item.watchedAt) ?? Date()
                             let existingWatch = try await hasCompletedWatchHistoryEntry(
@@ -458,7 +459,7 @@ actor TraktSyncOrchestrator {
                                     localRefreshTargets: localRefreshTargets
                                 )
                             }
-                            errors.append("Pull history entry \(mediaId): \(error.localizedDescription)")
+                            errors.append("Pull history entry \(identifiers.mediaId): \(error.localizedDescription)")
                         }
                     }
 
@@ -515,7 +516,7 @@ actor TraktSyncOrchestrator {
                 guard !remoteImdbIds.contains(imdbId) else { continue }
 
                 do {
-                    let mediaType = await resolveMediaType(for: imdbId)
+                    let mediaType = await resolveMediaType(for: entry.mediaId)
                     try await traktService.addToWatchlist(imdbId: imdbId, type: mediaType)
                     pushed += 1
                 } catch {
@@ -598,7 +599,7 @@ actor TraktSyncOrchestrator {
                 }
 
                 do {
-                    let mediaType = await resolveMediaType(for: imdbId)
+                    let mediaType = await resolveMediaType(for: event.mediaId ?? imdbId)
                     try await traktService.addRating(
                         imdbId: imdbId,
                         rating: clampedRating,
@@ -676,7 +677,7 @@ actor TraktSyncOrchestrator {
                         if entry.episodeId != nil {
                             mediaType = .series
                         } else {
-                            mediaType = await resolveMediaType(for: imdbId)
+                            mediaType = await resolveMediaType(for: entry.mediaId)
                         }
 
                         try await traktService.addToHistory(
@@ -1028,6 +1029,7 @@ actor TraktSyncOrchestrator {
         }
 
         var localIdentitiesByImdbId: [String: Set<String>] = [:]
+        var localMediaTypeByImdbId: [String: MediaType] = [:]
         var localIdentityKeys = Set<String>()
         for entry in entries {
             try Task.checkCancellation()
@@ -1035,6 +1037,9 @@ actor TraktSyncOrchestrator {
             localIdentityKeys.formUnion(identities)
             if let imdbID = await localIMDbID(for: entry.mediaId) {
                 localIdentitiesByImdbId[imdbID, default: []].formUnion(identities)
+                if localMediaTypeByImdbId[imdbID] == nil {
+                    localMediaTypeByImdbId[imdbID] = await resolveMediaType(for: entry.mediaId)
+                }
             }
         }
         let remoteImdbIds = Set(remoteByImdbId.keys)
@@ -1047,7 +1052,12 @@ actor TraktSyncOrchestrator {
                   remoteIdentityKeys.isDisjoint(with: localIdentities) else {
                 continue
             }
-            let mediaType = await resolveMediaType(for: imdbId)
+            let mediaType: MediaType
+            if let hintedType = localMediaTypeByImdbId[imdbId] {
+                mediaType = hintedType
+            } else {
+                mediaType = await resolveMediaType(for: imdbId)
+            }
             toAdd.append((id: imdbId, type: mediaType))
         }
 
@@ -1201,6 +1211,10 @@ actor TraktSyncOrchestrator {
             episodeId: episodeId,
             episodeAliases: episodeAliases
         )
+    }
+
+    private func canonicalLocalMediaId(for mediaId: String) async throws -> String {
+        try await database.fetchMediaItemResolvingAliases(id: mediaId)?.id ?? mediaId
     }
 
     /// Fetches all IMDb IDs in the remote Trakt watchlist for deduplication during push.
@@ -1455,12 +1469,27 @@ actor TraktSyncOrchestrator {
             return item.type
         }
 
+        if let hintedType = Self.mediaTypeHint(from: mediaId) {
+            return hintedType
+        }
+
         if let episodeStates = try? await database.fetchEpisodeWatchStates(mediaId: mediaId),
            !episodeStates.isEmpty {
             return .series
         }
 
         return .movie
+    }
+
+    private static func mediaTypeHint(from mediaId: String) -> MediaType? {
+        let normalized = mediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("series-") {
+            return .series
+        }
+        if normalized.hasPrefix("movie-") {
+            return .movie
+        }
+        return nil
     }
 
     private var isCancellationRequested: Bool {

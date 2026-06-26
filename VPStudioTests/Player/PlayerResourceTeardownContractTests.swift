@@ -373,6 +373,7 @@ struct PlayerResourceTeardownContractTests {
         #expect(topBarMenuSection.contains("PlayerEnvironmentMenuLabel("))
         #expect(topBarMenuSection.contains("spec: .standardRoom("))
         #expect(topBarMenuSection.contains("spec: .cinema("))
+        #expect(topBarMenuSection.contains("canOpenCinema: PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(topBarMenuSection.contains("spec: .compactAsset("))
         #expect(topBarMenuSection.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(topBarMenuSection.contains("activeEngine: activeEngine"))
@@ -933,6 +934,8 @@ struct PlayerResourceTeardownContractTests {
         #expect(warningsBody.contains("ForEach(capabilityWarnings, id: \\.self)"))
         #expect(warningsBody.contains("if let warningError"))
         #expect(warningsBody.contains("Text(warningError)"))
+        #expect(warningsBody.contains(".background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))"))
+        #expect(warningsBody.contains(".strokeBorder(.white.opacity(0.14), lineWidth: 0.5)"))
         #expect(!warningsBody.contains("playbackState == .failed"))
     }
 

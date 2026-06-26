@@ -66,15 +66,52 @@ private final class HDRISkyboxRenderState {
     var subtitleEntity: Entity?
     var lastMaterialSourceID: ObjectIdentifier?
     var autoDismissTask: Task<Void, Never>?
+    var hdriLoadTask: Task<CGImage?, Never>?
+    var activeEnvironmentAssetID: String?
+    var activeEnvironmentLoadID: UUID?
     var didAnchorScreenToHead = false
+
+    func beginEnvironmentLoad(assetID: String) -> UUID {
+        hdriLoadTask?.cancel()
+        let loadID = UUID()
+        activeEnvironmentAssetID = assetID
+        activeEnvironmentLoadID = loadID
+        hdriLoadTask = nil
+        lastMaterialSourceID = nil
+        return loadID
+    }
+
+    func setHDRILoadTask(_ task: Task<CGImage?, Never>, for loadID: UUID) {
+        guard activeEnvironmentLoadID == loadID else {
+            task.cancel()
+            return
+        }
+        hdriLoadTask = task
+    }
+
+    func isCurrentEnvironmentLoad(_ loadID: UUID, assetID: String) -> Bool {
+        activeEnvironmentLoadID == loadID && activeEnvironmentAssetID == assetID
+    }
+
+    func cancelEnvironmentLoad() {
+        hdriLoadTask?.cancel()
+        hdriLoadTask = nil
+        activeEnvironmentAssetID = nil
+        activeEnvironmentLoadID = nil
+        lastMaterialSourceID = nil
+    }
 
     func reset() {
         autoDismissTask?.cancel()
+        hdriLoadTask?.cancel()
         autoDismissTask = nil
+        hdriLoadTask = nil
         cinemaScreen = nil
         controlsAnchor = nil
         subtitleEntity = nil
         lastMaterialSourceID = nil
+        activeEnvironmentAssetID = nil
+        activeEnvironmentLoadID = nil
         didAnchorScreenToHead = false
     }
 }
@@ -157,21 +194,34 @@ struct HDRISkyboxEnvironment: View {
 
             // MARK: Async HDRI load
             guard let asset = appState.selectedEnvironmentAsset else {
+                renderState.cancelEnvironmentLoad()
                 setLoadingState(.failed(HDRISkyboxFailureCopy.noEnvironmentSelected))
                 return
             }
 
+            let environmentLoadID = renderState.beginEnvironmentLoad(assetID: asset.id)
+            setLoadingState(.loading)
+
             guard let url = await appState.environmentCatalogManager.resolvedAssetURL(for: asset) else {
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
                 setLoadingState(.failed(HDRISkyboxFailureCopy.missingEnvironmentFile))
                 return
             }
 
-            guard let cgImage = await Task.detached(priority: .userInitiated, operation: {
-                Self.loadHDRImage(from: url)
-            }).value else {
+            let hdriLoadTask = Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard !Task.isCancelled else { return nil }
+                let image = Self.loadHDRImage(from: url)
+                guard !Task.isCancelled else { return nil }
+                return image
+            }
+            renderState.setHDRILoadTask(hdriLoadTask, for: environmentLoadID)
+
+            guard let cgImage = await hdriLoadTask.value else {
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
                 setLoadingState(.failed(HDRISkyboxFailureCopy.decodeFailure))
                 return
             }
+            guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
 
             let yawRadians = (asset.hdriYawOffset ?? 0) * (.pi / 180.0)
 
@@ -182,6 +232,7 @@ struct HDRISkyboxEnvironment: View {
                     image: cgImage,
                     options: .init(semantic: .hdrColor)
                 )
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
 
                 var skyMaterial = UnlitMaterial()
                 skyMaterial.color = .init(texture: .init(texture))
@@ -199,6 +250,7 @@ struct HDRISkyboxEnvironment: View {
 
                 // MARK: IBL
                 let environmentResource = try await EnvironmentResource(equirectangular: cgImage)
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
                 let iblEntity = Entity()
                 iblEntity.name = "hdri-ibl"
                 if yawRadians != 0 {
@@ -236,6 +288,7 @@ struct HDRISkyboxEnvironment: View {
                 setLoadingState(.loaded)
 
             } catch {
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
                 logger.error("HDRI environment resource creation failed: \(error.localizedDescription, privacy: .public)")
                 setLoadingState(.failed(HDRISkyboxFailureCopy.resourceFailure))
             }
@@ -356,6 +409,7 @@ struct HDRISkyboxEnvironment: View {
                     NotificationCenter.default.post(name: .immersiveTapCatcherDidFire, object: nil)
                 }
         )
+        .id(appState.selectedEnvironmentAsset?.id ?? "no-environment")
         .preferredSurroundingsEffect(.systemDark)
         .onReceive(NotificationCenter.default.publisher(for: .immersiveTapCatcherDidFire)) { _ in
             performOptionalAnimation(.easeInOut(duration: 0.25)) {
@@ -442,11 +496,10 @@ struct HDRISkyboxEnvironment: View {
         }
     }
 
+    @MainActor
     private func setLoadingState(_ state: LoadingState) {
         guard loadingState != state else { return }
-        Task { @MainActor in
-            loadingState = state
-        }
+        loadingState = state
     }
 
     private func performOptionalAnimation(_ animation: Animation, updates: () -> Void) {

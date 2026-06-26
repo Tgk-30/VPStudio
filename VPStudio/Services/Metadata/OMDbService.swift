@@ -73,7 +73,7 @@ actor OMDbService: MetadataProvider {
         if let imdbID = Self.imdbID(from: id) {
             response = try await request(params: ["i": imdbID, "plot": "full"])
         } else {
-            guard let lookup = Self.titleLookup(from: id) else { throw OMDbError.notFound }
+            guard let lookup = OMDbTitleLookupPolicy.titleLookup(from: id) else { throw OMDbError.notFound }
             var params = ["t": lookup.title, "type": type.omdbType, "plot": "full"]
             if let year = lookup.year {
                 params["y"] = String(year)
@@ -255,7 +255,7 @@ actor OMDbService: MetadataProvider {
             return try await request(params: ["i": imdbID, "plot": "short"])
         }
 
-        guard let lookup = Self.titleLookup(from: id) else { return nil }
+        guard let lookup = OMDbTitleLookupPolicy.titleLookup(from: id) else { return nil }
         var params = [
             "t": lookup.title,
             "type": type.omdbType,
@@ -366,12 +366,15 @@ actor OMDbService: MetadataProvider {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw OMDbError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
-            throw OMDbError.httpError(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            throw OMDbError.httpError(
+                http.statusCode,
+                OMDbErrorRedactionPolicy.sanitized(String(data: data, encoding: .utf8) ?? "")
+            )
         }
 
         let decoded = try JSONDecoder().decode(T.self, from: data)
         if decoded.isFalseResponse {
-            let message = decoded.errorMessage ?? "OMDb request failed."
+            let message = OMDbErrorRedactionPolicy.sanitized(decoded.errorMessage ?? "OMDb request failed.")
             if message.localizedCaseInsensitiveContains("not found") {
                 throw OMDbError.notFound
             }
@@ -387,7 +390,20 @@ actor OMDbService: MetadataProvider {
         IMDbIdentifierPolicy.firstID(in: id)
     }
 
-    private static func titleLookup(from id: String) -> (title: String, year: Int?)? {
+}
+
+enum OMDbTitleLookupPolicy {
+    static func lookupID(title rawTitle: String, year: Int?) -> String {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return title }
+        guard let year, (1000...9999).contains(year) else { return title }
+        if titleLookup(from: title)?.year != nil {
+            return title
+        }
+        return "\(title) (\(year))"
+    }
+
+    static func titleLookup(from id: String) -> (title: String, year: Int?)? {
         let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty else { return nil }
 
@@ -416,10 +432,78 @@ private extension OMDbResponseChecking {
     var isFalseResponse: Bool { response?.localizedCaseInsensitiveCompare("False") == .orderedSame }
 }
 
+private enum OMDbErrorRedactionPolicy {
+    private static let urlPattern = try! NSRegularExpression(
+        pattern: #"(https?):\/\/[^\s"']+"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let sensitiveAssignmentPattern = try! NSRegularExpression(
+        pattern: #"(?i)(?<![A-Za-z0-9_-])(?:"# + SensitiveURLQueryPolicy.assignmentNameAlternationPattern + #")=([^\s&]+)"#,
+        options: []
+    )
+
+    static func sanitized(_ message: String) -> String {
+        let urlRedacted = redactURLs(in: message)
+        return redactSensitiveAssignments(in: urlRedacted)
+    }
+
+    private static func redactURLs(in message: String) -> String {
+        let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
+        let matches = urlPattern.matches(in: message, options: [], range: nsRange)
+        guard !matches.isEmpty else { return message }
+
+        var redacted = message
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: redacted) else { continue }
+            let candidate = String(redacted[range])
+            redacted.replaceSubrange(range, with: redactedURLString(candidate))
+        }
+        return redacted
+    }
+
+    private static func redactedURLString(_ value: String) -> String {
+        guard var components = URLComponents(string: value) else { return "<redacted-url>" }
+        if components.user?.isEmpty == false {
+            components.user = "REDACTED"
+        }
+        if components.password?.isEmpty == false {
+            components.password = "REDACTED"
+        }
+        components.queryItems = components.queryItems?.map { item in
+            URLQueryItem(
+                name: item.name,
+                value: SensitiveURLQueryPolicy.isSensitiveName(item.name) ? "REDACTED" : item.value
+            )
+        }
+        components.fragment = nil
+        return components.string ?? "<redacted-url>"
+    }
+
+    private static func redactSensitiveAssignments(in message: String) -> String {
+        let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
+        let matches = sensitiveAssignmentPattern.matches(in: message, options: [], range: nsRange)
+        guard !matches.isEmpty else { return message }
+
+        var redacted = message
+        for match in matches.reversed() {
+            guard match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: redacted) else {
+                continue
+            }
+            redacted.replaceSubrange(valueRange, with: "REDACTED")
+        }
+        return redacted
+    }
+}
+
 private enum OMDbArtworkURLPolicy {
+    private static let highQualityAmazonTransform = "QL90_UX600_"
     private static let allowedExactHosts: Set<String> = [
         "img.omdbapi.com",
         "ia.media-imdb.com",
+        "images-eu.ssl-images-amazon.com",
+        "images-fe.ssl-images-amazon.com",
         "images-na.ssl-images-amazon.com",
         "m.media-amazon.com",
     ]
@@ -429,10 +513,45 @@ private enum OMDbArtworkURLPolicy {
               scheme == "https",
               url.port == nil || url.port == 443,
               let host = url.host?.lowercased(),
-              !host.isEmpty else {
+              !host.isEmpty,
+              url.user == nil,
+              url.password == nil,
+              !SensitiveURLQueryPolicy.containsSensitiveQueryItem(in: url) else {
             return false
         }
-        return allowedExactHosts.contains(host) || host.hasSuffix(".media-amazon.com")
+        return allowedExactHosts.contains(host)
+    }
+
+    static func displayURLString(for url: URL) -> String {
+        guard let host = url.host?.lowercased(),
+              shouldUpgradeAmazonArtwork(host: host),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let upgradedPath = upgradedAmazonArtworkPath(components.percentEncodedPath) else {
+            return url.absoluteString
+        }
+
+        components.percentEncodedPath = upgradedPath
+        return components.url?.absoluteString ?? url.absoluteString
+    }
+
+    private static func shouldUpgradeAmazonArtwork(host: String) -> Bool {
+        host == "m.media-amazon.com"
+            || host == "images-eu.ssl-images-amazon.com"
+            || host == "images-fe.ssl-images-amazon.com"
+            || host == "images-na.ssl-images-amazon.com"
+            || host == "ia.media-imdb.com"
+    }
+
+    private static func upgradedAmazonArtworkPath(_ path: String) -> String? {
+        guard let transformStart = path.range(of: "_V1_")?.upperBound,
+              let extensionRange = path.range(
+                  of: #"\.(jpg|jpeg|png|webp)$"#,
+                  options: [.regularExpression, .caseInsensitive]
+              ) else {
+            return nil
+        }
+
+        return "\(path[..<transformStart])\(highQualityAmazonTransform)\(path[extensionRange.lowerBound...])"
     }
 }
 
@@ -543,7 +662,7 @@ private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
             backdropPath: nil,
             overview: plot.nilIfPlaceholder,
             genres: genre.omdbGenres,
-            imdbRating: Double(imdbRating.nilIfPlaceholder ?? ""),
+            imdbRating: MediaRatingPolicy.normalizedOMDbIMDbRating(imdbRating),
             runtime: runtime.omdbRuntimeMinutes,
             status: rated.nilIfPlaceholder,
             tmdbId: nil,
@@ -769,7 +888,7 @@ private extension String {
               OMDbArtworkURLPolicy.isAllowed(url) else {
             return nil
         }
-        return trimmed
+        return OMDbArtworkURLPolicy.displayURLString(for: url)
     }
 
     var nilIfPlaceholder: String? {

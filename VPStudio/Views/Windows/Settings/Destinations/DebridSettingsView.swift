@@ -299,7 +299,7 @@ struct DebridSettingsView: View {
                 case .success(let message):
                     Label(message, systemImage: "checkmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 case .failure(let error):
                     AppErrorInlineView(error: error)
                 }
@@ -341,7 +341,7 @@ struct DebridSettingsView: View {
                 case .success(let message):
                     Label(message, systemImage: "checkmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 case .failure(let error):
                     AppErrorInlineView(error: error)
                 }

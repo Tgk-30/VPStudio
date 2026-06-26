@@ -132,6 +132,26 @@ struct SimklSyncServiceRequestConstructionTests {
         #expect(decoded["movies"]?[0].ids.imdb == "tt1160419")
     }
 
+    @Test func addToListNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: Data?
+        }
+        let state = CapturedState()
+
+        let session = makeSimklStubSession { request in
+            state.capturedBody = request.httpBody ?? readStream(request.httpBodyStream)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = SimklSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToList(imdbId: "movie-omdb-TT1160419", type: .movie)
+
+        let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
+        #expect(decoded["movies"]?[0].ids.imdb == "tt1160419")
+    }
+
     @Test func addToListWithCustomList() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedBody: Data?
@@ -217,6 +237,26 @@ struct SimklSyncServiceRequestConstructionTests {
 
         let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
         #expect(decoded["movies"]?[0].watchedAt != nil)
+    }
+
+    @Test func markWatchedNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: Data?
+        }
+        let state = CapturedState()
+
+        let session = makeSimklStubSession { request in
+            state.capturedBody = request.httpBody ?? readStream(request.httpBodyStream)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = SimklSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.markWatched(imdbId: "movie-omdb-TT1160419", type: .movie)
+
+        let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
+        #expect(decoded["movies"]?[0].ids.imdb == "tt1160419")
     }
 
     @Test func addToListThrowsNotConnectedWithoutToken() async {

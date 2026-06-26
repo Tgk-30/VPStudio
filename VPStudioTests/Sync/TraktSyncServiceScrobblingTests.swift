@@ -68,6 +68,29 @@ struct TraktSyncServiceScrobblingTests {
         #expect(state.capturedBody?["progress"] as? Double == 25.5)
     }
 
+    @Test func startScrobbleNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":11,"action":"start"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.startScrobble(imdbId: "movie-omdb-TT1160419", type: .movie, progress: 11.0)
+
+        let movie = state.capturedBody?["movie"] as? [String: Any]
+        let ids = movie?["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1160419")
+    }
+
     @Test func startScrobbleShowSendsCorrectBody() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedBody: [String: Any]?

@@ -851,7 +851,7 @@ actor AIAssistantManager {
         }
 
         func deduplicatedRecommendations(_ recommendations: [AIMovieRecommendation]) -> [AIMovieRecommendation] {
-            var seen = Set<String>()
+            var indexesByKey: [String: Int] = [:]
             var deduplicated: [AIMovieRecommendation] = []
             for recommendation in recommendations {
                 let normalizedTitle = recommendation.title
@@ -860,14 +860,28 @@ actor AIAssistantManager {
                 let key = [
                     normalizedTitle,
                     "\(recommendation.year ?? 0)",
-                    recommendation.imdbId ?? "",
-                    "\(recommendation.tmdbId ?? 0)",
                     recommendation.type.rawValue
                 ].joined(separator: "|")
 
-                if seen.insert(key).inserted {
-                    deduplicated.append(recommendation)
+                if let index = indexesByKey[key] {
+                    let existing = deduplicated[index]
+                    if existing.imdbId == nil, recommendation.imdbId != nil {
+                        var merged = existing
+                        merged.imdbId = recommendation.imdbId
+                        merged.tmdbId = nil
+                        if merged.reason.isEmpty {
+                            merged.reason = recommendation.reason
+                        }
+                        if merged.score == nil {
+                            merged.score = recommendation.score
+                        }
+                        deduplicated[index] = merged
+                    }
+                    continue
                 }
+
+                indexesByKey[key] = deduplicated.count
+                deduplicated.append(recommendation)
             }
 
             return deduplicated

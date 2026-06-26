@@ -46,6 +46,8 @@ struct SettingsDestinationContractsCoverageTests {
         #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.omdbApiKey, value: normalized)"))
         #expect(source.contains("NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)"))
         #expect(source.contains("notice = MetadataSettingsPolicy.missingAPIKeyNotice"))
+        #expect(source.contains(".foregroundStyle(VPColor.success)"))
+        #expect(source.contains(".foregroundStyle(.green)") == false)
 
         // Provider/service creation should be lazy (only inside explicit test action).
         let testFnRange = try requiredRange(of: "private func testOMDbAPIKey() async {", in: source)
@@ -55,6 +57,26 @@ struct SettingsDestinationContractsCoverageTests {
             range: testFnRange.lowerBound..<source.endIndex
         )
         #expect(testFnRange.lowerBound < serviceUseRange.lowerBound)
+    }
+
+    @Test
+    func settingsStatusIndicatorsUseSharedColorTokens() throws {
+        let paths = [
+            "VPStudio/Views/Windows/Settings/Destinations/MetadataSettingsView.swift",
+            "VPStudio/Views/Windows/Settings/Destinations/DebridSettingsView.swift",
+            "VPStudio/Views/Windows/Settings/Destinations/TraktSettingsView.swift",
+            "VPStudio/Views/Windows/Settings/Destinations/AISettingsView.swift",
+            "VPStudio/Views/Windows/Settings/Destinations/IMDbImportSettingsView.swift",
+        ]
+        let combinedSource = try paths
+            .map(loadSource(at:))
+            .joined(separator: "\n")
+
+        #expect(combinedSource.contains("VPColor.success"))
+        #expect(combinedSource.contains("VPColor.info"))
+        #expect(combinedSource.contains(".foregroundStyle(.green)") == false)
+        #expect(combinedSource.contains(".foregroundStyle(.blue)") == false)
+        #expect(combinedSource.contains(".background(.green") == false)
     }
 
     @Test

@@ -212,12 +212,12 @@ struct ExploreUIPolishTests {
         #expect(actualIds == expectedIds)
     }
 
-    @Test func genreTilePolicyUsesReferenceSnapshotNames() {
+    @Test func genreTilePolicyUsesRawArtworkNamesWhenAvailable() {
         for card in ExploreGenreCatalog.cards {
-            #expect(ExploreGenreTilePolicy.imageName(for: card) == "genre-ref-\(card.id)")
+            #expect(ExploreGenreTilePolicy.imageName(for: card) == card.artImageName)
             #expect(ExploreGenreTilePolicy.accessibilityLabel(for: card) == "\(card.title), \(card.subtitle)")
         }
-        #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.16) < 0.0001)
+        #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.0) < 0.0001)
     }
 
     @Test func catalogDoesNotUseWideReferenceContextAssetsAsTiles() {
@@ -227,14 +227,34 @@ struct ExploreUIPolishTests {
     }
 
     @Test func genreTilePolicyKeepsScreenshotGeometryStable() {
-        #expect(ExploreGenreTilePolicy.columns == 6)
-        #expect(ExploreGenreTilePolicy.tileWidth == 152)
-        #expect(ExploreGenreTilePolicy.columnSpacing == 16)
-        #expect(ExploreGenreTilePolicy.rowSpacing == 15)
+        #expect(ExploreGenreTilePolicy.columns == 7)
+        #expect(ExploreGenreTilePolicy.tileWidth == 128)
+        #expect(ExploreGenreTilePolicy.columnSpacing == 14)
+        #expect(ExploreGenreTilePolicy.rowSpacing == 14)
         #expect(ExploreGenreTilePolicy.cornerRadius == VPRadius.control)
         #expect(abs(Double(ExploreGenreTilePolicy.referenceAspectRatio) - (128.0 / 142.0)) < 0.000_001)
-        #expect(abs(Double(ExploreGenreTilePolicy.tileHeight) - (152.0 / (128.0 / 142.0))) < 0.000_001)
-        #expect(ExploreGenreTilePolicy.gridColumns().count == ExploreGenreTilePolicy.columns)
+        #expect(abs(Double(ExploreGenreTilePolicy.tileHeight) - (128.0 / (128.0 / 142.0))) < 0.000_001)
+        #expect(ExploreGenreTilePolicy.gridColumns().count == 1)
+        #expect(ExploreGenreTilePolicy.rowCount(for: ExploreGenreCatalog.cards.count) == 2)
+    }
+
+    @Test func starterTitlePolicyProvidesStableSearchShortcuts() {
+        let titles = ExploreStarterTitlePolicy.titles
+
+        #expect(titles.count == 6)
+        #expect(Set(titles.map(\.id)).count == titles.count)
+        #expect(ExploreStarterTitlePolicy.gridColumns().count == 1)
+        #expect(ExploreStarterTitlePolicy.chipMinWidth >= 140)
+        #expect(ExploreStarterTitlePolicy.chipMaxWidth > ExploreStarterTitlePolicy.chipMinWidth)
+        #expect(ExploreStarterTitlePolicy.chipMinHeight >= 44)
+        #expect(ExploreStarterTitlePolicy.titleMinimumScale >= 0.8)
+
+        for title in titles {
+            #expect(!title.title.isEmpty)
+            #expect(!title.query.isEmpty)
+            #expect(!title.symbol.isEmpty)
+            #expect(ExploreStarterTitlePolicy.accessibilityLabel(for: title) == "Search for \(title.title)")
+        }
     }
 
     // MARK: - SearchLanguageOption

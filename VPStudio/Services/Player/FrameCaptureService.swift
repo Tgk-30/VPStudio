@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// Captures and stores the "last frame" thumbnails shown on Continue Watching tiles.
 ///
-/// Every capture is best-effort: callers MUST have a fallback (e.g. the TMDB backdrop)
+/// Every capture is best-effort: callers MUST have a fallback (e.g. the metadata backdrop)
 /// because the caches directory can be evicted by the OS, some streams can't be decoded
 /// to a still, and stereo/3D frames are intentionally skipped (a raw side-by-side frame
 /// would look squished as a thumbnail).

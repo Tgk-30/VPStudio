@@ -202,9 +202,7 @@ struct EnvironmentSettingsView: View {
                 Text("No immersive environment")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Use the default windowed playback space.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                environmentMetadataText("Use the default windowed playback space.")
             }
 
             Spacer()
@@ -235,9 +233,7 @@ struct EnvironmentSettingsView: View {
                 Text("Built-In")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Available from the player and Environments tab.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                environmentMetadataText("Available from the player and Environments tab.")
             }
 
             Spacer()
@@ -257,7 +253,7 @@ struct EnvironmentSettingsView: View {
 
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: preset.provider == .polyHaven ? "pano" : preset.provider == .official ? "apple.logo" : "shippingbox")
+                Image(systemName: EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider))
                     .font(.title3)
                     .frame(width: 24)
 
@@ -267,13 +263,10 @@ struct EnvironmentSettingsView: View {
                     Text(preset.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(preset.provider.displayName) • \(preset.licenseName)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    environmentMetadataText("\(preset.provider.displayName) • \(preset.licenseName)")
 
                     if let sourceURL = EnvironmentURLPolicy.webURL(from: preset.sourceAttributionURL) {
-                        Link("Source", destination: sourceURL)
-                            .font(.caption2)
+                        environmentSourceLink(sourceURL)
                     }
                 }
 
@@ -282,7 +275,7 @@ struct EnvironmentSettingsView: View {
                 if isInstalled {
                     Label("Installed", systemImage: "checkmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 } else {
                     Button {
                         Task { await installPreset(preset) }
@@ -324,19 +317,14 @@ struct EnvironmentSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if asset.sourceType == .imported {
-                        Text(EnvironmentPreviewRowPolicy.assetDetailLabel(for: asset))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        environmentMetadataText(EnvironmentPreviewRowPolicy.assetDetailLabel(for: asset))
                             .lineLimit(1)
                     } else if let license = asset.licenseName, !license.isEmpty {
-                        Text(license)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        environmentMetadataText(license)
                     }
 
                     if let sourceURL = EnvironmentURLPolicy.webURL(from: asset.sourceAttributionURL) {
-                        Link("Source", destination: sourceURL)
-                            .font(.caption2)
+                        environmentSourceLink(sourceURL)
                     }
                 }
 
@@ -439,6 +427,20 @@ struct EnvironmentSettingsView: View {
 
     private func environmentActionTitle(for status: EnvironmentPreviewCardStatus) -> String {
         status == .active ? "Exit" : "Clear"
+    }
+
+    private func environmentMetadataText(_ value: String) -> some View {
+        Text(value)
+            .font(.caption)
+            .foregroundStyle(VPColor.textSecondary)
+    }
+
+    private func environmentSourceLink(_ sourceURL: URL) -> some View {
+        Link(destination: sourceURL) {
+            Label("Source", systemImage: "arrow.up.right")
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(VPColor.info)
     }
 
     private func isDeletingAsset(_ asset: EnvironmentAsset) -> Bool {
@@ -623,11 +625,7 @@ private struct EnvironmentSettingsStatusLabel: View {
         if let chip = status.chip {
             Label(chip.title, systemImage: chip.systemImage)
                 .font(.caption)
-                .foregroundStyle(tint)
+                .foregroundStyle(chip.tint)
         }
-    }
-
-    private var tint: Color {
-        status == .active ? .green : .blue
     }
 }
