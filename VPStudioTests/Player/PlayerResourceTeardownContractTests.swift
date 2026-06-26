@@ -891,7 +891,7 @@ struct PlayerResourceTeardownContractTests {
         #expect(playerSource.contains("UIAccessibility.isClosedCaptioningEnabled"))
 
         #expect(immersiveControlsSource.contains("@Environment(\\.accessibilityReduceMotion)"))
-        #expect(immersiveControlsSource.contains(".animation(accessibilityReduceMotion ? nil : .easeOut(duration: 0.15), value: isDraggingScrubber)"))
+        #expect(immersiveControlsSource.contains(".animation(accessibilityReduceMotion ? nil : .easeOut(duration: 0.15), value: thumbIsExpanded)"))
 
         #expect(customEnvironmentSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(customEnvironmentSource.contains("performOptionalAnimation(.easeInOut(duration: 0.25))"))

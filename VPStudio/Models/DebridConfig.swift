@@ -335,17 +335,28 @@ enum IndexerURLSecurityPolicy {
     static let validationMessage = "Enter a valid HTTPS base URL, or HTTP localhost/LAN URL."
 
     static func permits(url: URL) -> Bool {
-        permits(scheme: url.scheme, host: url.host)
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              !hasEmbeddedCredentials(components) else {
+            return false
+        }
+        return permits(scheme: components.scheme, host: components.host)
     }
 
     static func permitsBaseURL(_ value: String) -> Bool {
         guard let components = URLComponents(string: value),
               let scheme = components.scheme,
               let host = components.host,
-              !host.isEmpty else {
+              !host.isEmpty,
+              !hasEmbeddedCredentials(components),
+              components.query == nil,
+              components.fragment == nil else {
             return false
         }
         return permits(scheme: scheme, host: host)
+    }
+
+    private static func hasEmbeddedCredentials(_ components: URLComponents) -> Bool {
+        components.user?.isEmpty == false || components.password?.isEmpty == false
     }
 
     static func permits(scheme: String?, host: String?) -> Bool {

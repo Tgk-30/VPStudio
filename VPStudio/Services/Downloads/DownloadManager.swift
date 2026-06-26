@@ -251,7 +251,7 @@ actor DownloadManager {
             mediaId: existing.mediaId,
             episodeId: existing.episodeId,
             streamURL: persistReplayableState ? replayableRequest.url?.absoluteString : nil,
-            fileName: existing.fileName,
+            fileName: sanitizedFileName(existing.fileName),
             status: .queued,
             progress: normalizedRestartProgress(existing.progress, canResumePartially: canResumePartially),
             bytesWritten: normalizedRestartBytesWritten(existing.bytesWritten, canResumePartially: canResumePartially),
@@ -291,7 +291,7 @@ actor DownloadManager {
 
         let existing = try await database.fetchDownloadTask(id: id)
         let stagedDestination: (original: URL, staged: URL)?
-        if let destination = existing?.destinationURL,
+        if let destination = managedDestinationURL(fromStoredPath: existing?.destinationPath),
            fileManager.fileExists(atPath: destination.path) {
             let stagedURL = destination
                 .deletingLastPathComponent()
@@ -408,7 +408,7 @@ actor DownloadManager {
                 mediaId: task.mediaId,
                 episodeId: task.episodeId,
                 streamURL: persistReplayableState ? replayableRequest.url?.absoluteString : nil,
-                fileName: task.fileName,
+                fileName: sanitizedFileName(task.fileName),
                 status: .queued,
                 progress: normalizedRestartProgress(task.progress, canResumePartially: canResumePartially),
                 bytesWritten: normalizedRestartBytesWritten(task.bytesWritten, canResumePartially: canResumePartially),
@@ -1029,7 +1029,7 @@ actor DownloadManager {
     }
 
     private func finalizeIfDestinationAlreadyExists(_ task: DownloadTask) async -> Bool {
-        guard let destination = task.destinationURL,
+        guard let destination = managedDestinationURL(fromStoredPath: task.destinationPath),
               fileManager.fileExists(atPath: destination.path) else {
             return false
         }
@@ -1234,7 +1234,8 @@ actor DownloadManager {
     }
 
     private func uniqueDestinationURL(for fileName: String) -> URL {
-        let candidate = downloadsDirectory.appendingPathComponent(fileName)
+        let safeFileName = sanitizedFileName(fileName)
+        let candidate = downloadsDirectory.appendingPathComponent(safeFileName, isDirectory: false)
         if isDestinationAvailable(candidate) {
             return candidate
         }
@@ -1245,12 +1246,32 @@ actor DownloadManager {
         while true {
             let suffix = " (\(index))"
             let name = ext.isEmpty ? "\(base)\(suffix)" : "\(base)\(suffix).\(ext)"
-            let next = downloadsDirectory.appendingPathComponent(name)
+            let next = downloadsDirectory.appendingPathComponent(name, isDirectory: false)
             if isDestinationAvailable(next) {
                 return next
             }
             index += 1
         }
+    }
+
+    private func managedDestinationURL(fromStoredPath storedPath: String?) -> URL? {
+        guard let path = storedPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return nil
+        }
+
+        let url = URL(fileURLWithPath: path)
+        guard url.isFileURL, isInsideDownloadsDirectory(url) else {
+            return nil
+        }
+        return url.standardizedFileURL
+    }
+
+    private func isInsideDownloadsDirectory(_ fileURL: URL) -> Bool {
+        let fileComponents = fileURL.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let directoryComponents = downloadsDirectory.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        guard fileComponents.count > directoryComponents.count else { return false }
+        return zip(directoryComponents, fileComponents).allSatisfy { $0 == $1 }
     }
 
     private func sanitizedFileName(_ raw: String) -> String {
@@ -1260,10 +1281,14 @@ actor DownloadManager {
             options: .regularExpression
         )
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "." || trimmed == ".." {
+        let normalized = trimmed.drop { character in
+            character == "." || character == "_" || character == " "
+        }
+        let safeName = String(normalized)
+        if safeName.isEmpty || safeName == "." || safeName == ".." {
             return "download-\(UUID().uuidString).mp4"
         }
-        return trimmed
+        return safeName
     }
 
     private func fileSize(at url: URL) throws -> Int64 {

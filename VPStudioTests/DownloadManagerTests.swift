@@ -2318,6 +2318,40 @@ struct DownloadManagerTests {
         #expect(!completed.fileName.contains(" "))
     }
 
+    @Test func retryDownloadSanitizesPersistedLegacyFileNameBeforeWriting() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "download-manager-legacy-filename.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let downloadsDir = rootDir.appendingPathComponent("downloads", isDirectory: true)
+        let legacy = DownloadTask(
+            id: "legacy-file-name",
+            mediaId: "tt-legacy-filename",
+            streamURL: "https://cdn.example.com/legacy.mkv",
+            fileName: "../bad:name?.mkv",
+            status: .failed,
+            expectedBytes: 64
+        )
+        try await database.saveDownloadTask(legacy)
+
+        let manager = DownloadManager(
+            database: database,
+            downloadsDirectory: downloadsDir,
+            performer: makeSuccessfulPerformer(bytes: 64),
+            resumePersistedDownloadsOnInit: false
+        )
+
+        try await manager.retryDownload(id: legacy.id)
+
+        let completed = try await waitForStatus(database: database, id: legacy.id, expected: .completed)
+        let destinationPath = try #require(completed.destinationPath)
+        let destinationURL = URL(fileURLWithPath: destinationPath)
+
+        #expect(completed.fileName == "bad_name_.mkv")
+        #expect(destinationURL.deletingLastPathComponent().standardizedFileURL.path == downloadsDir.standardizedFileURL.path)
+        #expect(destinationURL.lastPathComponent == completed.fileName)
+        #expect(!destinationPath.contains("../bad"))
+    }
+
     private func schedulerCapsConcurrentDownloadsAndStartsQueuedWorkWhenSlotFrees() async throws {
         let (database, rootDir) = try await makeDatabase(named: "download-manager-concurrency.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -5244,6 +5278,42 @@ struct DownloadManagerTests {
         try await manager.removeDownload(id: task.id)
 
         #expect(try await database.fetchDownloadTask(id: task.id) == nil)
+    }
+
+    @Test func removeDownloadDoesNotDeleteStoredPathOutsideDownloadsDirectory() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "download-manager-remove-outside-path.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let downloadsDir = rootDir.appendingPathComponent("downloads", isDirectory: true)
+        let outsideDir = rootDir.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideDir, withIntermediateDirectories: true)
+        let outsideFile = outsideDir.appendingPathComponent("keep.mkv", isDirectory: false)
+        try Data(repeating: 0x44, count: 32).write(to: outsideFile)
+
+        let task = DownloadTask(
+            mediaId: "tt-outside-remove",
+            streamURL: "https://cdn.example.com/keep.mkv",
+            fileName: "keep.mkv",
+            status: .completed,
+            progress: 1.0,
+            bytesWritten: 32,
+            totalBytes: 32,
+            destinationPath: outsideFile.path,
+            mediaTitle: "Outside Path",
+            mediaType: "movie"
+        )
+        try await database.saveDownloadTask(task)
+
+        let manager = DownloadManager(
+            database: database,
+            downloadsDirectory: downloadsDir,
+            performer: makeSuccessfulPerformer(bytes: 1)
+        )
+
+        try await manager.removeDownload(id: task.id)
+
+        #expect(try await database.fetchDownloadTask(id: task.id) == nil)
+        #expect(FileManager.default.fileExists(atPath: outsideFile.path))
     }
 
     @Test func cancellationStopsProgressSimulationUpdates() async throws {

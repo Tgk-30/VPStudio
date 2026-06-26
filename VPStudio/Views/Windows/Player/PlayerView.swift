@@ -1971,6 +1971,8 @@ struct PlayerView: View {
 
                         if PlayerEnvironmentMenuPolicy.showsEmptyImportedAssetMessage(assets: environmentAssets) {
                             Text("No imported environments")
+                                .foregroundStyle(.secondary)
+                                .disabled(true)
                         }
                         ForEach(environmentAssets, id: \.id) { asset in
                             Button {

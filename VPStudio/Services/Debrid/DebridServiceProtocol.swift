@@ -241,6 +241,20 @@ enum DebridError: LocalizedError, Equatable, Sendable {
     }
 }
 
+enum DebridRemoteStreamURLPolicy {
+    static func validatedURL(from rawValue: String, errorMessage: String) throws -> URL {
+        guard let normalized = TorrentResult.normalizedDirectStreamURLString(rawValue),
+              let url = URL(string: normalized) else {
+            throw DebridError.networkError(errorMessage)
+        }
+        return url
+    }
+
+    static func validatedURL(_ url: URL, errorMessage: String) throws -> URL {
+        try validatedURL(from: url.absoluteString, errorMessage: errorMessage)
+    }
+}
+
 enum DebridHTTPExecutor {
     private static let initialBackoffNanoseconds: UInt64 = 250_000_000
     private static let maximumBackoffNanoseconds: UInt64 = 5_000_000_000

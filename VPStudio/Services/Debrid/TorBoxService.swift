@@ -255,9 +255,13 @@ actor TorBoxService: DebridServiceProtocol {
                 URLQueryItem(name: "file_id", value: fileId),
             ]
         )
-        guard let urlStr = linkResponse.data?.urlString, let url = URL(string: urlStr) else {
+        guard let urlStr = linkResponse.data?.urlString else {
             throw DebridError.networkError("No download link")
         }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: urlStr,
+            errorMessage: "Invalid unrestrict URL"
+        )
 
         selectedFileIDsByTorrent.removeValue(forKey: torrentId)
         let fileName = selectedFile?.name ?? torrent.name ?? "Unknown"
@@ -277,8 +281,7 @@ actor TorBoxService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private struct MultipartFormData {

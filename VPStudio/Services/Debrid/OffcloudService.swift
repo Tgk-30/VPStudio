@@ -132,7 +132,11 @@ actor OffcloudService: DebridServiceProtocol {
             throw DebridError.fileNotReady(status)
         }
 
-        if let direct = statusResponse.url, let directURL = URL(string: direct) {
+        if let direct = statusResponse.url,
+           let directURL = try? DebridRemoteStreamURLPolicy.validatedURL(
+            from: direct,
+            errorMessage: "Invalid URL"
+           ) {
             let directFileName = resolvedDisplayFileName(
                 linkFileName: directURL.lastPathComponent.removingPercentEncoding ?? directURL.lastPathComponent,
                 statusFileName: statusResponse.fileName
@@ -180,9 +184,15 @@ actor OffcloudService: DebridServiceProtocol {
             }
             throw DebridError.networkError("No download link")
         }
-        guard let streamURL = URL(string: link) else {
+        let streamURL: URL
+        do {
+            streamURL = try DebridRemoteStreamURLPolicy.validatedURL(
+                from: link,
+                errorMessage: "Invalid URL"
+            )
+        } catch {
             clearSelectionState(for: torrentId)
-            throw DebridError.networkError("Invalid URL")
+            throw error
         }
 
         clearSelectionState(for: torrentId)
@@ -210,8 +220,7 @@ actor OffcloudService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private func request<T: Decodable>(

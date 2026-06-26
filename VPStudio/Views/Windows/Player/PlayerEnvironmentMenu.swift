@@ -539,6 +539,8 @@ struct PlayerEnvironmentButton: View {
             Divider()
             if PlayerEnvironmentMenuPolicy.showsEmptyImportedAssetMessage(assets: assets) {
                 Text("No imported environments")
+                    .foregroundStyle(.secondary)
+                    .disabled(true)
             }
             ForEach(assets, id: \.id) { asset in
                 PlayerEnvironmentCompactAssetRow(

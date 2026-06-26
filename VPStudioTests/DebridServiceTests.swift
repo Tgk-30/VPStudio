@@ -1941,6 +1941,12 @@ struct TorBoxServiceTestsDebridservicetests {
         await #expect(throws: DebridError.networkError("Invalid URL")) {
             _ = try await service.unrestrict(link: "http://[::1")
         }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "file:///Users/example/private.mkv")
+        }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "http://127.0.0.1:8080/private.mkv")
+        }
     }
 }
 
@@ -2098,6 +2104,13 @@ struct PremiumizeServiceTestsDebridservicetests {
             if case .networkError = error { /* OK */ }
             else { Issue.record("Unexpected DebridError: \(error)") }
         } catch { Issue.record("Unexpected error: \(error)") }
+
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "http://192.168.1.10/movie.mkv")
+        }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "javascript:alert(1)")
+        }
     }
 
     @Test func cleanupRemoteTransferPostsTransferDeleteById() async throws {
@@ -2786,6 +2799,12 @@ struct DebridLinkServiceURLEncodingTests {
 
         await #expect(throws: DebridError.networkError("Invalid URL")) {
             _ = try await service.unrestrict(link: "http://[bad")
+        }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "http://localhost/movie.mkv")
+        }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "file:///tmp/movie.mkv")
         }
     }
 

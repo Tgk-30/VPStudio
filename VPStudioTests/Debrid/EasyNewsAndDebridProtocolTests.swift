@@ -193,10 +193,15 @@ struct EasyNewsServiceTests {
     func unrestrictThrowsForInvalidURL() async throws {
         let service = EasyNewsService(apiToken: "test-token")
 
-        // URL(string:) may succeed for strings like "not a valid url" on some platforms,
-        // so we just verify the method exists and returns a URL for valid input
-        let url = try await service.unrestrict(link: "https://example.com/file")
-        #expect(url.absoluteString == "https://example.com/file")
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "file:///Users/example/private.mkv")
+        }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "http://127.0.0.1:8080/private.mkv")
+        }
+        await #expect(throws: DebridError.networkError("Invalid URL")) {
+            _ = try await service.unrestrict(link: "http://169.254.169.254/latest/meta-data")
+        }
     }
 
     @Test

@@ -195,9 +195,10 @@ actor RealDebridService: DebridServiceProtocol {
     private func unrestrictFile(link: String) async throws -> RDUnrestrictedFile {
         let body = "link=\(Self.formEncodedValue(link))"
         let response: RDUnrestrictResponse = try await request(method: "POST", path: "/unrestrict/link", body: body)
-        guard let url = URL(string: response.download) else {
-            throw DebridError.networkError("Invalid unrestrict URL")
-        }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: response.download,
+            errorMessage: "Invalid unrestrict URL"
+        )
         return RDUnrestrictedFile(
             downloadURL: url,
             filename: response.filename,

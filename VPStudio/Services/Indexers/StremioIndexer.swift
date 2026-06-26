@@ -692,6 +692,9 @@ enum StremioAddonURLBuilder {
               var components = URLComponents(string: normalizedBaseURL) else {
             throw URLError(.badURL)
         }
+        guard IndexerURLSecurityPolicy.permitsBaseURL(normalizedBaseURL) else {
+            throw URLError(.unsupportedURL)
+        }
 
         let normalizedBase = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let normalizedEndpoint = normalizedEndpointPath(endpointPath)

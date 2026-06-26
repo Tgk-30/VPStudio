@@ -215,6 +215,9 @@ struct IndexerSettingsTests {
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://[2001:db8::1]:9696"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("ftp://localhost:9696"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("not a url"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https://user:pass@indexer.example"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https://indexer.example?apikey=secret"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https://indexer.example#token"))
     }
 
     @Test func indexerURLSecurityPolicyCoversPrivateHostEdges() {

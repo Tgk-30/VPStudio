@@ -268,7 +268,10 @@ actor DebridManager {
             throw DebridError.networkError("\(serviceType.displayName) is not configured. Add it in Settings > Debrid Services.")
         }
 
-        let streamURL = try await service.unrestrict(link: link)
+        let streamURL = try DebridRemoteStreamURLPolicy.validatedURL(
+            try await service.unrestrict(link: link),
+            errorMessage: "Invalid unrestrict URL"
+        )
         let fileName = Self.fileName(for: streamURL, fallbackLink: link)
         return StreamInfo(
             streamURL: streamURL,
@@ -440,7 +443,10 @@ actor DebridManager {
             for attempt in 0..<maxAttempts {
                 try Task.checkCancellation()
                 do {
-                    let stream = try await service.getStreamURL(torrentId: torrentId)
+                    let stream = try Self.validatedRemoteStream(
+                        try await service.getStreamURL(torrentId: torrentId),
+                        errorMessage: "Invalid stream URL"
+                    )
                     return stream.withRecoveryContext(
                         StreamRecoveryContext(
                             infoHash: hash,
@@ -645,6 +651,11 @@ actor DebridManager {
     private static func sanitizedMagnetURI(hash: String, magnetURI: String?) throws -> String? {
         guard let magnetURI else { return nil }
         return try DebridMagnetInput.preferredMagnetURI(hash: hash, suppliedMagnetURI: magnetURI)
+    }
+
+    private static func validatedRemoteStream(_ stream: StreamInfo, errorMessage: String) throws -> StreamInfo {
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(stream.streamURL, errorMessage: errorMessage)
+        return stream.withStreamURL(url)
     }
 
     private func shouldFailover(from error: Error) -> Bool {

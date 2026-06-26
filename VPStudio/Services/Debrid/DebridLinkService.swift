@@ -133,7 +133,10 @@ actor DebridLinkService: DebridServiceProtocol {
             }
             throw DebridError.torrentNotFound(torrentId)
         }
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: link,
+            errorMessage: "Invalid URL"
+        )
         selectedFileIDsByTorrent.removeValue(forKey: torrentId)
         episodeSelectionByTorrent.removeValue(forKey: torrentId)
         let fileName = chosenFile?.name ?? chosenFile?.downloadUrl.flatMap { URL(string: $0)?.lastPathComponent } ?? torrent.name ?? "Unknown"
@@ -152,8 +155,7 @@ actor DebridLinkService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private func request<T: Decodable>(method: String, path: String, body: String? = nil) async throws -> T {

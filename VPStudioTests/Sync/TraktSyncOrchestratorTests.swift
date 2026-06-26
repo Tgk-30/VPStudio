@@ -517,6 +517,43 @@ struct TraktSyncOrchestratorPullTests {
         #expect(ratings.filter { $0.mediaId == "tt1160419" }.isEmpty)
     }
 
+    @Test("pull writes remote TMDb fallback ratings through the existing OMDb composite ID")
+    func pullWritesRemoteTMDbFallbackRatingsThroughExistingOMDbCompositeID() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+        let ratedAt = iso8601String(from: recentDate(daysAgo: 1))
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            ratingsMovies: """
+            [{"rating":8,"rated_at":"\(ratedAt)","movie":{"title":"Dune","year":2021,"ids":{"trakt":222,"tmdb":438631}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.ratingsPulled == 1)
+        let latest = try #require(try await database.fetchLatestTasteRating(mediaId: "movie-omdb-tt1160419"))
+        #expect(latest.mediaId == "movie-omdb-tt1160419")
+        #expect(latest.feedbackValue == 8)
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 10)
+        #expect(ratings.filter { $0.mediaId == "tmdb-438631" }.isEmpty)
+    }
+
     @Test("pull paginates ratings pages beyond page 1")
     func pullPaginatesRatingsPages() async throws {
         let database = try await makeTempDatabase()

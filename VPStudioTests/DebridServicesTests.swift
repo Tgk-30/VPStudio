@@ -2246,6 +2246,33 @@ struct DebridManagerTests {
         }
     }
 
+    @Test func unrestrictRejectsPrivateStreamURLReturnedByService() async throws {
+        let db = try makeInMemoryDB()
+        try await db.migrate()
+        let secretStore = MemorySecretStore()
+        let key = SecretKey.debridToken(service: .realDebrid, configId: "rd-unrestrict-private")
+        try await secretStore.setSecret("rd-token", for: key)
+        try await db.saveDebridConfig(
+            makeDebridConfig(id: "rd-unrestrict-private", type: .realDebrid, tokenRef: SecretReference.encode(key: key))
+        )
+
+        let manager = DebridManager(
+            database: db,
+            secretStore: secretStore,
+            serviceFactory: { type, _ in
+                MockDebridService(
+                    serviceType: type,
+                    streamURL: URL(string: "http://127.0.0.1/private.mkv")!
+                )
+            }
+        )
+        try await manager.initialize()
+
+        await #expect(throws: DebridError.networkError("Invalid unrestrict URL")) {
+            _ = try await manager.unrestrict(link: "https://origin.example/stream.mkv", serviceType: .realDebrid)
+        }
+    }
+
     @Test func unrestrictFallsBackToFallbackLinkWhenStreamURLHasNoFileName() async throws {
         let db = try makeInMemoryDB()
         try await db.migrate()

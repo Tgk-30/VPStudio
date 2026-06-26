@@ -562,6 +562,7 @@ struct EnvironmentPreviewCard: View {
     @State private var thumbnailImage: CGImage?
     @State private var thumbnailImageSourceID: String?
     @State private var thumbnailFailed = false
+    @State private var thumbnailLoadingSourceID: String?
     @State private var thumbnailLoadTask: Task<Void, Never>?
 
     var body: some View {
@@ -639,6 +640,13 @@ struct EnvironmentPreviewCard: View {
                 ProgressView()
                     .controlSize(.small)
                     .padding(10)
+            } else if isLoadingThumbnail {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+                    .padding(10)
+                    .background(.black.opacity(0.32), in: Circle())
+                    .transition(.opacity)
             } else if thumbnailFailed && EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: asset.assetPath) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
@@ -678,6 +686,11 @@ struct EnvironmentPreviewCard: View {
 
     // MARK: Background
 
+    private var isLoadingThumbnail: Bool {
+        thumbnailImage == nil
+            && thumbnailLoadingSourceID == EnvironmentPreviewRowPolicy.thumbnailLoadID(for: asset)
+    }
+
     @ViewBuilder
     private var previewBackground: some View {
         if let image = thumbnailImage {
@@ -708,7 +721,16 @@ struct EnvironmentPreviewCard: View {
         guard !paths.isEmpty else {
             thumbnailImage = nil
             thumbnailImageSourceID = nil
+            if thumbnailLoadingSourceID == loadID {
+                thumbnailLoadingSourceID = nil
+            }
             return
+        }
+        thumbnailLoadingSourceID = loadID
+        defer {
+            if thumbnailLoadingSourceID == loadID {
+                thumbnailLoadingSourceID = nil
+            }
         }
 
         let managedImportedAssetDirectory = managedImportedAssetDirectory

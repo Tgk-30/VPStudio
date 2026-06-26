@@ -138,9 +138,10 @@ actor PremiumizeService: DebridServiceProtocol {
         guard transfer.status == "finished", let link = transfer.link else {
             throw DebridError.fileNotReady(transfer.status ?? "unknown")
         }
-        guard let url = URL(string: link) else {
-            throw DebridError.networkError("Invalid URL")
-        }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: link,
+            errorMessage: "Invalid URL"
+        )
         let fileName = transfer.name ?? "Unknown"
         episodeSelectionByTorrent.removeValue(forKey: torrentId)
         return StreamInfo(
@@ -157,8 +158,7 @@ actor PremiumizeService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private static let formEncodingAllowed: CharacterSet = {

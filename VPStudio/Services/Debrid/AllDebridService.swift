@@ -212,10 +212,13 @@ actor AllDebridService: DebridServiceProtocol {
     func unrestrict(link: String) async throws -> URL {
         let params = ["link": link]
         let response: ADResponse<ADUnlockResponse> = try await request(path: "/link/unlock", params: params)
-        guard let urlStr = response.data.link, let url = URL(string: urlStr) else {
+        guard let urlStr = response.data.link else {
             throw DebridError.networkError("Invalid unrestrict URL")
         }
-        return url
+        return try DebridRemoteStreamURLPolicy.validatedURL(
+            from: urlStr,
+            errorMessage: "Invalid unrestrict URL"
+        )
     }
 
     private static let formEncodingAllowed: CharacterSet = {

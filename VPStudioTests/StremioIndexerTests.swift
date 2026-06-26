@@ -14,6 +14,27 @@ struct StremioIndexerTestsStremioindexertests {
         let expectedStreamSuffix: String
     }
 
+    @Test func manifestURLRejectsCredentialOrQueryBearingAddonBaseURLs() throws {
+        #expect(throws: URLError.self) {
+            try StremioAddonURLBuilder.manifestURL(
+                baseURL: "https://user:pass@addon.example",
+                endpointPath: "/manifest.json"
+            )
+        }
+        #expect(throws: URLError.self) {
+            try StremioAddonURLBuilder.manifestURL(
+                baseURL: "https://addon.example?token=secret",
+                endpointPath: "/manifest.json"
+            )
+        }
+        #expect(throws: URLError.self) {
+            try StremioAddonURLBuilder.manifestURL(
+                baseURL: "stremio://addon.example#token",
+                endpointPath: "/manifest.json"
+            )
+        }
+    }
+
     struct PayloadCase: Sendable {
         let payload: String
         let expectedCount: Int

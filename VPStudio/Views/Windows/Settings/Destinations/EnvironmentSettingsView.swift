@@ -319,6 +319,7 @@ struct EnvironmentSettingsView: View {
                     if asset.sourceType == .imported {
                         environmentMetadataText(EnvironmentPreviewRowPolicy.assetDetailLabel(for: asset))
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     } else if let license = asset.licenseName, !license.isEmpty {
                         environmentMetadataText(license)
                     }

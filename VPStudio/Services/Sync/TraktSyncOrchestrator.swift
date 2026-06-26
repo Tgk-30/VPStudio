@@ -272,8 +272,9 @@ actor TraktSyncOrchestrator {
                         localRefreshTargets: localRefreshTargets
                     )
                 }
-                guard let mediaId = extractRatingMediaId(from: item) else { continue }
+                guard let remoteMediaId = extractRatingMediaId(from: item) else { continue }
                 do {
+                    let mediaId = try await canonicalLocalMediaId(for: remoteMediaId)
                     let existing = try await database.fetchLatestTasteRating(mediaId: mediaId)
                     let localMediaId = existing?.mediaId ?? mediaId
                     let remoteRating = Double(item.rating)
@@ -324,7 +325,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     }
-                    errors.append("Pull rating \(mediaId): \(error.localizedDescription)")
+                    errors.append("Pull rating \(remoteMediaId): \(error.localizedDescription)")
                 }
             }
         }
