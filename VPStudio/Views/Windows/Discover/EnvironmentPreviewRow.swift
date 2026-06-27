@@ -24,6 +24,7 @@ enum EnvironmentPreviewLayoutPolicy {
     static let cardCornerRadius: CGFloat = 16
     static let gridSpacing: CGFloat = 18
     static let maximumCenteredColumns = 4
+    static let bottomContentPadding: CGFloat = 132
 
     static func gridColumns() -> [GridItem] {
         [
@@ -113,7 +114,9 @@ struct EnvironmentPickerSheet: View {
                     importErrorBanner(error)
                 }
             }
-            .padding(28)
+            .padding(.horizontal, 28)
+            .padding(.top, 28)
+            .padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)
         }
         .background {
             VPMenuBackground()

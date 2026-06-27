@@ -50,6 +50,8 @@ struct EnvironmentSettingsStatusContractTests {
         #expect(source.contains(".foregroundStyle(.green)") == false)
         #expect(source.contains("Text(\"Adding\")"))
         #expect(source.contains(".disabled(isInstalling)"))
+        #expect(source.contains("EnvironmentSettingsLayoutPolicy.bottomContentPadding"))
+        #expect(source.contains(".contentMargins(.bottom, EnvironmentSettingsLayoutPolicy.bottomContentPadding, for: .scrollContent)"))
         #expect(normalized.contains("Button(\"Delete\",role:.destructive){pendingDeletion=nilTask{awaitdeleteImportedEnvironment(id:deletion.id)}}"))
         #expect(normalized.contains("guard!isPresetInstalled(preset),!installingPresetIDs.contains(preset.id)else{return}"))
         #expect(normalized.contains("ifasset.isActive{") == false)

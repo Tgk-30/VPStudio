@@ -3,6 +3,10 @@ import UniformTypeIdentifiers
 
 // MARK: - Environment Settings
 
+enum EnvironmentSettingsLayoutPolicy {
+    static let bottomContentPadding: CGFloat = 44
+}
+
 struct EnvironmentSettingsView: View {
     @Environment(AppState.self) private var appState
     #if os(visionOS)
@@ -60,10 +64,6 @@ struct EnvironmentSettingsView: View {
                 ForEach(onlinePresets) { preset in
                     onlinePresetRow(preset)
                 }
-
-                Text("Use one-click import for curated sources, then activate from Imported Environments.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Imported Environments") {
@@ -115,6 +115,7 @@ struct EnvironmentSettingsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .contentMargins(.bottom, EnvironmentSettingsLayoutPolicy.bottomContentPadding, for: .scrollContent)
         .background {
             VPMenuBackground()
                 .ignoresSafeArea()

@@ -1057,7 +1057,7 @@ struct EnvironmentsTabView: View {
             .frame(maxWidth: 1040, alignment: .leading)
             .padding(.horizontal, 28)
             .padding(.top, 22)
-            .padding(.bottom, 128)
+            .padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)
         }
         .background {
             VPBackground()
@@ -1159,7 +1159,7 @@ struct EnvironmentsTabView: View {
                     Task { await clearEnvironmentSelection() }
                 } label: {
                     Label(
-                        appState.isImmersiveSpaceOpen ? "Exit Environment" : "Standard Room",
+                        appState.isImmersiveSpaceOpen ? "Exit Environment" : "Use Standard Room",
                         systemImage: appState.isImmersiveSpaceOpen ? "xmark.circle" : "rectangle.dashed"
                     )
                 }
@@ -1277,7 +1277,7 @@ struct EnvironmentsTabView: View {
             return "\(selected.name) is selected"
         }
 
-        return "Standard Room"
+        return "No immersive room selected"
     }
 
     private var environmentStatusDescription: String {
@@ -1289,7 +1289,7 @@ struct EnvironmentsTabView: View {
             return "The selected room will open when playback starts."
         }
 
-        return "No immersive environment is selected."
+        return "Playback will stay in the standard windowed room."
     }
 
     private var environmentStatusBadgeText: String {
@@ -1301,7 +1301,7 @@ struct EnvironmentsTabView: View {
             return "Selected"
         }
 
-        return "Standard"
+        return "Windowed"
     }
 
     private var environmentStatusIconName: String {

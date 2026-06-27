@@ -528,9 +528,12 @@ private struct SeededPlayerPreview: View {
     var body: some View {
         Group {
             if let engine {
+                let sessionRequest = PlayerPreviewSeed.sessionRequest
                 PlayerView(
                     stream: PlayerPreviewSeed.stream,
                     mediaTitle: PlayerPreviewSeed.mediaTitle,
+                    imdbId: sessionRequest.imdbId,
+                    sessionRequest: sessionRequest,
                     initialPlaybackState: .playing,
                     initialActiveEngine: PlayerPreviewSeed.activeEngine,
                     disablesAutomaticTasks: true

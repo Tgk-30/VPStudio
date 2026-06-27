@@ -60,6 +60,19 @@ struct PlayerViewRuntimeWrapperCoverageTests {
     }
 
     @Test
+    func seededPlayerPreviewFeedsSessionArtworkIntoRealPlayerSurface() throws {
+        let seedSource = try contents(of: "VPStudio/Core/Support/PlayerPreviewSeed.swift")
+        let testModeSource = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/TestModeView.swift")
+
+        #expect(seedSource.contains("static var sessionRequest: PlayerSessionRequest"))
+        #expect(seedSource.contains("https://m.media-amazon.com/images/M/vpstudio-player-preview.jpg"))
+        #expect(seedSource.contains("imdbId: imdbID"))
+        #expect(testModeSource.contains("let sessionRequest = PlayerPreviewSeed.sessionRequest"))
+        #expect(testModeSource.contains("sessionRequest: sessionRequest"))
+        #expect(testModeSource.contains("imdbId: sessionRequest.imdbId"))
+    }
+
+    @Test
     func playerSurfaceKeepsRebufferingFeedbackAttachedToTheVideoLayer() throws {
         let source = try playerViewSource()
         let surfaceBody = try section(

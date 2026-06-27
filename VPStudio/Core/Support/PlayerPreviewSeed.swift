@@ -9,7 +9,8 @@ import Foundation
 /// exactly how the live "player" window provides its `sharedEngine`. The seeded engine drives the
 /// real scrubber, time labels, buffered fill, chapter ticks/nav, rate pill, and chapter title; the
 /// view's `currentStream` / `activeEngine` drive the quality + engine pills and metadata line. The
-/// playback surface stays a harmless black fill because no engine surface is ever attached.
+/// session request carries a safe poster URL shape so the real player artwork fallback renders
+/// instead of a blank black stage when no engine surface is attached.
 enum PlayerPreviewSeed {
     /// Title shown in the player's top bar and metadata line.
     static let mediaTitle = "Dune: Part Two"
@@ -19,6 +20,8 @@ enum PlayerPreviewSeed {
 
     private static let durationSeconds: TimeInterval = 9960   // 2:46:00 total
     private static let currentSeconds: TimeInterval = 3501    // 58:21 elapsed
+    private static let imdbID = "tt15239678"
+    private static let previewPosterURL = "https://m.media-amazon.com/images/M/vpstudio-player-preview.jpg"
 
     /// Placeholder stream describing a believable 4K BluRay source. Its `streamURL` is **never
     /// loaded** — `PlayerView(disablesAutomaticTasks: true)` skips `preparePlayback`, so no AVPlayer
@@ -35,6 +38,16 @@ enum PlayerPreviewSeed {
         sizeBytes: 24_800_000_000,
         debridService: "Preview"
     )
+
+    static var sessionRequest: PlayerSessionRequest {
+        PlayerSessionRequest(
+            stream: stream,
+            mediaTitle: mediaTitle,
+            mediaId: imdbID,
+            imdbId: imdbID,
+            posterPath: previewPosterURL
+        )
+    }
 
     /// Builds a fully-seeded engine: roughly a third of the way through a long film, ~58% buffered,
     /// playing at 1.0×, with two audio tracks and a handful of chapters so the real chapter ticks,
