@@ -3,6 +3,7 @@ import GRDB
 
 enum LibraryCSVImportError: LocalizedError, Equatable {
     case unreadableFile
+    case fileTooLarge
     case unsupportedEncoding
     case emptyFile
     case missingHeader
@@ -11,6 +12,8 @@ enum LibraryCSVImportError: LocalizedError, Equatable {
         switch self {
         case .unreadableFile:
             return "Could not read the selected CSV file."
+        case .fileTooLarge:
+            return "CSV file is too large to import."
         case .unsupportedEncoding:
             return "CSV file encoding is unsupported."
         case .emptyFile:
@@ -102,6 +105,8 @@ struct LibraryCSVImportSummary: Sendable, Equatable {
 }
 
 actor LibraryCSVImportService {
+    static let maximumFileSizeBytes = 64 * 1024 * 1024
+
     private struct ParsedRow: Sendable {
         var mediaID: String
         var title: String
@@ -584,6 +589,8 @@ actor LibraryCSVImportService {
     }
 
     private static func readCSVText(from fileURL: URL) throws -> String {
+        try validateCSVFileForImport(fileURL)
+
         guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else {
             throw LibraryCSVImportError.unreadableFile
         }
@@ -600,6 +607,23 @@ actor LibraryCSVImportService {
         }
 
         throw LibraryCSVImportError.unsupportedEncoding
+    }
+
+    private static func validateCSVFileForImport(_ fileURL: URL) throws {
+        let values: URLResourceValues
+        do {
+            values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        } catch {
+            throw LibraryCSVImportError.unreadableFile
+        }
+
+        guard values.isRegularFile == true else {
+            throw LibraryCSVImportError.unreadableFile
+        }
+
+        guard (values.fileSize ?? 0) <= maximumFileSizeBytes else {
+            throw LibraryCSVImportError.fileTooLarge
+        }
     }
 
     private static func looksLikeUTF16(_ data: Data) -> Bool {

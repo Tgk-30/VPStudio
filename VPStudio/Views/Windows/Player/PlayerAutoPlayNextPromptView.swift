@@ -78,7 +78,9 @@ struct PlayerAutoPlayNextPromptView: View {
                         .opacity(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: isResolving))
                     }
                     .buttonStyle(.plain)
+                    #if os(visionOS)
                     .hoverEffect(.highlight)
+                    #endif
                     .disabled(isResolving)
                     .accessibilityLabel(isResolving ? "Loading next episode" : "Play next episode now")
 
@@ -94,7 +96,9 @@ struct PlayerAutoPlayNextPromptView: View {
                             }
                     }
                     .buttonStyle(.plain)
+                    #if os(visionOS)
                     .hoverEffect(.highlight)
+                    #endif
                     .disabled(isResolving)
                     .opacity(PlayerAutoPlayNextPromptStylePolicy.secondaryButtonOpacity(isResolving: isResolving))
                     .accessibilityLabel("Cancel auto-play")

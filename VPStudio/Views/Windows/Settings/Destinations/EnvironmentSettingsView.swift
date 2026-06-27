@@ -344,11 +344,19 @@ struct EnvironmentSettingsView: View {
                 } else if status.isHighlighted {
                     EnvironmentSettingsStatusLabel(status: status)
 
-                    Button(environmentActionTitle(for: status)) {
+                    Button {
                         Task { await clearActiveEnvironment() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: status == .active ? "xmark.circle" : "rectangle.dashed")
+                            Text(environmentActionTitle(for: status))
+                        }
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .frame(minWidth: 104, alignment: .trailing)
                 } else {
                     Button("Activate") {
                         Task {
@@ -381,6 +389,7 @@ struct EnvironmentSettingsView: View {
                     .disabled(isDeleting)
                 }
             }
+            .frame(minWidth: 120, alignment: .trailing)
         }
         .padding(.vertical, 6)
     }
@@ -624,9 +633,14 @@ private struct EnvironmentSettingsStatusLabel: View {
 
     var body: some View {
         if let chip = status.chip {
-            Label(chip.title, systemImage: chip.systemImage)
+            HStack(spacing: 4) {
+                Image(systemName: chip.systemImage)
+                Text(chip.title)
+            }
                 .font(.caption)
                 .foregroundStyle(chip.tint)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 }

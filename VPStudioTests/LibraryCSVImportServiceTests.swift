@@ -7,6 +7,7 @@ struct LibraryCSVImportServiceTests {
     @Test
     func importTypesExposeStableDisplayNamesAndDescriptions() {
         #expect(LibraryCSVImportError.unreadableFile.errorDescription == "Could not read the selected CSV file.")
+        #expect(LibraryCSVImportError.fileTooLarge.errorDescription == "CSV file is too large to import.")
         #expect(LibraryCSVImportError.unsupportedEncoding.errorDescription == "CSV file encoding is unsupported.")
         #expect(LibraryCSVImportError.emptyFile.errorDescription == "CSV file is empty.")
         #expect(LibraryCSVImportError.missingHeader.errorDescription == "CSV file is missing a valid header row or required columns.")
@@ -752,6 +753,28 @@ struct LibraryCSVImportServiceTests {
             Issue.record("Expected missingHeader when no recognizable columns are present")
         } catch let error as LibraryCSVImportError {
             #expect(error == .missingHeader)
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test
+    func throwsBeforeReadingOversizedCSVFile() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-oversized.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let csvURL = tempDir.appendingPathComponent("oversized.csv")
+        #expect(FileManager.default.createFile(atPath: csvURL.path, contents: Data()))
+        let fileHandle = try FileHandle(forWritingTo: csvURL)
+        try fileHandle.truncate(atOffset: UInt64(LibraryCSVImportService.maximumFileSizeBytes + 1))
+        try fileHandle.close()
+
+        let service = LibraryCSVImportService(database: database)
+        do {
+            _ = try await service.importCSV(from: csvURL)
+            Issue.record("Expected fileTooLarge before oversized CSV content is read")
+        } catch let error as LibraryCSVImportError {
+            #expect(error == .fileTooLarge)
         } catch {
             Issue.record("Unexpected error type: \(error)")
         }

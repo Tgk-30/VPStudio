@@ -1,5 +1,6 @@
-#if os(visionOS)
 import SwiftUI
+
+#if os(visionOS)
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -915,6 +916,8 @@ struct EnvironmentPreviewCard: View {
     }
 }
 
+#endif
+
 enum EnvironmentPreviewCardStatus: Equatable, Sendable {
     case inactive
     case current
@@ -1173,6 +1176,8 @@ enum EnvironmentPreviewRowPolicy {
         id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }
+
+#if os(visionOS)
 
 private struct EnvironmentPreviewFallbackArtworkView: View {
     let kind: EnvironmentPreviewFallbackArtworkKind
