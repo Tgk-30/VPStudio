@@ -107,6 +107,8 @@ struct BugFixVerificationTests {
             let allKeys = [
                 SettingsKeys.omdbApiKey,
                 SettingsKeys.tmdbApiKey,
+                SettingsKeys.omdbProviderPlan,
+                SettingsKeys.tmdbProviderPlan,
                 SettingsKeys.preferredQuality,
                 SettingsKeys.subtitleLanguage,
                 SettingsKeys.subtitleFontSize,

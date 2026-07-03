@@ -649,12 +649,42 @@ struct OpenSubtitlesServiceResponseParsingTests {
             _ = try await service.getDownloadURL(fileId: 1)
         }
     }
+
+    @Test func getDownloadURLRejectsPrivateNetworkDestinations() async {
+        let json = #"{"link":"http://169.254.169.254/latest/meta-data/"}"#
+
+        let session = makeStubSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(json.utf8))
+        }
+
+        let service = OpenSubtitlesService(apiKey: "key", session: session)
+
+        await #expect(throws: SubtitleError.invalidDownloadURL) {
+            _ = try await service.getDownloadURL(fileId: 1)
+        }
+    }
 }
 
 // MARK: - OpenSubtitlesService Download Handling Tests
 
 @Suite("OpenSubtitlesService - Download Handling")
 struct OpenSubtitlesServiceDownloadHandlingTests {
+    @Test func subtitleRedirectPolicyBlocksPrivateAndCredentialLeakingRedirects() throws {
+        var apiRequest = URLRequest(url: try #require(URL(string: "https://api.opensubtitles.com/api/v1/download")))
+        apiRequest.setValue("api-key", forHTTPHeaderField: "Api-Key")
+        let sameHostAPIRequest = URLRequest(url: try #require(URL(string: "https://api.opensubtitles.com/api/v1/download/next")))
+        let crossHostAPIRequest = URLRequest(url: try #require(URL(string: "https://capture.example.com/steal")))
+        let privateSubtitleRequest = URLRequest(url: try #require(URL(string: "http://127.0.0.1/subtitle.srt")))
+
+        #expect(OpenSubtitlesRedirectPolicy.allowsRedirect(from: apiRequest, to: sameHostAPIRequest))
+        #expect(OpenSubtitlesRedirectPolicy.allowsRedirect(from: apiRequest, to: crossHostAPIRequest) == false)
+        #expect(OpenSubtitlesRedirectPolicy.allowsRedirect(from: apiRequest, to: privateSubtitleRequest) == false)
+
+        let subtitleRequest = URLRequest(url: try #require(URL(string: "https://dl.opensubtitles.com/file.srt")))
+        let publicCDNRequest = URLRequest(url: try #require(URL(string: "https://cdn.example.com/file.srt")))
+        #expect(OpenSubtitlesRedirectPolicy.allowsRedirect(from: subtitleRequest, to: publicCDNRequest))
+    }
 
     @Test func downloadSubtitleReturnsContent() async throws {
         let subtitleContent = "1\n00:00:01,000 --> 00:00:02,000\nHello World\n"
@@ -745,6 +775,48 @@ struct OpenSubtitlesServiceDownloadHandlingTests {
             }
         } catch {
             Issue.record("Expected SubtitleError, got \(error)")
+        }
+    }
+
+    @Test func downloadSubtitleRejectsFinalPrivateNetworkDestination() async throws {
+        let fileURLResponse = #"{"link":"https://cdn.example.com/file.srt"}"#
+        let redirectedURL = try #require(URL(string: "http://127.0.0.1/file.srt"))
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            if url.path.contains("/download") {
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (response, Data(fileURLResponse.utf8))
+            }
+            let response = HTTPURLResponse(url: redirectedURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("1\n00:00:01,000 --> 00:00:02,000\nNope\n".utf8))
+        }
+
+        let service = OpenSubtitlesService(apiKey: "key", session: session)
+
+        await #expect(throws: SubtitleError.invalidDownloadURL) {
+            _ = try await service.downloadSubtitle(fileId: 1)
+        }
+    }
+
+    @Test func downloadSubtitleRejectsOversizedPayloadBeforeDecoding() async throws {
+        let fileURLResponse = #"{"link":"https://cdn.example.com/file.srt"}"#
+        let oversized = Data(repeating: 0x41, count: 5 * 1024 * 1024 + 1)
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            if url.path.contains("/download") {
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (response, Data(fileURLResponse.utf8))
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, oversized)
+        }
+
+        let service = OpenSubtitlesService(apiKey: "key", session: session)
+
+        await #expect(throws: SubtitleError.subtitleDownloadTooLarge) {
+            _ = try await service.downloadSubtitle(fileId: 1)
         }
     }
 

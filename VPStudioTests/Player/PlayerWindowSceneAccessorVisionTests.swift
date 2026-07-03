@@ -8,7 +8,7 @@ import UIKit
 @Suite("Player Window Scene Accessor")
 struct PlayerWindowSceneAccessorVisionTests {
     @Test
-    func observingViewReportsNilSceneWhenDetached() {
+    func observingViewReportsNilSceneWhenDetached() async {
         let view = WindowSceneObservingView()
         var didReportScene = false
         var observedScene: UIWindowScene?
@@ -18,6 +18,10 @@ struct PlayerWindowSceneAccessorVisionTests {
         }
 
         view.didMoveToWindow()
+
+        #expect(!didReportScene)
+        await Task.yield()
+        await Task.yield()
 
         #expect(didReportScene)
         #expect(observedScene == nil)

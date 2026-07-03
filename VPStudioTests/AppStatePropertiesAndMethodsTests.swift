@@ -188,6 +188,19 @@ struct AppStateObservablePropertiesTests {
         #expect(appState.indexerReloadWarning == "Indexer reload failed")
     }
 
+    @Test
+    func appStateWarningsAndLogsUseRedactedErrorPresentationPolicy() throws {
+        let source = try contents(of: "VPStudio/App/AppState.swift")
+
+        #expect(source.contains("enum AppStateErrorPresentationPolicy"))
+        #expect(source.contains("environmentBootstrapWarning = AppStateErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(source.contains("indexerReloadWarning = message"))
+        #expect(source.contains("let message = AppStateErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(!source.contains("environmentBootstrapWarning = error.localizedDescription"))
+        #expect(!source.contains("let message = error.localizedDescription"))
+        #expect(!source.contains("Injected database factory failed: \\(error.localizedDescription"))
+    }
+
     @Test @MainActor
     func navigationResetIDGeneratesNewUUIDOnSet() {
         let appState = AppState()
@@ -202,6 +215,21 @@ struct AppStateObservablePropertiesTests {
     func spatialAudioManagerIsCreated() {
         let appState = AppState()
         #expect(appState.spatialAudioManager.isImmersiveMode == false)
+    }
+
+    private func contents(of relativePath: String) throws -> String {
+        let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
+        return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func repoRootURL() -> URL {
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }
+            url = parent
+        }
+        return url
     }
 }
 

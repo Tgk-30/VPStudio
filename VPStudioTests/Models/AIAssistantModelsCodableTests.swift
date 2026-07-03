@@ -60,8 +60,8 @@ struct AIMovieRecommendationCodableTests {
         #expect(decoded.id == "movie-tmdb-27205")
     }
 
-    @Test("AIMovieRecommendation id prefers imdbId when both ids are available")
-    func aimovieRecommendationIdPrefersImdbId() throws {
+    @Test("AIMovieRecommendation id prefers OMDb-scoped imdbId when both ids are available")
+    func aimovieRecommendationIdPrefersOMDbScopedImdbId() throws {
         let original = AIMovieRecommendation(
             title: "Dune",
             year: 2021,
@@ -75,7 +75,29 @@ struct AIMovieRecommendationCodableTests {
         let decoded = try JSONDecoder().decode(AIMovieRecommendation.self, from: encoded)
         let preview = decoded.toMediaPreview()
 
-        #expect(decoded.id == "movie-imdb-tt1160419")
+        #expect(decoded.id == "movie-omdb-tt1160419")
+        #expect(preview.id == "tt1160419")
+        #expect(preview.tmdbId == nil)
+    }
+
+    @Test("AIMovieRecommendation accepts app-scoped OMDb imdbId values")
+    func aimovieRecommendationIdAcceptsOMDbScopedImdbId() throws {
+        let original = AIMovieRecommendation(
+            title: "Dune",
+            year: 2021,
+            type: .movie,
+            reason: "Great",
+            imdbId: "movie-omdb-TT1160419",
+            tmdbId: 438631
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AIMovieRecommendation.self, from: encoded)
+        let preview = decoded.toMediaPreview()
+
+        #expect(decoded.canonicalIMDbID == "tt1160419")
+        #expect(decoded.canonicalOMDbMediaID == "movie-omdb-tt1160419")
+        #expect(decoded.id == "movie-omdb-tt1160419")
         #expect(preview.id == "tt1160419")
         #expect(preview.tmdbId == nil)
     }

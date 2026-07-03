@@ -111,6 +111,10 @@ extension DebridConfig {
         return storedToken.isEmpty ? nil : storedToken
     }
 
+    var shouldDeleteStoredSecretAfterPersisting: Bool {
+        normalizedStoredToken == nil
+    }
+
     func resolvedToken(using secretStore: any SecretStore) async throws -> String? {
         guard let storedToken = normalizedStoredToken else {
             return nil
@@ -136,7 +140,6 @@ extension DebridConfig {
     func persistedCopy(using secretStore: any SecretStore) async throws -> (config: DebridConfig, changed: Bool) {
         var copy = self
         guard let normalizedToken = normalizedStoredToken else {
-            try? await secretStore.deleteSecret(for: secretKey)
             copy.apiTokenRef = ""
             return (copy, copy.apiTokenRef != apiTokenRef)
         }
@@ -304,12 +307,18 @@ extension IndexerConfig {
         return copy
     }
 
+    var shouldDeleteStoredSecretAfterPersisting: Bool {
+        guard let normalizedAPIKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return true
+        }
+        return normalizedAPIKey.isEmpty
+    }
+
     func persistedCopy(using secretStore: any SecretStore) async throws -> (config: IndexerConfig, changed: Bool) {
         var copy = self
         let normalizedAPIKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard let normalizedAPIKey, !normalizedAPIKey.isEmpty else {
-            try? await secretStore.deleteSecret(for: secretKey)
             copy.apiKey = nil
             return (copy, apiKey != nil)
         }
@@ -332,7 +341,8 @@ extension IndexerConfig {
 }
 
 enum IndexerURLSecurityPolicy {
-    static let validationMessage = "Enter a valid HTTPS base URL, or HTTP localhost/LAN URL."
+    static let validationMessage = "Enter a valid HTTPS base URL, or HTTP localhost, .local, or LAN IP URL."
+    static let apiKeyTransportValidationMessage = "API-key indexers must use HTTPS, or HTTP localhost/loopback for same-device services."
 
     static func permits(url: URL) -> Bool {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -355,8 +365,38 @@ enum IndexerURLSecurityPolicy {
         return permits(scheme: scheme, host: host)
     }
 
+    static func permitsAPIKeyTransport(baseURL value: String, apiKey: String?) -> Bool {
+        guard hasAPIKey(apiKey) else { return true }
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme,
+              let host = components.host,
+              !host.isEmpty else {
+            return false
+        }
+        return permitsAPIKeyTransport(scheme: scheme, host: host)
+    }
+
+    static func permitsAPIKeyTransport(url: URL, apiKey: String?) -> Bool {
+        guard hasAPIKey(apiKey) else { return true }
+        return permitsCredentialedTransport(url: url)
+    }
+
+    static func permitsCredentialedTransport(url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme,
+              let host = components.host,
+              !host.isEmpty else {
+            return false
+        }
+        return permitsAPIKeyTransport(scheme: scheme, host: host)
+    }
+
     private static func hasEmbeddedCredentials(_ components: URLComponents) -> Bool {
         components.user?.isEmpty == false || components.password?.isEmpty == false
+    }
+
+    private static func hasAPIKey(_ value: String?) -> Bool {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     static func permits(scheme: String?, host: String?) -> Bool {
@@ -370,10 +410,72 @@ enum IndexerURLSecurityPolicy {
             return true
         }
 
-        return scheme == "http" && isLocalOrPrivateHost(host)
+        // Cleartext HTTP is only permitted to an explicit local/private destination
+        // (localhost, `.local`, or a literal private IP) — not to a bare single-label
+        // DNS name, which must use HTTPS as a user-typed indexer base URL.
+        return scheme == "http" && isExplicitLocalOrPrivateHost(host)
+    }
+
+    static func permitsAPIKeyTransport(scheme: String?, host: String?) -> Bool {
+        guard let scheme = scheme?.lowercased(),
+              let host,
+              !host.isEmpty else {
+            return false
+        }
+
+        if scheme == "https" {
+            return true
+        }
+
+        return scheme == "http" && isLoopbackHost(host)
+    }
+
+    static func isLoopbackHost(_ host: String) -> Bool {
+        let normalized = host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+
+        if normalized == "localhost" || normalized.hasSuffix(".localhost") {
+            return true
+        }
+
+        if normalized == "::1" || normalized == "0:0:0:0:0:0:0:1" {
+            return true
+        }
+
+        if normalized.hasPrefix("::ffff:") {
+            return isLoopbackHost(String(normalized.dropFirst("::ffff:".count)))
+        }
+
+        let octets = normalized.split(separator: ".").compactMap { Int($0) }
+        return octets.count == 4
+            && octets.allSatisfy { (0...255).contains($0) }
+            && octets[0] == 127
     }
 
     static func isLocalOrPrivateHost(_ host: String) -> Bool {
+        if isExplicitLocalOrPrivateHost(host) {
+            return true
+        }
+
+        // A single-label host (no dots, not an IPv6 literal) is never a public internet
+        // name: it resolves via the local resolver / mDNS / hosts file (e.g. "prowlarr",
+        // "nas"). Treat it as local/private so an untrusted addon can't point the app at a
+        // LAN service (SSRF). NOTE: this is intentionally NOT part of the cleartext-HTTP
+        // allow-list used by `permits` — a bare single-label name is blocked as a stream
+        // target but still requires HTTPS as a user-typed indexer base URL.
+        let normalized = host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+        return !normalized.isEmpty && !normalized.contains(".") && !normalized.contains(":")
+    }
+
+    /// The strict local/private classification used to decide whether cleartext HTTP is
+    /// permitted (localhost, `.local`/`.localhost` suffixes, and literal private IPs).
+    /// Unlike `isLocalOrPrivateHost`, a bare single-label DNS name is NOT explicit-local,
+    /// so `http://prowlarr` is rejected while `http://192.168.1.5` / `http://nas.local` are allowed.
+    static func isExplicitLocalOrPrivateHost(_ host: String) -> Bool {
         let normalized = host
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             .lowercased()
@@ -393,7 +495,7 @@ enum IndexerURLSecurityPolicy {
             return normalized.hasPrefix("fc") || normalized.hasPrefix("fd")
         }
 
-        if normalized.hasSuffix(".local") || !normalized.contains(".") {
+        if normalized.hasSuffix(".local") {
             return true
         }
 

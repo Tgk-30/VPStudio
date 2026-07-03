@@ -477,10 +477,14 @@ struct MLXInferenceAdapterTests {
     }
 
     @Test
-    func snapshotRequestUsesDefaultMatchingPatterns() {
-        let request = LocalModelDownloader.snapshotRequest(repoID: "acme/local-model")
+    func snapshotRequestUsesPinnedRevisionAndDefaultMatchingPatterns() {
+        let request = LocalModelDownloader.snapshotRequest(
+            repoID: "acme/local-model",
+            revision: "0123456789012345678901234567890123456789"
+        )
 
         #expect(request.repoID == "acme/local-model")
+        #expect(request.revision == "0123456789012345678901234567890123456789")
         #expect(request.matchingPatterns == LocalModelDownloader.snapshotMatchingPatterns)
     }
 
@@ -489,10 +493,12 @@ struct MLXInferenceAdapterTests {
         let custom = ["weights.bin", "tokenizer.json"]
         let request = LocalModelDownloader.snapshotRequest(
             repoID: "acme/local-model",
+            revision: "0123456789012345678901234567890123456789",
             matchingPatterns: custom
         )
 
         #expect(request.repoID == "acme/local-model")
+        #expect(request.revision == "0123456789012345678901234567890123456789")
         #expect(request.matchingPatterns == custom)
         #expect(LocalModelDownloader.snapshotMatchingPatterns != custom)
     }

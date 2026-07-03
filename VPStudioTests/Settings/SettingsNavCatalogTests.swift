@@ -26,7 +26,7 @@ struct SettingsNavigationCatalogTests {
             (.debrid, "Streaming Providers (Debrid)", "cloud", .connect, "realdebrid"),
             (.debridCloud, "Debrid Cloud", "cloud.fill", .connect, "premium"),
             (.indexers, "Search Providers", "magnifyingglass.circle", .connect, "torznab"),
-            (.metadata, "Movie & TV Metadata (OMDb)", "film", .connect, "omdb"),
+            (.metadata, "Movie & TV Metadata", "film", .connect, "metadata"),
             (.ai, "AI Recommendations", "brain", .connect, "openai"),
             (.trakt, "Trakt", "arrow.triangle.2.circlepath", .connect, "watch history"),
             (.simkl, "Simkl", "arrow.triangle.2.circlepath.circle", .connect, "cleanup-only"),
@@ -71,10 +71,10 @@ struct SettingsNavigationCatalogTests {
     }
 
     @Test
-    func legacyTMDBQueryDoesNotRouteToMetadataDestination() {
+    func tmdbQueryFindsMetadataDestination() {
         let flattened = SettingsNavigationCatalog.groups(matching: "tmdb").flatMap(\.destinations)
 
-        #expect(flattened.isEmpty)
+        #expect(flattened == [.metadata])
     }
 
     @Test

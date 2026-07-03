@@ -26,6 +26,7 @@
 /* Begin PBXFileReference section */
 		C626B5422F47E175008624B6 /* VPStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VPStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C626B55E2F47E177008624B6 /* VPStudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VPStudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C630B5722FF81C9B006134B1 /* VPStudio.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = VPStudio.xcodeproj; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -66,6 +67,7 @@
 		C626B5392F47E175008624B6 = {
 			isa = PBXGroup;
 			children = (
+				C630B5722FF81C9B006134B1 /* VPStudio.xcodeproj */,
 				C626B5442F47E175008624B6 /* VPStudio */,
 				C626B5452F47E175008624B6 /* Packages */,
 				C626B5612F47E177008624B6 /* VPStudioTests */,
@@ -87,6 +89,11 @@
 			children = (
 			);
 			path = Packages;
+			sourceTree = "<group>";
+		};
+		C630B5732FF81C9B006134B1 /* Products */ = {
+			isa = PBXGroup;
+			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -176,6 +183,12 @@
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C626B5432F47E175008624B6 /* Products */;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = C630B5732FF81C9B006134B1 /* Products */;
+					ProjectRef = C630B5722FF81C9B006134B1 /* VPStudio.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
 				C626B5412F47E175008624B6 /* VPStudio */,

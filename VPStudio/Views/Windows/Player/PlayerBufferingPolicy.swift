@@ -5,6 +5,8 @@ import Foundation
 /// Centralizes text formatting and timing decisions that would otherwise
 /// be scattered across view code.
 enum PlayerBufferingPolicy {
+    static let readyBufferThreshold = 0.98
+    static let readyBufferSecondsAhead: TimeInterval = 2.0
 
     // MARK: - Buffering Text
 
@@ -13,7 +15,11 @@ enum PlayerBufferingPolicy {
     /// - Parameter bufferedPercent: The current buffered fraction (0...1).
     /// - Returns: A user-facing string like "Buffering... 60%" or "Rebuffering...".
     static func rebufferText(bufferedPercent: Double) -> String {
-        if bufferedPercent > 0 && bufferedPercent < 1 {
+        if isBufferReady(bufferedPercent: bufferedPercent) {
+            return "Buffer ready"
+        }
+
+        if bufferedPercent >= 0.01 && bufferedPercent < 1 {
             let pct = Int(bufferedPercent * 100)
             return "Buffering... \(pct)%"
         }
@@ -23,10 +29,26 @@ enum PlayerBufferingPolicy {
     static func surfaceFeedbackText(
         playbackState: PlayerPlaybackState,
         hasPlayedOnce: Bool,
-        bufferedPercent: Double
+        bufferedPercent: Double,
+        bufferedSecondsAhead: TimeInterval = 0
     ) -> String? {
         guard playbackState == .buffering, hasPlayedOnce else { return nil }
+        guard !isBufferReady(
+            bufferedPercent: bufferedPercent,
+            bufferedSecondsAhead: bufferedSecondsAhead
+        ) else { return nil }
         return rebufferText(bufferedPercent: bufferedPercent)
+    }
+
+    static func isBufferReady(
+        bufferedPercent: Double,
+        bufferedSecondsAhead: TimeInterval = 0
+    ) -> Bool {
+        if bufferedPercent.isFinite, bufferedPercent >= readyBufferThreshold {
+            return true
+        }
+
+        return bufferedSecondsAhead.isFinite && bufferedSecondsAhead >= readyBufferSecondsAhead
     }
 
     // MARK: - Quality Change Toast

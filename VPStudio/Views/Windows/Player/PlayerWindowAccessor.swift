@@ -49,10 +49,36 @@ struct PlayerWindowSceneAccessor: UIViewRepresentable {
 
 final class WindowSceneObservingView: UIView {
     var onSceneChange: ((UIWindowScene?) -> Void)?
+    private var pendingScenePublishTask: Task<Void, Never>?
+    private var lastPublishedSceneID: ObjectIdentifier?
+    private var didPublishScene = false
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        onSceneChange?(window?.windowScene)
+        publishSceneChange(window?.windowScene)
+    }
+
+    deinit {
+        pendingScenePublishTask?.cancel()
+    }
+
+    private func publishSceneChange(_ scene: UIWindowScene?) {
+        let sceneID = scene.map { ObjectIdentifier($0) }
+        guard !didPublishScene || sceneID != lastPublishedSceneID else { return }
+
+        didPublishScene = true
+        lastPublishedSceneID = sceneID
+        pendingScenePublishTask?.cancel()
+        // Deferred (not synchronous) so callers can observe the pre-publish state,
+        // but only one hop away so observers are notified within a single runloop turn.
+        pendingScenePublishTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            guard self.lastPublishedSceneID == sceneID else { return }
+            let currentScene = self.window?.windowScene
+            guard currentScene.map({ ObjectIdentifier($0) }) == sceneID else { return }
+            self.onSceneChange?(currentScene)
+            self.pendingScenePublishTask = nil
+        }
     }
 }
 #endif

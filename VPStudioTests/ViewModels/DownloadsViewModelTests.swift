@@ -462,14 +462,17 @@ struct DownloadsViewModelTests {
         let stubManager = StubDownloadManager()
         let task = DownloadTask(mediaId: "tt100", streamURL: "https://cdn.example.com/1.mkv", fileName: "1.mkv")
         await stubManager.setDownloads([task])
-        await stubManager.setRemoveError(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "remove-all-error"]))
+        // Use a spaced message: the log/secret redaction that AppError.errorDescription
+        // applies intentionally masks contiguous 16+char tokens (which "remove-all-error"
+        // coincidentally is). This test verifies error *surfacing*, not redaction.
+        await stubManager.setRemoveError(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "remove all failed"]))
 
         let vm = DownloadsViewModel(appState: appState, downloadManager: stubManager)
         await vm.load()
         await vm.removeAll(mediaId: "tt100")
 
-        #expect(vm.rootError == .unknown("remove-all-error"))
-        #expect(vm.errorMessage == "remove-all-error")
+        #expect(vm.rootError == .unknown("remove all failed"))
+        #expect(vm.errorMessage == "remove all failed")
         #expect(vm.tasks.map(\.id) == [task.id])
         #expect(vm.groups.map(\.mediaId) == [task.mediaId])
     }

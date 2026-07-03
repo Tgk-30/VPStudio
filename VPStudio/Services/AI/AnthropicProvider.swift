@@ -43,7 +43,7 @@ struct AnthropicProvider: AIProvider, Sendable {
             ]
         ]
 
-        guard let url = URL(string: trimmedBaseURL) else {
+        guard let url = AICloudEndpointPolicy.validatedEndpoint(from: trimmedBaseURL) else {
             throw AIError.invalidResponse
         }
         var request = URLRequest(url: url)
@@ -57,7 +57,7 @@ struct AnthropicProvider: AIProvider, Sendable {
         let (data, http) = try await AIHTTPTransport.perform(request, using: session, sleep: sleep)
 
         guard (200...299).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? ""
+            let msg = AIHTTPTransport.sanitizedHTTPErrorMessage(from: data)
             throw AIError.httpError(http.statusCode, msg)
         }
 

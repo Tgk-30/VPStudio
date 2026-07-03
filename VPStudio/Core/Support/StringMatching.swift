@@ -1,5 +1,30 @@
 import Foundation
 
+// MARK: - Media container extensions
+
+extension String {
+    /// Video/container file extensions that indexer/addon results sometimes carry
+    /// as a trailing filename suffix. Kept lowercase for case-insensitive matching.
+    static let knownMediaContainerExtensions: Set<String> = [
+        "ts", "mkv", "mp4", "m4v", "avi", "mov", "wmv", "flv", "webm",
+        "mpg", "mpeg", "m2ts", "mts", "vob", "ogm", "ogv", "divx", "mk3d", "3gp"
+    ]
+
+    /// Returns the receiver with a single trailing recognized media-container
+    /// extension removed (e.g. `"episode.title.ts"` → `"episode.title"`).
+    ///
+    /// This exists so source/quality parsing does not misread a container
+    /// extension as a release token — most importantly, so a legitimate `.ts`
+    /// (MPEG transport stream) filename is not classified as a `TS`/TELESYNC
+    /// camera source and silently hidden by the default "No CAM" filter.
+    func strippingTrailingMediaContainerExtension() -> String {
+        guard let dotIndex = lastIndex(of: ".") else { return self }
+        let ext = self[index(after: dotIndex)...].lowercased()
+        guard String.knownMediaContainerExtensions.contains(ext) else { return self }
+        return String(self[..<dotIndex])
+    }
+}
+
 // MARK: - Standalone token matching
 
 extension String {

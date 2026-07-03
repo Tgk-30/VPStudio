@@ -290,6 +290,16 @@ enum AIModelCatalog {
 
     // MARK: MiniMax Models
 
+    static let minimaxM3 = AIModelDefinition(
+        id: "MiniMax-M3",
+        displayName: "MiniMax M3",
+        provider: .minimax,
+        inputCostPer1MTokens: 0.30,
+        outputCostPer1MTokens: 1.20,
+        maxContextTokens: 1_000_000,
+        isDefault: true
+    )
+
     static let minimaxM27 = AIModelDefinition(
         id: "MiniMax-M2.7",
         displayName: "MiniMax M2.7",
@@ -297,7 +307,7 @@ enum AIModelCatalog {
         inputCostPer1MTokens: 0.30,
         outputCostPer1MTokens: 1.20,
         maxContextTokens: 204_800,
-        isDefault: true
+        isDefault: false
     )
 
     static let minimaxM27Highspeed = AIModelDefinition(
@@ -402,7 +412,7 @@ enum AIModelCatalog {
         openRouterGeminiFlashLite, openRouterClaudeHaiku, openRouterGPT4oMini,
         openRouterLlama3, openRouterMistralNemo, openRouterQwen,
         mistralSmallLatest, mistralMediumLatest, codestralLatest,
-        minimaxM27, minimaxM27Highspeed, minimaxM25, minimaxM25Highspeed,
+        minimaxM3, minimaxM27, minimaxM27Highspeed, minimaxM25, minimaxM25Highspeed,
         minimaxM21, minimaxM21Highspeed, minimaxM2,
         localSmolLM2, localPhi3Mini, localOpenELM3B,
     ]
@@ -462,6 +472,20 @@ enum AIModelCatalog {
 // MARK: - Live Model Fetcher
 
 enum AIModelFetcher {
+    private static func boundedData(
+        for request: URLRequest,
+        session: URLSession
+    ) async -> (Data, HTTPURLResponse)? {
+        guard let (data, response) = try? await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.aiProvider
+        ),
+              let http = response as? HTTPURLResponse else {
+            return nil
+        }
+        return (data, http)
+    }
 
     /// Fetches available models from the OpenAI API.
     static func fetchOpenAIModels(
@@ -473,8 +497,8 @@ enum AIModelFetcher {
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
         request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
 
@@ -510,8 +534,8 @@ enum AIModelFetcher {
         request.setValue(trimmedAPIKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.timeoutInterval = 15
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
 
@@ -542,8 +566,8 @@ enum AIModelFetcher {
         guard let url = AIOllamaEndpointPolicy.appendingPath(to: endpoint, path: "api/tags") else { return [] }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let models = json["models"] as? [[String: Any]] else { return [] }
 
@@ -578,8 +602,8 @@ enum AIModelFetcher {
         request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
 
@@ -630,8 +654,8 @@ enum AIModelFetcher {
         request.timeoutInterval = 15
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["models"] as? [[String: Any]] else { return [] }
 
@@ -666,8 +690,8 @@ enum AIModelFetcher {
         request.timeoutInterval = 15
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
 
@@ -703,8 +727,8 @@ enum AIModelFetcher {
         request.timeoutInterval = 15
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let (data, http) = await boundedData(for: request, session: session),
+              http.statusCode == 200 else { return [] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
 

@@ -20,7 +20,7 @@ struct EZTVIndexer: TorrentIndexer {
 
     func search(imdbId: String, type: MediaType, season: Int?, episode: Int?) async throws -> [TorrentResult] {
         guard type == .series else { return [] }
-        guard let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) else { return [] }
+        guard let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: imdbId) else { return [] }
         let cleanId = String(normalizedIMDbID.dropFirst(2))
 
         var results: [TorrentResult] = []

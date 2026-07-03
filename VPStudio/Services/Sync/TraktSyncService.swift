@@ -36,6 +36,11 @@ actor TraktSyncService {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 90
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
         return URLSession(configuration: configuration)
     }()
 
@@ -120,8 +125,13 @@ actor TraktSyncService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw TraktError.httpError(0)
         }
@@ -220,30 +230,30 @@ actor TraktSyncService {
     // MARK: - Add/Remove
 
     func addToWatchlist(imdbId: String, type: MediaType) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
+        let ids = try Self.traktMediaIds(from: imdbId)
         let body: [String: Any] = [
             type == .movie ? "movies" : "shows": [
-                ["ids": ["imdb": normalizedIMDbID]]
+                ["ids": ids]
             ]
         ]
         let _: TraktSyncResponse = try await post(path: "/sync/watchlist", body: body, auth: true)
     }
 
     func removeFromWatchlist(imdbId: String, type: MediaType) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
+        let ids = try Self.traktMediaIds(from: imdbId)
         let body: [String: Any] = [
             type == .movie ? "movies" : "shows": [
-                ["ids": ["imdb": normalizedIMDbID]]
+                ["ids": ids]
             ]
         ]
         let _: TraktSyncResponse = try await post(path: "/sync/watchlist/remove", body: body, auth: true)
     }
 
     func addRating(imdbId: String, rating: Int, type: MediaType) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
+        let ids = try Self.traktMediaIds(from: imdbId)
         let body: [String: Any] = [
             type == .movie ? "movies" : "shows": [
-                ["ids": ["imdb": normalizedIMDbID], "rating": rating]
+                ["ids": ids, "rating": rating]
             ]
         ]
         let _: TraktSyncResponse = try await post(path: "/sync/ratings", body: body, auth: true)
@@ -257,23 +267,23 @@ actor TraktSyncService {
     ) async throws {
         let formatter = ISO8601DateFormatter()
         let watchedAtString = formatter.string(from: watchedAt)
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
+        let ids = try Self.traktMediaIds(from: imdbId)
 
         let body: [String: Any]
         if type == .series,
            let episodeId,
            !episodeId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let normalizedEpisodeID = IMDbIdentifierPolicy.normalizedID(from: episodeId) {
+            if let episodeIds = Self.traktEpisodeIds(from: episodeId) {
                 body = [
                     "episodes": [
-                        ["ids": ["imdb": normalizedEpisodeID], "watched_at": watchedAtString]
+                        ["ids": episodeIds, "watched_at": watchedAtString]
                     ]
                 ]
             } else if let episodeContext = TraktEpisodeIdentifierPolicy.seasonEpisode(from: episodeId) {
                 body = [
                     "shows": [
                         [
-                            "ids": ["imdb": normalizedIMDbID],
+                            "ids": ids,
                             "seasons": [
                                 [
                                     "number": episodeContext.season,
@@ -294,7 +304,7 @@ actor TraktSyncService {
         } else {
             body = [
                 type == .movie ? "movies" : "shows": [
-                    ["ids": ["imdb": normalizedIMDbID], "watched_at": watchedAtString]
+                    ["ids": ids, "watched_at": watchedAtString]
                 ]
             ]
         }
@@ -302,11 +312,16 @@ actor TraktSyncService {
         let _: TraktSyncResponse = try await post(path: "/sync/history", body: body, auth: true)
     }
 
-    private static func validIMDbID(_ imdbId: String) throws -> String {
-        guard let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) else {
-            throw TraktError.invalidIdentifier("Invalid IMDb ID.")
+    private static func traktMediaIds(from mediaId: String) throws -> [String: Any] {
+        if let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: mediaId) {
+            return ["imdb": normalizedIMDbID]
         }
-        return normalizedIMDbID
+
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+            return ["tmdb": tmdbID]
+        }
+
+        throw TraktError.invalidIdentifier("Invalid IMDb, OMDb, or TMDb ID.")
     }
 }
 
@@ -316,7 +331,7 @@ enum TraktEpisodeIdentifierPolicy {
               !episodeId.isEmpty else {
             return nil
         }
-        if let imdbID = IMDbIdentifierPolicy.normalizedID(from: episodeId) {
+        if let imdbID = IMDbIdentifierPolicy.episodeScopedID(in: episodeId) {
             return imdbID
         }
         if let context = seasonEpisode(from: episodeId) {
@@ -378,8 +393,7 @@ extension TraktSyncService {
         var movies: [[String: Any]] = []
         var shows: [[String: Any]] = []
         for item in imdbIds {
-            let normalizedIMDbID = try Self.validIMDbID(item.id)
-            let entry: [String: Any] = ["ids": ["imdb": normalizedIMDbID]]
+            let entry: [String: Any] = ["ids": try Self.traktMediaIds(from: item.id)]
             if item.type == .movie { movies.append(entry) } else { shows.append(entry) }
         }
         var body: [String: Any] = [:]
@@ -392,8 +406,7 @@ extension TraktSyncService {
         var movies: [[String: Any]] = []
         var shows: [[String: Any]] = []
         for item in imdbIds {
-            let normalizedIMDbID = try Self.validIMDbID(item.id)
-            let entry: [String: Any] = ["ids": ["imdb": normalizedIMDbID]]
+            let entry: [String: Any] = ["ids": try Self.traktMediaIds(from: item.id)]
             if item.type == .movie { movies.append(entry) } else { shows.append(entry) }
         }
         var body: [String: Any] = [:]
@@ -408,31 +421,65 @@ extension TraktSyncService {
 
     // MARK: - Scrobbling
 
-    func startScrobble(imdbId: String, type: MediaType, progress: Double) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
-        let body: [String: Any] = [
-            type == .movie ? "movie" : "show": ["ids": ["imdb": normalizedIMDbID]],
-            "progress": progress,
-        ]
+    func startScrobble(imdbId: String, type: MediaType, progress: Double, episodeId: String? = nil) async throws {
+        let body = try scrobbleBody(imdbId: imdbId, type: type, progress: progress, episodeId: episodeId)
         let _: ScrobbleResponse = try await post(path: "/scrobble/start", body: body, auth: true)
     }
 
-    func pauseScrobble(imdbId: String, type: MediaType, progress: Double) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
-        let body: [String: Any] = [
-            type == .movie ? "movie" : "show": ["ids": ["imdb": normalizedIMDbID]],
-            "progress": progress,
-        ]
+    func pauseScrobble(imdbId: String, type: MediaType, progress: Double, episodeId: String? = nil) async throws {
+        let body = try scrobbleBody(imdbId: imdbId, type: type, progress: progress, episodeId: episodeId)
         let _: ScrobbleResponse = try await post(path: "/scrobble/pause", body: body, auth: true)
     }
 
-    func stopScrobble(imdbId: String, type: MediaType, progress: Double) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
-        let body: [String: Any] = [
-            type == .movie ? "movie" : "show": ["ids": ["imdb": normalizedIMDbID]],
+    func stopScrobble(imdbId: String, type: MediaType, progress: Double, episodeId: String? = nil) async throws {
+        let body = try scrobbleBody(imdbId: imdbId, type: type, progress: progress, episodeId: episodeId)
+        let _: ScrobbleResponse = try await post(path: "/scrobble/stop", body: body, auth: true)
+    }
+
+    private func scrobbleBody(
+        imdbId: String,
+        type: MediaType,
+        progress: Double,
+        episodeId: String?
+    ) throws -> [String: Any] {
+        let ids = try Self.traktMediaIds(from: imdbId)
+        if type == .series,
+           let episodeIds = Self.traktEpisodeIds(from: episodeId) {
+            return [
+                "episode": ["ids": episodeIds],
+                "progress": progress,
+            ]
+        }
+
+        let rootKey = type == .movie ? "movie" : "show"
+        return [
+            rootKey: ["ids": ids],
             "progress": progress,
         ]
-        let _: ScrobbleResponse = try await post(path: "/scrobble/stop", body: body, auth: true)
+    }
+
+    private static func traktEpisodeIds(from episodeId: String?) -> [String: Any]? {
+        guard let trimmed = episodeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        if let normalizedIMDbID = IMDbIdentifierPolicy.episodeScopedID(in: trimmed) {
+            return ["imdb": normalizedIMDbID]
+        }
+
+        // "tmdb-episode-N" is an app-generated placeholder minted when the
+        // provider lacks a real episode identity; it is not a Trakt-known TMDB
+        // episode id, so never sync it as one.
+        if trimmed.lowercased().hasPrefix("tmdb-episode-") {
+            return nil
+        }
+
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: trimmed) {
+            return ["tmdb": tmdbID]
+        }
+
+        return nil
     }
 
     // MARK: - Networking
@@ -470,8 +517,13 @@ extension TraktSyncService {
         request.setValue("2", forHTTPHeaderField: "trakt-api-version")
         request.setValue(self.clientId, forHTTPHeaderField: "trakt-api-key")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw TraktError.httpError(0)
         }
@@ -532,8 +584,13 @@ extension TraktSyncService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw TraktError.httpError(0)
         }
@@ -587,8 +644,13 @@ extension TraktSyncService {
         request.setValue("2", forHTTPHeaderField: "trakt-api-version")
         request.setValue(self.clientId, forHTTPHeaderField: "trakt-api-key")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        Self.prepareSensitiveRequest(&request)
 
-        let (_, response) = try await session.data(for: request)
+        let (_, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw TraktError.httpError(0)
         }
@@ -638,6 +700,13 @@ extension TraktSyncService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return normalized == "expired" || normalized == "expired-token"
+    }
+
+    private nonisolated static func prepareSensitiveRequest(_ request: inout URLRequest) {
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
     }
 }
 
@@ -897,7 +966,7 @@ enum TraktError: LocalizedError {
         case .httpError(let code): return "Trakt API error: HTTP \(code)"
         case .unauthorized: return "Trakt authorization expired"
         case .notConnected: return "Not connected to Trakt"
-        case .invalidIdentifier(let message): return message
+        case .invalidIdentifier(let message): return IndexerLogSanitizer.redactedMessage(message)
         case .authorizationSessionMissing: return "Start Trakt authorization again before entering the code."
         case .authorizationSessionExpired: return "The Trakt authorization session expired. Start the login flow again."
         case .authorizationStateMismatch: return "The Trakt authorization response did not match the active login session."

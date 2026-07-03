@@ -36,6 +36,99 @@ struct EnvironmentPreviewRowPolicyTests {
     }
 
     @Test
+    func onlinePresetRowsUseExplicitOnGlassTextTokens() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let rowSource = try #require(source.range(of: "private func onlinePresetRow"))
+        let rowBody = String(source[rowSource.lowerBound...])
+
+        #expect(rowBody.contains(".foregroundStyle(VPColor.textPrimary)"))
+        #expect(rowBody.contains(".foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)"))
+        #expect(!rowBody.contains(".foregroundStyle(VPColor.textTertiary)"))
+        #expect(rowBody.contains(".font(.body.weight(.semibold))"))
+        #expect(rowBody.contains(".font(.subheadline)"))
+        #expect(rowBody.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity"))
+        #expect(rowBody.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity"))
+        #expect(!rowBody.contains(".foregroundStyle(.tertiary)"))
+    }
+
+    @Test
+    func pickerImportAndErrorSurfacesUseBrightRoomLegibilityTokens() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let promptSource = try section(
+            from: "private var importPrompt: some View {",
+            to: "@ViewBuilder\n    private var importButtonLabel",
+            in: source
+        )
+        let errorSource = try section(
+            from: "private func importErrorBanner",
+            to: "// MARK: - Actions",
+            in: source
+        )
+
+        for sectionSource in [promptSource, errorSource] {
+            #expect(sectionSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText"))
+            #expect(sectionSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity"))
+            #expect(sectionSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity"))
+            #expect(!sectionSource.contains(".foregroundStyle(.secondary)"))
+            #expect(!sectionSource.contains(".background(.ultraThinMaterial"))
+        }
+    }
+
+    @Test
+    func brightRoomPickerSurfacesStayLegibleWithoutBecomingOpaquePanels() {
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityBackdropOpacity >= 0.16)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityBackdropOpacity <= 0.20)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityPanelOpacity >= 0.62)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityPanelOpacity <= 0.66)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity >= 0.58)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity <= 0.62)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity >= 0.28)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity <= 0.32)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryTextOpacity >= 0.92)
+        #expect(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryTextOpacity <= 0.96)
+    }
+
+    @Test
+    func onlinePresetOpenDismissesPickerAfterSelection() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let rowBody = try section(
+            from: "private func onlinePresetRow",
+            to: "private func importErrorBanner",
+            in: source
+        )
+
+        #expect(rowBody.contains("Button {"))
+        #expect(rowBody.contains("onSelect(installedAsset)\n                        dismiss()"))
+        #expect(rowBody.contains("Label(\"Open\", systemImage: \"play.circle\")"))
+    }
+
+    @Test
+    func environmentPickerErrorsUseSharedRedactionPolicy() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+
+        #expect(source.contains("EnvironmentErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(source.contains("EnvironmentErrorPresentationPolicy.deleteFailureMessage(for: error)"))
+        #expect(!source.contains("importError = error.localizedDescription"))
+        #expect(!source.contains("\"Failed to delete: \\(error.localizedDescription)\""))
+    }
+
+    @Test
+    func appleEnvironmentCopyMentionsSystemWindowAndGatesSystemExpansion() {
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentTitle == "Apple Environment")
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentTypeLabel == "System window")
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentDetailText.contains("system"))
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentBenefitLabel == "System expansion when available")
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentPickerSubtitle.contains("system window"))
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentPickerSubtitle.contains("system video surface"))
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentPickerSubtitle.contains("room effects"))
+        #expect(!EnvironmentPreviewRowPolicy.appleEnvironmentPickerSubtitle.localizedCaseInsensitiveContains("reflections"))
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody.contains("system-owned window"))
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody.contains("supported playback"))
+        #expect(EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody.contains("room effects"))
+        #expect(!EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody.localizedCaseInsensitiveContains("reflections"))
+    }
+
+    @Test
     func detectsHdriAssetsByExtensionCaseInsensitively() {
         #expect(EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: "/assets/sky.hdr"))
         #expect(EnvironmentPreviewRowPolicy.isHDRIAsset(assetPath: "/assets/sky.EXR"))
@@ -61,7 +154,7 @@ struct EnvironmentPreviewRowPolicyTests {
 
     @Test
     func fallbackArtworkIconsStayVisibleOnDarkEnvironmentCards() throws {
-        #expect(EnvironmentPreviewFallbackArtworkKind.standardRoom.iconName == "rectangle.dashed")
+        #expect(EnvironmentPreviewFallbackArtworkKind.standardRoom.iconName == "visionpro")
         #expect(EnvironmentPreviewFallbackArtworkKind.cinema.iconName == "theatermasks.fill")
         #expect(EnvironmentPreviewFallbackArtworkKind.bundledEnvironment.iconName == "sparkles")
         #expect(EnvironmentPreviewFallbackArtworkKind.panorama.iconName == "pano.fill")
@@ -73,8 +166,36 @@ struct EnvironmentPreviewRowPolicyTests {
         #expect(EnvironmentPreviewFallbackArtworkKind.scene.iconOpacity >= 0.66)
 
         let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
-        #expect(source.contains(".shadow(color: .black.opacity(0.32), radius: 2, y: 1)"))
+        #expect(source.contains(".shadow(color: .black.opacity(0.55), radius: 2, y: 1)"))
         #expect(!source.contains(".shadow(color: accent.opacity(0.26), radius: 16"))
+    }
+
+    @Test
+    func environmentCardCaptionsStayLegibleOverFallbackArtwork() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let cardSource = try section(
+            from: "struct EnvironmentPreviewCard: View {",
+            to: "struct CinemaEnvironmentPreviewCard: View {",
+            in: source
+        )
+        let cinemaSource = try section(
+            from: "struct CinemaEnvironmentPreviewCard: View {",
+            to: "struct NoEnvironmentPreviewCard: View {",
+            in: source
+        )
+        let appleSource = try section(
+            from: "struct NoEnvironmentPreviewCard: View {",
+            to: "private struct EnvironmentStatusChip: View {",
+            in: source
+        )
+
+        for cardBody in [cardSource, cinemaSource, appleSource] {
+            #expect(cardBody.contains(".foregroundStyle(.white.opacity(0.86))"))
+            #expect(cardBody.contains(".shadow(color: .black.opacity(0.55), radius: 2, y: 1)"))
+        }
+        #expect(!cardSource.contains(".foregroundStyle(.white.opacity(0.75))"))
+        #expect(!cinemaSource.contains(".foregroundStyle(.white.opacity(0.75))"))
+        #expect(!appleSource.contains(".foregroundStyle(.white.opacity(0.75))"))
     }
 
     @Test
@@ -187,25 +308,48 @@ struct EnvironmentPreviewRowPolicyTests {
         #expect(
             EnvironmentPreviewRowPolicy.standardRoomStatus(
                 selectedAssetID: nil,
+                activeEnvironment: nil,
                 isImmersiveSpaceOpen: false
             ) == .current
         )
         #expect(
             EnvironmentPreviewRowPolicy.standardRoomStatus(
                 selectedAssetID: "imported-hdri",
+                activeEnvironment: nil,
                 isImmersiveSpaceOpen: false
             ) == .inactive
         )
         #expect(
             EnvironmentPreviewRowPolicy.standardRoomStatus(
                 selectedAssetID: nil,
+                activeEnvironment: nil,
                 isImmersiveSpaceOpen: true
+            ) == .inactive
+        )
+        #expect(
+            EnvironmentPreviewRowPolicy.standardRoomStatus(
+                selectedAssetID: nil,
+                activeEnvironment: .cinemaEnvironment,
+                isImmersiveSpaceOpen: false
+            ) == .inactive
+        )
+        #expect(
+            EnvironmentPreviewRowPolicy.standardRoomStatus(
+                selectedAssetID: nil,
+                activeEnvironment: .customEnvironment,
+                isImmersiveSpaceOpen: false
             ) == .inactive
         )
     }
 
     @Test
     func effectiveSelectedAssetIDFallsBackToActiveCatalogAsset() {
+        let appStateAsset = EnvironmentAsset(
+            id: "app-state-selection",
+            name: "App State Selection",
+            sourceType: .imported,
+            assetPath: "/tmp/app-state.hdr"
+        )
         let activeAsset = EnvironmentAsset(
             id: "catalog-active-hdri",
             name: "Active HDRI",
@@ -222,7 +366,7 @@ struct EnvironmentPreviewRowPolicyTests {
 
         #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
             appStateSelectedID: " app-state-selection ",
-            assets: [activeAsset]
+            assets: [appStateAsset, activeAsset]
         ) == "app-state-selection")
         #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
             appStateSelectedID: nil,
@@ -232,6 +376,66 @@ struct EnvironmentPreviewRowPolicyTests {
             appStateSelectedID: "  ",
             assets: [inactiveAsset]
         ) == nil)
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: nil,
+            assets: [inactiveAsset, activeAsset]
+        )?.id == "catalog-active-hdri")
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: appStateAsset,
+            assets: [appStateAsset, activeAsset]
+        )?.id == "app-state-selection")
+    }
+
+    @Test
+    func staleAppStateSelectionFallsBackToLoadedCatalogState() {
+        let staleAppStateAsset = EnvironmentAsset(
+            id: "missing-selection",
+            name: "Deleted Environment",
+            sourceType: .imported,
+            assetPath: "/tmp/deleted.hdr"
+        )
+        let activeAsset = EnvironmentAsset(
+            id: "catalog-active-hdri",
+            name: "Active HDRI",
+            sourceType: .imported,
+            assetPath: "/tmp/active.hdr",
+            isActive: true
+        )
+        let inactiveAsset = EnvironmentAsset(
+            id: "inactive-hdri",
+            name: "Inactive HDRI",
+            sourceType: .imported,
+            assetPath: "/tmp/inactive.hdr"
+        )
+
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: staleAppStateAsset.id,
+            assets: [inactiveAsset, activeAsset]
+        ) == activeAsset.id)
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: staleAppStateAsset,
+            assets: [inactiveAsset, activeAsset]
+        )?.id == activeAsset.id)
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: staleAppStateAsset.id,
+            assets: [inactiveAsset]
+        ) == nil)
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: staleAppStateAsset,
+            assets: [inactiveAsset]
+        ) == nil)
+        #expect(EnvironmentPreviewRowPolicy.standardRoomStatus(
+            selectedAssetID: EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+                appStateSelectedID: staleAppStateAsset.id,
+                assets: [inactiveAsset]
+            ),
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == .current)
+        #expect(EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: staleAppStateAsset.id,
+            assets: []
+        ) == staleAppStateAsset.id)
     }
 
     @Test
@@ -251,6 +455,7 @@ struct EnvironmentPreviewRowPolicyTests {
         #expect(
             EnvironmentPreviewRowPolicy.standardRoomStatus(
                 selectedAssetID: selectedAssetID,
+                activeEnvironment: nil,
                 isImmersiveSpaceOpen: false
             ) == .inactive
         )
@@ -444,8 +649,48 @@ struct EnvironmentPreviewRowPolicyTests {
     }
 
     @Test
+    func thumbnailReadabilityRejectsDirectoriesSymlinksAndMissingFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("env-preview-thumbnail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("preview.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: file)
+
+        let directory = root.appendingPathComponent("preview-directory.jpg", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let symlink = root.appendingPathComponent("preview-link.jpg")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: file)
+
+        #expect(EnvironmentPreviewRowPolicy.isReadableThumbnailFile(file))
+        #expect(!EnvironmentPreviewRowPolicy.isReadableThumbnailFile(directory))
+        #expect(!EnvironmentPreviewRowPolicy.isReadableThumbnailFile(symlink))
+        #expect(!EnvironmentPreviewRowPolicy.isReadableThumbnailFile(root.appendingPathComponent("missing.jpg")))
+    }
+
+    @Test
     func thumbnailDecodePolicyUsesToneMappedLDRPreviewOutput() {
         #expect(EnvironmentThumbnailDecodePolicy.shouldAllowFloatForPreview == false)
+    }
+
+    @Test
+    func thumbnailArtworkCrossfadesFromFallbackInsteadOfPoppingIn() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let cardSource = try section(
+            from: "struct EnvironmentPreviewCard: View {",
+            to: "enum EnvironmentPreviewCardStatus",
+            in: source
+        )
+        let previewBody = try section(
+            from: "private var previewBackground: some View {",
+            to: "private var placeholderGradient: some View {",
+            in: cardSource
+        )
+
+        #expect(cardSource.contains(".animation(.easeInOut(duration: 0.18), value: thumbnailImageSourceID)"))
+        #expect(previewBody.contains(".transition(.opacity)"))
     }
 
     @Test
@@ -572,7 +817,7 @@ struct EnvironmentPreviewRowPolicyTests {
 
         #expect(source.contains("EnvironmentPreviewCardTitleText(asset.name)"))
         #expect(source.contains("EnvironmentPreviewCardTitleText(\"Cinema Environment\")"))
-        #expect(source.contains("EnvironmentPreviewCardTitleText(\"Standard Room\")"))
+        #expect(source.contains("EnvironmentPreviewCardTitleText(EnvironmentPreviewRowPolicy.appleEnvironmentTitle)"))
         #expect(titleSource.contains(".lineLimit(2)"))
         #expect(titleSource.contains(".minimumScaleFactor(0.82)"))
         #expect(titleSource.contains(".allowsTightening(true)"))
@@ -587,12 +832,21 @@ struct EnvironmentPreviewRowPolicyTests {
         let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
 
         #expect(EnvironmentPreviewLayoutPolicy.cardWidth == 286)
-        #expect(EnvironmentPreviewLayoutPolicy.cardHeight == 168)
+        #expect(EnvironmentPreviewLayoutPolicy.cardHeight == 158)
         #expect(EnvironmentPreviewLayoutPolicy.gridSpacing == 18)
         #expect(EnvironmentPreviewLayoutPolicy.maximumCenteredColumns == 4)
+        #expect(EnvironmentPreviewLayoutPolicy.contentSpacing == 24)
+        #expect(EnvironmentPreviewLayoutPolicy.contentHorizontalPadding == 24)
+        #expect(EnvironmentPreviewLayoutPolicy.contentTopPadding == 24)
+        #expect(EnvironmentPreviewLayoutPolicy.bottomContentPadding == 12)
         #expect(EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 1) == 286)
         #expect(EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 4) == 1_198)
         #expect(EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 8) == 1_198)
+        #expect(EnvironmentPreviewLayoutPolicy.pickerMinWidth == 720)
+        #expect(EnvironmentPreviewLayoutPolicy.pickerPreferredWidth == 1_180)
+        #expect(EnvironmentPreviewLayoutPolicy.pickerMinHeight == 456)
+        #expect(EnvironmentPreviewLayoutPolicy.pickerMinWidth <= 980)
+        #expect(EnvironmentPreviewLayoutPolicy.pickerPreferredWidth >= EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 3))
         #expect(source.contains(".adaptive(minimum: cardWidth, maximum: cardWidth)"))
         #expect(source.contains("columns: EnvironmentPreviewLayoutPolicy.gridColumns()"))
         #expect(source.contains(".frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: itemCount))"))
@@ -600,11 +854,126 @@ struct EnvironmentPreviewRowPolicyTests {
         #expect(!source.contains(".adaptive(minimum: 286, maximum: 340)"))
         #expect(!source.contains("private let cardWidth: CGFloat = 286"))
         #expect(!source.contains("private let cardHeight: CGFloat = 168"))
+        #expect(!source.contains("VStack(alignment: .leading, spacing: 28)"))
+        #expect(!source.contains(".padding(.horizontal, 28)"))
+        #expect(!source.contains(".padding(.top, 28)"))
+    }
+
+    @Test
+    func environmentsTabOwnsFullWindowBackground() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        let viewStart = try #require(source.range(of: "struct EnvironmentsTabView: View {"))
+        let viewSource = String(source[viewStart.lowerBound..<source.endIndex])
+
+        #expect(EnvironmentsTabPresentationPolicy.contentMaxWidth == EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 4))
+        #expect(viewSource.contains("ZStack(alignment: .topLeading)"))
+        #expect(viewSource.contains("VPEnvironmentBackdrop()\n                .ignoresSafeArea()"))
+        #expect(viewSource.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"))
+        #expect(viewSource.contains(".frame(maxWidth: EnvironmentsTabPresentationPolicy.contentMaxWidth, alignment: .leading)"))
+        #expect(viewSource.contains(".frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: itemCount), alignment: .leading)"))
+        #expect(viewSource.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        #expect(viewSource.contains(".foregroundStyle(VPColor.textPrimary)"))
+        #expect(viewSource.contains(".foregroundStyle(VPColor.textSecondary)"))
+        #expect(!viewSource.contains(".foregroundStyle(VPColor.textTertiary)"))
+        #expect(viewSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityPanelOpacity"))
+        #expect(viewSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity"))
+        #expect(viewSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity"))
+        #expect(viewSource.contains(".foregroundStyle(appState.isImmersiveSpaceOpen ? VPColor.success : VPColor.info)"))
+        #expect(viewSource.contains("VPColor.contentPlane.opacity(0.56)"))
+        #expect(viewSource.contains("private var effectiveSelectedEnvironmentAssetID: String?"))
+        #expect(viewSource.contains("private var effectiveSelectedEnvironmentAsset: EnvironmentAsset?"))
+        #expect(viewSource.contains("selectedAssetID: selectedAssetID"))
+        #expect(viewSource.contains("if appState.isImmersiveSpaceOpen || effectiveSelectedEnvironmentAssetID != nil"))
+        #expect(viewSource.contains("if EnvironmentPreviewRowPolicy.assetStatus("))
+        #expect(viewSource.contains("selectedAssetID: effectiveSelectedEnvironmentAssetID"))
+        #expect(viewSource.contains("return \"visionpro\""))
+        #expect(!viewSource.contains("if asset.id == effectiveSelectedEnvironmentAssetID, appState.isImmersiveSpaceOpen"))
+        #expect(!viewSource.contains(".frame(maxWidth: 900, alignment: .leading)"))
+
+        let headerSource = try section(
+            from: "private var environmentHeader: some View {",
+            to: "private var environmentGrid: some View {",
+            in: viewSource
+        )
+        #expect(!headerSource.contains("VPBadge("))
+        #expect(!headerSource.contains("environmentStatusBadgeText"))
+        #expect(!viewSource.contains("private var environmentStatusBadgeText: String"))
+    }
+
+    @Test
+    func environmentPickerShowsSelectedStatusPanelBelowCards() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/EnvironmentPreviewRow.swift")
+        let pickerSource = try section(
+            from: "struct EnvironmentPickerSheet: View {",
+            to: "private var exitButton: some View {",
+            in: source
+        )
+
+        #expect(pickerSource.contains("ViewThatFits(in: .vertical)"))
+        #expect(pickerSource.contains("pickerContent\n            ScrollView"))
+        #expect(pickerSource.contains("private var pickerContent: some View"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.roomLegibilityBackdropOpacity"))
+        let pickerContentSource = try section(
+            from: "private var pickerContent: some View {",
+            to: "private var header: some View {",
+            in: pickerSource
+        )
+        let gridRange = try #require(pickerContentSource.range(of: "environmentGrid"))
+        let statusPanelRange = try #require(pickerContentSource.range(of: "environmentStatusPanel"))
+        #expect(gridRange.upperBound <= statusPanelRange.lowerBound)
+        #expect(pickerSource.contains(".presentationSizing(.fitted)"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.pickerMinWidth"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.pickerPreferredWidth"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.pickerMinHeight"))
+        #expect(pickerSource.contains("idealWidth: EnvironmentPreviewLayoutPolicy.pickerPreferredWidth"))
+        #expect(pickerSource.contains("maxWidth: EnvironmentPreviewLayoutPolicy.pickerPreferredWidth"))
+        #expect(pickerSource.contains("ViewThatFits(in: .horizontal)"))
+        #expect(pickerSource.contains("private var headerTitleBlock: some View"))
+        #expect(pickerSource.contains("private var headerActions: some View"))
+        #expect(pickerSource.contains("private var closeButton: some View"))
+        #expect(pickerSource.contains("Image(systemName: \"xmark.circle.fill\")"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.closeButtonSize"))
+        #expect(pickerSource.contains(".accessibilityLabel(\"Close environments\")"))
+        #expect(!pickerSource.contains("Button(\"Done\")"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.contentSpacing"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.contentHorizontalPadding"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.contentTopPadding"))
+        #expect(pickerSource.contains("EnvironmentPreviewLayoutPolicy.bottomContentPadding"))
+        #expect(pickerSource.contains("private var environmentStatusPanel: some View"))
+        #expect(pickerSource.contains("Text(environmentStatusTitle)"))
+        #expect(pickerSource.contains("Text(environmentStatusDescription)"))
+        #expect(pickerSource.contains("Label(\n                        appState.isImmersiveSpaceOpen ? \"Exit Environment\" : \"Use Apple Environment\""))
+        #expect(pickerSource.contains("if appState.isImmersiveSpaceOpen || (effectiveSelectedEnvironmentAssetID != nil && onClear != nil)"))
+        #expect(pickerSource.contains(".frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 4))"))
+        #expect(source.contains("private var effectiveSelectedEnvironmentAssetID: String?"))
+        #expect(source.contains("private var environmentStatusIconName: String"))
+        #expect(source.contains("return EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody"))
+    }
+
+    @Test
+    func rootEnvironmentPickerDismissesOnlyActuallyActiveAssetSelection() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        let bodyStart = try #require(source.range(of: "private func openEnvironment(_ asset: EnvironmentAsset) async {"))
+        let bodyEnd = try #require(source.range(of: "private func ensureEnvironmentAssetExists", range: bodyStart.upperBound..<source.endIndex))
+        let openEnvironmentSource = String(source[bodyStart.lowerBound..<bodyEnd.lowerBound])
+
+        #expect(openEnvironmentSource.contains("let selectedAssetID = appState.selectedEnvironmentAsset?.id ?? (asset.isActive ? asset.id : nil)"))
+        #expect(openEnvironmentSource.contains("EnvironmentPreviewRowPolicy.assetStatus("))
+        #expect(openEnvironmentSource.contains("guard await ensureEnvironmentAssetExists(asset) else {"))
+        #expect(openEnvironmentSource.contains("activeEnvironment: appState.activeEnvironment"))
+        #expect(openEnvironmentSource.contains("isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen"))
+        #expect(!openEnvironmentSource.contains("if asset.id == appState.selectedEnvironmentAsset?.id, appState.isImmersiveSpaceOpen"))
     }
 
     private func contents(of relativePath: String) throws -> String {
         let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
         return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func section(from startToken: String, to endToken: String, in source: String) throws -> String {
+        let start = try #require(source.range(of: startToken))
+        let end = try #require(source.range(of: endToken, range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
     }
 
     private func repoRootURL() -> URL {

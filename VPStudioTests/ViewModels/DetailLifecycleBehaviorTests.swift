@@ -123,7 +123,7 @@ struct DetailLifecycleBehaviorTests {
             tmdbId: 77
         )
 
-        await viewModel.loadDetail(preview: preview, apiKey: "")
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
         viewModel.selectedSeason = 1
         viewModel.selectedEpisode = Episode(
             id: "77-s1e1",
@@ -189,12 +189,46 @@ struct DetailLifecycleBehaviorTests {
             tmdbId: 438_631
         )
 
-        await viewModel.loadDetail(preview: preview, apiKey: "")
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
 
         #expect(viewModel.mediaItem?.id == "tt1160419")
         #expect(viewModel.mediaItem?.tmdbId == 438_631)
         #expect(viewModel.currentFeedbackValue == 9)
         #expect(try await database.fetchLatestTasteRating(mediaId: "tt1160419")?.mediaId == "movie-tmdb-438631")
+    }
+
+    @Test
+    @MainActor
+    func loadDetailRejectsLegacyTMDbOnlyConfiguration() async {
+        let appState = AppState()
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(id: "tmdb-438631", type: .movie, title: "Dune: Part Two", tmdbId: 438_631),
+            seasonsResult: [],
+            episodesBySeason: [:]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataConfigurationProviderFactory: { _ in metadata },
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune: Part Two",
+            year: 2024,
+            tmdbId: 438_631
+        )
+
+        await viewModel.loadDetail(
+            preview: preview,
+            configuration: MetadataProviderConfiguration(tmdbApiKey: "legacy-tmdb")
+        )
+
+        #expect(viewModel.mediaItem == nil)
+        #expect(viewModel.error == .metadataSetupRequired(feature: DetailMetadataConfigurationPolicy.setupRequiredFeature))
+        #expect(viewModel.isLoadingDetail == false)
     }
 
     @Test
@@ -290,7 +324,7 @@ struct DetailLifecycleBehaviorTests {
             episodeId: "123-s2e5"
         )
 
-        await viewModel.loadDetail(preview: preview, apiKey: "")
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
 
         #expect(viewModel.selectedSeason == 2)
         #expect(viewModel.selectedEpisode?.episodeNumber == 5)
@@ -396,6 +430,57 @@ struct DetailLifecycleBehaviorTests {
         #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
         #expect(await debrid.lastResolvedHash == nil)
         #expect(viewModel.debridResolver.streams.first == stream)
+    }
+
+    @Test
+    @MainActor
+    func loadDetailSkipsEmptySpecialsSeasonForDefaultSelection() async {
+        let appState = AppState()
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(
+                id: "tt34809853",
+                type: .series,
+                title: "Teach You a Lesson",
+                tmdbId: 276161
+            ),
+            seasonsResult: [
+                Season(id: 0, seasonNumber: 0, name: "Specials", overview: nil, posterPath: nil, episodeCount: 0, airDate: nil),
+                Season(id: 1, seasonNumber: 1, name: "Season 1", overview: nil, posterPath: nil, episodeCount: 10, airDate: nil),
+            ],
+            episodesBySeason: [
+                1: [
+                    Episode(
+                        id: "276161-s1e1",
+                        mediaId: "tmdb-276161",
+                        seasonNumber: 1,
+                        episodeNumber: 1,
+                        title: "Episode 1",
+                        overview: nil,
+                        airDate: nil,
+                        stillPath: nil,
+                        runtime: nil
+                    ),
+                ],
+            ]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataProviderFactory: { _ in metadata },
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "tt34809853",
+            type: .series,
+            title: "Teach You a Lesson",
+            tmdbId: 276161
+        )
+
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
+
+        #expect(viewModel.selectedSeason == 1)
+        #expect(viewModel.episodes.map(\.episodeNumber) == [1])
     }
 
     @Test
@@ -591,7 +676,7 @@ struct DetailLifecycleBehaviorTests {
         await viewModel.queueDownload(torrent: torrent)
 
         let tasks = (try? await downloads.listDownloads()) ?? []
-        #expect(tasks.first?.mediaId == "tt1160419")
+        #expect(tasks.first?.mediaId == "movie-omdb-tt1160419")
     }
 
     @Test
@@ -705,7 +790,7 @@ struct DetailLifecycleBehaviorTests {
 
         let preview = MediaPreview(id: "ttyoungpope", type: .series, title: "The Young Pope", tmdbId: 123)
 
-        await viewModel.loadDetail(preview: preview, apiKey: "")
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
 
         #expect(viewModel.selectedSeason == 2)
         #expect(viewModel.selectedEpisode?.episodeNumber == 4)
@@ -868,6 +953,16 @@ struct DetailLifecycleBehaviorTests {
                 id: "watch-omdb-episode",
                 mediaId: "tt2300999",
                 episodeId: "tt2301001",
+                title: "Pilot",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            ),
+            "s01e01": WatchHistory(
+                id: "watch-duplicate-synthetic-alias",
+                mediaId: "tt2300999",
+                episodeId: "s01e01",
                 title: "Pilot",
                 progress: 1,
                 duration: 1,

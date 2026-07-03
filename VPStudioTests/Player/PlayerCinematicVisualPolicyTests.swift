@@ -73,6 +73,11 @@ struct PlayerCinematicVisualPolicyIconSurfaceOpacityTests {
     func iconSurfaceShadowOpacity() {
         #expect(PlayerCinematicVisualPolicy.iconSurfaceShadowOpacity == 0.44)
     }
+
+    @Test
+    func activeControlBorderOpacity() {
+        #expect(PlayerCinematicVisualPolicy.activeControlBorderOpacity == 0.88)
+    }
 }
 
 @Suite("PlayerCinematicVisualPolicy - Progress Track Opacity")

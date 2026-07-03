@@ -349,6 +349,23 @@ struct SettingsManagerComprehensiveTests {
         #expect(fetched == nil)
     }
 
+    @Test func getMetadataProviderConfigurationReadsProviderPlans() async throws {
+        let (manager, _, _, tempDir) = try await makeTempSettingsManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await manager.setValue("omdb-key", forKey: SettingsKeys.omdbApiKey)
+        try await manager.setValue("tmdb-key", forKey: SettingsKeys.tmdbApiKey)
+        try await manager.setValue("paid", forKey: SettingsKeys.omdbProviderPlan)
+        try await manager.setValue("invalid", forKey: SettingsKeys.tmdbProviderPlan)
+
+        let configuration = try await manager.getMetadataProviderConfiguration()
+
+        #expect(configuration.omdbApiKey == "omdb-key")
+        #expect(configuration.tmdbApiKey == "tmdb-key")
+        #expect(configuration.omdbPlan == .paid)
+        #expect(configuration.tmdbPlan == .free)
+    }
+
     @Test func getPreferredQualityDefaultsTo1080p() async throws {
         let (manager, _, _, tempDir) = try await makeTempSettingsManager()
         defer { try? FileManager.default.removeItem(at: tempDir) }

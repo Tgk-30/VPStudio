@@ -52,6 +52,23 @@ struct AIAssistantManagerStateCoverageTests {
     }
 
     @Test
+    func aiHTTPTransportRedactsSecretsFromHTTPErrorBodies() {
+        let bearerSecret = "sk_" + "test_secret"
+        let authorizationPrefix = "Authorization: " + "Bearer"
+        let apiKeyName = "api_" + "key"
+        let message = """
+        upstream echoed \(authorizationPrefix) \(bearerSecret) and https://api.example.com/fail?\(apiKeyName)=leaked-token&detail=bad
+        """
+        let redacted = AIHTTPTransport.sanitizedHTTPErrorMessage(from: Data(message.utf8))
+
+        #expect(redacted.contains("Bearer REDACTED"))
+        #expect(redacted.contains("\(apiKeyName)=REDACTED"))
+        #expect(redacted.contains("detail=bad"))
+        #expect(!redacted.contains(bearerSecret))
+        #expect(!redacted.contains("leaked-token"))
+    }
+
+    @Test
     func aiHTTPTransportPerformRetriesOneRateLimitResponse() async throws {
         let state = TransportState()
         let session = URLProtocolHarness.makeSession { request in

@@ -65,11 +65,11 @@ enum PlayerStartupFailurePolicy {
         if let engineError = error as? PlayerEngineError {
             switch engineError {
             case .invalidStreamURL(let value):
-                append(value)
+                append(IndexerLogSanitizer.redactedMessage(value))
             case .startupTimeout:
                 break
             case .initializationFailed(_, let message):
-                append(message)
+                append(IndexerLogSanitizer.redactedMessage(message))
             }
         }
 

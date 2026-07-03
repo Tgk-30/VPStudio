@@ -67,8 +67,6 @@ struct ImmersivePlayerControlsView: View {
                         )
                 }
         }
-        .shadow(color: .black.opacity(0.07), radius: 24)
-        .shadow(color: .black.opacity(0.13), radius: 8, y: 4)
     }
 
     // MARK: - Media Info Header
@@ -80,12 +78,16 @@ struct ImmersivePlayerControlsView: View {
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.78)
             }
             if let chapter = engine.currentChapter(at: engine.currentTime) {
                 Text(chapter.title)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.6))
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.82)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -245,6 +247,7 @@ struct ImmersivePlayerControlsView: View {
         }
         .accessibilityLabel(label)
         .opacity(hasChapters ? 1 : 0)
+        .animation(.easeInOut(duration: 0.18), value: hasChapters)
         .allowsHitTesting(hasChapters)
         .accessibilityHidden(!hasChapters)
     }
@@ -264,17 +267,28 @@ struct ImmersivePlayerControlsView: View {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .tint(.black)
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
                 } else {
                     Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title2)
                         .foregroundStyle(.black)
+                        .transition(.opacity)
                 }
             }
+            .animation(
+                accessibilityReduceMotion ? nil : .easeInOut(duration: ImmersiveControlsPolicy.bufferingIndicatorTransitionDuration),
+                value: engine.isBuffering
+            )
         }
         .buttonStyle(.plain)
         .hoverEffect(.highlight)
         .accessibilityLabel(engine.isPlaying ? "Pause" : "Play")
         .accessibilityValue(playPauseAccessibilityValue)
+        .accessibilityHint(
+            engine.isBuffering
+                ? "Playback is loading."
+                : "Double-tap to toggle playback."
+        )
     }
 
     // MARK: - Secondary Controls

@@ -1268,7 +1268,7 @@ struct DebridConfigSecretMigrationTests {
         #expect(try await secretStore.getSecret(for: expectedKey) == "plaintext-token")
     }
 
-    @Test func blankTokenResolvesToNilAndDeletesPersistedSecret() async throws {
+    @Test func blankTokenResolvesToNilAndDefersPersistedSecretDeletionUntilAfterCommit() async throws {
         let secretStore = TestSecretStore()
         let config = DebridConfig(
             id: "blank",
@@ -1283,6 +1283,10 @@ struct DebridConfigSecretMigrationTests {
         #expect(resolvedToken == nil)
         #expect(persisted.config.apiTokenRef == "")
         #expect(persisted.changed)
+        #expect(persisted.config.shouldDeleteStoredSecretAfterPersisting)
+        #expect(try await secretStore.getSecret(for: config.secretKey) == "old-token")
+
+        try await persisted.config.deleteStoredSecret(using: secretStore)
         #expect(try await secretStore.getSecret(for: config.secretKey) == nil)
     }
 

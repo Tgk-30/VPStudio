@@ -133,8 +133,8 @@ struct SettingsHealthPolicyTests {
             .indexers: SettingsDestinationStatus(message: "No active indexers", kind: .warning),
             .metadata: SettingsDestinationStatus(message: "OMDb key required", kind: .warning),
             .ai: SettingsDestinationStatus(message: "Needs credentials", kind: .warning),
-            .trakt: SettingsDestinationStatus(message: "Not connected", kind: .warning),
-            .simkl: SettingsDestinationStatus(message: "Not connected", kind: .warning),
+            .trakt: SettingsDestinationStatus(message: "Optional", kind: .neutral),
+            .simkl: SettingsDestinationStatus(message: "Unavailable in this build", kind: .neutral),
         ]
         let count = SettingsHealthPolicy.essentialConfiguredCount(statuses: statuses)
         #expect(count == 0)

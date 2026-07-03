@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 struct MediaCardView: View {
     enum InteractionMode: Equatable {
@@ -187,21 +192,55 @@ struct MediaCardView: View {
     @ViewBuilder
     private var posterArtwork: some View {
         if let lastFrameURL {
-            AsyncImage(url: lastFrameURL, transaction: Transaction(animation: .easeOut(duration: 0.4))) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .transition(.opacity)
-                case .failure, .empty:
-                    fallbackPosterArtwork
-                @unknown default:
-                    fallbackPosterArtwork
-                }
+            if lastFrameURL.isFileURL {
+                localLastFrameArtwork(url: lastFrameURL)
+            } else {
+                remoteLastFrameArtwork(url: lastFrameURL)
             }
         } else {
             fallbackPosterArtwork
+        }
+    }
+
+    @ViewBuilder
+    private func localLastFrameArtwork(url: URL) -> some View {
+        #if os(macOS)
+        if let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .transition(.opacity)
+        } else {
+            fallbackPosterArtwork
+        }
+        #elseif canImport(UIKit)
+        if let image = UIImage(contentsOfFile: url.path) {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .transition(.opacity)
+        } else {
+            fallbackPosterArtwork
+        }
+        #else
+        fallbackPosterArtwork
+        #endif
+    }
+
+    @ViewBuilder
+    private func remoteLastFrameArtwork(url: URL) -> some View {
+        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.4))) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .transition(.opacity)
+            case .failure, .empty:
+                fallbackPosterArtwork
+            @unknown default:
+                fallbackPosterArtwork
+            }
         }
     }
 

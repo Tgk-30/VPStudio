@@ -1,0 +1,13 @@
+{
+  "images" : [
+    {
+      "filename" : "vpstudio-logo-spatial-lens-v4-1024.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

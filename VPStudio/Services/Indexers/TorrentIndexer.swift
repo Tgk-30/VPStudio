@@ -19,16 +19,20 @@ enum IndexerParseError: LocalizedError, Equatable {
 }
 
 enum IndexerLogSanitizer {
-    private static let urlPattern = try! NSRegularExpression(
+    private static let urlPattern = SensitiveURLQueryPolicy.regularExpression(
         pattern: #"(https?|magnet):\/\/[^\s"']+|magnet:\?[^\s"']+"#,
         options: [.caseInsensitive]
     )
-    private static let tokenLikeSegment = try! NSRegularExpression(
+    private static let tokenLikeSegment = SensitiveURLQueryPolicy.regularExpression(
         pattern: #"^[A-Za-z0-9._~-]{16,}$"#,
         options: []
     )
-    private static let looseTokenPattern = try! NSRegularExpression(
+    private static let looseTokenPattern = SensitiveURLQueryPolicy.regularExpression(
         pattern: #"(?<=(^|[\s\(\[\{<:=""'\-]))([A-Za-z0-9._~-]{16,})(?=($|[\s\)\]\}>"'!?.,:;]))"#,
+        options: []
+    )
+    private static let assignmentPattern = SensitiveURLQueryPolicy.regularExpression(
+        pattern: #"(?i)(?<![A-Za-z0-9_-])("# + SensitiveURLQueryPolicy.assignmentNameAlternationPattern + #")=([^\s&]+)"#,
         options: []
     )
 
@@ -78,7 +82,11 @@ enum IndexerLogSanitizer {
 
     static func redactedErrorMessage(_ error: Error) -> String {
         let localized = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        return redactLooseString(localized)
+        return redactedMessage(localized)
+    }
+
+    static func redactedMessage(_ value: String) -> String {
+        redactLooseString(value)
     }
 
     private static func shouldRedactQueryItem(named name: String, value: String?) -> Bool {
@@ -99,10 +107,13 @@ enum IndexerLogSanitizer {
     }
 
     private static func redactLooseString(_ value: String) -> String {
+        guard let urlPattern else {
+            return redactStandaloneSecrets(from: value)
+        }
         let nsRange = NSRange(value.startIndex..<value.endIndex, in: value)
         let matches = urlPattern.matches(in: value, options: [], range: nsRange)
         if matches.isEmpty {
-            return redactStandaloneTokens(from: value)
+            return redactStandaloneSecrets(from: value)
         }
 
         var redacted = value
@@ -111,10 +122,26 @@ enum IndexerLogSanitizer {
             let candidate = String(redacted[range])
             redacted.replaceSubrange(range, with: redactedURLString(candidate))
         }
-        return redactStandaloneTokens(from: redacted)
+        return redactStandaloneSecrets(from: redacted)
+    }
+
+    private static func redactStandaloneSecrets(from value: String) -> String {
+        let bearerRedacted = SensitiveURLQueryPolicy.redactedBearerTokens(in: value)
+        guard let assignmentPattern else {
+            return redactStandaloneTokens(from: bearerRedacted)
+        }
+        let nsRange = NSRange(bearerRedacted.startIndex..<bearerRedacted.endIndex, in: bearerRedacted)
+        let assignmentRedacted = assignmentPattern.stringByReplacingMatches(
+            in: bearerRedacted,
+            options: [],
+            range: nsRange,
+            withTemplate: "$1=REDACTED"
+        )
+        return redactStandaloneTokens(from: assignmentRedacted)
     }
 
     private static func redactStandaloneTokens(from value: String) -> String {
+        guard let looseTokenPattern else { return value }
         let nsRange = NSRange(value.startIndex..<value.endIndex, in: value)
         let matches = looseTokenPattern.matches(in: value, options: [], range: nsRange)
         guard !matches.isEmpty else { return value }
@@ -129,6 +156,7 @@ enum IndexerLogSanitizer {
 
     private static func looksSensitive(_ value: String) -> Bool {
         guard value.count >= 16 else { return false }
+        guard let tokenLikeSegment else { return false }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         return tokenLikeSegment.firstMatch(in: value, options: [], range: range) != nil
     }
@@ -186,7 +214,11 @@ actor IndexerManager {
         secretStore: any SecretStore = KeychainSecretStore(serviceName: "com.vpstudio.credentials"),
         indexers: [any TorrentIndexer] = [],
         hasInitialized: Bool = false,
-        perIndexerSearchTimeout: Duration = .seconds(12)
+        // Aggregating indexers (Jackett/Prowlarr/Torrentio) that scrape many
+        // trackers can legitimately take >12s; a tighter cap silently discarded
+        // their (successful) results. Concurrency means this only extends the
+        // worst-case overall wait, not the common case.
+        perIndexerSearchTimeout: Duration = .seconds(20)
     ) {
         self.database = database
         self.secretStore = secretStore
@@ -210,6 +242,7 @@ actor IndexerManager {
         if hydratedConfigs != fetchedConfigs {
             try await database.saveIndexerConfigs(hydratedConfigs)
         }
+        await Self.cleanupClearedIndexerSecrets(in: hydratedConfigs, secretStore: secretStore)
 
         let runtimeConfigs = try await Self.runtimeConfigs(from: hydratedConfigs, secretStore: secretStore)
         let activeConfigs = runtimeConfigs.filter(\.isActive)
@@ -235,7 +268,7 @@ actor IndexerManager {
     }
 
     func search(imdbId: String, type: MediaType, season: Int? = nil, episode: Int? = nil) async throws -> [TorrentResult] {
-        let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) ?? imdbId
+        let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: imdbId) ?? imdbId
         return try await runConcurrentSearch { indexer in
             let results = try await indexer.search(imdbId: normalizedIMDbID, type: type, season: season, episode: episode)
             if type == .series, let season, let episode {
@@ -396,6 +429,15 @@ actor IndexerManager {
         return persisted
     }
 
+    private static func cleanupClearedIndexerSecrets(
+        in configs: [IndexerConfig],
+        secretStore: any SecretStore
+    ) async {
+        for config in configs where config.shouldDeleteStoredSecretAfterPersisting {
+            try? await config.deleteStoredSecret(using: secretStore)
+        }
+    }
+
     private static func runtimeConfigs(from configs: [IndexerConfig], secretStore: any SecretStore) async throws -> [IndexerConfig] {
         var runtime: [IndexerConfig] = []
         runtime.reserveCapacity(configs.count)
@@ -406,6 +448,22 @@ actor IndexerManager {
 
         return runtime
     }
+}
+
+/// Ephemeral session for all indexer traffic: no shared cookie jar or URL
+/// cache (query API keys must never enter shared cache keys and a hostile
+/// indexer must not plant cookies visible to other requests), and no
+/// credential storage.
+enum IndexerHTTPSession {
+    static let hardened: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return URLSession(configuration: configuration)
+    }()
 }
 
 enum IndexerFactory {
@@ -419,11 +477,11 @@ enum IndexerFactory {
 
         switch config.indexerType {
         case .apiBay:
-            return APIBayIndexer(baseURL: config.baseURL, session: session)
+            return APIBayIndexer(baseURL: config.baseURL, session: session ?? IndexerHTTPSession.hardened)
         case .yts:
-            return YTSIndexer(baseURLs: config.baseURL.map { [$0] }, session: session)
+            return YTSIndexer(baseURLs: config.baseURL.map { [$0] }, session: session ?? IndexerHTTPSession.hardened)
         case .eztv:
-            return EZTVIndexer(baseURL: config.baseURL ?? "https://eztvx.to/api", session: session)
+            return EZTVIndexer(baseURL: config.baseURL ?? "https://eztvx.to/api", session: session ?? IndexerHTTPSession.hardened)
         case .jackett, .prowlarr, .torznab:
             guard let url = config.baseURL else { return nil }
             return TorznabIndexer(
@@ -433,18 +491,18 @@ enum IndexerFactory {
                 apiKey: config.apiKey,
                 categoryFilter: config.categoryFilter,
                 apiKeyTransport: config.apiKeyTransport,
-                session: session ?? .shared
+                session: session ?? IndexerHTTPSession.hardened
             )
         case .zilean:
             guard let url = config.baseURL else { return nil }
-            return ZileanIndexer(baseURL: url, endpointPath: config.endpointPath, session: session)
+            return ZileanIndexer(baseURL: url, endpointPath: config.endpointPath, session: session ?? IndexerHTTPSession.hardened)
         case .stremio:
             guard let url = config.baseURL else { return nil }
             return StremioIndexer(
                 name: config.name,
                 baseURL: url,
                 endpointPath: config.endpointPath,
-                session: session ?? .shared
+                session: session ?? IndexerHTTPSession.hardened
             )
         }
     }

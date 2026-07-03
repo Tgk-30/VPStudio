@@ -16,6 +16,29 @@ struct ImmersiveControlsPolicyPositioningTests {
     }
 
     @Test
+    func controlsForwardOffsetScalesForLargeScreensWithoutMovingTooFarAway() {
+        #expect(ImmersiveControlsPolicy.controlsForwardOffset(forScreenDistance: 10) == 1.5)
+        #expect(ImmersiveControlsPolicy.controlsForwardOffset(forScreenDistance: 20) == 2.0)
+        #expect(ImmersiveControlsPolicy.controlsForwardOffset(forScreenDistance: 35) == 3.2)
+        #expect(ImmersiveControlsPolicy.controlsForwardOffset(forScreenDistance: -1) == 1.5)
+    }
+
+    @Test
+    func tapCatcherGeometryStaysBehindAndNearTheScreenPlane() {
+        let size = ImmersiveControlsPolicy.tapCatcherSize(screenWidth: 10, screenHeight: 5.625)
+        #expect(size.x == 12.4)
+        #expect(size.y == 8.025)
+        #expect(size.z == ImmersiveControlsPolicy.tapCatcherDepth)
+
+        let position = ImmersiveControlsPolicy.tapCatcherPosition(
+            forScreenPosition: SIMD3<Float>(0, 1.6, -20)
+        )
+        #expect(position.x == 0)
+        #expect(position.y == 1.6)
+        #expect(position.z == -20.12)
+    }
+
+    @Test
     func controlsVerticalOffset() {
         #expect(ImmersiveControlsPolicy.controlsVerticalOffset == -0.15)
     }
@@ -88,8 +111,11 @@ struct ImmersiveControlsPolicyScrubberGeometryTests {
         #expect(ImmersiveControlsPolicy.scrubberDraggingThumbSize > ImmersiveControlsPolicy.scrubberIdleThumbSize)
         // visionOS gaze+pinch needs the same forgiving target as the circular
         // controls; 44pt is too easy to miss at immersive viewing distance.
-        #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= 58)
+        #expect(ImmersiveControlsPolicy.controlButtonDiameter >= 60)
+        #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= 60)
         #expect(ImmersiveControlsPolicy.scrubberHitTargetHeight >= ImmersiveControlsPolicy.controlButtonDiameter)
+        #expect(ImmersiveControlsPolicy.bufferingIndicatorTransitionDuration > 0)
+        #expect(ImmersiveControlsPolicy.bufferingIndicatorTransitionDuration <= 0.18)
     }
 
     @Test

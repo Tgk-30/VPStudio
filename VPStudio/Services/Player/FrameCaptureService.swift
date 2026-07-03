@@ -44,6 +44,48 @@ enum FrameCaptureService {
         framesDirectory()?.appendingPathComponent(fileName(mediaId: mediaId, episodeId: episodeId))
     }
 
+    static func storedFrameURL(from path: String?, fileManager: FileManager = .default) -> URL? {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return nil
+        }
+
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard isManagedFrameURL(url, fileManager: fileManager),
+              isReadableJPEGFile(at: url, fileManager: fileManager) else {
+            return nil
+        }
+        return url
+    }
+
+    private static func isManagedFrameURL(_ url: URL, fileManager: FileManager) -> Bool {
+        guard url.isFileURL,
+              let directory = framesDirectory()?.resolvingSymlinksInPath() else {
+            return false
+        }
+
+        let directoryPath = directory.path.hasSuffix("/") ? directory.path : directory.path + "/"
+        return url.path.hasPrefix(directoryPath)
+    }
+
+    private static func isReadableJPEGFile(at url: URL, fileManager: FileManager) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let fileSize = attributes[.size] as? NSNumber,
+              fileSize.intValue >= 4,
+              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
+            return false
+        }
+
+        return data.count >= 4
+            && data.first == 0xFF
+            && data.dropFirst().first == 0xD8
+            && data.suffix(2).elementsEqual([0xFF, 0xD9])
+    }
+
     // MARK: - Capture
 
     /// Generates a still (as JPEG data) from a raw `AVPlayer`'s asset at the given time.

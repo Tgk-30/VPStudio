@@ -70,7 +70,7 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         case .indexers:
             return "Search Providers"
         case .metadata:
-            return "Movie & TV Metadata (OMDb)"
+            return "Movie & TV Metadata"
         case .ai:
             return "AI Recommendations"
         case .trakt:
@@ -140,7 +140,7 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         case .indexers:
             return "Add search providers so VPStudio can find sources quickly."
         case .metadata:
-            return "Add your OMDb key for posters, details, and Discover results."
+            return "Add an OMDb key for ratings, artwork, details, Discover results, and sync identity."
         case .ai:
             return "Choose and configure your AI provider for personalized recommendations and rating help."
         case .trakt:
@@ -204,7 +204,7 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         case .indexers:
             return ["torznab", "jackett", "prowlarr", "zilean", "stremio", "search"]
         case .metadata:
-            return ["omdb", "imdb", "metadata", "movie database", "api key"]
+            return ["omdb", "tmdb", "imdb", "metadata", "movie database", "api key"]
         case .ai:
             return ["openai", "anthropic", "ollama", "openrouter", "llm", "assistant", "ratings", "recommendations", "local", "on-device", "mlx", "download model", "qwen", "phi", "llama"]
         case .trakt:

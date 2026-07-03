@@ -15,6 +15,7 @@ struct SettingsStatusSnapshot: Equatable, Sendable {
     var activeDebridCount = 0
     var activeIndexerCount = 0
     var hasMetadataKey = false
+    var metadataProviderSummary: String?
     var hasOpenSubtitlesKey = false
     var environmentAssetCount = 0
     var aiProvider: AIProviderKind = .anthropic
@@ -66,7 +67,7 @@ enum SettingsStatusFormatter {
 
         case .metadata:
             if snapshot.hasMetadataKey {
-                return SettingsDestinationStatus(message: "OMDb key configured", kind: .positive)
+                return SettingsDestinationStatus(message: snapshot.metadataProviderSummary ?? "Metadata configured", kind: .positive)
             }
             return SettingsDestinationStatus(message: "OMDb key required", kind: .warning)
 
@@ -96,12 +97,12 @@ enum SettingsStatusFormatter {
                 let message = snapshot.isLocalAIEnabled
                     ? "\(provider) needs a downloaded model"
                     : "\(provider) is disabled"
-                return SettingsDestinationStatus(message: message, kind: .warning)
+                return SettingsDestinationStatus(message: message, kind: .neutral)
             }
 
             return SettingsDestinationStatus(
-                message: "\(snapshot.aiProvider.displayName) needs credentials",
-                kind: .warning
+                message: "\(snapshot.aiProvider.displayName) not set",
+                kind: .neutral
             )
 
         case .trakt:
@@ -111,7 +112,7 @@ enum SettingsStatusFormatter {
             if snapshot.hasTraktCredentials {
                 return SettingsDestinationStatus(message: "Ready to connect", kind: .neutral)
             }
-            return SettingsDestinationStatus(message: "Not connected", kind: .warning)
+            return SettingsDestinationStatus(message: "Optional", kind: .neutral)
 
         case .simkl:
             if snapshot.hasSimklCredentials {
@@ -139,7 +140,7 @@ enum SettingsStatusFormatter {
                     kind: .positive
                 )
             }
-            return SettingsDestinationStatus(message: "No environments added", kind: .warning)
+            return SettingsDestinationStatus(message: "Apple Environment available", kind: .neutral)
 
         case .library:
             return SettingsDestinationStatus(message: "Browse your library", kind: .neutral)
@@ -151,7 +152,7 @@ enum SettingsStatusFormatter {
             return SettingsDestinationStatus(message: "Erase all app data", kind: .neutral)
 
         case .testMode:
-            return SettingsDestinationStatus(message: "9 screens to preview", kind: .neutral)
+            return SettingsDestinationStatus(message: "10 screens to preview", kind: .neutral)
         }
     }
 

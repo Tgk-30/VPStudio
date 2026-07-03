@@ -432,7 +432,7 @@ struct ComponentConstructionTests {
             SeriesDetailLayout(
                 viewModel: viewModel,
                 title: "The Expanse",
-                metadataApiKey: "test-key",
+                metadataConfiguration: MetadataProviderConfiguration(omdbApiKey: "test-key"),
                 mediaType: .series,
                 streamResultsAnchor: "streams",
                 shareItem: "The Expanse",
@@ -502,7 +502,7 @@ struct ComponentConstructionTests {
             SeriesDetailLayout(
                 viewModel: viewModel,
                 title: movie.title,
-                metadataApiKey: "test-key",
+                metadataConfiguration: MetadataProviderConfiguration(omdbApiKey: "test-key"),
                 mediaType: .movie,
                 streamResultsAnchor: "streams",
                 shareItem: movie.title,
@@ -1690,6 +1690,7 @@ struct ComponentConstructionTests {
             (.environmentSettings, "Environment Settings", "Presets + playback", "pano"),
             (.player, "Player", "Controls + overlays", "play.circle"),
             (.settings, "Settings", "All categories", "gearshape"),
+            (.metadataSettings, "Metadata Settings", "Provider plans", "film"),
             (.setupPreferences, "Setup Preferences", "Wizard source filters", "wand.and.stars"),
         ]
 
@@ -1713,6 +1714,7 @@ struct ComponentConstructionTests {
         #expect(TestScreenLaunchPolicy.screen(for: "environments-tab") == .environmentsTab)
         #expect(TestScreenLaunchPolicy.screen(for: "Environment Picker") == .environmentPicker)
         #expect(TestScreenLaunchPolicy.screen(for: "environment settings") == .environmentSettings)
+        #expect(TestScreenLaunchPolicy.screen(for: "metadata settings") == .metadataSettings)
         #expect(TestScreenLaunchPolicy.screen(for: "   ") == nil)
         #expect(TestScreenLaunchPolicy.screen(for: "unknown") == nil)
     }

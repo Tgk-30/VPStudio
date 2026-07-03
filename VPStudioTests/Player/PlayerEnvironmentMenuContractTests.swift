@@ -70,6 +70,28 @@ struct PlayerEnvironmentMenuViewCoverageTests {
     }
 
     @Test
+    func standardLabelSpecDoesNotPromiseReflectionsWithoutSystemVideoSurface() {
+        let avPlayerSpec = PlayerEnvironmentMenuLabelSpec.standardRoom(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            canUseSystemVideoSurface: true
+        )
+        let fallbackSpec = PlayerEnvironmentMenuLabelSpec.standardRoom(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            canUseSystemVideoSurface: false
+        )
+
+        #expect(avPlayerSpec.subtitle == PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit)
+        #expect(avPlayerSpec.subtitle?.localizedCaseInsensitiveContains("reflections") == false)
+        #expect(fallbackSpec.subtitle == PlayerEnvironmentMenuPolicy.appleEnvironmentFallbackBenefit)
+        #expect(fallbackSpec.subtitle?.localizedCaseInsensitiveContains("reflections") == false)
+        #expect(fallbackSpec.menuTitle == "Apple Environment - Standard window until supported playback is active")
+    }
+
+    @Test
     func standardMenuAssetSpecUsesLiveSelectionInsteadOfPersistedAssetFlags() {
         let selectedAsset = makeAsset(
             id: "selected",
@@ -220,6 +242,7 @@ struct PlayerEnvironmentMenuViewCoverageTests {
         var selectedCinema = false
         var selectedAssetID: String?
         var clearedStandardRoom = false
+        var expandedAppleEnvironment = false
         var dismissedCount = 0
 
         PlayerEnvironmentCinemaRow(
@@ -252,14 +275,25 @@ struct PlayerEnvironmentMenuViewCoverageTests {
             action: { selectedAssetID = $0.id }
         ).performAction()
 
-        PlayerEnvironmentExitRow(role: .destructive) {
+        PlayerEnvironmentAppleExpandRow {
+            expandedAppleEnvironment = true
+        }.performAction()
+
+        PlayerEnvironmentExitRow(role: nil) {
             dismissedCount += 1
+        }.performAction()
+
+        var closedMenu = false
+        PlayerEnvironmentCloseMenuRow {
+            closedMenu = true
         }.performAction()
 
         #expect(selectedCinema)
         #expect(clearedStandardRoom)
         #expect(selectedAssetID == asset.id)
+        #expect(expandedAppleEnvironment)
         #expect(dismissedCount == 1)
+        #expect(closedMenu)
     }
 
     @Test
@@ -297,7 +331,9 @@ struct PlayerEnvironmentMenuViewCoverageTests {
             isImmersiveSpaceOpen: true,
             action: { _ in }
         ))
+        SwiftUIViewDiagnosticHost.render(PlayerEnvironmentAppleExpandRow(action: {}))
         SwiftUIViewDiagnosticHost.render(PlayerEnvironmentExitRow(role: nil, action: {}))
+        SwiftUIViewDiagnosticHost.render(PlayerEnvironmentCloseMenuRow(action: {}))
 
         #expect(asset.name == "Northern Sky")
     }
@@ -328,18 +364,48 @@ struct PlayerEnvironmentMenuSourceContractTests {
         let source = try Self.playerEnvironmentMenuSource()
 
         #expect(source.contains(#"title: "Cinema Environment""#))
-        #expect(source.contains(#"title: "Standard Room""#))
+        #expect(source.contains("title: EnvironmentPreviewRowPolicy.appleEnvironmentTitle"))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.triggerTitle("))
         #expect(source.contains("leadingSystemImage: PlayerEnvironmentMenuPolicy.standardRoomIconName("))
         #expect(source.contains("leadingSystemImage: PlayerEnvironmentMenuPolicy.cinemaIconName("))
         #expect(source.contains("canOpenCinema: canOpenCinema"))
+        #expect(source.contains("canUseSystemVideoSurface: canUseSystemVideoSurface"))
+        #expect(source.contains("static let appleEnvironmentFallbackBenefit"))
+        #expect(source.contains("static let appleEnvironmentPendingBenefit"))
+        #expect(source.contains("static let appleEnvironmentExpandTitle"))
+        #expect(source.contains("static let closeMenuTitle = PlayerCinematicChromePolicy.closeMenuTitle"))
+        #expect(source.contains("var onCloseMenu: () -> Void = {}"))
+        #expect(source.contains("PlayerEnvironmentCloseMenuRow(action: onCloseMenu)"))
+        #expect(source.contains("static let appleEnvironmentExpandIconName"))
+        #expect(source.contains("PlayerEnvironmentAppleExpandRow"))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction("))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.appleEnvironmentExpandTitle"))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.appleEnvironmentExpandIconName"))
+        #expect(source.contains("System expansion with reflections") == false)
+        #expect(source.contains("Standard window; needs AVPlayer surface") == false)
+        #expect(source.contains("System Scene") == false)
+        #expect(source.contains("Requires AVPlayer playback") == false)
         #expect(source.contains("PlayerCinemaEnvironmentPolicy.unavailableMessage"))
         #expect(source.contains(#"leadingSystemImage: PlayerEnvironmentMenuPolicy.menuAssetIconName("#))
         #expect(source.contains("asset.isActive") == false)
         #expect(source.contains("let selectedAssetID = effectiveSelectedAssetID"))
         #expect(source.contains("private var effectiveSelectedAssetID"))
+        #expect(source.contains("private var effectiveSelectedAssetName"))
         #expect(source.contains("activeEnvironment: appState.activeEnvironment"))
         #expect(source.contains(#"Label("Exit Environment", systemImage: "xmark.circle")"#))
-        #expect(containsIgnoringWhitespace(source, #"Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))"#))
+        #expect(containsIgnoringWhitespace(
+            source,
+            """
+            Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(
+                selectedAssetID: selectedAssetID,
+                activeEnvironment: appState.activeEnvironment,
+                isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+            ))
+            """
+        ))
+        #expect(source.contains(".accessibilityLabel(PlayerEnvironmentMenuPolicy.triggerTitle("))
+        #expect(source.contains(".blue") == false)
+        #expect(source.contains("VPColor.info"))
     }
 
     @Test
@@ -381,8 +447,25 @@ struct PlayerEnvironmentMenuSourceContractTests {
         #expect(countOccurrences(of: "Menu {", in: buttonBody) == 1)
         #expect(menuBody.contains("showsExitEnvironment(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen)"))
         #expect(buttonBody.contains("showsExitEnvironment(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen)"))
+        #expect(menuBody.contains("PlayerEnvironmentAppleExpandRow(action: onExpandAppleEnvironment)"))
+        #expect(buttonBody.contains("PlayerEnvironmentAppleExpandRow(action: onExpandAppleEnvironment)"))
         #expect(buttonBody.contains(".buttonStyle(.plain)"))
         #expect(buttonBody.contains(".hoverEffect(.lift)"))
+        #expect(source.contains("static let triggerDisclosureIconName = \"chevron.down\""))
+        #expect(source.contains("static let compactTriggerMinWidth: CGFloat = 170"))
+        #expect(source.contains("static let compactTriggerMaxWidth: CGFloat = 328"))
+        #expect(source.contains("static let compactTriggerMinHeight: CGFloat = PlayerCinematicChromePolicy.quickActionPillMinHeight"))
+        #expect(source.contains("static let compactTriggerMinimumScaleFactor: CGFloat = 0.88"))
+        #expect(source.contains("static let menuRowMinimumScaleFactor: CGFloat = 0.78"))
+        #expect(source.contains("Image(systemName: PlayerEnvironmentMenuPolicy.triggerDisclosureIconName)"))
+        #expect(source.contains(".minimumScaleFactor(PlayerEnvironmentMenuPolicy.menuRowMinimumScaleFactor)"))
+        #expect(source.contains(".minimumScaleFactor(PlayerEnvironmentMenuPolicy.compactTriggerMinimumScaleFactor)"))
+        #expect(source.contains(".layoutPriority(1)"))
+        #expect(source.contains(".fixedSize()"))
+        #expect(source.contains("minWidth: PlayerEnvironmentMenuPolicy.compactTriggerMinWidth"))
+        #expect(source.contains("maxWidth: PlayerEnvironmentMenuPolicy.compactTriggerMaxWidth"))
+        #expect(source.contains("minHeight: PlayerEnvironmentMenuPolicy.compactTriggerMinHeight"))
+        #expect(source.contains(".contentShape(Capsule())"))
         #expect(containsIgnoringWhitespace(
             source,
             """
@@ -449,8 +532,10 @@ struct PlayerEnvironmentMenuSourceContractTests {
         #expect(menuBody.contains("PlayerEnvironmentExitRow(role: nil, action: onDismiss)"))
         #expect(buttonBody.contains("PlayerEnvironmentStandardRow("))
         #expect(buttonBody.contains("PlayerEnvironmentCompactAssetRow("))
-        #expect(buttonBody.contains("PlayerEnvironmentExitRow(role: .destructive, action: onDismiss)"))
-        #expect(menuBody.contains("Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))"))
+        #expect(buttonBody.contains("PlayerEnvironmentExitRow(role: nil, action: onDismiss)"))
+        #expect(menuBody.contains("PlayerEnvironmentMenuPolicy.triggerIconName("))
+        #expect(menuBody.contains("selectedAssetID: selectedAssetID"))
+        #expect(menuBody.contains("private var effectiveSelectedAssetName"))
     }
 
     private static func playerEnvironmentMenuSource() throws -> String {

@@ -210,7 +210,7 @@ struct DiscoverErrorPresentation: Equatable {
 }
 
 enum DiscoverErrorPresentationPolicy {
-    static let setupInlineMessage = "Add your OMDb key in Settings, then come back here for metadata, posters, and Discover rows. Library and Downloads keep working in the meantime."
+    static let setupInlineMessage = "Add an OMDb key in Settings, then come back here for metadata, posters, ratings, and Discover rows. Library and Downloads keep working in the meantime."
 
     static func presentation(for error: AppError) -> DiscoverErrorPresentation {
         let isSetupError = error.requiresMetadataSetupAction
@@ -301,6 +301,12 @@ enum DiscoverNavigationPolicy {
 
     static func continueWatchingRoute(for preview: MediaPreview) -> DiscoverDetailRoute {
         DiscoverDetailRoute(preview: preview, initialAction: .resumePlayback)
+    }
+}
+
+enum ContinueWatchingArtworkPolicy {
+    static func lastFrameURL(from path: String?, fileManager: FileManager = .default) -> URL? {
+        FrameCaptureService.storedFrameURL(from: path, fileManager: fileManager)
     }
 }
 
@@ -421,10 +427,7 @@ struct DiscoverView: View {
                         #if !os(macOS)
                         .tabViewStyle(.page(indexDisplayMode: .never))
                         #endif
-                        // Match the hero's own height (540) — the legacy 604 left a 64pt dead
-                        // band below the card now that the default page dots are hidden, which
-                        // the custom indicator was floating in.
-                        .frame(height: 540)
+                        .frame(height: DiscoverLayoutPolicy.heroHeight)
                         // Premium bar-style page indicator (Apple TV+ feel) instead of the
                         // default UIPageControl dots.
                         .overlay(alignment: .bottom) {
@@ -476,6 +479,9 @@ struct DiscoverView: View {
             .animation(.easeOut(duration: 0.25), value: discoverLoadingPresentation)
             .padding(.horizontal, 4)
             .padding(.bottom, DiscoverLayoutPolicy.bottomContentPadding(for: appState.navigationLayout))
+        }
+        .safeAreaInset(edge: .bottom) {
+            VPBottomViewportScrim(height: DiscoverLayoutPolicy.bottomViewportInset)
         }
         .background {
             if useObsidianGlass {
@@ -570,6 +576,9 @@ struct DiscoverView: View {
             metadataReloadTask?.cancel()
             userRatingsReloadTask?.cancel()
             recommendationsFilterTask?.cancel()
+            continueWatchingResumeTask?.cancel()
+            continueWatchingResumeTask = nil
+            resumingItemID = nil
         }
     }
 
@@ -890,16 +899,19 @@ struct DiscoverView: View {
 
     @MainActor
     private func loadUserRatings() async {
-        let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
-        userRatings = TasteRatingLookupPolicy.lookup(from: events)
+        async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)
+        async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()
+        let events = (try? await eventsLoad) ?? []
+        let aliasItems = (try? await aliasItemsLoad) ?? []
+        userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)
     }
 
     @MainActor
     private func reloadDiscoverForLatestMetadataKey() async {
-        let key = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
+        let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
         viewModel.configure(database: appState.database)
         currentHeroIndex = 0
-        await viewModel.load(apiKey: key)
+        await viewModel.load(configuration: configuration)
         await viewModel.refreshResolvedAIPreviewsIfNeeded()
         await viewModel.loadAIRecommendationsIfNeeded(
             aiManager: appState.aiAssistantManager,
@@ -920,8 +932,8 @@ struct DiscoverView: View {
     private var continueWatchingFrames: [String: URL] {
         var result: [String: URL] = [:]
         for entry in viewModel.continueWatching {
-            if let path = entry.history.lastFrameImagePath {
-                result[entry.preview.continueWatchingRowID] = URL(fileURLWithPath: path)
+            if let url = ContinueWatchingArtworkPolicy.lastFrameURL(from: entry.history.lastFrameImagePath) {
+                result[entry.preview.continueWatchingRowID] = url
             }
         }
         return result
@@ -948,8 +960,8 @@ struct DiscoverView: View {
 
         resumingItemID = preview.continueWatchingRowID
         continueWatchingResumeTask?.cancel()
+        let resumeItemID = preview.continueWatchingRowID
         continueWatchingResumeTask = Task { @MainActor in
-            defer { resumingItemID = nil }
             if let request = await appState.resolveContinueWatchingSession(
                 history: entry.history,
                 preview: entry.preview
@@ -959,6 +971,7 @@ struct DiscoverView: View {
                 // than dead-end, route through the detail page (which shows the "already playing"
                 // toast or resumes once the slot frees).
                 guard appState.activePlayerSession == nil else {
+                    clearContinueWatchingResumeState(for: resumeItemID)
                     appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
                     return
                 }
@@ -966,19 +979,31 @@ struct DiscoverView: View {
                 // player — same as Detail.openPlayer. Falls back to embedded if the external
                 // app declines/isn't installed.
                 let preference = await ExternalPlayerSettings.loadPreference(from: appState.settingsManager)
+                guard !Task.isCancelled else { return }
+                clearContinueWatchingResumeState(for: resumeItemID)
                 if let launchURL = ExternalPlayerRouting.launchURL(for: request.stream.streamURL, preference: preference) {
                     let accepted = await withCheckedContinuation { continuation in
                         openURL(launchURL) { continuation.resume(returning: $0) }
                     }
+                    guard !Task.isCancelled else { return }
                     if accepted { return }
                 }
-                appState.activePlayerSession = request
+                appState.beginEmbeddedPlayerSession(request)
                 openWindow(id: "player", value: request)
             } else {
+                guard !Task.isCancelled else { return }
+                clearContinueWatchingResumeState(for: resumeItemID)
                 // No usable stored source — fall back to the normal search→resolve→play path.
                 appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
             }
         }
+    }
+
+    private func clearContinueWatchingResumeState(for itemID: String) {
+        if resumingItemID == itemID {
+            resumingItemID = nil
+        }
+        continueWatchingResumeTask = nil
     }
 }
 
@@ -1296,7 +1321,7 @@ struct FeaturedHeroView: View {
         GeometryReader { proxy in
             heroBody(availableWidth: proxy.size.width)
         }
-        .frame(height: 540)
+        .frame(height: DiscoverLayoutPolicy.heroHeight)
         .clipShape(RoundedRectangle(cornerRadius: 28))
         .overlay(
             RoundedRectangle(cornerRadius: 28)
@@ -1327,7 +1352,7 @@ struct FeaturedHeroView: View {
     private func heroBody(availableWidth: CGFloat) -> some View {
         ZStack(alignment: .bottomLeading) {
             heroBackdropLayer
-                .frame(height: 540)
+                .frame(height: DiscoverLayoutPolicy.heroHeight)
                 .clipped()
 
             // Cinematic gradient fade to dark at bottom

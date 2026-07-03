@@ -123,7 +123,10 @@ struct MLXInferenceAdapterContractTests {
         let source = try adapterSource()
 
         #expect(source.contains("static let snapshotMatchingPatterns = [\"*.mlmodelc/*\", \"*.mlpackage/*\", \"*.json\", \"*.jinja\", \"tokenizer*\"]"))
-        #expect(source.contains("let request = snapshotRequest(repoID: repoID)"))
+        #expect(source.contains("revision: String,"))
+        #expect(source.contains("LocalModelRevisionPolicy.normalizedImmutableRevision(revision)"))
+        #expect(source.contains("let request = snapshotRequest(repoID: repoID, revision: immutableRevision)"))
+        #expect(source.contains("revision: request.revision"))
         #expect(source.contains("matching: request.matchingPatterns"))
         #expect(source.contains("return try await HubApi.shared.snapshot("))
     }

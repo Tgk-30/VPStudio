@@ -6,6 +6,7 @@ enum ExploreGenreTilePolicy {
     static let columnSpacing: CGFloat = 14
     static let rowSpacing: CGFloat = 14
     static let cornerRadius: CGFloat = VPRadius.control
+    static let defaultFallbackImageName = "genre-art-deep"
     static let referenceAspectRatio: CGFloat = 128.0 / 142.0
     static let artworkOverscanScale: CGFloat = 1.0
     static let labelFontSize: CGFloat = 14
@@ -23,7 +24,16 @@ enum ExploreGenreTilePolicy {
     }
 
     static func imageName(for card: ExploreMoodCard) -> String {
-        card.artImageName ?? "genre-ref-\(card.id)"
+        if let artImageName = card.artImageName {
+            return artImageName
+        }
+
+        let catalogFallback = "genre-art-\(card.id)"
+        if knownCatalogArtImageNames.contains(catalogFallback) {
+            return catalogFallback
+        }
+
+        return defaultFallbackImageName
     }
 
     static func accessibilityLabel(for card: ExploreMoodCard) -> String {
@@ -56,6 +66,10 @@ enum ExploreGenreTilePolicy {
         let rows = rowCount(for: itemCount, availableWidth: availableWidth)
         guard rows > 0 else { return 0 }
         return CGFloat(rows) * tileHeight + CGFloat(rows - 1) * rowSpacing
+    }
+
+    private static var knownCatalogArtImageNames: Set<String> {
+        Set(ExploreGenreCatalog.cards.compactMap(\.artImageName))
     }
 }
 

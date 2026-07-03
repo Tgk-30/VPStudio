@@ -50,7 +50,8 @@ enum AudioSessionConfigurator {
 
             try session.setActive(true)
         } catch {
-            logger.error("Failed to configure AVAudioSession: \(error.localizedDescription, privacy: .public)")
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            logger.error("Failed to configure AVAudioSession: \(reason, privacy: .public)")
         }
     }
     #else

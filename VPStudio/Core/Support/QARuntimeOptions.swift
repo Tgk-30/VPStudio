@@ -89,22 +89,30 @@ enum QARuntimeOptions {
         environment.stringList(key)
     }
 
+    static let initialTab: SidebarTab? = {
+        guard let rawValue = string("VPSTUDIO_QA_INITIAL_TAB")?.lowercased() else { return nil }
+        return SidebarTab.allCases.first {
+            $0.rawValue.lowercased() == rawValue || String(describing: $0).lowercased() == rawValue
+        }
+    }()
+
     static func absoluteURL(from value: String) -> URL? {
-        guard let url = URL(string: value),
-              let scheme = url.scheme,
-              !scheme.isEmpty,
-              url.host != nil else {
+        publicMediaURL(from: value)
+    }
+
+    static func publicMediaURL(from value: String) -> URL? {
+        guard let normalized = TorrentResult.normalizedDirectStreamURLString(value) else {
             return nil
         }
-        return url
+        return URL(string: normalized)
     }
 
     static func sampleURLs(from snapshot: EnvironmentSnapshot) -> [URL] {
-        let configured = snapshot.stringList("VPSTUDIO_QA_SAMPLE_URLS").compactMap(absoluteURL(from:))
+        let configured = snapshot.stringList("VPSTUDIO_QA_SAMPLE_URLS").compactMap(publicMediaURL(from:))
         if !configured.isEmpty {
             return configured
         }
-        if let sampleURL = snapshot.value("VPSTUDIO_QA_SAMPLE_URL").flatMap(absoluteURL(from:)) {
+        if let sampleURL = snapshot.value("VPSTUDIO_QA_SAMPLE_URL").flatMap(publicMediaURL(from:)) {
             return [sampleURL]
         }
         return []
@@ -115,7 +123,7 @@ enum QARuntimeOptions {
             return nil
         }
 
-        let streamURLs = snapshot.stringList("VPSTUDIO_QA_DEBRID_FIXTURE_URLS").compactMap(absoluteURL(from:))
+        let streamURLs = snapshot.stringList("VPSTUDIO_QA_DEBRID_FIXTURE_URLS").compactMap(publicMediaURL(from:))
         guard !streamURLs.isEmpty else { return nil }
 
         let serviceType = snapshot.string("VPSTUDIO_QA_DEBRID_FIXTURE_SERVICE")
@@ -193,6 +201,7 @@ enum QARuntimeOptions {
     static let preferredResultTitle = env("VPSTUDIO_QA_PREFERRED_RESULT_TITLE")
     static let autoOpenFirstSearchResult = bool("VPSTUDIO_QA_AUTO_OPEN_FIRST_RESULT")
     static let scrollDebug = bool("VPSTUDIO_QA_SCROLL_DEBUG")
+    static let scrollAnchorBottom = bool("VPSTUDIO_QA_SCROLL_ANCHOR_BOTTOM")
     static let autoOpenSearchFilterSheet = bool("VPSTUDIO_QA_AUTO_OPEN_FILTER_SHEET")
     static let autoApplySearchFilterSheet = bool("VPSTUDIO_QA_AUTO_APPLY_FILTER_SHEET")
     static let autoSelectFilterGenre = bool("VPSTUDIO_QA_AUTO_SELECT_FILTER_GENRE")
@@ -206,9 +215,9 @@ enum QARuntimeOptions {
     static let autoAddFavorites = bool("VPSTUDIO_QA_AUTO_ADD_FAVORITES")
     static let autoRemoveWatchlist = bool("VPSTUDIO_QA_AUTO_REMOVE_WATCHLIST")
     static let autoRemoveFavorites = bool("VPSTUDIO_QA_AUTO_REMOVE_FAVORITES")
-    static let sampleURL = env("VPSTUDIO_QA_SAMPLE_URL").flatMap(absoluteURL(from:))
+    static let sampleURL = env("VPSTUDIO_QA_SAMPLE_URL").flatMap(publicMediaURL(from:))
     static let sampleURLs = sampleURLs(from: environment)
-    static let sampleRefreshURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_URL").flatMap(absoluteURL(from:))
+    static let sampleRefreshURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_URL").flatMap(publicMediaURL(from:))
     static let sampleRefreshSignalURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_SIGNAL_URL").flatMap(absoluteURL(from:))
     static let autoQueueSampleDownload = bool("VPSTUDIO_QA_AUTO_QUEUE_SAMPLE_DOWNLOAD")
     static let autoPlaySample = bool("VPSTUDIO_QA_AUTO_PLAY_SAMPLE")
@@ -220,6 +229,7 @@ enum QARuntimeOptions {
     static let playerAutoCloseAfterSeconds = double("VPSTUDIO_QA_PLAYER_AUTOCLOSE_SECONDS")
     static let playerAspectRatioSelection = env("VPSTUDIO_QA_PLAYER_ASPECT_RATIO")
     static let showAspectRatioBadge = bool("VPSTUDIO_QA_SHOW_ASPECT_BADGE")
+    static let playerAppleEnvironmentMode = bool("VPSTUDIO_QA_PLAYER_APPLE_ENVIRONMENT")
 
     static let autoOpenResetSheet = bool("VPSTUDIO_QA_AUTO_OPEN_RESET_SHEET")
     static let autoExecuteReset = bool("VPSTUDIO_QA_AUTO_EXECUTE_RESET")
@@ -237,7 +247,8 @@ enum QARuntimeOptions {
     static let suppressQuickStartPrompt = suppressQuickStartPrompt(from: environment)
 
     static let setupAutoAdvance = bool("VPSTUDIO_QA_SETUP_AUTO_ADVANCE")
-    static let setupOMDbApiKey = env("VPSTUDIO_QA_SETUP_OMDB_API_KEY") ?? env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")
+    static let setupOMDbApiKey = env("VPSTUDIO_QA_SETUP_OMDB_API_KEY")
+    static let setupTMDbApiKey = env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")
     static let setupPreferredQuality = env("VPSTUDIO_QA_SETUP_PREFERRED_QUALITY").flatMap(VideoQuality.init(rawValue:))
     static let setupSubtitleLanguage = env("VPSTUDIO_QA_SETUP_SUBTITLE_LANGUAGE").flatMap(SubtitleLanguageOption.init(rawValue:))
 

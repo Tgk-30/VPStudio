@@ -130,6 +130,18 @@ struct SidebarLayoutPolicyTests {
         #expect(SidebarLayoutPolicy.collapsedWidth == 52)
     }
 
+    @Test func resolvedRailWidthNeverShrinksBelowTapTarget() {
+        let unscaledWidth = SidebarLayoutPolicy.iconFrame + SidebarLayoutPolicy.railChromeInset * 2
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) == unscaledWidth)
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1.25) == unscaledWidth * 1.25)
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) > SidebarLayoutPolicy.iconFrame)
+    }
+
+    @Test func environmentButtonSpacingKeepsPickerClusteredWithRail() {
+        #expect(SidebarLayoutPolicy.environmentButtonSpacing == 5)
+        #expect(SidebarLayoutPolicy.environmentButtonSpacing < 10)
+    }
+
     @Test func expandedWidthIsGreaterThanCollapsed() {
         #expect(SidebarLayoutPolicy.expandedWidth > SidebarLayoutPolicy.collapsedWidth)
     }

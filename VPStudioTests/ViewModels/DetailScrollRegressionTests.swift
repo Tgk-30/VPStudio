@@ -247,7 +247,7 @@ struct DetailScrollRegressionTests {
                 imdbRating: nil,
                 tmdbId: 103
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
 
         #expect(viewModel.selectedSeason == 1)
@@ -300,7 +300,7 @@ struct DetailScrollRegressionTests {
                 imdbRating: nil,
                 tmdbId: 204
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
         await viewModel.searchTorrents()
 
@@ -369,7 +369,7 @@ struct DetailScrollRegressionTests {
                 imdbRating: nil,
                 tmdbId: 104
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
         await viewModel.searchTorrents()
         #expect(viewModel.requiresFreshEpisodeSearch == false)
@@ -433,7 +433,7 @@ struct DetailScrollRegressionTests {
                 title: "Race Show",
                 tmdbId: 304
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
 
         let delayedSeasonLoad = Task {
@@ -483,7 +483,7 @@ struct DetailScrollRegressionTests {
                 title: "Retry Show",
                 tmdbId: 404
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
         await metadata.resetFailure()
 

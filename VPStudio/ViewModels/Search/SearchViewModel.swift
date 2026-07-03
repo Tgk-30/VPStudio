@@ -10,6 +10,12 @@ enum ExplorePhase: Equatable {
     case error
 }
 
+enum SearchErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+}
+
 protocol SearchSettingsStorage: Sendable {
     func getString(key: String) async throws -> String?
     func setString(key: String, value: String?) async throws
@@ -332,8 +338,8 @@ final class SearchViewModel {
     private var debounceTask: Task<Void, Never>?
     private var aiTask: Task<Void, Never>?
     private var metadataService: (any MetadataProvider)?
-    private let metadataServiceFactory: @Sendable (String) -> any MetadataProvider
-    private var configuredApiKey: String?
+    private let metadataServiceFactory: @Sendable (MetadataProviderConfiguration) -> any MetadataProvider
+    private var configuredMetadataConfiguration: MetadataProviderConfiguration?
 
     /// Monotonically-increasing counter used to discard stale search/loadMore results.
     private(set) var searchGeneration: Int = 0
@@ -379,15 +385,28 @@ final class SearchViewModel {
         !languageFilters.isEmpty && languageFilters != [Self.defaultLanguageCode]
     }
 
+    var supportsPersonCreditSearch: Bool {
+        metadataService?.supportsPersonCreditSearch == true
+    }
+
     init(
         metadataService: (any MetadataProvider)? = nil,
         metadataServiceFactory: @escaping @Sendable (String) -> any MetadataProvider = { OMDbService(apiKey: $0) },
+        metadataConfigurationServiceFactory: (@Sendable (MetadataProviderConfiguration) -> any MetadataProvider)? = nil,
         debounceInterval: Duration = .milliseconds(300),
         debounceSleeper: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         paginationCooldown: Duration = .milliseconds(500)
     ) {
         self.metadataService = metadataService
-        self.metadataServiceFactory = metadataServiceFactory
+        self.metadataServiceFactory = metadataConfigurationServiceFactory ?? { configuration in
+            if configuration.hasTMDb || configuration.omdbPlan.usesPaidResources {
+                return CachingMetadataProvider(
+                    wrapping: MetadataProviderFactory.make(configuration: configuration),
+                    configuration: configuration
+                )
+            }
+            return metadataServiceFactory(configuration.omdbApiKey ?? "")
+        }
         self.debounceInterval = debounceInterval
         self.debounceSleeper = debounceSleeper
         self.paginationCooldown = paginationCooldown
@@ -445,48 +464,67 @@ final class SearchViewModel {
     // deinit cannot access @MainActor properties in Swift 6 strict concurrency.
 
     func configure(apiKey: String) {
-        let normalizedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        configure(configuration: MetadataProviderConfiguration(omdbApiKey: apiKey))
+    }
 
+    func configure(configuration: MetadataProviderConfiguration) {
         // Empty key means "search is not configured". Clear only services that were
         // previously configured through this key path; preserve explicitly injected
         // metadataService instances used by tests.
-        if normalizedKey.isEmpty {
-            guard configuredApiKey != nil else { return }
+        if !configuration.isConfigured {
+            guard configuredMetadataConfiguration != nil else { return }
             cancelInFlightWork()
             clearAIRecommendations()
             searchGeneration += 1
             metadataService = nil
-            configuredApiKey = nil
+            configuredMetadataConfiguration = nil
             genreCacheByType.removeAll()
             genres = []
-            setSelectedGenreState(nil)
-            activeMoodCard = nil
-            replaceResults([])
-            error = nil
-            isSearching = false
-            isLoadingMore = false
-            currentPage = 1
-            totalPages = 1
-            lastPaginationTime = nil
-            scrollToTopTrigger += 1
+            clearProviderOwnedSearchState()
             return
         }
 
-        if let configuredApiKey {
-            guard configuredApiKey != normalizedKey else { return }
+        if let configuredMetadataConfiguration {
+            guard configuredMetadataConfiguration != configuration else { return }
+            // Cancelling an in-flight pagination must leave the already-delivered
+            // rows exactly as they were before loadMore started: the generation
+            // bump below drops the stale page when it lands, and blanking the
+            // visible list mid-pagination would yank content out from under an
+            // active scroll. A key change with no pagination in flight resets the
+            // whole search workspace as before.
+            let paginationInFlight = isLoadingMore
             cancelInFlightWork()
             clearAIRecommendations()
             searchGeneration += 1
-            metadataService = metadataServiceFactory(normalizedKey)
-            self.configuredApiKey = normalizedKey
+            metadataService = metadataServiceFactory(configuration)
+            self.configuredMetadataConfiguration = configuration
             genreCacheByType.removeAll()
             genres = []
+            if paginationInFlight {
+                error = nil
+                lastPaginationTime = nil
+            } else {
+                clearProviderOwnedSearchState()
+            }
             return
         }
 
         guard metadataService == nil else { return }
-        metadataService = metadataServiceFactory(normalizedKey)
-        configuredApiKey = normalizedKey
+        metadataService = metadataServiceFactory(configuration)
+        configuredMetadataConfiguration = configuration
+    }
+
+    private func clearProviderOwnedSearchState() {
+        setSelectedGenreState(nil)
+        activeMoodCard = nil
+        replaceResults([])
+        error = nil
+        isSearching = false
+        isLoadingMore = false
+        currentPage = 1
+        totalPages = 1
+        lastPaginationTime = nil
+        scrollToTopTrigger += 1
     }
 
     // MARK: - Text Search
@@ -1011,7 +1049,8 @@ final class SearchViewModel {
                 if (self.selectedType ?? .movie) == type {
                     self.genres = []
                 }
-                Self.logger.error("Genre load failed for \(type.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                let message = SearchErrorPresentationPolicy.displayMessage(for: error)
+                Self.logger.error("Genre load failed for \(type.rawValue, privacy: .public): \(message, privacy: .public)")
             }
 
             guard let self, self.genreLoadTaskType == type, self.genreLoadGeneration == generation else { return }
@@ -1570,7 +1609,8 @@ final class SearchViewModel {
             recentSearches = normalizedTerms
         } catch {
             recentSearches = []
-            Self.logger.error("Recent search load failed: \(error.localizedDescription, privacy: .public)")
+            let message = SearchErrorPresentationPolicy.displayMessage(for: error)
+            Self.logger.error("Recent search load failed: \(message, privacy: .public)")
         }
     }
 
@@ -1582,7 +1622,8 @@ final class SearchViewModel {
                 guard let json = String(data: data, encoding: .utf8) else { return }
                 try await settingsManager.setString(key: SettingsKeys.recentSearches, value: json)
             } catch {
-                Self.logger.error("Recent search save failed: \(error.localizedDescription, privacy: .public)")
+                let message = SearchErrorPresentationPolicy.displayMessage(for: error)
+                Self.logger.error("Recent search save failed: \(message, privacy: .public)")
             }
         }
     }
@@ -1646,7 +1687,7 @@ final class SearchViewModel {
                     self.aiGeneration == generation
                 else { return }
                 self.aiRecommendations = []
-                self.aiError = error.localizedDescription
+                self.aiError = SearchErrorPresentationPolicy.displayMessage(for: error)
                 self.isLoadingAI = false
             }
         }
@@ -1699,7 +1740,7 @@ final class SearchViewModel {
                     self.aiGeneration == generation
                 else { return }
                 self.aiRecommendations = []
-                self.aiError = error.localizedDescription
+                self.aiError = SearchErrorPresentationPolicy.displayMessage(for: error)
                 self.isLoadingAI = false
             }
         }
@@ -1740,7 +1781,7 @@ final class SearchViewModel {
                     self.aiGeneration == generation
                 else { return }
                 self.aiRecommendations = []
-                self.aiError = error.localizedDescription
+                self.aiError = SearchErrorPresentationPolicy.displayMessage(for: error)
                 self.isLoadingAI = false
             }
         }

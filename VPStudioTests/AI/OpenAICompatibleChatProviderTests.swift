@@ -211,6 +211,40 @@ struct OpenAICompatibleChatProviderTests {
         }
     }
 
+    @Test func completeRedactsSecretsFromHTTPErrorBody() async {
+        let session = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+            let bearerSecret = "sk_" + "test_secret"
+            let authorizationPrefix = "Authorization: " + "Bearer"
+            let body = """
+            auth failed \(authorizationPrefix) \(bearerSecret) callback=https://api.example.com/error?token=secret-token&quality=1080p
+            """
+            return (response, Data(body.utf8))
+        }
+        let provider = OpenAICompatibleChatProvider(
+            providerKind: .minimax,
+            apiKey: "key",
+            model: "model",
+            chatCompletionsURL: "https://api.example.com/v1/chat/completions",
+            session: session,
+            sleep: { _ in }
+        )
+
+        do {
+            _ = try await provider.complete(system: "s", userMessage: "m")
+            Issue.record("Expected HTTP error")
+        } catch AIError.httpError(let status, let message) {
+            #expect(status == 401)
+            #expect(message.contains("Bearer REDACTED"))
+            #expect(message.contains("token=REDACTED"))
+            #expect(message.contains("quality=1080p"))
+            #expect(!message.contains("sk_" + "test_secret"))
+            #expect(!message.contains("secret-token"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func completeThrowsHTTPErrorWithEmptyMessageForNonUTF8Body() async {
         let session = URLProtocolHarness.makeSession { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 502, httpVersion: nil, headerFields: nil)!

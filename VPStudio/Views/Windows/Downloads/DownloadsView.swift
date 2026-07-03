@@ -29,6 +29,22 @@ enum DownloadsErrorSurfacePolicy {
     }
 }
 
+enum DownloadsLayoutPolicy {
+    static let bottomContentPadding: CGFloat = 200
+    static let bottomViewportInset: CGFloat = 168
+    static let verticalSectionSpacing: CGFloat = VPSpace.normal
+    static let groupSpacing: CGFloat = VPSpace.normal
+    static let topContentPadding: CGFloat = VPSpace.roomy
+    static let summaryCardPadding: CGFloat = VPSpace.normal
+    static let summaryIconHaloSize: CGFloat = 64
+    static let summaryIconSize: CGFloat = 50
+    static let groupPosterWidth: CGFloat = 84
+    static let groupPosterHeight: CGFloat = 126
+    static let groupHeaderPadding: CGFloat = VPSpace.tight
+    static let taskRowVerticalPadding: CGFloat = VPSpace.micro
+    static let completedSectionTopPadding: CGFloat = VPSpace.roomy
+}
+
 struct DownloadsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openWindow) private var openWindow
@@ -179,7 +195,7 @@ struct DownloadsView: View {
                 ) { appState.selectedTab = .discover }
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: VPSpace.roomy) {
+                    VStack(alignment: .leading, spacing: DownloadsLayoutPolicy.verticalSectionSpacing) {
                         HStack(alignment: .firstTextBaseline) {
                             Text("Downloads")
                                 .font(VPFont.title1)
@@ -197,22 +213,28 @@ struct DownloadsView: View {
 
                         if !vm.activeGroups.isEmpty {
                             downloadsSectionHeader("Active", systemImage: "arrow.down.circle.fill", count: vm.activeTaskCount)
-                            LazyVStack(spacing: VPSpace.roomy) {
+                            LazyVStack(spacing: DownloadsLayoutPolicy.groupSpacing) {
                                 ForEach(vm.activeGroups) { obsidianGroupCard($0, vm: vm) }
                             }
                         }
 
                         if !vm.completedGroups.isEmpty {
-                            downloadsSectionHeader("Downloaded", systemImage: "checkmark.circle.fill", count: vm.completedGroups.count)
-                            LazyVStack(spacing: VPSpace.roomy) {
-                                ForEach(vm.completedGroups) { obsidianGroupCard($0, vm: vm) }
+                            VStack(alignment: .leading, spacing: DownloadsLayoutPolicy.verticalSectionSpacing) {
+                                downloadsSectionHeader("Downloaded", systemImage: "checkmark.circle.fill", count: vm.completedGroups.count)
+                                LazyVStack(spacing: DownloadsLayoutPolicy.groupSpacing) {
+                                    ForEach(vm.completedGroups) { obsidianGroupCard($0, vm: vm) }
+                                }
                             }
+                            .padding(.top, DownloadsLayoutPolicy.completedSectionTopPadding)
                         }
                     }
                     .padding(.horizontal, VPSpace.roomy)
-                    .padding(.top, VPSpace.section)
-                    .padding(.bottom, 112)
+                    .padding(.top, DownloadsLayoutPolicy.topContentPadding)
+                    .padding(.bottom, DownloadsLayoutPolicy.bottomContentPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    VPBottomViewportScrim(height: DownloadsLayoutPolicy.bottomViewportInset)
                 }
                 .refreshable { await vm.load() }
             }
@@ -233,23 +255,33 @@ struct DownloadsView: View {
             startPoint: .leading,
             endPoint: .trailing
         )
-        return VPCard(elevation: .raised) {
-            HStack(alignment: .center, spacing: VPSpace.roomy) {
+        return VPCard(elevation: .raised, padding: DownloadsLayoutPolicy.summaryCardPadding) {
+            HStack(alignment: .center, spacing: VPSpace.normal) {
                 ZStack {
-                    Circle().fill(heroGradient).opacity(0.22).blur(radius: 16).frame(width: 78, height: 78)
+                    Circle()
+                        .fill(heroGradient)
+                        .opacity(0.22)
+                        .blur(radius: 14)
+                        .frame(
+                            width: DownloadsLayoutPolicy.summaryIconHaloSize,
+                            height: DownloadsLayoutPolicy.summaryIconHaloSize
+                        )
                     Circle()
                         .fill(VPColor.contentPlane)
                         .overlay { Circle().strokeBorder(heroGradient, lineWidth: 1.5) }
-                        .frame(width: 60, height: 60)
+                        .frame(
+                            width: DownloadsLayoutPolicy.summaryIconSize,
+                            height: DownloadsLayoutPolicy.summaryIconSize
+                        )
                     Image(systemName: "internaldrive")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(VPColor.textPrimary)
                 }
 
                 VStack(alignment: .leading, spacing: VPSpace.tight) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(formatBytes(used))
-                            .font(.system(size: 30, weight: .bold))
+                            .font(.system(size: 26, weight: .bold))
                             .foregroundStyle(VPColor.textPrimary)
                         Text("of \(formatBytes(total)) used")
                             .font(VPFont.caption)
@@ -393,7 +425,10 @@ struct DownloadsView: View {
                             posterPlaceholder(for: group)
                         }
                     }
-                    .frame(width: 108, height: 162)
+                    .frame(
+                        width: DownloadsLayoutPolicy.groupPosterWidth,
+                        height: DownloadsLayoutPolicy.groupPosterHeight
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous))
                     .overlay {
                         RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous)
@@ -454,7 +489,7 @@ struct DownloadsView: View {
                         }
                     }
                 }
-                .padding(VPSpace.snug)
+                .padding(DownloadsLayoutPolicy.groupHeaderPadding)
 
                 Divider().overlay(VPColor.specularDim).padding(.horizontal, VPSpace.snug)
 
@@ -545,7 +580,7 @@ struct DownloadsView: View {
             }
         }
         .padding(.horizontal, VPSpace.snug)
-        .padding(.vertical, VPSpace.tight)
+        .padding(.vertical, DownloadsLayoutPolicy.taskRowVerticalPadding)
         .frame(minHeight: VPSpace.minTapTarget)
     }
 
@@ -946,7 +981,18 @@ struct DownloadsView: View {
             Task { await vm.load() }
             return
         }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+        let stream = StreamInfo(
+            streamURL: fileURL,
+            quality: .unknown,
+            codec: .unknown,
+            audio: .unknown,
+            source: .unknown,
+            hdr: .sdr,
+            fileName: task.fileName,
+            sizeBytes: task.totalBytes,
+            debridService: "local"
+        )
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
             playbackValidationMessage = "The downloaded file for \"\(task.displayTitle)\" is no longer available on disk."
             Task { await vm.load() }
             return
@@ -959,17 +1005,6 @@ struct DownloadsView: View {
             playbackValidationMessage = "A video is already playing. Close it before starting another."
             return
         }
-        let stream = StreamInfo(
-            streamURL: fileURL,
-            quality: .unknown,
-            codec: .unknown,
-            audio: .unknown,
-            source: .unknown,
-            hdr: .sdr,
-            fileName: task.fileName,
-            sizeBytes: task.totalBytes,
-            debridService: "local"
-        )
         let request = PlayerSessionRequest(
             stream: stream,
             mediaTitle: task.displayTitle,
@@ -977,7 +1012,7 @@ struct DownloadsView: View {
             posterPath: task.posterPath,
             episodeId: task.episodeId
         )
-        appState.activePlayerSession = request
+        appState.beginEmbeddedPlayerSession(request)
         openWindow(id: "player", value: request)
         #endif
     }

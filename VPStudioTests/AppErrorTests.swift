@@ -169,13 +169,29 @@ struct AppErrorInitMappingTests {
         #expect(mapped == .unknown("named error"))
     }
 
+    @Test func appErrorDescriptionRedactsSensitiveProviderDetails() {
+        let error = AppError.network(
+            .server(
+                statusCode: 500,
+                message: "Failed https://api.example.com/title?apikey=omdb-banner-secret&token=tmdb-banner-secret Authorization: Bearer appErrorBearerSecret123456 clientSecret=app-error-client-secret-1234567890"
+            )
+        )
+        let description = error.errorDescription ?? ""
+
+        #expect(description.contains("REDACTED"))
+        #expect(!description.contains("omdb-banner-secret"))
+        #expect(!description.contains("tmdb-banner-secret"))
+        #expect(!description.contains("appErrorBearerSecret123456"))
+        #expect(!description.contains("app-error-client-secret-1234567890"))
+    }
+
     @Test func metadataSetupRequiredMarksActionableSetupErrorsOnly() {
         let setup = AppError.metadataSetupRequired(feature: "Search")
         let plain = AppError.unknown("Search needs an OMDb API key.")
         let network = AppError.network(.unauthorized)
 
         #expect(setup.requiresMetadataSetupAction)
-        #expect(setup.errorDescription?.contains("Search needs an OMDb API key") == true)
+        #expect(setup.errorDescription?.contains("Search needs an OMDb metadata API key") == true)
         #expect(!plain.requiresMetadataSetupAction)
         #expect(!network.requiresMetadataSetupAction)
     }

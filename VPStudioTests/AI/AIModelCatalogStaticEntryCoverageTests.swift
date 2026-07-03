@@ -32,6 +32,7 @@ struct AIModelCatalogStaticEntryCoverageTests {
             AIModelCatalog.mistralSmallLatest,
             AIModelCatalog.mistralMediumLatest,
             AIModelCatalog.codestralLatest,
+            AIModelCatalog.minimaxM3,
             AIModelCatalog.minimaxM27,
             AIModelCatalog.minimaxM27Highspeed,
             AIModelCatalog.minimaxM25,
@@ -60,7 +61,7 @@ struct AIModelCatalogStaticEntryCoverageTests {
         #expect(defaults[.gemini]?.map(\.id) == [AIModelCatalog.gemini25Flash.id])
         #expect(defaults[.openRouter]?.map(\.id) == [AIModelCatalog.openRouterGeminiFlashLite.id])
         #expect(defaults[.mistral]?.map(\.id) == [AIModelCatalog.mistralSmallLatest.id])
-        #expect(defaults[.minimax]?.map(\.id) == [AIModelCatalog.minimaxM27.id])
+        #expect(defaults[.minimax]?.map(\.id) == [AIModelCatalog.minimaxM3.id])
         #expect(defaults[.local]?.map(\.id) == [AIModelCatalog.localSmolLM2.id])
     }
 

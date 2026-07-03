@@ -413,7 +413,17 @@ echo "DB path: $DB_PATH" >> "$SUMMARY_TXT"
 
 # 2) Optional secure credential injection for Discover/debrid user-like smoke
 # Provide credentials via env vars before running script:
-#   VPSTUDIO_TMDB_API_KEY=... VPSTUDIO_DEBRID_TOKEN=... tools/visionpro-deep-smoke.sh
+#   VPSTUDIO_OMDB_API_KEY=... VPSTUDIO_TMDB_API_KEY=... VPSTUDIO_DEBRID_TOKEN=... tools/visionpro-deep-smoke.sh
+if [ -n "${VPSTUDIO_OMDB_API_KEY:-}" ] && [ -f "$DB_PATH" ]; then
+  if upsert_secret_setting "omdb_api_key" "$VPSTUDIO_OMDB_API_KEY"; then
+    echo "Configured omdb_api_key via simulator keychain reference" >> "$SUMMARY_TXT"
+  else
+    echo "Unable to seed simulator keychain for omdb_api_key; skipping secure OMDB injection" >> "$SUMMARY_TXT"
+  fi
+else
+  echo "OMDB key not provided; OMDB-only metadata smoke paths may show API key error" >> "$SUMMARY_TXT"
+fi
+
 if [ -n "${VPSTUDIO_TMDB_API_KEY:-}" ] && [ -f "$DB_PATH" ]; then
   if upsert_secret_setting "tmdb_api_key" "$VPSTUDIO_TMDB_API_KEY"; then
     echo "Configured tmdb_api_key via simulator keychain reference" >> "$SUMMARY_TXT"

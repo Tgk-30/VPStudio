@@ -65,6 +65,12 @@ enum TraktSettingsPolicy {
     }
 }
 
+enum SyncSettingsErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+}
+
 struct TraktSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openURL) private var openURL
@@ -434,7 +440,7 @@ struct TraktSettingsView: View {
                 )
             }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -477,7 +483,7 @@ struct TraktSettingsView: View {
                         isAuthenticating = false
                         deviceUserCode = nil
                         deviceVerificationURL = nil
-                        errorMessage = error.localizedDescription
+                        errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                         return
                     }
                 }
@@ -486,7 +492,7 @@ struct TraktSettingsView: View {
                     isAuthenticating = false
                     deviceUserCode = nil
                     deviceVerificationURL = nil
-                    errorMessage = error.localizedDescription
+                    errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
                 return
             }
@@ -524,7 +530,7 @@ struct TraktSettingsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
+                    errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
             }
         }
@@ -611,7 +617,7 @@ struct TraktSettingsView: View {
             NotificationCenter.default.post(name: .settingsDidChange, object: nil)
         } catch {
             await MainActor.run {
-                errorMessage = error.localizedDescription
+                errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
             }
         }
     }
@@ -625,7 +631,7 @@ struct TraktSettingsView: View {
             NotificationCenter.default.post(name: .settingsDidChange, object: nil)
         } catch {
             await MainActor.run {
-                errorMessage = error.localizedDescription
+                errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
             }
         }
     }

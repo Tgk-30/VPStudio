@@ -204,11 +204,16 @@ struct ViewModelTaskLifecycleTests {
         let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
         #expect(!source.contains("NotificationCenter.default.post(name: .mainWindowDidActivate, object: nil)"))
         #expect(source.contains("terminatePlayerIfMainWindowOpened()"))
+        #expect(source.contains("markVisible: { appState.markMainWindowDidReappearForPlayer() }"))
+        #expect(source.contains("markHidden: { appState.markMainWindowDidDisappearForPlayer() }"))
+        #expect(source.contains("markVisible()"))
+        #expect(source.contains("terminate()"))
+        #expect(source.contains(".onDisappear(perform: markHidden)"))
         #expect(source.contains(".onChange(of: scenePhase)"))
         #expect(source.contains("guard phase == .active else { return }"))
 
         let body = try functionBody(containing: "private func terminatePlayerIfMainWindowOpened()", in: source)
-        #expect(body.contains("guard appState.activePlayerSession != nil || appState.isMainWindowSuppressedForPlayer else { return }"))
+        #expect(body.contains("guard appState.shouldTerminatePlayerForMainWindowActivation() else { return }"))
 
         #expect(body.contains("if let activeSession = appState.activePlayerSession"))
         #expect(body.contains("dismissWindow(id: \"player\", value: activeSession)"))
@@ -219,6 +224,35 @@ struct ViewModelTaskLifecycleTests {
         let terminateRange = try requiredRange(of: "appState.terminateActivePlayerSession()", in: body)
         #expect(valueDismissRange.lowerBound < fallbackDismissRange.lowerBound)
         #expect(fallbackDismissRange.lowerBound < terminateRange.lowerBound)
+    }
+
+    @Test
+    func discoverContinueWatchingClearsResumeStateBeforePlayerOpenHandoff() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Discover/DiscoverView.swift")
+        let body = try functionBody(containing: "private func handleContinueWatchingTap", in: source)
+
+        #expect(!body.contains("defer { resumingItemID = nil }"))
+        #expect(body.contains("let resumeItemID = preview.continueWatchingRowID"))
+        #expect(body.contains("clearContinueWatchingResumeState(for: resumeItemID)"))
+        #expect(source.contains("continueWatchingResumeTask?.cancel()"))
+        #expect(source.contains("continueWatchingResumeTask = nil"))
+
+        let clearRange = try requiredRange(of: "clearContinueWatchingResumeState(for: resumeItemID)", in: body)
+        let activeSessionRange = try requiredRange(of: "appState.beginEmbeddedPlayerSession(request)", in: body)
+        let openWindowRange = try requiredRange(of: "openWindow(id: \"player\", value: request)", in: body)
+        #expect(clearRange.lowerBound < activeSessionRange.lowerBound)
+        #expect(clearRange.lowerBound < openWindowRange.lowerBound)
+    }
+
+    @Test
+    func detailViewUsesCentralEmbeddedPlayerHandoffBeforeOpeningPlayerWindow() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Detail/DetailView.swift")
+        let body = try functionBody(containing: "func openPlayer(", in: source)
+
+        #expect(body.contains("appState.beginEmbeddedPlayerSession(request)"))
+        let handoffRange = try requiredRange(of: "appState.beginEmbeddedPlayerSession(request)", in: body)
+        let openWindowRange = try requiredRange(of: "openWindow(id: \"player\", value: request)", in: body)
+        #expect(handoffRange.lowerBound < openWindowRange.lowerBound)
     }
 
     @Test

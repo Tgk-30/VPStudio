@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import VPStudio
 
@@ -41,5 +42,24 @@ struct MediaCardViewPosterLoadingTests {
 
     @Test func systemHoverOnlyStillAllowsLegacyHoverChromeOffVisionOS() {
         #expect(MediaCardView.InteractionMode.systemHoverOnly.allowsCustomHoverChrome(onVisionOS: false) == true)
+    }
+
+    @Test func cachedLastFrameFileURLsBypassAsyncImage() throws {
+        // Resolve the repo root from this file's location — the test process's
+        // working directory is not the repo root under `xcodebuild test`.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Views
+            .deletingLastPathComponent() // VPStudioTests
+            .deletingLastPathComponent() // repo root
+        let sourceURL = repoRoot
+            .appendingPathComponent("VPStudio/Views/Components/MediaCardView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        #expect(source.contains("if lastFrameURL.isFileURL"))
+        #expect(source.contains("localLastFrameArtwork(url: lastFrameURL)"))
+        #expect(source.contains("remoteLastFrameArtwork(url: lastFrameURL)"))
+        #expect(source.contains("NSImage(contentsOf: url)") || source.contains("UIImage(contentsOfFile: url.path)"))
+        #expect(!source.contains("AsyncImage(url: lastFrameURL"))
+        #expect(source.contains("AsyncImage(url: url"))
     }
 }

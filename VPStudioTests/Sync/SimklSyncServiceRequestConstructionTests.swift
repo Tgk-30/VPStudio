@@ -36,6 +36,8 @@ struct SimklSyncServiceRequestConstructionTests {
             var capturedPath: String?
             var capturedMethod: String?
             var capturedHeaders: [String: String] = [:]
+            var cachePolicy: URLRequest.CachePolicy?
+            var handlesCookies: Bool?
         }
         let state = CapturedState()
 
@@ -44,6 +46,10 @@ struct SimklSyncServiceRequestConstructionTests {
             state.capturedMethod = request.httpMethod
             state.capturedHeaders["Authorization"] = request.value(forHTTPHeaderField: "Authorization")
             state.capturedHeaders["simkl-api-key"] = request.value(forHTTPHeaderField: "simkl-api-key")
+            state.capturedHeaders["Cache-Control"] = request.value(forHTTPHeaderField: "Cache-Control")
+            state.capturedHeaders["Pragma"] = request.value(forHTTPHeaderField: "Pragma")
+            state.cachePolicy = request.cachePolicy
+            state.handlesCookies = request.httpShouldHandleCookies
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data(#"{"movies":[],"shows":[]}"#.utf8))
         }
@@ -57,6 +63,10 @@ struct SimklSyncServiceRequestConstructionTests {
         #expect(state.capturedMethod == "GET")
         #expect(state.capturedHeaders["Authorization"] == "Bearer token")
         #expect(state.capturedHeaders["simkl-api-key"] == "test-client")
+        #expect(state.capturedHeaders["Cache-Control"] == "no-store")
+        #expect(state.capturedHeaders["Pragma"] == "no-cache")
+        #expect(state.cachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(state.handlesCookies == false)
     }
 
     @Test func addToListMovieSendsCorrectBody() async throws {
@@ -130,6 +140,28 @@ struct SimklSyncServiceRequestConstructionTests {
 
         let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
         #expect(decoded["movies"]?[0].ids.imdb == "tt1160419")
+        #expect(decoded["movies"]?[0].ids.tmdb == nil)
+    }
+
+    @Test func addToListAcceptsTMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: Data?
+        }
+        let state = CapturedState()
+
+        let session = makeSimklStubSession { request in
+            state.capturedBody = request.httpBody ?? readStream(request.httpBodyStream)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = SimklSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToList(imdbId: "movie-tmdb-438631", type: .movie)
+
+        let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
+        #expect(decoded["movies"]?[0].ids.imdb == nil)
+        #expect(decoded["movies"]?[0].ids.tmdb == "438631")
     }
 
     @Test func addToListNormalizesOMDbCompositeMediaID() async throws {
@@ -150,6 +182,50 @@ struct SimklSyncServiceRequestConstructionTests {
 
         let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
         #expect(decoded["movies"]?[0].ids.imdb == "tt1160419")
+        #expect(decoded["movies"]?[0].ids.tmdb == nil)
+    }
+
+    @Test func addToListNormalizesBareProviderPrefixedIMDbID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: Data?
+        }
+        let state = CapturedState()
+
+        let session = makeSimklStubSession { request in
+            state.capturedBody = request.httpBody ?? readStream(request.httpBodyStream)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = SimklSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToList(imdbId: "omdb-TT1160419", type: .movie)
+
+        let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
+        #expect(decoded["movies"]?[0].ids.imdb == "tt1160419")
+        #expect(decoded["movies"]?[0].ids.tmdb == nil)
+    }
+
+    @Test func markWatchedAcceptsTMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: Data?
+        }
+        let state = CapturedState()
+
+        let session = makeSimklStubSession { request in
+            state.capturedBody = request.httpBody ?? readStream(request.httpBodyStream)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = SimklSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.markWatched(imdbId: "movie-tmdb-438631", type: .movie)
+
+        let decoded = try JSONDecoder().decode([String: [SimklAddItem]].self, from: state.capturedBody!)
+        #expect(decoded["movies"]?[0].ids.imdb == nil)
+        #expect(decoded["movies"]?[0].ids.tmdb == "438631")
+        #expect(decoded["movies"]?[0].watchedAt != nil)
     }
 
     @Test func addToListWithCustomList() async throws {
@@ -283,9 +359,9 @@ struct SimklSyncServiceRequestConstructionTests {
         } catch { Issue.record("Unexpected error type: \(error)") }
     }
 
-    @Test func markWatchedRejectsInvalidIMDbIDBeforeNetwork() async {
+    @Test func markWatchedRejectsInvalidMediaIDBeforeNetwork() async {
         let session = makeSimklStubSession { request in
-            Issue.record("Should not reach network with invalid IMDb ID: \(request)")
+            Issue.record("Should not reach network with invalid media ID: \(request)")
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data(#"{"added":{"movies":1}}"#.utf8))
         }
@@ -294,7 +370,7 @@ struct SimklSyncServiceRequestConstructionTests {
         await service.setTokens(access: "token", refresh: nil)
 
         do {
-            try await service.markWatched(imdbId: "movie-tmdb-438631", type: .movie)
+            try await service.markWatched(imdbId: "local-only-id", type: .movie)
             Issue.record("Expected SimklError.invalidIMDbID")
         } catch let error as SimklError {
             if case .invalidIMDbID = error { /* OK */ }
@@ -602,6 +678,10 @@ struct SimklSyncServiceErrorHandlingTests {
             #expect(!error.errorDescription!.isEmpty)
         }
     }
+
+    @Test func invalidMediaIDDescriptionIncludesOMDb() async {
+        #expect(SimklError.invalidIMDbID.errorDescription == "Invalid IMDb, OMDb, or TMDb ID")
+    }
 }
 
 // MARK: - SimklAddItem Codable Verification
@@ -619,5 +699,6 @@ private struct SimklAddItem: Codable {
 }
 
 private struct SimklAddIds: Codable {
-    let imdb: String
+    let imdb: String?
+    let tmdb: String?
 }

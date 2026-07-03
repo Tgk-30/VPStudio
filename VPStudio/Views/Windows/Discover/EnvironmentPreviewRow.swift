@@ -20,11 +20,27 @@ enum EnvironmentThumbnailDecodePolicy {
 
 enum EnvironmentPreviewLayoutPolicy {
     static let cardWidth: CGFloat = 286
-    static let cardHeight: CGFloat = 168
+    static let cardHeight: CGFloat = 158
     static let cardCornerRadius: CGFloat = 16
     static let gridSpacing: CGFloat = 18
     static let maximumCenteredColumns = 4
-    static let bottomContentPadding: CGFloat = 132
+    static let contentSpacing: CGFloat = 24
+    static let contentHorizontalPadding: CGFloat = 24
+    static let contentTopPadding: CGFloat = 24
+    static let bottomContentPadding: CGFloat = 12
+    static let pickerMinWidth: CGFloat = 720
+    static let pickerPreferredWidth: CGFloat = 1_180
+    static let pickerMinHeight: CGFloat = 456
+    static let roomLegibilityBackdropOpacity: Double = 0.18
+    static let roomLegibilityPanelOpacity: Double = 0.64
+    static let roomLegibilityRowOpacity: Double = 0.60
+    static let roomLegibilityStrokeOpacity: Double = 0.30
+    static let roomLegibilitySecondaryTextOpacity: Double = 0.94
+    static let closeButtonSize: CGFloat = 42
+
+    static var roomLegibilitySecondaryText: Color {
+        Color.white.opacity(roomLegibilitySecondaryTextOpacity)
+    }
 
     static func gridColumns() -> [GridItem] {
         [
@@ -95,33 +111,20 @@ struct EnvironmentPickerSheet: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                header
-                environmentGrid
-
-                if EnvironmentPreviewRowPolicy.shouldShowImportPrompt(environments: environments) {
-                    importPrompt
-                }
-
-                if appState.isImmersiveSpaceOpen {
-                    exitButton
-                }
-
-                onlinePresetsSection
-
-                if let error = importError {
-                    importErrorBanner(error)
-                }
+        ViewThatFits(in: .vertical) {
+            pickerContent
+            ScrollView {
+                pickerContent
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 28)
-            .padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)
         }
         .background {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            ZStack {
+                VPEnvironmentBackdrop(includesMaterial: false)
+                Color.black.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityBackdropOpacity)
+            }
         }
+        .presentationBackground(.clear)
+        .presentationSizing(.fitted)
         .task {
             guard !disablesAutomaticTasks else { return }
             await coalescedLoadEnvironments()
@@ -169,34 +172,97 @@ struct EnvironmentPickerSheet: View {
 
     // MARK: - Sub-views
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 18) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Environments")
-                    .font(.largeTitle.weight(.bold))
-                    .foregroundStyle(.primary)
+    private var pickerContent: some View {
+        VStack(alignment: .leading, spacing: EnvironmentPreviewLayoutPolicy.contentSpacing) {
+            header
+            environmentGrid
+            environmentStatusPanel
 
-                Text("Choose an immersive environment to preview. The active environment opens automatically when playback starts.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if EnvironmentPreviewRowPolicy.shouldShowImportPrompt(environments: environments) {
+                importPrompt
             }
 
-            Spacer(minLength: 16)
+            if appState.isImmersiveSpaceOpen {
+                exitButton
+            }
 
-            HStack(spacing: 10) {
-                Button {
-                    isShowingFileImporter = true
-                } label: {
-                    importButtonLabel
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isImportingEnvironment)
+            onlinePresetsSection
 
-                Button("Done") { dismiss() }
-                    .buttonStyle(.bordered)
+            if let error = importError {
+                importErrorBanner(error)
             }
         }
+        .padding(.horizontal, EnvironmentPreviewLayoutPolicy.contentHorizontalPadding)
+        .padding(.top, EnvironmentPreviewLayoutPolicy.contentTopPadding)
+        .padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)
+        .frame(
+            minWidth: EnvironmentPreviewLayoutPolicy.pickerMinWidth,
+            idealWidth: EnvironmentPreviewLayoutPolicy.pickerPreferredWidth,
+            maxWidth: EnvironmentPreviewLayoutPolicy.pickerPreferredWidth,
+            minHeight: EnvironmentPreviewLayoutPolicy.pickerMinHeight,
+            alignment: .topLeading
+        )
+    }
+
+    private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 18) {
+                headerTitleBlock
+                Spacer(minLength: 16)
+                headerActions
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                headerTitleBlock
+                headerActions
+            }
+        }
+    }
+
+    private var headerTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Environments")
+                .font(.largeTitle.weight(.bold))
+                .foregroundStyle(VPColor.textPrimary)
+
+            Text(EnvironmentPreviewRowPolicy.appleEnvironmentPickerSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var headerActions: some View {
+        HStack(spacing: 10) {
+            Button {
+                isShowingFileImporter = true
+            } label: {
+                importButtonLabel
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isImportingEnvironment)
+
+            closeButton
+        }
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.title3.weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .frame(
+                    width: EnvironmentPreviewLayoutPolicy.closeButtonSize,
+                    height: EnvironmentPreviewLayoutPolicy.closeButtonSize
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(VPColor.textPrimary)
+        .accessibilityLabel("Close environments")
+        .accessibilityHint("Closes the environment picker.")
     }
 
     private var environmentGrid: some View {
@@ -212,6 +278,7 @@ struct EnvironmentPickerSheet: View {
             NoEnvironmentPreviewCard(
                 status: EnvironmentPreviewRowPolicy.standardRoomStatus(
                     selectedAssetID: selectedAssetID,
+                    activeEnvironment: appState.activeEnvironment,
                     isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
                 ),
                 onSelect: {
@@ -260,6 +327,61 @@ struct EnvironmentPickerSheet: View {
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
+    private var environmentStatusPanel: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: environmentStatusIconName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(appState.isImmersiveSpaceOpen ? VPColor.success : VPColor.info)
+                .frame(width: 42, height: 42)
+                .background(VPColor.contentPlane.opacity(0.56), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(environmentStatusTitle)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(VPColor.textPrimary)
+                Text(environmentStatusDescription)
+                    .font(.subheadline)
+                    .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 12)
+
+            if appState.isImmersiveSpaceOpen || (effectiveSelectedEnvironmentAssetID != nil && onClear != nil) {
+                Button(role: appState.isImmersiveSpaceOpen ? .destructive : nil) {
+                    if appState.isImmersiveSpaceOpen {
+                        onDismiss()
+                    } else {
+                        onClear?()
+                    }
+                    dismiss()
+                } label: {
+                    Label(
+                        appState.isImmersiveSpaceOpen ? "Exit Environment" : "Use Apple Environment",
+                        systemImage: appState.isImmersiveSpaceOpen ? "xmark.circle" : "visionpro"
+                    )
+                }
+                .buttonStyle(VPButtonStyle(kind: appState.isImmersiveSpaceOpen ? .destructive : .secondary))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 22)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityPanelOpacity))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 4))
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
     private var exitButton: some View {
         HStack {
             Spacer(minLength: 0)
@@ -277,19 +399,75 @@ struct EnvironmentPickerSheet: View {
         .padding(.top, 2)
     }
 
+    private var effectiveSelectedEnvironmentAssetID: String? {
+        EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: appState.selectedEnvironmentAsset?.id,
+            assets: environments
+        )
+    }
+
+    private var effectiveSelectedEnvironmentAsset: EnvironmentAsset? {
+        EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: appState.selectedEnvironmentAsset,
+            assets: environments
+        )
+    }
+
+    private var environmentStatusTitle: String {
+        if appState.isImmersiveSpaceOpen {
+            if appState.activeEnvironment == .cinemaEnvironment {
+                return "Cinema Environment is active"
+            }
+            if let selected = effectiveSelectedEnvironmentAsset {
+                return "\(selected.name) is active"
+            }
+            return "Environment is active"
+        }
+
+        if let selected = effectiveSelectedEnvironmentAsset {
+            return "\(selected.name) is selected"
+        }
+
+        return EnvironmentPreviewRowPolicy.appleEnvironmentSelectedTitle
+    }
+
+    private var environmentStatusDescription: String {
+        if appState.isImmersiveSpaceOpen {
+            return "This environment is currently open. Exit it before switching back to Apple Environment."
+        }
+
+        if effectiveSelectedEnvironmentAssetID != nil {
+            return "The selected environment will open when playback starts."
+        }
+
+        return EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody
+    }
+
+    private var environmentStatusIconName: String {
+        if appState.activeEnvironment == .cinemaEnvironment {
+            return "theatermasks"
+        }
+        if effectiveSelectedEnvironmentAssetID != nil {
+            return "mountain.2"
+        }
+        return "visionpro"
+    }
+
     private var importPrompt: some View {
         HStack(spacing: 16) {
             Image(systemName: "mountain.2")
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
                 .frame(width: 44, height: 44)
+                .background(VPColor.contentPlane.opacity(0.42), in: Circle())
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("No imported environments")
                     .font(.headline)
-                Text("Import \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList) files to build a reusable playback room library.")
+                    .foregroundStyle(VPColor.textPrimary)
+                Text("Import \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList) files to build a reusable playback environment library.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -305,11 +483,17 @@ struct EnvironmentPickerSheet: View {
         }
         .frame(maxWidth: .infinity)
         .padding(18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.thinMaterial)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity))
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(.white.opacity(0.10), lineWidth: 1)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     @ViewBuilder
@@ -331,10 +515,11 @@ struct EnvironmentPickerSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("More Environments")
-                        .font(.headline)
-                    Text("One-click import curated Poly Haven HDRI panoramas, then tap the card above to open them.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(VPColor.textPrimary)
+                    Text("One-click import curated Poly Haven HDRI panoramas, then open them from this list or the cards above.")
+                        .font(.subheadline)
+                        .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
                 }
 
                 ForEach(onlinePresets) { preset in
@@ -346,6 +531,7 @@ struct EnvironmentPickerSheet: View {
 
     @ViewBuilder
     private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View {
+        let installedAsset = installedPresetAsset(preset)
         let isInstalled = isPresetInstalled(preset)
         let isInstalling = installingPresetIDs.contains(preset.id)
 
@@ -353,31 +539,43 @@ struct EnvironmentPickerSheet: View {
             Image(systemName: EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider))
                 .font(.title3)
                 .frame(width: 34, height: 34)
-                .foregroundStyle(.secondary)
-                .background(.white.opacity(0.06), in: Circle())
+                .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
+                .background(VPColor.contentPlane.opacity(0.42), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(preset.name)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(VPColor.textPrimary)
                 Text(preset.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
                 Text("\(preset.provider.displayName) • \(preset.licenseName)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+                    .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
             }
             .layoutPriority(1)
 
             Spacer(minLength: 12)
 
-            if isInstalled {
-                Label("Added", systemImage: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(VPColor.success)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(VPColor.success.opacity(0.12), in: Capsule())
+            if isInstalled, let installedAsset {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Label("Added", systemImage: "checkmark.circle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(VPColor.success)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(VPColor.success.opacity(0.12), in: Capsule())
+
+                    Button {
+                        onSelect(installedAsset)
+                        dismiss()
+                    } label: {
+                        Label("Open", systemImage: "play.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .frame(minWidth: 92)
+                }
             } else {
                 Button {
                     Task { await installPreset(preset) }
@@ -393,17 +591,23 @@ struct EnvironmentPickerSheet: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(minWidth: 82)
+                .controlSize(.regular)
+                .frame(minWidth: 92)
                 .disabled(isInstalling)
             }
         }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.thinMaterial)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity))
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.white.opacity(0.10), lineWidth: 1)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func importErrorBanner(_ message: String) -> some View {
@@ -412,13 +616,23 @@ struct EnvironmentPickerSheet: View {
                 .foregroundStyle(VPColor.warning)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(EnvironmentPreviewLayoutPolicy.roomLegibilitySecondaryText)
             Spacer()
             Button("Dismiss") { importError = nil }
                 .font(.caption)
         }
         .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.thinMaterial)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     // MARK: - Actions
@@ -437,9 +651,16 @@ struct EnvironmentPickerSheet: View {
 
     @MainActor
     private func loadEnvironments() async {
-        let latestEnvironments = (try? await appState.environmentCatalogManager.fetchAssets()) ?? []
-        guard !Task.isCancelled else { return }
-        environments = latestEnvironments
+        do {
+            let latestEnvironments = try await appState.environmentCatalogManager.fetchAssets()
+            guard !Task.isCancelled else { return }
+            environments = latestEnvironments
+            appState.reconcileEnvironmentSelection(withLoadedAssets: latestEnvironments)
+            importError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            importError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)
+        }
     }
 
     @MainActor
@@ -463,11 +684,11 @@ struct EnvironmentPickerSheet: View {
                 _ = try await appState.environmentCatalogManager.importEnvironment(from: url)
                 await coalescedLoadEnvironments()
             } catch {
-                importError = error.localizedDescription
+                importError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)
             }
 
         case .failure(let error):
-            importError = error.localizedDescription
+            importError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -480,7 +701,11 @@ struct EnvironmentPickerSheet: View {
     }
 
     private func isPresetInstalled(_ preset: CuratedEnvironmentPreset) -> Bool {
-        environments.contains { environment in
+        installedPresetAsset(preset) != nil
+    }
+
+    private func installedPresetAsset(_ preset: CuratedEnvironmentPreset) -> EnvironmentAsset? {
+        environments.first { environment in
             environment.sourceType == .imported
                 && environment.name == preset.name
                 && environment.sourceAttributionURL == preset.sourceAttributionURL
@@ -529,7 +754,7 @@ struct EnvironmentPickerSheet: View {
             try await appState.environmentCatalogManager.deleteAsset(id: normalizedID)
             await coalescedLoadEnvironments()
         } catch {
-            importError = "Failed to delete: \(error.localizedDescription)"
+            importError = EnvironmentErrorPresentationPolicy.deleteFailureMessage(for: error)
         }
     }
 
@@ -545,10 +770,13 @@ struct EnvironmentPickerSheet: View {
         defer { installingPresetIDs.remove(preset.id) }
 
         do {
-            _ = try await appState.environmentCatalogManager.importCuratedPreset(preset)
+            let importedAsset = try await appState.environmentCatalogManager.importCuratedPreset(preset)
             await coalescedLoadEnvironments()
+            if installedPresetAsset(preset) == nil {
+                environments.append(importedAsset)
+            }
         } catch {
-            importError = error.localizedDescription
+            importError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 }
@@ -589,20 +817,21 @@ struct EnvironmentPreviewCard: View {
                 .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 VStack(alignment: .leading, spacing: 5) {
+                    EnvironmentPreviewCardTitleText(asset.name)
                     HStack(spacing: 5) {
                         Image(systemName: EnvironmentPreviewRowPolicy.assetTypeIconName(forAssetPath: asset.assetPath))
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.white.opacity(0.86))
                         Text(EnvironmentPreviewRowPolicy.assetTypeLabel(
                             sourceType: asset.sourceType,
                             assetPath: asset.assetPath
                         ))
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.white.opacity(0.86))
                     }
-                    EnvironmentPreviewCardTitleText(asset.name)
                 }
                 .padding(16)
+                .shadow(color: .black.opacity(0.55), radius: 2, y: 1)
             }
             .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
         }
@@ -665,6 +894,7 @@ struct EnvironmentPreviewCard: View {
             y: 4
         )
         .opacity(isDeleting ? 0.72 : 1.0)
+        .animation(.easeInOut(duration: 0.18), value: thumbnailImageSourceID)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: status)
         .animation(.easeInOut(duration: 0.18), value: isDeleting)
         .hoverEffect(.lift)
@@ -701,8 +931,10 @@ struct EnvironmentPreviewCard: View {
             Image(image, scale: 1.0, label: Text(asset.name))
                 .resizable()
                 .aspectRatio(contentMode: .fill)
+                .transition(.opacity)
         } else {
             placeholderGradient
+                .transition(.opacity)
         }
     }
 
@@ -747,7 +979,7 @@ struct EnvironmentPreviewCard: View {
                     for: path,
                     managedImportedAssetDirectory: managedImportedAssetDirectory
                 ),
-                      FileManager.default.fileExists(atPath: url.path) else {
+                      EnvironmentPreviewRowPolicy.isReadableThumbnailFile(url) else {
                     continue
                 }
                 if let image = Self.loadHDRThumbnail(from: url, maxDimension: 512) {
@@ -968,7 +1200,7 @@ enum EnvironmentPreviewFallbackArtworkKind: Equatable, Sendable {
     var iconName: String {
         switch self {
         case .standardRoom:
-            return "rectangle.dashed"
+            return "visionpro"
         case .cinema:
             return "theatermasks.fill"
         case .bundledEnvironment:
@@ -997,6 +1229,14 @@ enum EnvironmentPreviewFallbackArtworkKind: Equatable, Sendable {
 }
 
 enum EnvironmentPreviewRowPolicy {
+    static let appleEnvironmentTitle = "Apple Environment"
+    static let appleEnvironmentTypeLabel = "System window"
+    static let appleEnvironmentBenefitLabel = "System expansion when available"
+    static let appleEnvironmentDetailText = "Keeps playback in the visionOS system window."
+    static let appleEnvironmentPickerSubtitle = "Choose a VPStudio playback environment, or keep Apple Environment for the system window. System expansion and room effects are available only when playback uses the system video surface."
+    static let appleEnvironmentSelectedTitle = "Apple Environment selected"
+    static let appleEnvironmentSelectedBody = "Playback stays in a system-owned window. System expansion and room effects are available with supported playback."
+
     static func shouldShowImportPrompt(environments: [EnvironmentAsset]) -> Bool {
         !environments.contains { $0.sourceType == .imported }
     }
@@ -1007,12 +1247,39 @@ enum EnvironmentPreviewRowPolicy {
     ) -> String? {
         let appStateID = normalizedID(appStateSelectedID)
         if !appStateID.isEmpty {
-            return appStateID
+            if assets.isEmpty || assets.contains(where: { normalizedID($0.id) == appStateID }) {
+                return appStateID
+            }
         }
 
         return assets.first { asset in
             asset.isActive && !normalizedID(asset.id).isEmpty
         }.map(\.id)
+    }
+
+    static func effectiveSelectedAsset(
+        appStateSelectedAsset: EnvironmentAsset?,
+        assets: [EnvironmentAsset]
+    ) -> EnvironmentAsset? {
+        if let appStateSelectedAsset,
+           !normalizedID(appStateSelectedAsset.id).isEmpty {
+            let appStateID = normalizedID(appStateSelectedAsset.id)
+            if let catalogAsset = assets.first(where: { normalizedID($0.id) == appStateID }) {
+                return catalogAsset
+            }
+            if assets.isEmpty {
+                return appStateSelectedAsset
+            }
+        }
+
+        guard let selectedID = effectiveSelectedAssetID(
+            appStateSelectedID: appStateSelectedAsset?.id,
+            assets: assets
+        ) else {
+            return nil
+        }
+
+        return assets.first { normalizedID($0.id) == selectedID }
     }
 
     static func providerIconName(for provider: CuratedEnvironmentProvider) -> String {
@@ -1028,8 +1295,10 @@ enum EnvironmentPreviewRowPolicy {
 
     static func standardRoomStatus(
         selectedAssetID: String?,
+        activeEnvironment: EnvironmentType?,
         isImmersiveSpaceOpen: Bool
     ) -> EnvironmentPreviewCardStatus {
+        guard activeEnvironment == nil else { return .inactive }
         guard !isImmersiveSpaceOpen else { return .inactive }
         return hasSelectedAssetID(selectedAssetID) ? .inactive : .current
     }
@@ -1152,6 +1421,22 @@ enum EnvironmentPreviewRowPolicy {
             return
         }
         paths.append(path)
+    }
+
+    static func isReadableThumbnailFile(_ url: URL, fileManager: FileManager = .default) -> Bool {
+        guard url.isFileURL,
+              let values = try? url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .isDirectoryKey,
+              ]) else {
+            return false
+        }
+
+        return values.isRegularFile == true
+            && values.isSymbolicLink != true
+            && values.isDirectory != true
+            && fileManager.fileExists(atPath: url.path)
     }
 
     static func shouldClearActiveSelection(
@@ -1373,17 +1658,18 @@ struct CinemaEnvironmentPreviewCard: View {
                 .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 VStack(alignment: .leading, spacing: 5) {
+                    EnvironmentPreviewCardTitleText("Cinema Environment")
                     HStack(spacing: 5) {
                         Image(systemName: "theatermasks")
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.white.opacity(0.86))
                         Text("Built-in")
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.white.opacity(0.86))
                     }
-                    EnvironmentPreviewCardTitleText("Cinema Environment")
                 }
                 .padding(16)
+                .shadow(color: .black.opacity(0.55), radius: 2, y: 1)
             }
             .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
         }
@@ -1438,17 +1724,18 @@ struct NoEnvironmentPreviewCard: View {
                 .clipShape(EnvironmentPreviewLayoutPolicy.cardShape)
 
                 VStack(alignment: .leading, spacing: 5) {
+                    EnvironmentPreviewCardTitleText(EnvironmentPreviewRowPolicy.appleEnvironmentTitle)
                     HStack(spacing: 5) {
-                        Image(systemName: "rectangle.dashed")
+                        Image(systemName: EnvironmentPreviewFallbackArtworkKind.standardRoom.iconName)
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.75))
-                        Text("Default")
+                            .foregroundStyle(.white.opacity(0.86))
+                        Text(EnvironmentPreviewRowPolicy.appleEnvironmentTypeLabel)
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.white.opacity(0.86))
                     }
-                    EnvironmentPreviewCardTitleText("Standard Room")
                 }
                 .padding(16)
+                .shadow(color: .black.opacity(0.55), radius: 2, y: 1)
             }
             .frame(width: EnvironmentPreviewLayoutPolicy.cardWidth, height: EnvironmentPreviewLayoutPolicy.cardHeight)
         }

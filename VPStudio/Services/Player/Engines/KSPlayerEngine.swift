@@ -6,6 +6,18 @@ import VideoToolbox
 
 struct KSPlayerEngine: PlayerEngine {
     let kind: PlayerEngineKind = .ksPlayer
+    private let resolveStream: @Sendable (StreamInfo) async throws -> StreamInfo
+
+    init(resolveStream: @escaping @Sendable (StreamInfo) async throws -> StreamInfo = PlaybackStreamURLResolver.resolve) {
+        self.resolveStream = resolveStream
+    }
+
+    struct ReadinessObservation: Equatable, Sendable {
+        let playbackState: PlayerPlaybackState
+        let message: String
+        let hasStartedPlayback: Bool
+        let terminalFailureMessage: String?
+    }
 
     struct TuningProfile: Equatable, Sendable {
         let preferredForwardBufferDuration: Double
@@ -16,7 +28,7 @@ struct KSPlayerEngine: PlayerEngine {
     }
 
     func canHandle(stream: StreamInfo) -> Bool {
-        URL(string: stream.streamURL.absoluteString) != nil
+        PlayerStreamURLPolicy.isLaunchable(stream)
     }
 
     @MainActor
@@ -25,7 +37,11 @@ struct KSPlayerEngine: PlayerEngine {
         // debrid stream bytes in-place (FFmpeg-backed) for containers/codecs
         // AVPlayer can't open; it never rewrites or re-encodes the media. See
         // DirectPlayPolicy for the contract.
-        guard URL(string: stream.streamURL.absoluteString) != nil else {
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
+            throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
+        }
+        let stream = try await resolveStream(stream)
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
             throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
         }
 
@@ -34,6 +50,18 @@ struct KSPlayerEngine: PlayerEngine {
         KSOptions.isAutoPlay = true
         KSOptions.isSecondOpen = false
         KSOptions.logLevel = .error
+        #if targetEnvironment(simulator)
+        // The simulator's audio HAL often cannot create the AVAudioSession
+        // proxy ("Creating proxy session failed... Session lookup failed",
+        // AURemoteIO "no reporter associated"). With the default
+        // AudioEnginePlayer, AVAudioEngine.start() then throws (KSPlayer only
+        // logs it) and the audio clock never starts; streams with an audio
+        // track pin KSPlayer's main clock to that frozen audio clock and
+        // startup stalls in .buffering forever. AVSampleBufferAudioRenderer's
+        // synchronizer timebase advances without hardware audio, so simulator
+        // and QA runs still get advancing (possibly silent) playback.
+        KSOptions.audioPlayerType = AudioRendererPlayer.self
+        #endif
 
         let options = KSOptions()
 
@@ -133,17 +161,8 @@ struct KSPlayerEngine: PlayerEngine {
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
-            switch coordinator.state {
-            case .initialized, .preparing:
-                onState?(.preparing, "Initializing KSPlayer.")
-
-            case .readyToPlay, .buffering:
-                onState?(.buffering, "KSPlayer is buffering.")
-
-            case .bufferFinished, .paused, .playedToTheEnd:
-                onState?(.playing, "KSPlayer is rendering.")
-                return
-
+            let state = coordinator.state
+            switch state {
             case .error:
                 // The onFinish callback may not have fired yet when the state
                 // transitions to .error, so failureMessage() can be nil.
@@ -154,11 +173,21 @@ struct KSPlayerEngine: PlayerEngine {
                 let detail = failureMessage()
                 let message: String
                 if let detail, !detail.isEmpty {
-                    message = "KSPlayer decode error: \(detail)"
+                    message = "KSPlayer decode error: \(IndexerLogSanitizer.redactedMessage(detail))"
                 } else {
                     message = "KSPlayer failed to initialize (no error detail from decoder)"
                 }
                 throw PlayerEngineError.initializationFailed(.ksPlayer, message)
+
+            default:
+                let observation = readinessObservation(for: state)
+                if let terminalFailureMessage = observation.terminalFailureMessage {
+                    throw PlayerEngineError.initializationFailed(.ksPlayer, terminalFailureMessage)
+                }
+                onState?(observation.playbackState, observation.message)
+                if observation.hasStartedPlayback {
+                    return
+                }
             }
 
             try await Task.sleep(for: pollInterval)
@@ -168,6 +197,71 @@ struct KSPlayerEngine: PlayerEngine {
     }
 
     // MARK: - Private Helpers
+
+    static func readinessObservation(for state: KSPlayerState) -> ReadinessObservation {
+        switch state {
+        case .initialized, .preparing:
+            return ReadinessObservation(
+                playbackState: .preparing,
+                message: "Initializing KSPlayer.",
+                hasStartedPlayback: false,
+                terminalFailureMessage: nil
+            )
+
+        case .readyToPlay:
+            return ReadinessObservation(
+                playbackState: .buffering,
+                message: "KSPlayer is ready; starting playback.",
+                hasStartedPlayback: false,
+                terminalFailureMessage: nil
+            )
+
+        case .buffering:
+            // KSPlayerLayer enters .buffering the moment play() is requested —
+            // before any frame renders or the playback clock starts — so it
+            // must NOT satisfy startup readiness. A stream stuck here past the
+            // startup budget falls through to PlayerEngineError.startupTimeout
+            // so the UI can offer the next stream instead of waiting forever.
+            return ReadinessObservation(
+                playbackState: .buffering,
+                message: "KSPlayer is buffering the stream start.",
+                hasStartedPlayback: false,
+                terminalFailureMessage: nil
+            )
+
+        case .bufferFinished:
+            return ReadinessObservation(
+                playbackState: .playing,
+                message: "KSPlayer is rendering.",
+                hasStartedPlayback: true,
+                terminalFailureMessage: nil
+            )
+
+        case .paused:
+            return ReadinessObservation(
+                playbackState: .buffering,
+                message: "KSPlayer is ready; waiting for playback.",
+                hasStartedPlayback: false,
+                terminalFailureMessage: nil
+            )
+
+        case .playedToTheEnd:
+            return ReadinessObservation(
+                playbackState: .failed,
+                message: "KSPlayer reached the end before playback started.",
+                hasStartedPlayback: false,
+                terminalFailureMessage: "KSPlayer reached the end before playback started."
+            )
+
+        case .error:
+            return ReadinessObservation(
+                playbackState: .failed,
+                message: "KSPlayer failed to initialize.",
+                hasStartedPlayback: false,
+                terminalFailureMessage: "KSPlayer failed to initialize."
+            )
+        }
+    }
 
     /// Returns `true` for streams where codec initialisation and buffering are
     /// meaningfully slower than standard 1080p H.264 content.

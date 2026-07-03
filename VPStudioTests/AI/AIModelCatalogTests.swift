@@ -271,9 +271,9 @@ struct AIModelCatalogTests {
         #expect(def?.id == "mistral-small-latest")
     }
 
-    @Test func defaultMiniMaxModelIsM27() {
+    @Test func defaultMiniMaxModelIsM3() {
         let def = AIModelCatalog.defaultModel(for: .minimax)
-        #expect(def?.id == "MiniMax-M2.7")
+        #expect(def?.id == "MiniMax-M3")
     }
 
     @Test func defaultLocalModelIsSmolLM2() {
@@ -281,8 +281,9 @@ struct AIModelCatalogTests {
         #expect(def?.id == "apple/SmolLM2-360M-Instruct-CoreML")
     }
 
-    @Test func miniMaxFallbackCatalogIncludesCurrentM2Family() {
+    @Test func miniMaxFallbackCatalogIncludesCurrentM3AndM2Family() {
         let ids = AIModelCatalog.models(for: .minimax).map(\.id)
+        #expect(ids.contains("MiniMax-M3"))
         #expect(ids.contains("MiniMax-M2.7"))
         #expect(ids.contains("MiniMax-M2.7-highspeed"))
         #expect(ids.contains("MiniMax-M2.5"))
@@ -917,6 +918,7 @@ struct MiniMaxModelFetcherTests {
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             let data = try JSONSerialization.data(withJSONObject: [
                 "data": [
+                    ["id": "MiniMax-M3"],
                     ["id": "MiniMax-M2.7"],
                     ["id": "MiniMax-M2.7-highspeed"],
                     ["id": "custom-minimax_model"],
@@ -928,9 +930,11 @@ struct MiniMaxModelFetcherTests {
 
         let models = await AIModelFetcher.fetchMiniMaxModels(apiKey: " minimax-key ", session: session)
 
-        #expect(models.map(\.id) == ["custom-minimax_model", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"])
-        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.displayName == "MiniMax M2.7")
-        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.isDefault == true)
+        #expect(models.map(\.id) == ["custom-minimax_model", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M3"])
+        #expect(models.first(where: { $0.id == "MiniMax-M3" })?.displayName == "MiniMax M3")
+        #expect(models.first(where: { $0.id == "MiniMax-M3" })?.isDefault == true)
+        #expect(models.first(where: { $0.id == "MiniMax-M3" })?.maxContextTokens == 1_000_000)
+        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.isDefault == false)
         #expect(models.first(where: { $0.id == "custom-minimax_model" })?.maxContextTokens == 204_800)
     }
 

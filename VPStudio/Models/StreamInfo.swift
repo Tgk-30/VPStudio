@@ -53,6 +53,16 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
 }
 
 struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
+    private static let maxRequestHeaderValueLength = 2_048
+    private static let allowedRequestHeaderNames: [String: String] = [
+        "accept": "Accept",
+        "accept-language": "Accept-Language",
+        "origin": "Origin",
+        "referer": "Referer",
+        "referrer": "Referer",
+        "user-agent": "User-Agent",
+    ]
+
     private enum CodingKeys: String, CodingKey {
         case streamURL
         case quality
@@ -140,11 +150,61 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
 
             let name = pair.key.trimmingCharacters(in: .whitespacesAndNewlines)
             let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, !value.isEmpty else { return }
-            result[name] = value
+            guard !name.isEmpty else { return }
+            guard let canonicalName = allowedRequestHeaderNames[name.lowercased()] else { return }
+            guard let value = normalizedRequestHeaderValue(value, canonicalName: canonicalName) else { return }
+            result[canonicalName] = value
         }
 
         return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func normalizedRequestHeaderValue(_ value: String, canonicalName: String) -> String? {
+        guard !value.isEmpty,
+              value.utf8.count <= maxRequestHeaderValueLength,
+              value.rangeOfCharacter(from: .controlCharacters) == nil else {
+            return nil
+        }
+
+        if canonicalName == "Origin" || canonicalName == "Referer" {
+            guard isPublicHTTPHeaderURL(value),
+                  !containsCredentialMaterial(inHeaderURLString: value) else { return nil }
+        }
+
+        return value
+    }
+
+    private static func isPublicHTTPHeaderURL(_ value: String) -> Bool {
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host,
+              !host.isEmpty,
+              !PrivateNetworkHostPolicy.isPrivateOrReserved(host: host) else {
+            return false
+        }
+        return true
+    }
+
+    private static func containsCredentialMaterial(inHeaderURLString value: String) -> Bool {
+        guard let url = URL(string: value) else {
+            return true
+        }
+
+        return url.user != nil
+            || url.password != nil
+            || SensitiveURLQueryPolicy.containsSensitiveQueryItem(in: url)
+            || containsSensitiveFragment(in: url)
+    }
+
+    private static func containsSensitiveFragment(in url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let fragment = components.percentEncodedFragment,
+              !fragment.isEmpty else {
+            return false
+        }
+
+        return SensitiveURLQueryPolicy.containsSensitiveAssignment(in: fragment)
     }
 
     private var transportIdentity: String {

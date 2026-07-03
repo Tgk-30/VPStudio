@@ -35,6 +35,10 @@ struct PlayerEngineProtocolTests {
     func test_playerEngineError_invalidStreamURL() {
         let error = PlayerEngineError.invalidStreamURL("invalid-url")
         #expect(error.errorDescription == "Invalid stream URL: invalid-url")
+
+        let signedURL = PlayerEngineError.invalidStreamURL("https://cdn.example.com/movie.mkv?token=secret-token&quality=1080p")
+        #expect(signedURL.errorDescription == "Invalid stream URL: https://cdn.example.com/movie.mkv?token=REDACTED&quality=1080p")
+        #expect(signedURL.errorDescription?.contains("secret-token") == false)
     }
 
     @Test
@@ -53,6 +57,13 @@ struct PlayerEngineProtocolTests {
 
         let avError = PlayerEngineError.initializationFailed(.avPlayer, "timeout")
         #expect(avError.errorDescription == "AVPlayer failed: timeout")
+
+        let signedURL = PlayerEngineError.initializationFailed(
+            .ksPlayer,
+            "Decoder failed for https://cdn.example.com/movie.mkv?token=secret-token&quality=1080p"
+        )
+        #expect(signedURL.errorDescription?.contains("token=REDACTED") == true)
+        #expect(signedURL.errorDescription?.contains("secret-token") == false)
     }
 
     @Test

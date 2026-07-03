@@ -35,7 +35,7 @@ actor LibraryCSVExportService {
                 let entries = try await fetchAllWatchHistory()
                 if !entries.isEmpty {
                     let mediaItems = try await fetchMediaItems(for: entries.map(\.mediaId))
-                    let ratings = try await fetchRatings(for: entries.map(\.mediaId))
+                    let ratings = try await fetchRatings(for: entries.map(\.mediaId), mediaItems: mediaItems)
                     let csv = buildHistoryCSV(entries: entries, mediaItems: mediaItems, ratings: ratings)
                     let fileName = uniqueFileName(baseName: "History", reserved: &reservedFileNames)
                     let fileURL = outputDir.appendingPathComponent(fileName)
@@ -57,7 +57,7 @@ actor LibraryCSVExportService {
 
                 let mediaIds = entries.map(\.mediaId)
                 let mediaItems = try await fetchMediaItems(for: mediaIds)
-                let ratings = try await fetchRatings(for: mediaIds)
+                let ratings = try await fetchRatings(for: mediaIds, mediaItems: mediaItems)
 
                 let csv = buildLibraryCSV(
                     entries: entries,
@@ -88,7 +88,7 @@ actor LibraryCSVExportService {
         if listType == .history {
             let entries = try await fetchAllWatchHistory()
             let mediaItems = try await fetchMediaItems(for: entries.map(\.mediaId))
-            let ratings = try await fetchRatings(for: entries.map(\.mediaId))
+            let ratings = try await fetchRatings(for: entries.map(\.mediaId), mediaItems: mediaItems)
             let csv = buildHistoryCSV(entries: entries, mediaItems: mediaItems, ratings: ratings)
             return (csv, entries.count)
         }
@@ -99,7 +99,7 @@ actor LibraryCSVExportService {
         )
         let mediaIds = entries.map(\.mediaId)
         let mediaItems = try await fetchMediaItems(for: mediaIds)
-        let ratings = try await fetchRatings(for: mediaIds)
+        let ratings = try await fetchRatings(for: mediaIds, mediaItems: mediaItems)
         let csv = buildLibraryCSV(
             entries: entries,
             mediaItems: mediaItems,
@@ -140,7 +140,7 @@ actor LibraryCSVExportService {
             let item = mediaItems[entry.mediaId]
             let rating = ratings[entry.mediaId]
 
-            let imdbId = IMDbIdentifierPolicy.firstID(in: entry.mediaId) ?? ""
+            let imdbId = Self.imdbID(requestedMediaID: entry.mediaId, item: item)
             let title = escapeCSV(item?.title ?? "")
             let url = imdbId.isEmpty ? "" : "https://www.imdb.com/title/\(imdbId)/"
             let titleType = imdbTitleType(for: item?.type ?? .movie)
@@ -182,7 +182,7 @@ actor LibraryCSVExportService {
             let item = mediaItems[entry.mediaId]
             let rating = ratings[entry.mediaId]
 
-            let imdbId = IMDbIdentifierPolicy.firstID(in: entry.mediaId) ?? ""
+            let imdbId = Self.imdbID(requestedMediaID: entry.mediaId, item: item)
             let title = escapeCSV(item?.title ?? entry.title)
             let url = imdbId.isEmpty ? "" : "https://www.imdb.com/title/\(imdbId)/"
             let titleType = imdbTitleType(for: item?.type ?? .movie)
@@ -233,14 +233,12 @@ actor LibraryCSVExportService {
         try await database.fetchMediaItemsResolvingAliases(ids: mediaIds)
     }
 
-    private func fetchRatings(for mediaIds: [String]) async throws -> [String: TasteEvent] {
+    private func fetchRatings(
+        for mediaIds: [String],
+        mediaItems: [String: MediaItem]
+    ) async throws -> [String: TasteEvent] {
         let relevant = Set(mediaIds)
         guard !relevant.isEmpty else { return [:] }
-
-        let relevantByIMDbID = relevant.reduce(into: [String: [String]]()) { partial, mediaId in
-            guard let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId) else { return }
-            partial[imdbID, default: []].append(mediaId)
-        }
 
         var dict: [String: TasteEvent] = [:]
         let pageSize = 1000
@@ -254,18 +252,19 @@ actor LibraryCSVExportService {
             )
             if events.isEmpty { break }
 
-            for event in events {
-                guard let mediaId = event.mediaId else { continue }
-                // fetchTasteEvents is ordered DESC by createdAt, so first one is newest.
-                if relevant.contains(mediaId), dict[mediaId] == nil {
-                    dict[mediaId] = event
-                }
-
-                guard let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId),
-                      let aliasedMediaIDs = relevantByIMDbID[imdbID] else { continue }
-                for aliasedMediaID in aliasedMediaIDs where dict[aliasedMediaID] == nil {
-                    dict[aliasedMediaID] = event
-                }
+            let pageLookup = TasteRatingLookupPolicy.lookup(
+                from: events,
+                mediaItems: Array(mediaItems.values)
+            )
+            for mediaId in relevant where dict[mediaId] == nil {
+                let item = mediaItems[mediaId]
+                dict[mediaId] = TasteRatingLookupPolicy.rating(
+                    in: pageLookup,
+                    mediaId: mediaId,
+                    type: item?.type,
+                    tmdbId: item?.tmdbId,
+                    resolvedMediaId: item?.id
+                )
             }
 
             if events.count < pageSize || dict.count == relevant.count { break }
@@ -273,6 +272,12 @@ actor LibraryCSVExportService {
         }
 
         return dict
+    }
+
+    private static func imdbID(requestedMediaID: String, item: MediaItem?) -> String {
+        IMDbIdentifierPolicy.appScopedID(in: requestedMediaID)
+            ?? item.flatMap { IMDbIdentifierPolicy.appScopedID(in: $0.id) }
+            ?? ""
     }
 
     private func ratingValue(from event: TasteEvent?) -> String {

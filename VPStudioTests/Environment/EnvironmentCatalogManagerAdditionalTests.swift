@@ -449,6 +449,51 @@ struct EnvironmentCatalogManagerValidationTests {
             Issue.record("Unexpected error: \(error)")
         }
     }
+
+    @Test
+    func importCuratedPresetReimportsWhenExistingPresetBackingFileIsMissing() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "validation-curated-missing-file.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let environmentsDirectory = rootDir.appendingPathComponent("env", isDirectory: true)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: environmentsDirectory,
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let preset = CuratedEnvironmentPreset(
+            id: "missing-curated-preset",
+            name: "Missing Curated Theater",
+            description: "A curated preset whose installed file was deleted",
+            provider: .polyHaven,
+            downloadURL: URL(string: "https://example.com/missing-curated.hdr")!,
+            sourceAttributionURL: "https://example.com/missing-curated",
+            licenseName: "CC0"
+        )
+        let staleAsset = EnvironmentAsset(
+            id: "stale-curated-preset",
+            name: preset.name,
+            sourceType: .imported,
+            assetPath: environmentsDirectory.appendingPathComponent("deleted-preset.hdr").path,
+            licenseName: preset.licenseName,
+            sourceAttributionURL: preset.sourceAttributionURL
+        )
+        try await database.saveEnvironmentAsset(staleAsset)
+
+        let imported = try await manager.importCuratedPreset(preset)
+        let assets = try await manager.fetchAssets()
+
+        #expect(imported.id != staleAsset.id)
+        #expect(imported.name == preset.name)
+        #expect(FileManager.default.fileExists(atPath: imported.assetPath))
+        #expect(!assets.contains(where: { $0.id == staleAsset.id }))
+        #expect(assets.contains(where: { $0.id == imported.id }))
+    }
 }
 
 @Suite("EnvironmentCatalogManager Fetch and Activate Tests", .serialized)
@@ -485,6 +530,42 @@ struct EnvironmentCatalogManagerFetchActivateTests {
         let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
         let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
 
+        #expect(active?.id == imported.id)
+        #expect(preferred == imported.id)
+        #expect(cleared == nil)
+    }
+
+    @Test
+    func activateAssetWithUnresolvableBundledAssetDoesNotReplaceCurrentSelection() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "fetch-activate-unresolvable-bundle.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true }
+        )
+
+        let source = rootDir.appendingPathComponent("active.hdr")
+        try Data("hdr".utf8).write(to: source)
+        let imported = try await manager.importEnvironment(from: source)
+        try await manager.activateAsset(id: imported.id)
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: nil)
+
+        let staleBundled = EnvironmentAsset(
+            id: "missing-bundled-environment",
+            name: "Missing Bundled Environment",
+            sourceType: .bundled,
+            assetPath: "bundle://missing-environment.usdz"
+        )
+        try await database.saveEnvironmentAsset(staleBundled)
+
+        let activated = try await manager.activateAsset(id: staleBundled.id)
+        let active = try await manager.activeAsset()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+
+        #expect(!activated)
         #expect(active?.id == imported.id)
         #expect(preferred == imported.id)
         #expect(cleared == nil)

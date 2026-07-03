@@ -9,6 +9,8 @@ struct SettingsKeysConstantsTests {
     func allKeysAreNonNil() {
         #expect(!SettingsKeys.omdbApiKey.isEmpty)
         #expect(!SettingsKeys.tmdbApiKey.isEmpty)
+        #expect(!SettingsKeys.omdbProviderPlan.isEmpty)
+        #expect(!SettingsKeys.tmdbProviderPlan.isEmpty)
         #expect(!SettingsKeys.preferredQuality.isEmpty)
         #expect(!SettingsKeys.subtitleLanguage.isEmpty)
         #expect(!SettingsKeys.audioLanguage.isEmpty)
@@ -95,7 +97,9 @@ struct SettingsKeysConstantsTests {
     @Test("All keys are unique")
     func allKeysUnique() {
         let allKeys: [String] = [
-            SettingsKeys.omdbApiKey, SettingsKeys.tmdbApiKey, SettingsKeys.preferredQuality,
+            SettingsKeys.omdbApiKey, SettingsKeys.tmdbApiKey,
+            SettingsKeys.omdbProviderPlan, SettingsKeys.tmdbProviderPlan,
+            SettingsKeys.preferredQuality,
             SettingsKeys.subtitleLanguage, SettingsKeys.audioLanguage,
             SettingsKeys.subtitleFontSize, SettingsKeys.subtitleAutoSearch,
             SettingsKeys.openSubtitlesApiKey, SettingsKeys.autoPlayNext,
@@ -123,6 +127,8 @@ struct SettingsKeysConstantsTests {
     func keyNamingPatterns() {
         #expect(SettingsKeys.omdbApiKey.hasPrefix("omdb"))
         #expect(SettingsKeys.tmdbApiKey.hasPrefix("tmdb"))
+        #expect(SettingsKeys.omdbProviderPlan.hasPrefix("omdb"))
+        #expect(SettingsKeys.tmdbProviderPlan.hasPrefix("tmdb"))
         #expect(SettingsKeys.openAIApiKey.hasPrefix("openai"))
         #expect(SettingsKeys.anthropicApiKey.hasPrefix("anthropic"))
         #expect(SettingsKeys.traktClientId.hasPrefix("trakt"))

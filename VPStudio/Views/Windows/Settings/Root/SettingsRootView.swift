@@ -6,6 +6,11 @@ enum SettingsNavigationInteractionPolicy {
     }
 }
 
+enum SettingsRootLayoutPolicy {
+    static let bottomContentPadding: CGFloat = 320
+    static let bottomViewportInset: CGFloat = 260
+}
+
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
 
@@ -284,7 +289,11 @@ struct SettingsView: View {
     // MARK: - Obsidian Glass body
 
     private var obsidianBody: some View {
-        VPPageShell(title: "Settings") {
+        VPPageShell(
+            title: "Settings",
+            bottomContentPadding: SettingsRootLayoutPolicy.bottomContentPadding,
+            bottomViewportInset: SettingsRootLayoutPolicy.bottomViewportInset
+        ) {
             obsidianHealthCard
 
             if let recentDestination, recentDestination.matches(normalizedQuery) {
@@ -586,8 +595,13 @@ struct SettingsView: View {
             snapshot.activeIndexerCount = configs.filter(\.isActive).count
         }
 
-        let metadataApiKey = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
-        snapshot.hasMetadataKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let configuration = try? await appState.settingsManager.getMetadataProviderConfiguration() {
+            snapshot.hasMetadataKey = configuration.isConfigured
+            snapshot.metadataProviderSummary = configuration.isConfigured ? configuration.providerSummary : nil
+        } else {
+            snapshot.hasMetadataKey = false
+            snapshot.metadataProviderSummary = nil
+        }
         snapshot.hasOpenSubtitlesKey = await hasNonEmptyString(for: SettingsKeys.openSubtitlesApiKey)
 
         if let assets = try? await appState.environmentCatalogManager.fetchAssets() {

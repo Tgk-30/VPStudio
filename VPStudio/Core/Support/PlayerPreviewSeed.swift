@@ -9,8 +9,8 @@ import Foundation
 /// exactly how the live "player" window provides its `sharedEngine`. The seeded engine drives the
 /// real scrubber, time labels, buffered fill, chapter ticks/nav, rate pill, and chapter title; the
 /// view's `currentStream` / `activeEngine` drive the quality + engine pills and metadata line. The
-/// session request carries a safe poster URL shape so the real player artwork fallback renders
-/// instead of a blank black stage when no engine surface is attached.
+/// preview passes a bundled artwork asset so the real player fallback renders instead of a blank
+/// black stage when no engine surface is attached.
 enum PlayerPreviewSeed {
     /// Title shown in the player's top bar and metadata line.
     static let mediaTitle = "Dune: Part Two"
@@ -21,7 +21,7 @@ enum PlayerPreviewSeed {
     private static let durationSeconds: TimeInterval = 9960   // 2:46:00 total
     private static let currentSeconds: TimeInterval = 3501    // 58:21 elapsed
     private static let imdbID = "tt15239678"
-    private static let previewPosterURL = "https://m.media-amazon.com/images/M/vpstudio-player-preview.jpg"
+    static let fallbackArtworkAssetName = "genre-art-scifi"
 
     /// Placeholder stream describing a believable 4K BluRay source. Its `streamURL` is **never
     /// loaded** — `PlayerView(disablesAutomaticTasks: true)` skips `preparePlayback`, so no AVPlayer
@@ -44,8 +44,7 @@ enum PlayerPreviewSeed {
             stream: stream,
             mediaTitle: mediaTitle,
             mediaId: imdbID,
-            imdbId: imdbID,
-            posterPath: previewPosterURL
+            imdbId: imdbID
         )
     }
 

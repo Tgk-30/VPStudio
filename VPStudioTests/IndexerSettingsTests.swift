@@ -209,15 +209,30 @@ struct IndexerSettingsTests {
         #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://10.0.0.25:9696"))
         #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://172.16.4.20:9696"))
         #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://jackett.local:9117"))
-        #expect(IndexerURLSecurityPolicy.permitsBaseURL("http://prowlarr:9696"))
 
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://indexer.example"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://prowlarr:9696"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://jackett:9117"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://[2001:db8::1]:9696"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("ftp://localhost:9696"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("not a url"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https://user:pass@indexer.example"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https://indexer.example?apikey=secret"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https://indexer.example#token"))
+    }
+
+    @Test func indexerURLSecurityPolicyRequiresConfidentialAPIKeyTransport() {
+        #expect(IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "https://indexer.example", apiKey: "key"))
+        #expect(IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://localhost:9696", apiKey: "key"))
+        #expect(IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://127.0.0.1:9696", apiKey: "key"))
+        #expect(IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://[::1]:9696", apiKey: "key"))
+        #expect(IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://192.168.1.50:9696", apiKey: nil))
+        #expect(IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://192.168.1.50:9696", apiKey: "   "))
+
+        #expect(!IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://192.168.1.50:9696", apiKey: "key"))
+        #expect(!IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://10.0.0.25:9696", apiKey: "key"))
+        #expect(!IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://jackett.local:9117", apiKey: "key"))
+        #expect(!IndexerURLSecurityPolicy.permitsAPIKeyTransport(baseURL: "http://[fd12::1]:9696", apiKey: "key"))
     }
 
     @Test func indexerURLSecurityPolicyCoversPrivateHostEdges() {
@@ -242,6 +257,7 @@ struct IndexerSettingsTests {
         #expect(IndexerURLSecurityPolicy.permits(scheme: "http", host: "[FD12::1]"))
 
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("https:///missing-host"))
+        #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://nas:9696"))
         #expect(!IndexerURLSecurityPolicy.permitsBaseURL("http://172.32.0.1:9696"))
     }
 
@@ -256,7 +272,7 @@ struct IndexerSettingsTests {
         #expect(draft.validationError == nil)
 
         draft.baseURL = "http://192.168.50.10:9696"
-        #expect(draft.validationError == nil)
+        #expect(draft.validationError == IndexerURLSecurityPolicy.apiKeyTransportValidationMessage)
 
         draft.baseURL = "https://secure.example"
         draft.apiKey = "   "

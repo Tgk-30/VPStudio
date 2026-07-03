@@ -19,6 +19,7 @@ struct TestModeViewMacRenderCoverageTests {
         #expect(TestScreenLaunchPolicy.screen(for: "DOWNLOADS") == .downloads)
         #expect(TestScreenLaunchPolicy.screen(for: "environment-picker") == .environmentPicker)
         #expect(TestScreenLaunchPolicy.screen(for: "Environment Settings") == .environmentSettings)
+        #expect(TestScreenLaunchPolicy.screen(for: "Metadata Settings") == .metadataSettings)
     }
 
     @Test
@@ -36,12 +37,32 @@ struct TestModeViewMacRenderCoverageTests {
             "environmentSettings",
             "player",
             "settings",
+            "metadataSettings",
             "setupPreferences",
         ])
         #expect(TestScreen.allCases.allSatisfy { !$0.title.isEmpty })
         #expect(TestScreen.allCases.allSatisfy { !$0.subtitle.isEmpty })
         #expect(TestScreen.allCases.allSatisfy { !$0.icon.isEmpty })
         #expect(Set(TestScreen.allCases.map(\.id)).count == TestScreen.allCases.count)
+    }
+
+    @Test
+    func seededDetailPreviewCanOpenRealPlayerForQASamplePlayback() throws {
+        let source = try testModeViewSource()
+
+        #expect(source.contains("@Environment(\\.openWindow) private var openWindow"))
+        #expect(source.contains("@State private var didOpenQASamplePlayer = false"))
+        #expect(source.contains("openQASamplePlayerIfRequested(viewModel)"))
+        #expect(source.contains("guard QARuntimeOptions.autoPlaySample, !didOpenQASamplePlayer else { return }"))
+        #expect(source.contains("DetailQASamplePolicy.makeSampleStreams("))
+        #expect(source.contains("QARuntimeOptions.playerAppleEnvironmentMode"))
+        #expect(source.contains("@State private var appleEnvironmentClearTask: Task<Void, Never>?"))
+        #expect(source.contains("await appState.clearEnvironmentSelection()"))
+        let clearRange = try #require(source.range(of: "await appState.clearEnvironmentSelection()"))
+        let openRange = try #require(source.range(of: "openWindow(id: \"player\", value: request)"))
+        #expect(clearRange.lowerBound < openRange.lowerBound)
+        #expect(source.contains("appState.beginEmbeddedPlayerSession(request)"))
+        #expect(source.contains("openWindow(id: \"player\", value: request)"))
     }
 
     #if os(macOS)
@@ -71,4 +92,18 @@ struct TestModeViewMacRenderCoverageTests {
         }
     }
     #endif
+
+    private func testModeViewSource() throws -> String {
+        try String(contentsOf: repoRootURL().appendingPathComponent("VPStudio/Views/Windows/Settings/Destinations/TestModeView.swift"), encoding: .utf8)
+    }
+
+    private func repoRootURL() -> URL {
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }
+            url = parent
+        }
+        return url
+    }
 }

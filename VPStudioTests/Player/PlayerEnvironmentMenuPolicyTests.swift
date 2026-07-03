@@ -133,7 +133,7 @@ struct PlayerEnvironmentMenuPolicyTests {
     @Test
     func playerEnvironmentMenuStandardRoomReflectsClearedSelection() {
         #expect(PlayerEnvironmentMenuPolicy.standardRoomIconName(isSelected: true) == "checkmark")
-        #expect(PlayerEnvironmentMenuPolicy.standardRoomIconName(isSelected: false) == "rectangle.dashed")
+        #expect(PlayerEnvironmentMenuPolicy.standardRoomIconName(isSelected: false) == "visionpro")
         #expect(PlayerEnvironmentMenuPolicy.isStandardRoomSelected(
             selectedAssetID: nil,
             activeEnvironment: nil,
@@ -154,6 +154,11 @@ struct PlayerEnvironmentMenuPolicyTests {
             activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: true
         ))
+        #expect(PlayerEnvironmentMenuPolicy.isStandardRoomSelected(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: true
+        ))
     }
 
     @Test
@@ -168,13 +173,32 @@ struct PlayerEnvironmentMenuPolicyTests {
             activeEnvironment: nil,
             isImmersiveSpaceOpen: false
         )
-        #expect(selected.title == "Standard Room")
+        let unavailableSystemSurface = PlayerEnvironmentMenuLabelSpec.standardRoom(
+            selectedAssetID: "env-1",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            canUseSystemVideoSurface: false
+        )
+        let pendingExpansion = PlayerEnvironmentMenuLabelSpec.standardRoom(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            canUseSystemVideoSurface: false,
+            isExpansionPending: true
+        )
+        #expect(selected.title == "Apple Environment")
         #expect(selected.leadingSystemImage == "checkmark")
         #expect(selected.subtitle == "Active now")
-        #expect(selected.menuTitle == "Standard Room - Active now")
-        #expect(unselected.leadingSystemImage == "rectangle.dashed")
-        #expect(unselected.subtitle == nil)
-        #expect(unselected.menuTitle == "Standard Room")
+        #expect(selected.menuTitle == "Apple Environment")
+        #expect(unselected.leadingSystemImage == "visionpro")
+        #expect(unselected.subtitle == PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit)
+        #expect(unselected.menuTitle == "Apple Environment - System expansion when available")
+        #expect(unavailableSystemSurface.leadingSystemImage == "visionpro")
+        #expect(unavailableSystemSurface.subtitle == PlayerEnvironmentMenuPolicy.appleEnvironmentFallbackBenefit)
+        #expect(unavailableSystemSurface.menuTitle == "Apple Environment - Standard window until supported playback is active")
+        #expect(pendingExpansion.leadingSystemImage == "checkmark")
+        #expect(pendingExpansion.subtitle == PlayerEnvironmentMenuPolicy.appleEnvironmentPendingBenefit)
+        #expect(pendingExpansion.menuTitle == "Apple Environment - Expansion queued until supported playback is active")
     }
 
     @Test
@@ -184,6 +208,23 @@ struct PlayerEnvironmentMenuPolicyTests {
             activeEnvironment: nil,
             isImmersiveSpaceOpen: false
         ) == "Active now")
+        #expect(PlayerEnvironmentMenuPolicy.standardRoomStateText(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            isExpansionPending: true
+        ) == PlayerEnvironmentMenuPolicy.appleEnvironmentPendingBenefit)
+        #expect(PlayerEnvironmentMenuPolicy.standardRoomStateText(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit)
+        #expect(PlayerEnvironmentMenuPolicy.standardRoomStateText(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false,
+            canUseSystemVideoSurface: false
+        ) == PlayerEnvironmentMenuPolicy.appleEnvironmentFallbackBenefit)
         #expect(PlayerEnvironmentMenuPolicy.cinemaStateText(
             activeEnvironment: .cinemaEnvironment,
             isImmersiveSpaceOpen: true
@@ -230,10 +271,70 @@ struct PlayerEnvironmentMenuPolicyTests {
 
     @Test
     func playerEnvironmentMenuTriggerAndVisibilityState() {
+        #expect(PlayerEnvironmentMenuPolicy.triggerDisclosureIconName == "chevron.down")
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit == "System expansion when available")
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit.localizedCaseInsensitiveContains("reflections") == false)
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentFallbackBenefit == "Standard window until supported playback is active")
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentPendingBenefit == "Expansion queued until supported playback is active")
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentChromeStatus == "Apple Environment")
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentExpandTitle == "Expand Apple Environment")
+        #expect(PlayerEnvironmentMenuPolicy.appleEnvironmentExpandIconName == "arrow.up.left.and.arrow.down.right")
+        #expect(PlayerEnvironmentMenuPolicy.compactTriggerMinWidth == 170)
+        #expect(PlayerEnvironmentMenuPolicy.compactTriggerMaxWidth == 328)
+        #expect(PlayerEnvironmentMenuPolicy.compactTriggerMinHeight == PlayerCinematicChromePolicy.quickActionPillMinHeight)
+        #expect(PlayerEnvironmentMenuPolicy.compactTriggerMinimumScaleFactor == 0.88)
+        #expect(PlayerEnvironmentMenuPolicy.menuRowMinimumScaleFactor == 0.78)
+        #expect(PlayerEnvironmentMenuPolicy.compactTriggerMinWidth < PlayerEnvironmentMenuPolicy.compactTriggerMaxWidth)
         #expect(PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: true) == "mountain.2.fill")
         #expect(PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: false) == "mountain.2")
+        #expect(PlayerEnvironmentMenuPolicy.triggerIconName(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == "visionpro")
+        #expect(PlayerEnvironmentMenuPolicy.triggerTitle(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == "Apple Environment")
+        #expect(PlayerEnvironmentMenuPolicy.triggerTitle(
+            selectedAssetID: "env",
+            selectedAssetName: "Starlight Cinema",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == "Starlight Cinema")
+        #expect(PlayerEnvironmentMenuPolicy.triggerTitle(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == "Environment Selected")
+        #expect(PlayerEnvironmentMenuPolicy.triggerTitle(
+            selectedAssetID: "env",
+            activeEnvironment: .customEnvironment,
+            isImmersiveSpaceOpen: true
+        ) == "Environment On")
         #expect(PlayerEnvironmentMenuPolicy.showsExitEnvironment(isImmersiveSpaceOpen: true))
         #expect(!PlayerEnvironmentMenuPolicy.showsExitEnvironment(isImmersiveSpaceOpen: false))
+        #expect(PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ))
+        #expect(PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: true
+        ))
+        #expect(!PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ))
+        #expect(!PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+            selectedAssetID: nil,
+            activeEnvironment: .cinemaEnvironment,
+            isImmersiveSpaceOpen: true
+        ))
         #expect(PlayerEnvironmentMenuPolicy.showsEmptyAssetMessage(assetCount: 0))
         #expect(!PlayerEnvironmentMenuPolicy.showsEmptyAssetMessage(assetCount: 1))
     }
@@ -260,6 +361,12 @@ struct PlayerEnvironmentMenuPolicyTests {
 
     @Test
     func playerEnvironmentMenuEffectiveSelectionFallsBackToActiveCatalogAsset() {
+        let appStateAsset = EnvironmentAsset(
+            id: "app-state-selection",
+            name: "App State Selection",
+            sourceType: .imported,
+            assetPath: "/tmp/app-state.hdr"
+        )
         let inactive = EnvironmentAsset(
             id: "inactive-hdri",
             name: "Inactive HDRI",
@@ -276,7 +383,7 @@ struct PlayerEnvironmentMenuPolicyTests {
 
         #expect(PlayerEnvironmentMenuPolicy.effectiveSelectedAssetID(
             appStateSelectedID: " app-state-selection ",
-            assets: [active]
+            assets: [appStateAsset, active]
         ) == "app-state-selection")
         #expect(PlayerEnvironmentMenuPolicy.effectiveSelectedAssetID(
             appStateSelectedID: nil,
@@ -293,6 +400,46 @@ struct PlayerEnvironmentMenuPolicyTests {
     }
 
     @Test
+    func playerEnvironmentMenuDropsStaleSelectedNameAfterCatalogLoads() {
+        let stale = EnvironmentAsset(
+            id: "deleted-environment",
+            name: "Deleted Environment",
+            sourceType: .imported,
+            assetPath: "/tmp/deleted.hdr"
+        )
+        let active = EnvironmentAsset(
+            id: "catalog-active-hdri",
+            name: "Northern Sky",
+            sourceType: .imported,
+            assetPath: "/tmp/northern.hdr",
+            isActive: true
+        )
+        let inactive = EnvironmentAsset(
+            id: "inactive-hdri",
+            name: "Inactive HDRI",
+            sourceType: .imported,
+            assetPath: "/tmp/inactive.hdr"
+        )
+
+        #expect(PlayerEnvironmentMenuPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: stale.id,
+            assets: [inactive, active]
+        ) == active.id)
+        #expect(PlayerEnvironmentMenuPolicy.effectiveSelectedAssetName(
+            appStateSelectedAsset: stale,
+            assets: [inactive, active]
+        ) == active.name)
+        #expect(PlayerEnvironmentMenuPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: stale.id,
+            assets: [inactive]
+        ) == nil)
+        #expect(PlayerEnvironmentMenuPolicy.effectiveSelectedAssetName(
+            appStateSelectedAsset: stale,
+            assets: [inactive]
+        ) == nil)
+    }
+
+    @Test
     func playerEnvironmentSurfacesUseEffectiveCatalogSelection() throws {
         let menuSource = try playerEnvironmentMenuPolicyFileContents(
             of: "VPStudio/Views/Windows/Player/PlayerEnvironmentMenu.swift"
@@ -302,6 +449,9 @@ struct PlayerEnvironmentMenuPolicyTests {
         )
 
         #expect(menuSource.contains("private var effectiveSelectedAssetID"))
+        #expect(menuSource.contains("private var effectiveSelectedAssetName"))
+        #expect(menuSource.contains("PlayerEnvironmentMenuPolicy.triggerIconName(\n                selectedAssetID: selectedAssetID"))
+        #expect(menuSource.contains(".accessibilityLabel(PlayerEnvironmentMenuPolicy.triggerTitle("))
         #expect(playerSource.contains("private var effectiveEnvironmentAssetID"))
         #expect(playerSource.contains("selectedAssetID: effectiveEnvironmentAssetID"))
         #expect(playerSource.contains("let selectedAsset = effectiveEnvironmentAsset"))
@@ -312,34 +462,70 @@ struct PlayerEnvironmentMenuPolicyTests {
     func playerEnvironmentChromeStatusSummarizesSelectionAndActiveRoom() {
         #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
             selectedAssetName: nil,
+            selectedAssetID: nil,
             activeEnvironment: nil,
             isImmersiveSpaceOpen: false
-        ) == "Standard Room")
+        ) == PlayerEnvironmentMenuPolicy.appleEnvironmentChromeStatus)
         #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
             selectedAssetName: "Cinema Hall",
+            selectedAssetID: "cinema-hall",
             activeEnvironment: nil,
             isImmersiveSpaceOpen: false
-        ) == "Cinema Hall Selected")
+        ) == "")
         #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
             selectedAssetName: nil,
+            selectedAssetID: "cinema-hall",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ) == "")
+        #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
+            selectedAssetName: nil,
+            selectedAssetID: nil,
             activeEnvironment: .cinemaEnvironment,
             isImmersiveSpaceOpen: true
         ) == "Cinema Active")
         #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
             selectedAssetName: "Northern Sky",
+            selectedAssetID: "northern-sky",
             activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: true
         ) == "Northern Sky Active")
         #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
             selectedAssetName: "HDR Dome",
+            selectedAssetID: "hdr-dome",
             activeEnvironment: .hdriSkybox,
             isImmersiveSpaceOpen: true
         ) == "HDR Dome Active")
         #expect(PlayerEnvironmentMenuPolicy.chromeStatusText(
             selectedAssetName: "   ",
+            selectedAssetID: "hdr-dome",
             activeEnvironment: .customEnvironment,
             isImmersiveSpaceOpen: true
         ) == "Environment Active")
+    }
+
+    @Test
+    func playerEnvironmentMenuAppleEnvironmentModeTracksClearedSelection() {
+        #expect(PlayerEnvironmentMenuPolicy.usesAppleEnvironmentMode(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ))
+        #expect(!PlayerEnvironmentMenuPolicy.usesAppleEnvironmentMode(
+            selectedAssetID: "env",
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: false
+        ))
+        #expect(!PlayerEnvironmentMenuPolicy.usesAppleEnvironmentMode(
+            selectedAssetID: nil,
+            activeEnvironment: .cinemaEnvironment,
+            isImmersiveSpaceOpen: true
+        ))
+        #expect(PlayerEnvironmentMenuPolicy.usesAppleEnvironmentMode(
+            selectedAssetID: nil,
+            activeEnvironment: nil,
+            isImmersiveSpaceOpen: true
+        ))
     }
 
     @Test
@@ -357,10 +543,10 @@ struct PlayerEnvironmentMenuPolicyTests {
 
         #expect(unavailableSpec.title == "Cinema Environment")
         #expect(unavailableSpec.subtitle == PlayerCinemaEnvironmentPolicy.unavailableMessage)
-        #expect(unavailableSpec.menuTitle == "Cinema Environment - \(PlayerCinemaEnvironmentPolicy.unavailableMessage)")
+        #expect(unavailableSpec.menuTitle == "Cinema Environment - Requires supported playback")
         #expect(unavailableSpec.leadingSystemImage == "theatermasks")
         #expect(activeSpec.subtitle == "Active now")
-        #expect(activeSpec.menuTitle == "Cinema Environment - Active now")
+        #expect(activeSpec.menuTitle == "Cinema Environment")
         #expect(activeSpec.leadingSystemImage == "checkmark")
     }
 }

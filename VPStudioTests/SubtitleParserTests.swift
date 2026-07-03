@@ -917,6 +917,51 @@ struct SubtitleParserActiveCueEdgeCaseTests {
     }
 }
 
+// MARK: - SubtitleParser Bounds
+
+@Suite("SubtitleParser - Bounds")
+struct SubtitleParserBoundsTests {
+    @Test func parseRejectsOversizedInputBeforeCueWork() {
+        let oversized = String(repeating: "x", count: SubtitleParser.maximumInputBytes + 1)
+
+        let cues = SubtitleParser.parse(content: oversized, format: .srt)
+
+        #expect(cues.isEmpty)
+    }
+
+    @Test func parseCapsCueCount() {
+        var blocks: [String] = []
+        blocks.reserveCapacity(SubtitleParser.maximumCueCount + 5)
+        for index in 1...(SubtitleParser.maximumCueCount + 5) {
+            blocks.append(
+                """
+                \(index)
+                00:00:01,000 --> 00:00:02,000
+                Cue \(index)
+                """
+            )
+        }
+
+        let cues = SubtitleParser.parse(content: blocks.joined(separator: "\n\n"), format: .srt)
+
+        #expect(cues.count == SubtitleParser.maximumCueCount)
+    }
+
+    @Test func parseTruncatesPathologicallyLongCueText() {
+        let longText = String(repeating: "A", count: SubtitleParser.maximumCueTextCharacters + 200)
+        let content = """
+        1
+        00:00:01,000 --> 00:00:02,000
+        \(longText)
+        """
+
+        let cues = SubtitleParser.parse(content: content, format: .srt)
+
+        #expect(cues.count == 1)
+        #expect(cues[0].text.count == SubtitleParser.maximumCueTextCharacters)
+    }
+}
+
 // MARK: - SubtitleCue Identifiable Conformance
 
 @Suite("SubtitleCue Identifiable")

@@ -22,7 +22,8 @@ enum SearchShellCopyPolicy {
     static func subtitle(
         activeMoodCardTitle: String?,
         selectedGenreName: String?,
-        submittedQuery: String
+        submittedQuery: String,
+        supportsPersonCreditSearch: Bool = true
     ) -> String {
         if let activeMoodCardTitle {
             return "You are already inside \(activeMoodCardTitle.lowercased()) picks. Tighten the lane with search and filters without losing the browse context."
@@ -36,7 +37,10 @@ enum SearchShellCopyPolicy {
             return "Tighten the query, switch type, or add filters."
         }
 
-        return "Search a title, actor, or keyword — or let AI pick for you."
+        if supportsPersonCreditSearch {
+            return "Search a title, actor, or keyword — or let AI pick for you."
+        }
+        return "Search a title or keyword — or let AI pick for you."
     }
 }
 
@@ -99,8 +103,9 @@ enum SearchAutoOpenPolicy {
 }
 
 enum SearchResultsPresentationPolicy {
-    static let standardBottomContentPadding: CGFloat = 132
-    static let bottomTabBarContentPadding: CGFloat = 240
+    static let standardBottomContentPadding: CGFloat = 180
+    static let bottomTabBarContentPadding: CGFloat = 288
+    static let bottomViewportInset: CGFloat = 132
 
     static func bottomContentPadding(for layout: NavigationLayout) -> CGFloat {
         switch layout {
@@ -439,8 +444,8 @@ struct SearchView: View {
     @State private var hasTraktToken = false
     @State private var traktHistorySyncEnabled = false
     private let contentMaxWidth: CGFloat = 1080
-    // OMDb has no original-language filter, so Search must not surface inert language controls.
-    private let supportsSearchLanguageFilters = false
+    // OMDb has no original-language filter; TMDb-backed configurations can surface it.
+    @State private var supportsSearchLanguageFilters = false
     private let disablesAutomaticTasks: Bool
 
     init(
@@ -602,7 +607,8 @@ struct SearchView: View {
         SearchShellCopyPolicy.subtitle(
             activeMoodCardTitle: viewModel.activeMoodCard?.title,
             selectedGenreName: viewModel.selectedGenre?.name,
-            submittedQuery: viewModel.submittedQuery
+            submittedQuery: viewModel.submittedQuery,
+            supportsPersonCreditSearch: viewModel.supportsPersonCreditSearch
         )
     }
 
@@ -1181,6 +1187,9 @@ struct SearchView: View {
             // that pushed Recent/Browse ~40pt right of the search bar's left edge).
             .padding(.horizontal, 34)
         }
+        .safeAreaInset(edge: .bottom) {
+            VPBottomViewportScrim(height: SearchResultsPresentationPolicy.bottomViewportInset)
+        }
     }
 
 
@@ -1375,6 +1384,9 @@ struct SearchView: View {
                     }
                 }
                 .id("results-scroll-\(viewModel.selectedType?.rawValue ?? "all")")
+                .safeAreaInset(edge: .bottom) {
+                    VPBottomViewportScrim(height: SearchResultsPresentationPolicy.bottomViewportInset)
+                }
                 .task {
                     await ensureUserRatingsLoaded()
                 }
@@ -1484,9 +1496,12 @@ struct SearchView: View {
     private func loadUserRatings(force: Bool) async {
         guard force || !hasLoadedUserRatings else { return }
 
-        let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
+        async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)
+        async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()
+        let events = (try? await eventsLoad) ?? []
+        let aliasItems = (try? await aliasItemsLoad) ?? []
         guard !Task.isCancelled else { return }
-        userRatings = TasteRatingLookupPolicy.lookup(from: events)
+        userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)
         hasLoadedUserRatings = true
     }
 
@@ -1540,13 +1555,14 @@ struct SearchView: View {
 
     @MainActor
     private func reloadMetadataConfigurationAndSearch() async {
-        let key = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
+        let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
+        supportsSearchLanguageFilters = configuration.hasTMDb
         let shouldRequery =
             !viewModel.submittedQuery.isEmpty ||
             viewModel.selectedGenre != nil ||
             viewModel.activeMoodCard != nil
 
-        viewModel.configure(apiKey: key)
+        viewModel.configure(configuration: configuration)
 
         // Genres are still loaded lazily when the filter summary appears.
         if shouldRequery {

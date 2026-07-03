@@ -186,7 +186,34 @@ struct AVPlayerEngineFailureDescriptionTests {
 
     @Test func failureDescriptionWithSpecialCharactersInComment() {
         let desc = AVPlayerEngine.failureDescription(statusCode: 0, comment: "Error: token=abc123&expired", itemError: nil)
-        #expect(desc == "Error: token=abc123&expired")
+        #expect(desc == "Error: token=REDACTED&expired")
+    }
+
+    @Test func failureDescriptionRedactsSignedURLAndBearerTokenInComment() {
+        let desc = AVPlayerEngine.failureDescription(
+            statusCode: 403,
+            comment: "Forbidden https://cdn.example.com/movie.mkv?sig=signature123&quality=1080p Bearer sk_test_secret",
+            itemError: nil
+        )
+        #expect(desc.contains("HTTP 403: Forbidden"))
+        #expect(desc.contains("sig=REDACTED"))
+        #expect(desc.contains("quality=1080p"))
+        #expect(desc.contains("Bearer REDACTED"))
+        #expect(desc.contains("signature123") == false)
+        #expect(desc.contains("sk_test_secret") == false)
+    }
+
+    @Test func failureDescriptionRedactsItemErrorDescription() {
+        let error = NSError(
+            domain: "AVFoundation",
+            code: -11800,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Failed for https://cdn.example.com/movie.mkv?access_token=secret-token"
+            ]
+        )
+        let desc = AVPlayerEngine.failureDescription(statusCode: 0, comment: nil, itemError: error)
+        #expect(desc.contains("access_token=REDACTED"))
+        #expect(desc.contains("secret-token") == false)
     }
 
     @Test func failureDescriptionWithUnicodeComment() {
@@ -212,7 +239,7 @@ struct AVPlayerEngineFailureDescriptionTests {
 @Suite("AVPlayerEngine - Prepare")
 @MainActor
 struct AVPlayerEnginePrepareTests {
-    private let engine = AVPlayerEngine()
+    private let engine = AVPlayerEngine(resolveStream: { $0 })
 
     @Test func prepareThrowsInvalidStreamURLForMalformedURL() async {
         final class MalformedURL: NSURL, @unchecked Sendable {
@@ -272,6 +299,30 @@ struct AVPlayerEnginePrepareTests {
         #expect(prepared.avPlayer != nil)
     }
 
+    @Test func prepareRejectsResolvedMissingLocalFile() async {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("avplayer-resolved-missing-\(UUID().uuidString).mp4")
+        let engine = AVPlayerEngine(resolveStream: { stream in
+            Fixtures.stream(
+                url: missingURL.absoluteString,
+                quality: stream.quality,
+                codec: stream.codec,
+                audio: stream.audio,
+                source: stream.source,
+                hdr: stream.hdr,
+                fileName: "missing.mp4"
+            )
+        })
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mp4",
+            fileName: "movie.mp4"
+        )
+
+        await #expect(throws: PlayerEngineError.invalidStreamURL(missingURL.absoluteString)) {
+            try await engine.prepare(stream: stream)
+        }
+    }
+
     @Test func assetOptionsCarryDirectStreamRequestHeaders() throws {
         let stream = Fixtures.stream(
             url: "https://cdn.example.com/movie.mp4",
@@ -312,6 +363,90 @@ struct AVPlayerEnginePrepareTests {
         )
 
         #expect(engine.canHandle(stream: stream))
+    }
+
+    @Test func canHandleAllowsExistingDownloadedFileURLs() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("avplayer-existing-download-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let fileURL = tempDir.appendingPathComponent("movie.mp4")
+        try Data([0]).write(to: fileURL)
+        let stream = Fixtures.stream(
+            url: fileURL.absoluteString,
+            fileName: "movie.mp4"
+        )
+
+        #expect(PlayerStreamURLPolicy.isPlayable(stream))
+        #expect(PlayerStreamURLPolicy.isLaunchable(stream))
+        #expect(engine.canHandle(stream: stream))
+    }
+
+    @Test func canHandleRejectsMissingDownloadedFileURLs() {
+        let stream = Fixtures.stream(
+            url: FileManager.default.temporaryDirectory
+                .appendingPathComponent("missing-\(UUID().uuidString).mp4")
+                .absoluteString,
+            fileName: "missing.mp4"
+        )
+
+        #expect(PlayerStreamURLPolicy.isPlayable(stream))
+        #expect(PlayerStreamURLPolicy.isLaunchable(stream) == false)
+        #expect(engine.canHandle(stream: stream) == false)
+    }
+
+    @Test func launchabilityRequiresExistingLocalFile() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("player-launchability-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let existingFile = tempDir.appendingPathComponent("movie.mp4")
+        try Data([0]).write(to: existingFile)
+
+        let existingFileStream = Fixtures.stream(
+            url: existingFile.absoluteString,
+            fileName: "movie.mp4"
+        )
+        let missingFileStream = Fixtures.stream(
+            url: tempDir.appendingPathComponent("missing.mp4").absoluteString,
+            fileName: "missing.mp4"
+        )
+        let directoryStream = Fixtures.stream(
+            url: tempDir.absoluteString,
+            fileName: "directory"
+        )
+        let symlink = tempDir.appendingPathComponent("linked-movie.mp4")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: existingFile)
+        let symlinkStream = Fixtures.stream(
+            url: symlink.absoluteString,
+            fileName: "linked-movie.mp4"
+        )
+
+        #expect(PlayerStreamURLPolicy.isPlayable(missingFileStream))
+        #expect(PlayerStreamURLPolicy.isLaunchable(existingFileStream))
+        #expect(PlayerStreamURLPolicy.isLaunchable(missingFileStream) == false)
+        #expect(PlayerStreamURLPolicy.isLaunchable(directoryStream) == false)
+        #expect(PlayerStreamURLPolicy.isLaunchable(symlinkStream) == false)
+    }
+
+    @Test func launchabilityAllowsPublicRemoteStreams() {
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mp4",
+            fileName: "movie.mp4"
+        )
+
+        #expect(PlayerStreamURLPolicy.isLaunchable(stream))
+    }
+
+    @Test func canHandleRejectsPrivateRemoteURLs() {
+        let stream = Fixtures.stream(
+            url: "http://127.0.0.1:8080/movie.mp4",
+            fileName: "movie.mp4"
+        )
+
+        #expect(PlayerStreamURLPolicy.isPlayable(stream) == false)
+        #expect(engine.canHandle(stream: stream) == false)
     }
 
     @Test func canHandleReturnsFalseForInvalidURL() {

@@ -215,7 +215,7 @@ struct DiscoverViewModelAITests {
         let recommendation = try #require(recommendations.first)
         #expect(recommendation.imdbId == "tt1160419")
         #expect(recommendation.tmdbId == nil)
-        #expect(recommendation.id == "movie-imdb-tt1160419")
+        #expect(recommendation.id == "movie-omdb-tt1160419")
     }
 
     // MARK: - Initial State

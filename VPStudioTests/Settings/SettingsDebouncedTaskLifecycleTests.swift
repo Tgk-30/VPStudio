@@ -221,7 +221,8 @@ struct SettingsDebouncedTaskLifecycleTests {
         let source = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/TraktSettingsView.swift")
         #expect(source.contains("persistBool"))
         #expect(source.contains("persistString"))
-        #expect(source.contains("errorMessage = error.localizedDescription"))
+        #expect(source.contains("SyncSettingsErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(!source.contains("errorMessage = error.localizedDescription"))
     }
 
     @Test

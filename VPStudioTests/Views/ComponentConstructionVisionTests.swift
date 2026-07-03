@@ -1043,7 +1043,7 @@ struct ComponentConstructionVisionTests {
                     initialOMDbApiKey: "fixture-unsaved-key",
                     initialBaselineOMDbApiKey: "fixture-saved-key",
                     initialIsTestingApiKey: true,
-                    initialSurfaceError: .unknown("OMDb validation failed in construction test."),
+                    initialSurfaceError: .unknown("Metadata validation failed in construction test."),
                     disablesAutomaticTasks: true
                 )
             }.environment(appState))),
@@ -1435,7 +1435,7 @@ struct ComponentConstructionVisionTests {
             SeriesDetailLayout(
                 viewModel: seriesViewModel,
                 title: "The Expanse",
-                metadataApiKey: "test-key",
+                metadataConfiguration: MetadataProviderConfiguration(omdbApiKey: "test-key"),
                 mediaType: .series,
                 streamResultsAnchor: "streams",
                 shareItem: "The Expanse",
@@ -1451,7 +1451,7 @@ struct ComponentConstructionVisionTests {
             SeriesDetailLayout(
                 viewModel: movieViewModel,
                 title: movie.title,
-                metadataApiKey: "test-key",
+                metadataConfiguration: MetadataProviderConfiguration(omdbApiKey: "test-key"),
                 mediaType: .movie,
                 streamResultsAnchor: "streams",
                 shareItem: movie.title,

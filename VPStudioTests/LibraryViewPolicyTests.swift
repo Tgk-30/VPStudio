@@ -157,6 +157,33 @@ struct LibraryFeedbackPresentationPolicyTests {
     }
 }
 
+@Suite("Library Rating Alias Loading")
+struct LibraryRatingAliasLoadingTests {
+    @Test
+    func libraryBuildsUserRatingsWithCachedMediaAliases() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Library/LibraryView.swift")
+
+        #expect(source.contains("async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)"))
+        #expect(source.contains("async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()"))
+        #expect(source.contains("userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)"))
+    }
+
+    private func contents(of relativePath: String) throws -> String {
+        let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
+        return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func repoRootURL() -> URL {
+        var url = URL(fileURLWithPath: #filePath)
+        while url.lastPathComponent != "VPStudioTests" {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }
+            url = parent
+        }
+        return url.deletingLastPathComponent()
+    }
+}
+
 @Suite("Library Import Outcome Policy")
 struct LibraryImportOutcomePolicyTests {
     @Test
@@ -261,7 +288,7 @@ struct LibraryImportOutcomePolicyTests {
 @Suite("Library Metadata Hydration Policy")
 struct LibraryMetadataHydrationPolicyTests {
     @Test
-    func candidatesDeduplicateRequestedIDsAndUseTitleForLegacyTMDBOnlyItems() {
+    func candidatesDeduplicateRequestedIDsAndUseTMDBForLegacyTMDBItems() {
         let movie = mediaItem(
             id: "movie-local",
             type: .movie,
@@ -275,7 +302,49 @@ struct LibraryMetadataHydrationPolicyTests {
         )
 
         #expect(candidates == [
-            .init(requestedID: "movie-local", detailID: "Fight Club", type: .movie),
+            .init(requestedID: "movie-local", detailID: "tmdb-550", type: .movie, knownTMDBID: 550),
+        ])
+    }
+
+    @Test
+    func candidatesPreferOMDbTitleLookupWhenOMDbIsConfigured() {
+        let movie = mediaItem(
+            id: "movie-local",
+            type: .movie,
+            title: "Fight Club",
+            year: 1999,
+            tmdbId: 550
+        )
+
+        let candidates = LibraryMetadataHydrationPolicy.candidates(
+            for: ["movie-local"],
+            mediaItems: ["movie-local": movie],
+            allowsTMDbIdentifier: true,
+            prefersOMDbTitleLookup: true
+        )
+
+        #expect(candidates == [
+            .init(requestedID: "movie-local", detailID: "Fight Club (1999)", type: .movie, knownTMDBID: 550),
+        ])
+    }
+
+    @Test
+    func candidatesUseTitleForLegacyTMDBItemsWhenTMDBIsUnavailable() {
+        let movie = mediaItem(
+            id: "movie-local",
+            type: .movie,
+            title: "Fight Club",
+            tmdbId: 550
+        )
+
+        let candidates = LibraryMetadataHydrationPolicy.candidates(
+            for: ["movie-local"],
+            mediaItems: ["movie-local": movie],
+            allowsTMDbIdentifier: false
+        )
+
+        #expect(candidates == [
+            .init(requestedID: "movie-local", detailID: "Fight Club", type: .movie, knownTMDBID: 550),
         ])
     }
 
@@ -294,7 +363,7 @@ struct LibraryMetadataHydrationPolicyTests {
         )
 
         #expect(candidates == [
-            .init(requestedID: "local-matrix", detailID: "tt0133093", type: .movie),
+            .init(requestedID: "local-matrix", detailID: "tt0133093", type: .movie, knownTMDBID: 603),
         ])
     }
 
@@ -326,18 +395,21 @@ struct LibraryMetadataHydrationPolicyTests {
     func candidatesFallbackToIMDbItemIDThenRequestedIDThenTitle() {
         let imdbItem = mediaItem(id: "tt0133093", type: .movie)
         let aliasItem = mediaItem(id: "local-alias", type: .series)
+        let tmdbAliasItem = mediaItem(id: "series-tmdb-1399", type: .series)
 
         let candidates = LibraryMetadataHydrationPolicy.candidates(
-            for: ["tt0133093", "tt-series-alias"],
+            for: ["tt0133093", "tt-series-alias", "series-tmdb-1399"],
             mediaItems: [
                 "tt0133093": imdbItem,
                 "tt-series-alias": aliasItem,
+                "series-tmdb-1399": tmdbAliasItem,
             ]
         )
 
         #expect(candidates == [
             .init(requestedID: "tt0133093", detailID: "tt0133093", type: .movie),
             .init(requestedID: "tt-series-alias", detailID: "Title local-alias", type: .series),
+            .init(requestedID: "series-tmdb-1399", detailID: "tmdb-1399", type: .series, knownTMDBID: 1399),
         ])
     }
 
@@ -355,10 +427,51 @@ struct LibraryMetadataHydrationPolicyTests {
         #expect(candidates.isEmpty)
     }
 
+    @Test
+    func shouldPersistWhenTypeMatchesAndTMDBIDAgrees() {
+        #expect(LibraryMetadataHydrationPolicy.shouldPersist(
+            hydratedType: .series,
+            hydratedTMDBID: 276161,
+            requestedType: .series,
+            knownTMDBID: 276161
+        ))
+    }
+
+    @Test
+    func shouldPersistWhenNoTMDBIDIsKnownYet() {
+        #expect(LibraryMetadataHydrationPolicy.shouldPersist(
+            hydratedType: .movie,
+            hydratedTMDBID: 438631,
+            requestedType: .movie,
+            knownTMDBID: nil
+        ))
+    }
+
+    @Test
+    func shouldRejectCrossTypeHydrationOverwrite() {
+        #expect(!LibraryMetadataHydrationPolicy.shouldPersist(
+            hydratedType: .movie,
+            hydratedTMDBID: 896977,
+            requestedType: .series,
+            knownTMDBID: 276161
+        ))
+    }
+
+    @Test
+    func shouldRejectConflictingTMDBIdentity() {
+        #expect(!LibraryMetadataHydrationPolicy.shouldPersist(
+            hydratedType: .series,
+            hydratedTMDBID: 896977,
+            requestedType: .series,
+            knownTMDBID: 276161
+        ))
+    }
+
     private func mediaItem(
         id: String,
         type: MediaType = .movie,
         title: String? = nil,
+        year: Int? = nil,
         posterPath: String? = nil,
         backdropPath: String? = nil,
         tmdbId: Int? = nil
@@ -367,6 +480,7 @@ struct LibraryMetadataHydrationPolicyTests {
             id: id,
             type: type,
             title: title ?? "Title \(id)",
+            year: year,
             posterPath: posterPath,
             backdropPath: backdropPath,
             tmdbId: tmdbId

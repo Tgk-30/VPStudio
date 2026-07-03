@@ -36,6 +36,8 @@ struct TraktSyncServiceRequestConstructionTests {
             var capturedPath: String?
             var capturedMethod: String?
             var capturedHeaders: [String: String] = [:]
+            var cachePolicy: URLRequest.CachePolicy?
+            var handlesCookies: Bool?
         }
         let state = CapturedState()
 
@@ -45,6 +47,10 @@ struct TraktSyncServiceRequestConstructionTests {
             state.capturedHeaders["Authorization"] = request.value(forHTTPHeaderField: "Authorization")
             state.capturedHeaders["trakt-api-key"] = request.value(forHTTPHeaderField: "trakt-api-key")
             state.capturedHeaders["trakt-api-version"] = request.value(forHTTPHeaderField: "trakt-api-version")
+            state.capturedHeaders["Cache-Control"] = request.value(forHTTPHeaderField: "Cache-Control")
+            state.capturedHeaders["Pragma"] = request.value(forHTTPHeaderField: "Pragma")
+            state.cachePolicy = request.cachePolicy
+            state.handlesCookies = request.httpShouldHandleCookies
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data("[]".utf8))
         }
@@ -58,6 +64,10 @@ struct TraktSyncServiceRequestConstructionTests {
         #expect(state.capturedHeaders["Authorization"] == "Bearer token")
         #expect(state.capturedHeaders["trakt-api-key"] == "test-client")
         #expect(state.capturedHeaders["trakt-api-version"] == "2")
+        #expect(state.capturedHeaders["Cache-Control"] == "no-store")
+        #expect(state.capturedHeaders["Pragma"] == "no-cache")
+        #expect(state.cachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(state.handlesCookies == false)
     }
 
     @Test func getWatchlistShowsUsesCorrectPath() async throws {
@@ -224,6 +234,52 @@ struct TraktSyncServiceRequestConstructionTests {
         #expect(ids?["imdb"] == "tt1160419")
     }
 
+    @Test func addToWatchlistNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToWatchlist(imdbId: "movie-omdb-TT1160419", type: .movie)
+
+        let movies = state.capturedBody?["movies"] as? [[String: Any]]
+        let ids = movies?[0]["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1160419")
+    }
+
+    @Test func addToWatchlistNormalizesBareProviderPrefixedIMDbID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToWatchlist(imdbId: "omdb-TT1160419", type: .movie)
+
+        let movies = state.capturedBody?["movies"] as? [[String: Any]]
+        let ids = movies?[0]["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1160419")
+    }
+
     @Test func addToWatchlistShowSendsCorrectBody() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedBody: [String: Any]?
@@ -271,6 +327,29 @@ struct TraktSyncServiceRequestConstructionTests {
         #expect(state.capturedPath?.contains("/sync/watchlist/remove") == true)
         let movies = state.capturedBody?["movies"] as? [[String: Any]]
         #expect(movies?.count == 1)
+    }
+
+    @Test func removeFromWatchlistNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"deleted":{"shows":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.removeFromWatchlist(imdbId: "series-omdb-TT0903747", type: .series)
+
+        let shows = state.capturedBody?["shows"] as? [[String: Any]]
+        let ids = shows?[0]["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt0903747")
     }
 
     @Test func removeFromWatchlistShowSendsCorrectBody() async throws {
@@ -339,6 +418,31 @@ struct TraktSyncServiceRequestConstructionTests {
         let movies = state.capturedBody?["movies"] as? [[String: Any]]
         let ids = movies?[0]["ids"] as? [String: String]
         #expect(ids?["imdb"] == "tt1160419")
+        #expect(movies?[0]["rating"] as? Int == 8)
+    }
+
+    @Test func addRatingAcceptsTMDbFallbackMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addRating(imdbId: "movie-tmdb-438631", rating: 8, type: .movie)
+
+        let movies = state.capturedBody?["movies"] as? [[String: Any]]
+        let ids = movies?[0]["ids"] as? [String: Any]
+        #expect(ids?["tmdb"] as? Int == 438_631)
+        #expect(ids?["imdb"] == nil)
         #expect(movies?[0]["rating"] as? Int == 8)
     }
 
@@ -434,6 +538,65 @@ struct TraktSyncServiceRequestConstructionTests {
         #expect(episodes?.count == 1)
         let ids = episodes?[0]["ids"] as? [String: String]
         #expect(ids?["imdb"] == "tt001")
+    }
+
+    @Test func addToHistoryShowWithOMDbEpisodeIdUsesEpisodesFormat() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"episodes":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToHistory(
+            imdbId: "series-omdb-TT0944947",
+            type: .series,
+            episodeId: "episode-omdb-TT1480055"
+        )
+
+        let episodes = state.capturedBody?["episodes"] as? [[String: Any]]
+        #expect(episodes?.count == 1)
+        let ids = episodes?[0]["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1480055")
+        #expect(state.capturedBody?["shows"] == nil)
+    }
+
+    @Test func addToHistoryShowWithTMDbEpisodeIdUsesEpisodesFormat() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"episodes":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToHistory(
+            imdbId: "series-tmdb-1396",
+            type: .series,
+            episodeId: "episode-tmdb-62086"
+        )
+
+        let episodes = state.capturedBody?["episodes"] as? [[String: Any]]
+        #expect(episodes?.count == 1)
+        let ids = episodes?[0]["ids"] as? [String: Any]
+        #expect(ids?["tmdb"] as? Int == 62_086)
+        #expect(ids?["imdb"] == nil)
+        #expect(state.capturedBody?["shows"] == nil)
     }
 
     @Test func addToHistoryShowWithSeasonEpisodeParsesCorrectly() async throws {

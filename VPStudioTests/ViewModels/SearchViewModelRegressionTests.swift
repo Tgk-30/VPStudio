@@ -571,6 +571,20 @@ struct SearchViewModelRegressionTests {
 
     @Test
     @MainActor
+    func configureWithPaidOMDbPlanUsesPlanAwareFactory() {
+        let factorySpy = MetadataServiceFactorySpy()
+        let viewModel = SearchViewModel(metadataServiceFactory: factorySpy.callAsFunction)
+
+        viewModel.configure(configuration: MetadataProviderConfiguration(
+            omdbApiKey: "paid-omdb-key",
+            omdbPlan: .paid
+        ))
+
+        #expect(factorySpy.createdKeys.isEmpty)
+    }
+
+    @Test
+    @MainActor
     func searchQueryTextArgCommitsTrimmedValueAndHitsService() async throws {
         let stub = SearchRegressionMetadataStub()
         let viewModel = SearchViewModel(metadataService: stub)

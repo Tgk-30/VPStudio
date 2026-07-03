@@ -129,6 +129,8 @@ struct StreamInfoCodableTests {
             debridService: "realDebrid",
             requestHeaders: [
                 "User-Agent": "Stremio",
+                "Authorization": "Bearer ignored",
+                "Cookie": "session=ignored",
                 "Bad\nName": "ignored",
                 "X-Blank": " "
             ]

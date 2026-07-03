@@ -196,7 +196,7 @@ struct PlayerEngineFallbackTests {
 
     @MainActor
     @Test func avPlayerEnginePrepareReturnsAVSession() async throws {
-        let engine = AVPlayerEngine()
+        let engine = AVPlayerEngine(resolveStream: { $0 })
         let stream = makeStream(
             url: "https://cdn.example.com/movie.mp4",
             fileName: "Movie.2025.1080p.mp4",
@@ -212,7 +212,7 @@ struct PlayerEngineFallbackTests {
 
     @MainActor
     @Test func avPlayerEnginePrepareUsesLongerBufferForDemandingStreams() async throws {
-        let engine = AVPlayerEngine()
+        let engine = AVPlayerEngine(resolveStream: { $0 })
         let stream = makeStream(
             url: "https://cdn.example.com/movie.mp4",
             fileName: "Movie.2025.2160p.DV.mp4",
@@ -231,7 +231,7 @@ struct PlayerEngineFallbackTests {
 
     @MainActor
     @Test func avPlayerEnginePrepareUsesLongerBufferForUHDAndHDR10Plus() async throws {
-        let engine = AVPlayerEngine()
+        let engine = AVPlayerEngine(resolveStream: { $0 })
         let uhdStream = StreamInfo(
             streamURL: URL(string: "https://cdn.example.com/movie-uhd.mp4")!,
             quality: .uhd4k,

@@ -607,7 +607,7 @@ struct StremioIndexerTests {
                 let body = #"{"catalogs":[{"id":"movies","type":"movie","extra":[{"name":"search"}]}]}"#
                 return (response, Data(body.utf8))
             }
-            let body = #"{"streams":[{"title":"Header Stream","url":"https://cdn.example.com/file.mkv","infoHash":"\#(hash)","behaviorHints":{"proxyHeaders":{"request":{" User-Agent ":"  TestAgent ","X-Auth":"token-123","X-Empty":"   "}}}}]}"#
+            let body = #"{"streams":[{"title":"Header Stream","url":"https://cdn.example.com/file.mkv","infoHash":"\#(hash)","behaviorHints":{"proxyHeaders":{"request":{" User-Agent ":"  TestAgent ","Referer":"https://app.strem.io/","Authorization":"Bearer ignored","X-Auth":"token-123","X-Empty":"   "}}}}]}"#
             return (response, Data(body.utf8))
         }
 
@@ -616,7 +616,9 @@ struct StremioIndexerTests {
 
         #expect(results.count == 1)
         #expect(results[0].directStreamRequestHeaders?["User-Agent"] == "TestAgent")
-        #expect(results[0].directStreamRequestHeaders?["X-Auth"] == "token-123")
+        #expect(results[0].directStreamRequestHeaders?["Referer"] == "https://app.strem.io/")
+        #expect(results[0].directStreamRequestHeaders?["Authorization"] == nil)
+        #expect(results[0].directStreamRequestHeaders?["X-Auth"] == nil)
         #expect(results[0].directStreamRequestHeaders?["X-Empty"] == nil)
         #expect(results[0].directStreamRequestHeaders?.count == 2)
     }

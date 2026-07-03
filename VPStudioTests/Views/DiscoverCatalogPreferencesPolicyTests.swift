@@ -142,8 +142,10 @@ struct DiscoverCatalogPreferencesPolicyTests {
 
     @Test
     func layoutPolicyReservesBottomClearanceForBottomTabs() {
-        #expect(DiscoverLayoutPolicy.standardBottomContentPadding == 132)
-        #expect(DiscoverLayoutPolicy.bottomTabBarContentPadding == 240)
+        #expect(DiscoverLayoutPolicy.heroHeight == 504)
+        #expect(DiscoverLayoutPolicy.standardBottomContentPadding == 180)
+        #expect(DiscoverLayoutPolicy.bottomTabBarContentPadding == 288)
+        #expect(DiscoverLayoutPolicy.bottomViewportInset == 132)
         #expect(DiscoverLayoutPolicy.bottomContentPadding(for: .bottomTabBar) == DiscoverLayoutPolicy.bottomTabBarContentPadding)
         #expect(DiscoverLayoutPolicy.bottomContentPadding(for: .leftSidebar) == DiscoverLayoutPolicy.standardBottomContentPadding)
         #expect(DiscoverLayoutPolicy.bottomTabBarContentPadding > DiscoverLayoutPolicy.standardBottomContentPadding)

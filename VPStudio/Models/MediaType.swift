@@ -153,7 +153,10 @@ enum SourceType: String, Codable, Sendable, CaseIterable {
     }
 
     nonisolated static func parse(from title: String) -> SourceType {
-        let lowered = title.lowercased()
+        // Drop a trailing container extension first so a legitimate `.ts`
+        // (MPEG transport stream) filename is not read as a `TS`/TELESYNC
+        // camera source and hidden by the default "No CAM" filter.
+        let lowered = title.lowercased().strippingTrailingMediaContainerExtension()
         if lowered.contains("bluray") || lowered.contains("blu-ray") || lowered.contains("bdrip") || lowered.contains("brrip") {
             return .bluRay
         } else if lowered.contains("web-dl") || lowered.contains("webdl") {
@@ -167,9 +170,12 @@ enum SourceType: String, Codable, Sendable, CaseIterable {
         } else if lowered.contains("hdtv") {
             return .hdtv
         } else if lowered.contains("hdcam")
+            || lowered.contains("hdts")
             || lowered.contains("telesync")
+            || lowered.contains("telecine")
             || lowered.containsStandaloneToken("cam")
-            || lowered.containsStandaloneToken("ts") {
+            || lowered.containsStandaloneToken("ts")
+            || lowered.containsStandaloneToken("hdtc") {
             return .cam
         }
         return .unknown

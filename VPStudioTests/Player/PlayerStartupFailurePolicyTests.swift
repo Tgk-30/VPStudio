@@ -192,6 +192,29 @@ struct PlayerStartupFailurePolicyTests {
         #expect(description.contains("https://cdn.example.com/expired.mkv"))
     }
 
+    @Test func normalizedDescriptionRedactsSensitiveInvalidStreamURLValue() {
+        let description = PlayerStartupFailurePolicy.normalizedDescription(
+            for: PlayerEngineError.invalidStreamURL("https://cdn.example.com/expired.mkv?token=player-token-secret&quality=1080p")
+        )
+
+        #expect(description.contains("expired.mkv"))
+        #expect(description.contains("token=redacted"))
+        #expect(!description.contains("player-token-secret"))
+    }
+
+    @Test func normalizedDescriptionRedactsSensitiveInitializationFailureMessage() {
+        let description = PlayerStartupFailurePolicy.normalizedDescription(
+            for: PlayerEngineError.initializationFailed(
+                .ksPlayer,
+                "Decoder failed for https://cdn.example.com/expired.mkv?token=player-token-secret&quality=1080p"
+            )
+        )
+
+        #expect(description.contains("expired.mkv"))
+        #expect(description.contains("token=redacted"))
+        #expect(!description.contains("player-token-secret"))
+    }
+
     @Test func normalizedDescriptionHandlesStartupTimeoutWithoutExtraMessage() {
         let description = PlayerStartupFailurePolicy.normalizedDescription(
             for: PlayerEngineError.startupTimeout(.avPlayer)

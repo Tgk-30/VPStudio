@@ -715,6 +715,19 @@ struct SecurityTests {
             #expect(redacted == short)
         }
 
+        @Test func looseMessagesRedactAssignmentsBearerTokensAndURLs() {
+            let message = "Failed token=abc123 Bearer sk_test_secret at https://cdn.example.com/movie.mkv?sig=signature123&quality=1080p"
+            let redacted = IndexerLogSanitizer.redactedMessage(message)
+
+            #expect(redacted.contains("token=REDACTED"))
+            #expect(redacted.contains("Bearer REDACTED"))
+            #expect(redacted.contains("sig=REDACTED"))
+            #expect(redacted.contains("quality=1080p"))
+            #expect(redacted.contains("abc123") == false)
+            #expect(redacted.contains("sk_test_secret") == false)
+            #expect(redacted.contains("signature123") == false)
+        }
+
         @Test func urlWithMultipleSensitiveParams() {
             var components = URLComponents()
             components.scheme = "https"
@@ -752,6 +765,33 @@ struct SecurityTests {
             // URLComponents can parse scheme-less URLs; sensitive query values are redacted
             #expect(redacted.contains("example.com"))
             #expect(redacted.contains("token=REDACTED"))
+        }
+
+        @Test func runtimeErrorLogsSanitizeLocalizedDescriptionsBeforeLogging() throws {
+            let sourcePaths = [
+                "VPStudio/Services/Player/Immersive/HeadTracker.swift",
+                "VPStudio/Services/Player/Rendering/HDRMetadataExtractor.swift",
+                "VPStudio/Services/AI/Local/LocalDownloadService.swift",
+                "VPStudio/Services/AI/Local/LocalModelCatalogStore.swift",
+            ]
+
+            for path in sourcePaths {
+                let source = try Self.sourceFile(path)
+                #expect(source.contains("IndexerLogSanitizer.redactedErrorMessage(error)"))
+                #expect(!source.contains("\\(error.localizedDescription)"))
+            }
+        }
+
+        private static func sourceFile(_ relativePath: String) throws -> String {
+            try String(contentsOf: repositoryRoot().appendingPathComponent(relativePath), encoding: .utf8)
+        }
+
+        private static func repositoryRoot() -> URL {
+            var url = URL(fileURLWithPath: #filePath)
+            while url.lastPathComponent != "VPStudioTests", url.pathComponents.count > 1 {
+                url.deleteLastPathComponent()
+            }
+            return url.deletingLastPathComponent()
         }
     }
 }

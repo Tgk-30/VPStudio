@@ -112,7 +112,7 @@ struct EnvironmentCatalogTests {
         #expect(EnvironmentCatalogError.downloadFailed("offline").errorDescription?.contains("offline") == true)
     }
 
-    @Test func defaultValidatorRejectsInvalidRealityAssets() async throws {
+    @Test func defaultValidatorHandlesRealityAssetsPerPlatform() async throws {
         let (database, rootDir) = try await makeDatabase(named: "environment-catalog-default-validator-reality.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -124,6 +124,7 @@ struct EnvironmentCatalogTests {
         let source = rootDir.appendingPathComponent("plain.reality")
         try Data("non-empty reality placeholder".utf8).write(to: source)
 
+        #if os(visionOS)
         do {
             _ = try await manager.importEnvironment(from: source)
             Issue.record("Expected invalid asset error")
@@ -132,6 +133,11 @@ struct EnvironmentCatalogTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+        #else
+        let imported = try await manager.importEnvironment(from: source)
+        #expect(imported.sourceType == .imported)
+        #expect(imported.assetPath.hasSuffix(".reality"))
+        #endif
     }
 
     @Test func defaultValidatorRejectsEmptySupportedAsset() async throws {
@@ -261,7 +267,7 @@ struct EnvironmentCatalogTests {
         try await manager.deleteAsset(id: first.id)
 
         let active = try await manager.activeAsset()
-        #expect(active == nil, "Deleting the active asset should leave Standard Room selected")
+        #expect(active == nil, "Deleting the active asset should leave Apple Environment selected")
         #expect(try await manager.fetchAssets().contains { $0.id == second.id })
     }
 
@@ -759,6 +765,8 @@ struct EnvironmentCatalogTests {
         let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
         let existingFile = envDir.appendingPathComponent("existing.hdr")
         try Data("fake-hdr".utf8).write(to: existingFile)
+        let directoryURL = envDir.appendingPathComponent("directory.hdr", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         let existingAsset = EnvironmentAsset(
             id: "existing",
@@ -778,6 +786,12 @@ struct EnvironmentCatalogTests {
             sourceType: .imported,
             assetPath: rootDir.appendingPathComponent("outside.hdr").path
         )
+        let directoryAsset = EnvironmentAsset(
+            id: "directory",
+            name: "Directory",
+            sourceType: .imported,
+            assetPath: directoryURL.path
+        )
         let bundleAsset = EnvironmentAsset(
             id: "bundle",
             name: "Bundle",
@@ -794,6 +808,7 @@ struct EnvironmentCatalogTests {
         #expect(await manager.resolvedAssetURL(for: existingAsset) == existingFile)
         #expect(await manager.resolvedAssetURL(for: missingAsset) == nil)
         #expect(await manager.resolvedAssetURL(for: externalAsset) == nil)
+        #expect(await manager.resolvedAssetURL(for: directoryAsset) == nil)
         #expect(await manager.resolvedAssetURL(for: bundleAsset) == nil)
         #expect(await manager.resolvedAssetURL(for: emptyBundlePathAsset) == nil)
     }
@@ -826,6 +841,36 @@ struct EnvironmentCatalogTests {
         try await manager.bootstrapCuratedAssets()
         assets = try await manager.fetchAssets()
         #expect(!assets.contains(where: { $0.id == imported.id }), "Orphaned imported asset should be pruned on second bootstrap")
+    }
+
+    @Test func bootstrapPrunesImportedAssetsWhosePathsAreDirectories() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-prune-directory.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let directoryURL = envDir.appendingPathComponent("not-a-loadable-asset.hdr", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: envDir,
+            assetValidator: { _ in true }
+        )
+        let asset = EnvironmentAsset(
+            id: "directory-asset",
+            name: "Directory Asset",
+            sourceType: .imported,
+            assetPath: directoryURL.path,
+            isActive: true
+        )
+        try await database.saveEnvironmentAsset(asset)
+
+        try await manager.bootstrapCuratedAssets()
+        let assets = try await manager.fetchAssets()
+
+        #expect(!assets.contains(where: { $0.id == asset.id }))
+        #expect(try await manager.activeAsset() == nil)
     }
 
     @Test func bootstrapPrunesOnEveryCallNotJustFirstLaunch() async throws {

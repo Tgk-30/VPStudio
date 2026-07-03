@@ -11,6 +11,8 @@ struct PlayerResourceTeardownContractTests {
         #expect(source.contains("static func dismantleUIView"))
         #expect(source.contains("nsView.player = nil"))
         #expect(source.contains("uiView.player = nil"))
+        #expect(!source.contains("static func dismantleUIViewController"))
+        #expect(!source.contains("AVPlayerViewController"))
     }
 
     @Test
@@ -55,6 +57,9 @@ struct PlayerResourceTeardownContractTests {
         #expect(source.contains("preparePlaybackTask = Task { await preparePlayback(for: currentStream, preparationID: preparationID) }"))
         #expect(source.contains("preparePlaybackTask = Task { await preparePlayback(for: stream, preparationID: preparationID) }"))
         #expect(source.contains("static func preparePlaybackShouldRun(requestedPreparationID: UUID, activePreparationID: UUID?) -> Bool"))
+        #expect(source.contains("guard await waitForPlayerSceneAttachmentIfNeeded(preparationID: preparationID)"))
+        #expect(source.contains("private func waitForPlayerSceneAttachmentIfNeeded(preparationID: UUID) async -> Bool"))
+        #expect(source.contains("PlayerLifecyclePolicy.playerSceneAttachmentWaitAttempts"))
     }
 
     @Test
@@ -147,6 +152,11 @@ struct PlayerResourceTeardownContractTests {
             #expect(cancelRange.lowerBound < cleanupRange.lowerBound)
             #expect(clearRange.lowerBound < cleanupRange.lowerBound)
         }
+        let statusObservationCancelRange = try requiredRange(
+            of: "cancelAVPlayerStatusObservationIfNeeded()",
+            in: closePlayerBody
+        )
+        #expect(statusObservationCancelRange.lowerBound < cleanupRange.lowerBound)
 
         let visionOSBranch = try section(
             from: "#if os(visionOS)",
@@ -177,7 +187,7 @@ struct PlayerResourceTeardownContractTests {
     }
 
     @Test
-    func playerViewClosesWhenActiveSessionIsClearedExternally() throws {
+    func playerViewScopesActiveSessionChangesToCurrentOrStaleClosePath() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
         let observerSection = try section(
             from: ".onChange(of: appState.activePlayerSession?.id)",
@@ -185,8 +195,42 @@ struct PlayerResourceTeardownContractTests {
             in: source
         )
 
-        #expect(observerSection.contains("guard activeSessionID != sessionID else { return }"))
+        #expect(observerSection.contains("PlayerViewStatePolicy.activeSessionChangeAction"))
+        #expect(observerSection.contains("case .keepOpen:"))
+        #expect(observerSection.contains("case .closeCurrentSession:"))
         #expect(observerSection.contains("closePlayer()"))
+        #expect(observerSection.contains("case .closeStaleScene:"))
+        #expect(observerSection.contains("closeStalePlayerSceneForActiveSessionChange()"))
+    }
+
+    @Test
+    func stalePlayerSceneCloseDoesNotUseGenericPlayerWindowDismissOrRestoreEnvironment() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
+        let staleCloseBody = try functionBody(
+            named: "closeStalePlayerSceneForActiveSessionChange",
+            in: source
+        )
+        let scopedCleanupRange = try requiredRange(
+            of: "cleanupPlayback(clearSession: false, resetSharedEngineState: false)",
+            in: staleCloseBody
+        )
+        // The re-entrancy guard at the top of the function may dismiss the (already
+        // cleaned-up) scene again without re-running cleanup, so assert the ordering on
+        // the first-close path: scoped cleanup runs before the dismissal that follows it.
+        let afterScopedCleanup = String(staleCloseBody[scopedCleanupRange.upperBound..<staleCloseBody.endIndex])
+
+        #expect(staleCloseBody.contains("didCloseStalePlayerScene = true"))
+        #expect(staleCloseBody.contains("didInitiateClose = true"))
+        #expect(staleCloseBody.contains("cancelAVPlayerStatusObservationIfNeeded()"))
+        #expect(!staleCloseBody.contains("engine.resetSessionState()"))
+        #expect(afterScopedCleanup.contains("dismissCurrentPlayerSceneOnly()"))
+        #expect(!staleCloseBody.contains("scheduleImmersiveDismiss"))
+        #expect(!staleCloseBody.contains("scheduleMainWindowRestoreIfNeeded"))
+
+        let currentSceneDismissBody = try functionBody(named: "dismissCurrentPlayerSceneOnly", in: source)
+        #expect(currentSceneDismissBody.contains("dismissWindow(id: \"player\", value: sessionRequest)"))
+        #expect(currentSceneDismissBody.contains("dismiss()"))
+        #expect(!currentSceneDismissBody.contains("dismissWindow(id: \"player\")"))
     }
 
     @Test
@@ -197,7 +241,10 @@ struct PlayerResourceTeardownContractTests {
             to: "RuntimeMemoryDiagnostics.capture(",
             in: source
         )
-        let cleanupRange = try requiredRange(of: "cleanupPlayback()", in: onDisappearSection)
+        let cleanupRange = try requiredRange(
+            of: "resetSharedEngineState: !didCloseStalePlayerScene",
+            in: onDisappearSection
+        )
 
         for taskName in [
             "initialPlayerStateTask",
@@ -238,19 +285,25 @@ struct PlayerResourceTeardownContractTests {
 
         #expect(containsIgnoringWhitespace(
             loadInitialBody,
-            "guard !Task.isCancelled else { return } streamQueue = await PlayerSessionRouting.playbackQueue("
+            "guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return } streamQueue = await PlayerSessionRouting.playbackQueue("
+        ))
+        let loadEnvironmentRange = try requiredRange(of: "await loadEnvironmentAssets()", in: loadInitialBody)
+        let loadPrivacyRange = try requiredRange(of: "await loadPrivacyPreferences()", in: loadInitialBody)
+        let afterPrivacyBody = String(loadInitialBody[loadPrivacyRange.upperBound..<loadInitialBody.endIndex])
+        let postPrivacyCancellationRange = try requiredRange(
+            of: "guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }",
+            in: afterPrivacyBody
+        )
+        let progressAfterPrivacyRange = try requiredRange(of: "startProgressPersistence()", in: afterPrivacyBody)
+        #expect(loadEnvironmentRange.lowerBound < loadPrivacyRange.lowerBound)
+        #expect(postPrivacyCancellationRange.lowerBound < progressAfterPrivacyRange.lowerBound)
+        #expect(containsIgnoringWhitespace(
+            loadInitialBody,
+            "let catalogMutationID = UUID() subtitleCatalogMutationID = catalogMutationID await refreshSubtitleCatalog( for: currentStream, requestedStreamID: currentStream.id, mutationID: catalogMutationID ) guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return } await autoLoadSubtitlesIfEnabled(for: currentStream)"
         ))
         #expect(containsIgnoringWhitespace(
             loadInitialBody,
-            "await loadEnvironmentAssets() await loadPrivacyPreferences() guard !Task.isCancelled else { return } if !guestModeEnabled { startProgressPersistence() }"
-        ))
-        #expect(containsIgnoringWhitespace(
-            loadInitialBody,
-            "let catalogMutationID = UUID() subtitleCatalogMutationID = catalogMutationID await refreshSubtitleCatalog( for: currentStream, requestedStreamID: currentStream.id, mutationID: catalogMutationID ) guard !Task.isCancelled else { return } await autoLoadSubtitlesIfEnabled(for: currentStream)"
-        ))
-        #expect(containsIgnoringWhitespace(
-            loadInitialBody,
-            "await autoLoadSubtitlesIfEnabled(for: currentStream) guard !Task.isCancelled else { return } scheduleControlsHide()"
+            "await autoLoadSubtitlesIfEnabled(for: currentStream) guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return } scheduleControlsHide()"
         ))
     }
 
@@ -261,6 +314,8 @@ struct PlayerResourceTeardownContractTests {
         for functionName in ["scrobbleStart", "scrobblePause", "scrobbleResume", "scrobbleStop"] {
             let body = try functionBody(named: functionName, in: source)
             #expect(body.contains("guard await shouldSuppressPlaybackTracking() == false else { return }"))
+            #expect(body.contains("PlayerViewPolicy.scrobbleSyncID(mediaId: mediaId, imdbId: imdbId, tmdbId: tmdbId)"))
+            #expect(!body.contains("PlayerViewPolicy.scrobbleIMDbID"))
         }
 
         let persistBody = try functionBody(named: "persistCurrentWatchProgress", in: source)
@@ -351,7 +406,7 @@ struct PlayerResourceTeardownContractTests {
         let requestRange = try requiredRange(of: "requestEnvironmentPicker()", in: switchHandler)
         #expect(recordRange.lowerBound < requestRange.lowerBound)
         #expect(source.contains("private func requestEnvironmentPicker()"))
-        #expect(source.contains("isShowingEnvironmentPicker = true"))
+        #expect(source.contains("presentControlModal(.environmentPicker)"))
     }
 
     @Test
@@ -368,10 +423,21 @@ struct PlayerResourceTeardownContractTests {
             to: ".animation(motionAnimationsEnabled ? .easeInOut(duration: 0.2) : nil, value: appState.isImmersiveSpaceOpen)",
             in: source
         )
+        let systemPickerSection = try section(
+            from: "private var playerSystemEnvironmentPickerEntries: some View {",
+            to: "#endif\n\n    @ViewBuilder\n    private var playerSurfaceFeedbackOverlay",
+            in: source
+        )
+        let playerSurfaceContentSection = try section(
+            from: "private var playerSurfaceContent: some View {",
+            to: "#if os(visionOS)\n    @ViewBuilder\n    private var playerSystemEnvironmentPickerEntries",
+            in: source
+        )
 
         #expect(topBarMenuSection.contains("openCinemaEnvironmentAfterMenuDismissal()"))
         #expect(topBarMenuSection.contains("PlayerEnvironmentMenuLabel("))
         #expect(topBarMenuSection.contains("spec: .standardRoom("))
+        #expect(topBarMenuSection.contains("canUseSystemVideoSurface: PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(topBarMenuSection.contains("spec: .cinema("))
         #expect(topBarMenuSection.contains("canOpenCinema: PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(topBarMenuSection.contains("spec: .compactAsset("))
@@ -384,11 +450,26 @@ struct PlayerResourceTeardownContractTests {
 
         #expect(transportPillSection.contains("PlayerEnvironmentButton("))
         #expect(transportPillSection.contains("openCinemaEnvironmentAfterMenuDismissal()"))
+        #expect(transportPillSection.contains("canUseSystemVideoSurface: PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(transportPillSection.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(transportPillSection.contains("activeEngine: activeEngine"))
         #expect(transportPillSection.contains("hasAVPlayer: avPlayer != nil"))
         #expect(transportPillSection.contains("onShowCinemaSettings:"))
         #expect(transportPillSection.contains("onShowPicker:"))
+        #expect(source.contains(".immersiveEnvironmentPicker {"))
+        #expect(source.contains("playerSystemEnvironmentPickerEntries"))
+        #expect(!playerSurfaceContentSection.contains(".immersiveEnvironmentPicker"))
+        #expect(systemPickerSection.contains("Text(EnvironmentPreviewRowPolicy.appleEnvironmentTitle)"))
+        #expect(systemPickerSection.contains("Image(systemName: \"visionpro\")"))
+        #expect(systemPickerSection.contains("Text(PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit)"))
+        #expect(systemPickerSection.contains("await openAppleEnvironmentFromSystemPicker()"))
+        #expect(systemPickerSection.contains("Text(\"Cinema Environment\")"))
+        #expect(systemPickerSection.contains("Text(\"VPStudio\")"))
+        #expect(systemPickerSection.contains("await openCinemaEnvironment()"))
+        #expect(systemPickerSection.contains("ForEach(environmentAssets, id: \\.id)"))
+        #expect(systemPickerSection.contains("await openEnvironment(asset)"))
+        #expect(systemPickerSection.contains("EnvironmentPreviewRowPolicy.assetTypeLabel("))
+        #expect(systemPickerSection.contains(".disabled(!PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(menuSource.contains(#"title: "Cinema Environment""#))
         #expect(menuSource.contains("PlayerEnvironmentCinemaRow("))
         #expect(menuSource.contains("Label(\"Cinema Settings\", systemImage: \"slider.horizontal.3\")"))
@@ -403,14 +484,24 @@ struct PlayerResourceTeardownContractTests {
         for functionName in [
             "openCinemaEnvironmentAfterMenuDismissal",
             "openEnvironmentAfterMenuDismissal",
+            "openAppleEnvironmentAfterMenuDismissal",
             "showEnvironmentPickerAfterMenuDismissal",
             "showCinemaSettingsAfterMenuDismissal",
             "dismissEnvironmentAfterMenuDismissal",
+            "clearEnvironmentSelectionAfterMenuDismissal",
         ] {
             let body = try functionBody(named: functionName, in: source)
             #expect(body.contains("Task { @MainActor in"))
             #expect(body.contains("await waitForMenuDismissal()"))
+            #expect(body.contains("guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }"))
+            #expect(body.contains("dismissControlModalsForDeferredEnvironmentAction()"))
         }
+
+        let dismissBody = try functionBody(named: "dismissControlModalsForDeferredEnvironmentAction", in: source)
+        #expect(dismissBody.contains("isShowingSubtitlePicker = false"))
+        #expect(dismissBody.contains("isShowingAudioPicker = false"))
+        #expect(dismissBody.contains("isShowingEnvironmentPicker = false"))
+        #expect(dismissBody.contains("isShowingCinemaSettings = false"))
 
         let waitBody = try functionBody(named: "waitForMenuDismissal", in: source)
         #expect(waitBody.contains("await Task.yield()"))
@@ -429,6 +520,7 @@ struct PlayerResourceTeardownContractTests {
         #expect(sheetBody.contains("openEnvironmentAfterMenuDismissal(asset)"))
         #expect(sheetBody.contains("dismissEnvironmentAfterMenuDismissal()"))
         #expect(sheetBody.contains("openCinemaEnvironmentAfterMenuDismissal()"))
+        #expect(sheetBody.contains("openAppleEnvironmentAfterMenuDismissal()"))
         #expect(!sheetBody.contains("Task { await openEnvironment(asset) }"))
         #expect(!sheetBody.contains("Task { await openCinemaEnvironment() }"))
         #expect(!sheetBody.contains("Task { await dismissImmersiveIfNeeded(reason: .userInitiated) }"))
@@ -441,11 +533,11 @@ struct PlayerResourceTeardownContractTests {
         let settingsBody = try functionBody(named: "showCinemaSettingsAfterMenuDismissal", in: source)
         let requestBody = try functionBody(named: "requestEnvironmentPicker", in: source)
 
-        #expect(pickerBody.contains("guard !isShowingEnvironmentPicker else {"))
-        #expect(settingsBody.contains("guard !isShowingCinemaSettings else {"))
+        #expect(pickerBody.contains("guard !isShowingEnvironmentPickerForAutoHide else {"))
+        #expect(settingsBody.contains("guard !isShowingCinemaSettingsForAutoHide else {"))
         #expect(pickerBody.contains("environmentMenuActionTask = nil"))
         #expect(settingsBody.contains("environmentMenuActionTask = nil"))
-        #expect(requestBody.contains("guard !isShowingEnvironmentPicker else {"))
+        #expect(requestBody.contains("guard !isShowingEnvironmentPickerForAutoHide else {"))
         #expect(requestBody.contains("environmentAssetsTask = Task { await loadEnvironmentAssets() }"))
     }
 
@@ -517,6 +609,7 @@ struct PlayerResourceTeardownContractTests {
         #expect(buttonSection.contains("Text(\"No imported environments\")"))
         #expect(buttonSection.contains("var onShowCinemaSettings: (() -> Void)? = nil"))
         #expect(buttonSection.contains("var onShowPicker: (() -> Void)? = nil"))
+        #expect(buttonSection.contains("canUseSystemVideoSurface"))
         #expect(buttonSection.contains("canOpenCinema"))
     }
 
@@ -534,6 +627,7 @@ struct PlayerResourceTeardownContractTests {
         #expect(infoPillsRow.contains("onClear:"))
         #expect(infoPillsRow.contains("onShowCinemaSettings:"))
         #expect(infoPillsRow.contains("onShowPicker:"))
+        #expect(infoPillsRow.contains("canUseSystemVideoSurface: PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(infoPillsRow.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
     }
 
@@ -617,18 +711,23 @@ struct PlayerResourceTeardownContractTests {
             to: ".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))",
             in: source
         )
-        let onDisappearCleanupRange = try requiredRange(of: "cleanupPlayback()", in: onDisappearSection)
+        let onDisappearCleanupRange = try requiredRange(
+            of: "resetSharedEngineState: !didCloseStalePlayerScene",
+            in: onDisappearSection
+        )
 
         for taskName in [
             "environmentAssetsTask",
             "scenePhaseTask",
             "memoryPressureTask",
+            "playerSceneActivationTask",
         ] {
             let cancelRange = try requiredRange(of: "\(taskName)?.cancel()", in: onDisappearSection)
             #expect(cancelRange.lowerBound < onDisappearCleanupRange.lowerBound)
         }
 
         let restoreRange = try requiredRange(of: "scheduleMainWindowRestoreIfNeeded()", in: onDisappearSection)
+        #expect(onDisappearSection.contains("if !didCloseStalePlayerScene"))
         #expect(onDisappearCleanupRange.lowerBound < restoreRange.lowerBound)
 
         let closePlayerBody = try functionBody(named: "closePlayer", in: source)
@@ -653,6 +752,7 @@ struct PlayerResourceTeardownContractTests {
         for taskName in [
             "scenePhaseTask",
             "memoryPressureTask",
+            "playerSceneActivationTask",
             "immersiveDismissTask",
         ] {
             let cancelRange = try requiredRange(of: "\(taskName)?.cancel()", in: visionTaskCancelBody)
@@ -679,6 +779,7 @@ struct PlayerResourceTeardownContractTests {
             of: "scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)",
             in: visionOSSection
         )
+        #expect(visionOSSection.contains("if !didCloseStalePlayerScene"))
 
         let scheduleBody = try functionBody(named: "scheduleImmersiveDismiss", in: source)
         let dismissRange = try requiredRange(
@@ -768,18 +869,18 @@ struct PlayerResourceTeardownContractTests {
             in: source
         )
 
-        // Invariant (robust to interleaved state resets): prepare re-checks cancellation
-        // (the !Task.isCancelled guard) BEFORE it tears down playback without clearing the
-        // session (cleanupPlayback(clearSession: false)). Asserted by relative ordering so
-        // unrelated state-reset lines added between them don't break this contract.
-        let hasPlayedReset = try requiredRange(of: "hasPlayedOnce = false", in: prepareBody)
-        let cancellationGuard = try requiredRange(of: "!Task.isCancelled else {", in: prepareBody)
-        let cleanupWithoutClearingSession = try requiredRange(
-            of: "cleanupPlayback(clearSession: false)",
+        // Invariant (robust to interleaved state resets and to cancellation guards added
+        // earlier in prepare): after resetting per-stream state (hasPlayedOnce = false),
+        // prepare re-checks cancellation (a !Task.isCancelled guard) BEFORE it tears down
+        // playback without clearing the session (cleanupPlayback(clearSession: false)).
+        // Extracting the reset-to-teardown region enforces the reset < teardown ordering
+        // and lets us require a cancellation guard strictly between the two.
+        let resetToTeardown = try section(
+            from: "hasPlayedOnce = false",
+            to: "cleanupPlayback(clearSession: false)",
             in: prepareBody
         )
-        #expect(hasPlayedReset.lowerBound < cancellationGuard.lowerBound)
-        #expect(cancellationGuard.lowerBound < cleanupWithoutClearingSession.lowerBound)
+        #expect(resetToTeardown.contains("!Task.isCancelled else {"))
     }
 
     @Test
@@ -840,6 +941,10 @@ struct PlayerResourceTeardownContractTests {
         let source = try contents(of: "VPStudio/Views/Immersive/CustomEnvironmentView.swift")
         #expect(source.contains("ImmersiveControlsPolicy.smoothedPosition("))
         #expect(source.contains("ImmersiveControlsPolicy.fallbackControlsPosition"))
+        #expect(source.contains("ImmersiveControlsPolicy.tapCatcherSize("))
+        #expect(source.contains("ImmersiveControlsPolicy.tapCatcherPosition("))
+        #expect(!source.contains("ShapeResource.generateBox(size: [200, 200, 0.5])"))
+        #expect(!source.contains("tapCatcher.position = SIMD3<Float>(0, 0, -5)"))
         #expect(source.contains("Attachment(id: \"loadingIndicator\")"))
         #expect(source.contains("makeFallbackScreen()"))
         #expect(source.contains("setLoadingState(.failed"))
@@ -889,9 +994,16 @@ struct PlayerResourceTeardownContractTests {
         #expect(playerSource.contains("performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeInDuration))"))
         #expect(playerSource.contains("performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeOutDuration))"))
         #expect(playerSource.contains("UIAccessibility.isClosedCaptioningEnabled"))
+        #expect(playerSource.contains("private func transportChapterIconButton("))
+        #expect(playerSource.contains("transportChapterControlDivider(isVisible: hasChapters)"))
+        #expect(playerSource.contains(".opacity(isVisible ? 1 : 0)"))
+        #expect(playerSource.contains(".allowsHitTesting(isVisible)"))
+        #expect(playerSource.contains(".accessibilityHidden(!isVisible)"))
 
         #expect(immersiveControlsSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(immersiveControlsSource.contains(".animation(accessibilityReduceMotion ? nil : .easeOut(duration: 0.15), value: thumbIsExpanded)"))
+        #expect(immersiveControlsSource.contains(".minimumScaleFactor(0.78)"))
+        #expect(immersiveControlsSource.contains(".minimumScaleFactor(0.82)"))
 
         #expect(customEnvironmentSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(customEnvironmentSource.contains("performOptionalAnimation(.easeInOut(duration: 0.25))"))
@@ -913,7 +1025,7 @@ struct PlayerResourceTeardownContractTests {
         #expect(containsIgnoringWhitespace(
             source,
             """
-            warningsOverlay
+            AnyView(warningsOverlay)
                                 .padding(.top, 6)
                                 .compositingGroup()
             """

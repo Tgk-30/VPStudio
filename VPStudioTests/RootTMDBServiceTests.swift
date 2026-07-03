@@ -361,7 +361,7 @@ struct TMDBIDExtractionTests {
         }
 
         let service = TMDBService(apiKey: "key", session: session)
-        let extracted = try await service.getDetail(id: "movie-tmdb-438631", type: .movie)
+        let extracted = try await service.getDetail(id: " MOVIE-TMDB-438631 ", type: .movie)
         let numeric = try await service.getDetail(id: "438631", type: .movie)
 
         #expect(extracted.id == "tt1160419")
@@ -913,5 +913,9 @@ struct TMDBErrorTestsRoottmdbservicetests {
         #expect(TMDBError.rateLimited == TMDBError.rateLimited)
         #expect(TMDBError.notFound("a") == TMDBError.notFound("a"))
         #expect(TMDBError.notFound("a") != TMDBError.notFound("b"))
+    }
+
+    @Test func unauthorizedDescriptionNamesTMDbCredential() {
+        #expect(TMDBError.unauthorized.errorDescription == "Invalid TMDb API key or read token")
     }
 }

@@ -484,21 +484,26 @@ struct PlayerCinematicChromePolicyTests {
     }
 
     @Test func controlsDockLayoutTokensStayStable() {
-        #expect(PlayerCinematicChromePolicy.controlsDockMaxWidth == 860)
-        #expect(PlayerCinematicChromePolicy.quickActionsMaxWidth == 640)
-        #expect(PlayerCinematicChromePolicy.transportCardMaxWidth == 780)
+        #expect(PlayerCinematicChromePolicy.controlsDockMaxWidth == 960)
+        #expect(PlayerCinematicChromePolicy.quickActionsMaxWidth == 700)
+        #expect(PlayerCinematicChromePolicy.transportCardMinWidth == 660)
+        #expect(PlayerCinematicChromePolicy.transportCardMaxWidth == 840)
         #expect(PlayerCinematicChromePolicy.controlsDockSpacing == 8)
         #expect(PlayerCinematicChromePolicy.controlsDockHorizontalPadding == 18)
         #expect(PlayerCinematicChromePolicy.controlsDockBottomPadding == 56)
-        #expect(PlayerCinematicChromePolicy.transportCardHorizontalPadding == 20)
+        #expect(PlayerCinematicChromePolicy.transportCardHorizontalPadding == 24)
         #expect(PlayerCinematicChromePolicy.transportCardVerticalPadding == 12)
+        #expect(PlayerCinematicChromePolicy.transportControlSpacing == 28)
+        #expect(PlayerCinematicChromePolicy.transportControlDividerOpacity == 0.18)
     }
 
     @Test func transportButtonAndProgressTokensStayStable() {
-        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 50)
+        #expect(PlayerCinematicChromePolicy.topBarButtonSize == VPSpace.minTapTarget)
         #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == VPSpace.minTapTarget)
-        #expect(PlayerCinematicChromePolicy.progressBarIdleHeight == 4)
-        #expect(PlayerCinematicChromePolicy.progressBarScrubbingHeight == 8)
+        #expect(PlayerCinematicChromePolicy.progressBarIdleHeight == 5)
+        #expect(PlayerCinematicChromePolicy.progressBarScrubbingHeight == 9)
+        #expect(PlayerCinematicChromePolicy.progressBarIdleKnobSize == 12)
+        #expect(PlayerCinematicChromePolicy.progressBarScrubbingKnobSize == 18)
     }
 }
 

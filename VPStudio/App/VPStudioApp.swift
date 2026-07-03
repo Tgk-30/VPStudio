@@ -52,7 +52,7 @@ struct VPStudioApp: App {
             ContentView()
                 .environment(appState)
         }
-        .defaultSize(width: 1200, height: 800)
+        .defaultSize(width: 1280, height: 780)
         #if os(macOS)
         .windowResizability(.contentMinSize)
         #endif
@@ -90,9 +90,9 @@ struct VPStudioApp: App {
             }
         }
         .defaultSize(width: 1400, height: 788)
-#if os(macOS)
+        #if os(macOS) || os(visionOS)
         .windowStyle(.plain)
-#endif
+        #endif
         #if os(visionOS)
         .windowResizability(.automatic)
         #endif

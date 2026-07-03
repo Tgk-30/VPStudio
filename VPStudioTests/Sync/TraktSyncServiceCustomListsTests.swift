@@ -201,6 +201,38 @@ struct TraktSyncServiceCustomListsTests {
         #expect(shows?.count == 1)
     }
 
+    @Test func addToCustomListNormalizesOMDbCompositeMediaIDs() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"added":{"movies":1,"shows":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.addToCustomList(
+            listId: 1,
+            imdbIds: [
+                ("movie-omdb-TT1160419", .movie),
+                ("series-omdb-TT0903747", .series),
+            ]
+        )
+
+        let movies = state.capturedBody?["movies"] as? [[String: Any]]
+        let movieIds = movies?[0]["ids"] as? [String: String]
+        let shows = state.capturedBody?["shows"] as? [[String: Any]]
+        let showIds = shows?[0]["ids"] as? [String: String]
+        #expect(movieIds?["imdb"] == "tt1160419")
+        #expect(showIds?["imdb"] == "tt0903747")
+    }
+
     @Test func removeFromCustomListSendsCorrectBody() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedPath: String?
@@ -224,6 +256,38 @@ struct TraktSyncServiceCustomListsTests {
         #expect(state.capturedPath?.contains("/users/me/lists/1/items/remove") == true)
         let movies = state.capturedBody?["movies"] as? [[String: Any]]
         #expect(movies?.count == 1)
+    }
+
+    @Test func removeFromCustomListNormalizesOMDbCompositeMediaIDs() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"deleted":{"movies":1,"shows":1}}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.removeFromCustomList(
+            listId: 1,
+            imdbIds: [
+                ("movie-omdb-TT1160419", .movie),
+                ("series-omdb-TT0903747", .series),
+            ]
+        )
+
+        let movies = state.capturedBody?["movies"] as? [[String: Any]]
+        let movieIds = movies?[0]["ids"] as? [String: String]
+        let shows = state.capturedBody?["shows"] as? [[String: Any]]
+        let showIds = shows?[0]["ids"] as? [String: String]
+        #expect(movieIds?["imdb"] == "tt1160419")
+        #expect(showIds?["imdb"] == "tt0903747")
     }
 
     @Test func deleteCustomListCallsCorrectPath() async throws {

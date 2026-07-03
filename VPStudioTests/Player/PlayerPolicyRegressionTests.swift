@@ -164,11 +164,13 @@ struct PlayerPolicyRegressionTests {
 
     @Test func bufferingTextUsesPercentOnlyForPartialProgress() {
         #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0) == "Rebuffering\u{2026}")
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.004) == "Buffering... 0%")
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.999) == "Buffering... 99%")
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1) == "Rebuffering\u{2026}")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.004) == "Rebuffering\u{2026}")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.01) == "Buffering... 1%")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.979) == "Buffering... 97%")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.98) == "Buffer ready")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1) == "Buffer ready")
         #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: -0.2) == "Rebuffering\u{2026}")
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1.2) == "Rebuffering\u{2026}")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1.2) == "Buffer ready")
     }
 
     @Test func qualityToastOnlyAppearsWhenQualityChangesExactly() {

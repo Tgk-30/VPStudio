@@ -34,6 +34,18 @@ enum PlayerLifecyclePolicy {
     static var dismissesCurrentPresentationOnBack: Bool {
         true
     }
+
+    #if os(visionOS)
+    static let playerSceneAttachmentWaitAttempts = 20
+    #endif
+}
+
+enum PlayerViewErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        PlayerViewStatePolicy.userVisibleErrorDescription(
+            IndexerLogSanitizer.redactedErrorMessage(error)
+        )
+    }
 }
 
 enum PlayerArtworkPresentationPolicy {
@@ -46,6 +58,21 @@ enum PlayerArtworkPresentationPolicy {
     static let posterCardWidth: CGFloat = 112
     static let posterCardHeight: CGFloat = 168
     static let posterCardCornerRadius: CGFloat = 12
+    static let backdropFallbackOverlayOpacity: Double = 0.55
+    static let backdropFallbackBlurRadius: CGFloat = 28
+    static let posterFallbackOverlayOpacity: Double = 0.58
+    static let posterFallbackBlurRadius: CGFloat = 30
+    static let bundledFallbackOverlayOpacity: Double = 0.44
+    static let bundledFallbackBlurRadius: CGFloat = 18
+    static let bundledFallbackSaturation: Double = 0.68
+    static let appleEnvironmentBackdropFallbackOverlayOpacity: Double = 0.38
+    static let appleEnvironmentBackdropFallbackBlurRadius: CGFloat = 18
+    static let appleEnvironmentPosterFallbackOverlayOpacity: Double = 0.42
+    static let appleEnvironmentPosterFallbackBlurRadius: CGFloat = 20
+    static let appleEnvironmentBundledFallbackOverlayOpacity: Double = 0.36
+    static let appleEnvironmentBundledFallbackBlurRadius: CGFloat = 34
+    static let appleEnvironmentBundledFallbackSaturation: Double = 0.24
+    static let appleEnvironmentBundledFallbackVignetteOpacity: Double = 0.16
 
     static func stageArtworkKind(backdropPath: String?, posterPath: String?) -> StageArtworkKind {
         if hasRenderableArtworkPath(backdropPath, legacyTMDBSizePath: "w1280") {
@@ -59,6 +86,57 @@ enum PlayerArtworkPresentationPolicy {
 
     static func showsPosterCard(for kind: StageArtworkKind) -> Bool {
         kind == .posterOnly
+    }
+
+    static func showsStageStatusBadge(
+        for state: PlayerPlaybackState,
+        isElevatedFallback: Bool = false
+    ) -> Bool {
+        if state == .failed {
+            return false
+        }
+
+        if isElevatedFallback {
+            return true
+        }
+
+        return state != .playing
+    }
+
+    static func stageStatusBadgeIconName(isElevatedFallback: Bool) -> String {
+        isElevatedFallback ? "video.slash.fill" : "play.rectangle.fill"
+    }
+
+    static func resolvedBackdropFallbackOverlayOpacity(usesAppleEnvironmentMode: Bool) -> Double {
+        usesAppleEnvironmentMode ? appleEnvironmentBackdropFallbackOverlayOpacity : backdropFallbackOverlayOpacity
+    }
+
+    static func resolvedBackdropFallbackBlurRadius(usesAppleEnvironmentMode: Bool) -> CGFloat {
+        usesAppleEnvironmentMode ? appleEnvironmentBackdropFallbackBlurRadius : backdropFallbackBlurRadius
+    }
+
+    static func resolvedPosterFallbackOverlayOpacity(usesAppleEnvironmentMode: Bool) -> Double {
+        usesAppleEnvironmentMode ? appleEnvironmentPosterFallbackOverlayOpacity : posterFallbackOverlayOpacity
+    }
+
+    static func resolvedPosterFallbackBlurRadius(usesAppleEnvironmentMode: Bool) -> CGFloat {
+        usesAppleEnvironmentMode ? appleEnvironmentPosterFallbackBlurRadius : posterFallbackBlurRadius
+    }
+
+    static func resolvedBundledFallbackOverlayOpacity(usesAppleEnvironmentMode: Bool) -> Double {
+        usesAppleEnvironmentMode ? appleEnvironmentBundledFallbackOverlayOpacity : bundledFallbackOverlayOpacity
+    }
+
+    static func resolvedBundledFallbackBlurRadius(usesAppleEnvironmentMode: Bool) -> CGFloat {
+        usesAppleEnvironmentMode ? appleEnvironmentBundledFallbackBlurRadius : bundledFallbackBlurRadius
+    }
+
+    static func resolvedBundledFallbackSaturation(usesAppleEnvironmentMode: Bool) -> Double {
+        usesAppleEnvironmentMode ? appleEnvironmentBundledFallbackSaturation : bundledFallbackSaturation
+    }
+
+    static func resolvedBundledFallbackVignetteOpacity(usesAppleEnvironmentMode: Bool) -> Double {
+        usesAppleEnvironmentMode ? appleEnvironmentBundledFallbackVignetteOpacity : 0
     }
 
     private static func hasRenderableArtworkPath(_ value: String?, legacyTMDBSizePath: String) -> Bool {
@@ -145,6 +223,32 @@ struct PlayerSubtitleRuntimeSettings {
 
 enum PlayerViewPolicy {
     static let avPlayerPeriodicObserverIntervalSeconds: TimeInterval = 0.25
+    static let avPlayerStatusObserverIntervalMilliseconds: Int64 = 250
+
+    enum ControlModal: Equatable {
+        case subtitles
+        case audio
+        case environmentPicker
+        case cinemaSettings
+    }
+
+    struct ControlModalPresentationFlags: Equatable {
+        var isShowingSubtitlePicker: Bool
+        var isShowingAudioPicker: Bool
+        var isShowingEnvironmentPicker: Bool
+        var isShowingCinemaSettings: Bool
+    }
+
+    enum CloseRequestAction: Equatable {
+        case dismissControlModal
+        case closePlayer
+    }
+
+    enum CloseControlMenuAction: Equatable {
+        case dismissControlModal
+        case hideControls
+        case keepLockedControlsVisible
+    }
 
     static func playbackStateTitle(for state: PlayerPlaybackState) -> String {
         switch state {
@@ -159,12 +263,49 @@ enum PlayerViewPolicy {
         }
     }
 
+    static func playbackStateTitle(
+        for state: PlayerPlaybackState,
+        isElevatedStageFallback: Bool
+    ) -> String {
+        if state == .playing && isElevatedStageFallback {
+            return "Waiting for Video"
+        }
+
+        return playbackStateTitle(for: state)
+    }
+
     static func audioTrackRefreshShouldRun(requestedStreamID: String, currentStreamID: String?) -> Bool {
         currentStreamID == requestedStreamID
     }
 
-    static func scrobbleIMDbID(mediaId: String?, imdbId: String?) -> String? {
-        IMDbIdentifierPolicy.firstID(in: imdbId) ?? IMDbIdentifierPolicy.firstID(in: mediaId)
+    static func scrobbleSyncID(mediaId: String?, imdbId: String?, tmdbId: Int?) -> String? {
+        if let imdbID = IMDbIdentifierPolicy.appScopedID(in: imdbId) ?? IMDbIdentifierPolicy.appScopedID(in: mediaId) {
+            return imdbID
+        }
+        if let typedTMDBID = typedTMDBScrobbleID(from: mediaId) {
+            return typedTMDBID
+        }
+        let mediaTMDBID = mediaId.flatMap { MetadataProviderIdentifierPolicy.tmdbID(from: $0) }
+        if let tmdbID = mediaTMDBID ?? tmdbId {
+            return "tmdb-\(tmdbID)"
+        }
+        return nil
+    }
+
+    private static func typedTMDBScrobbleID(from mediaId: String?) -> String? {
+        guard let mediaId else { return nil }
+
+        let normalized = mediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for mediaType in MediaType.allCases {
+            let prefix = "\(mediaType.rawValue)-tmdb-"
+            guard normalized.hasPrefix(prefix) else { continue }
+
+            let suffix = String(normalized.dropFirst(prefix.count))
+            guard let tmdbID = Int(suffix), tmdbID > 0 else { return nil }
+            return "\(mediaType.rawValue)-tmdb-\(tmdbID)"
+        }
+
+        return nil
     }
 
     static func preparePlaybackShouldRun(requestedPreparationID: UUID, activePreparationID: UUID?) -> Bool {
@@ -233,6 +374,130 @@ enum PlayerViewPolicy {
         let bufferedEnd = loadedRangeStart + loadedRangeDuration
         guard bufferedEnd.isFinite else { return nil }
         return max(0, min(1, bufferedEnd / itemDuration))
+    }
+
+    static func observedBufferedPercent(
+        loadedRangeStart: TimeInterval?,
+        loadedRangeDuration: TimeInterval?,
+        itemDuration: TimeInterval?
+    ) -> Double {
+        guard let loadedRangeStart,
+              let loadedRangeDuration,
+              let itemDuration,
+              let percent = bufferedPercent(
+                loadedRangeStart: loadedRangeStart,
+                loadedRangeDuration: loadedRangeDuration,
+                itemDuration: itemDuration
+              ) else {
+            return 0
+        }
+        return percent
+    }
+
+    static func bufferedPercent(
+        loadedRanges: [(start: TimeInterval, duration: TimeInterval)],
+        itemDuration: TimeInterval
+    ) -> Double? {
+        var bestPercent: Double?
+        for range in loadedRanges {
+            guard let percent = bufferedPercent(
+                loadedRangeStart: range.start,
+                loadedRangeDuration: range.duration,
+                itemDuration: itemDuration
+            ) else { continue }
+            bestPercent = max(bestPercent ?? 0, percent)
+        }
+        return bestPercent
+    }
+
+    static func observedBufferedPercent(
+        loadedRanges: [(start: TimeInterval, duration: TimeInterval)],
+        itemDuration: TimeInterval?
+    ) -> Double {
+        guard let itemDuration,
+              let percent = bufferedPercent(
+                loadedRanges: loadedRanges,
+                itemDuration: itemDuration
+              ) else {
+            return 0
+        }
+        return percent
+    }
+
+    static func bufferedSecondsAhead(
+        loadedRangeStart: TimeInterval,
+        loadedRangeDuration: TimeInterval,
+        currentTime: TimeInterval
+    ) -> TimeInterval? {
+        guard loadedRangeStart.isFinite,
+              loadedRangeDuration.isFinite,
+              currentTime.isFinite,
+              loadedRangeDuration >= 0,
+              currentTime >= 0 else {
+            return nil
+        }
+
+        let bufferedEnd = loadedRangeStart + loadedRangeDuration
+        guard bufferedEnd.isFinite else { return nil }
+        guard currentTime >= loadedRangeStart, currentTime <= bufferedEnd else { return 0 }
+        return max(0, bufferedEnd - currentTime)
+    }
+
+    static func observedBufferedSecondsAhead(
+        loadedRangeStart: TimeInterval?,
+        loadedRangeDuration: TimeInterval?,
+        currentTime: TimeInterval?
+    ) -> TimeInterval {
+        guard let loadedRangeStart,
+              let loadedRangeDuration,
+              let currentTime,
+              let seconds = bufferedSecondsAhead(
+                loadedRangeStart: loadedRangeStart,
+                loadedRangeDuration: loadedRangeDuration,
+                currentTime: currentTime
+              ) else {
+            return 0
+        }
+        return seconds
+    }
+
+    static func bufferedSecondsAhead(
+        loadedRanges: [(start: TimeInterval, duration: TimeInterval)],
+        currentTime: TimeInterval
+    ) -> TimeInterval? {
+        var bestSecondsAhead: TimeInterval?
+        for range in loadedRanges {
+            guard let secondsAhead = bufferedSecondsAhead(
+                loadedRangeStart: range.start,
+                loadedRangeDuration: range.duration,
+                currentTime: currentTime
+            ) else { continue }
+            bestSecondsAhead = max(bestSecondsAhead ?? 0, secondsAhead)
+        }
+        return bestSecondsAhead
+    }
+
+    static func observedBufferedSecondsAhead(
+        loadedRanges: [(start: TimeInterval, duration: TimeInterval)],
+        currentTime: TimeInterval?
+    ) -> TimeInterval {
+        guard let currentTime,
+              let seconds = bufferedSecondsAhead(
+                loadedRanges: loadedRanges,
+                currentTime: currentTime
+              ) else {
+            return 0
+        }
+        return seconds
+    }
+
+    static func shouldUpdateBufferedPercent(
+        current: Double,
+        observed: Double,
+        tolerance: Double = 0.01
+    ) -> Bool {
+        guard current.isFinite else { return true }
+        return abs(current - observed) > tolerance
     }
 
     static func resolvedSubtitleFontSize(storedSize: Double?) -> Double {
@@ -345,6 +610,59 @@ enum PlayerViewPolicy {
         isShowingEnvironmentPicker ||
         isShowingCinemaSettings
     }
+
+    static func controlModalPresentationFlags(for modal: ControlModal) -> ControlModalPresentationFlags {
+        ControlModalPresentationFlags(
+            isShowingSubtitlePicker: modal == .subtitles,
+            isShowingAudioPicker: modal == .audio,
+            isShowingEnvironmentPicker: modal == .environmentPicker,
+            isShowingCinemaSettings: modal == .cinemaSettings
+        )
+    }
+
+    static func closeRequestAction(
+        isShowingSubtitlePicker: Bool,
+        isShowingAudioPicker: Bool,
+        isShowingEnvironmentPicker: Bool,
+        isShowingCinemaSettings: Bool
+    ) -> CloseRequestAction {
+        isControlModalPresented(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: isShowingEnvironmentPicker,
+            isShowingCinemaSettings: isShowingCinemaSettings
+        ) ? .dismissControlModal : .closePlayer
+    }
+
+    static func closeControlMenuAction(
+        isShowingSubtitlePicker: Bool,
+        isShowingAudioPicker: Bool,
+        isShowingEnvironmentPicker: Bool,
+        isShowingCinemaSettings: Bool,
+        isControlsLocked: Bool
+    ) -> CloseControlMenuAction {
+        if isControlModalPresented(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: isShowingEnvironmentPicker,
+            isShowingCinemaSettings: isShowingCinemaSettings
+        ) {
+            return .dismissControlModal
+        }
+        return isControlsLocked ? .keepLockedControlsVisible : .hideControls
+    }
+
+    static func defaultDimPassthrough(usesAppleEnvironmentMode: Bool) -> Bool {
+        !usesAppleEnvironmentMode
+    }
+
+    static func resolvedDimPassthrough(storedValue: String?, usesAppleEnvironmentMode: Bool) -> Bool {
+        guard let rawValue = storedValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty else {
+            return defaultDimPassthrough(usesAppleEnvironmentMode: usesAppleEnvironmentMode)
+        }
+        return rawValue == "1" || rawValue.lowercased() == "true"
+    }
 }
 
 enum PlayerTrackPresentationPolicy {
@@ -420,11 +738,11 @@ enum PlayerSubtitleServicePolicy {
     }
 
     static func imdbSearchID(from mediaID: String?) -> String? {
-        IMDbIdentifierPolicy.firstID(in: mediaID)
+        IMDbIdentifierPolicy.appScopedID(in: mediaID)
     }
 
     static func lookupIDs(mediaID: String?, imdbId explicitIMDbID: String? = nil, tmdbId: Int?) -> LookupIDs {
-        let imdbId = IMDbIdentifierPolicy.firstID(in: explicitIMDbID) ?? imdbSearchID(from: mediaID)
+        let imdbId = IMDbIdentifierPolicy.appScopedID(in: explicitIMDbID) ?? imdbSearchID(from: mediaID)
         return LookupIDs(
             imdbId: imdbId,
             tmdbId: imdbId == nil ? tmdbId : nil
@@ -769,6 +1087,10 @@ struct PlayerView: View {
     @State private var isScrubbing = false
     @State private var scrubTime: TimeInterval = 0
     @State private var hasPlayedOnce = false
+    /// Highest genuine KSPlayer playback tick for the current stream. Excludes the
+    /// synthetic `currentTime == duration` tick KSPlayer emits on end-of-file so a
+    /// nil-error finish can be classified as premature (dead/truncated stream).
+    @State private var lastObservedKSPlaybackTime: TimeInterval = 0
     @State private var isShowingSubtitlePicker = false
     @State private var isShowingAudioPicker = false
     #if os(visionOS)
@@ -793,6 +1115,7 @@ struct PlayerView: View {
     @State private var subtitleCatalogMutationID: UUID?
     @State private var subtitleDownloadMutationID: UUID?
     @State private var didInitiateClose = false
+    @State private var didCloseStalePlayerScene = false
     @State private var avAudioOptions: [AVTrackOption] = []
     @State private var avSubtitleOptions: [AVTrackOption] = []
     @State private var ksSubtitleOptions: [KSSubtitleOption] = []
@@ -810,12 +1133,19 @@ struct PlayerView: View {
     @State private var autoPlayNextCountdownRemaining = PlayerAutoplayNextPolicy.countdownDurationSeconds
     @State private var autoPlayNextCountdownTask: Task<Void, Never>?
     @State private var autoPlayNextResolveTask: Task<Void, Never>?
+    @State private var avPlayerStatusObservationTask: Task<Void, Never>?
+    #if os(visionOS)
+    @State private var didApplyInitialDimDefault = false
+    @State private var didExpandAppleEnvironmentWindow = false
+    @State private var pendingAppleEnvironmentWindowExpansion = false
+    #endif
 
     #if os(visionOS)
     @State private var apmpInjector = APMPInjector()
     @State private var isAPMPActive = false
     @State private var playerWindowScene: UIWindowScene?
     @State private var visionGeometryTask: Task<Void, Never>?
+    @State private var playerSceneActivationTask: Task<Void, Never>?
     /// Bounded retry that polls KSPlayer's `naturalSize` until a usable video
     /// ratio is available, then applies window geometry. KSPlayer's state
     /// callbacks can fire with a zero `naturalSize` for slow/torrent streams, so
@@ -826,6 +1156,13 @@ struct PlayerView: View {
     @State private var transientPlayerMessage: String?
     @State private var transientPlayerMessageTask: Task<Void, Never>?
     #endif
+
+    // MARK: - Measured Chrome Geometry
+    /// Live window content size measured from the player stage. Single source
+    /// of truth for size-aware chrome metrics (transport card width, dock
+    /// padding, top-bar span, control sizes). `.zero` until first layout —
+    /// every consumer falls back to the fixed design constants in that case.
+    @State private var measuredChromeContainerSize: CGSize = .zero
 
     // MARK: - Aspect Ratio
     @State private var aspectRatioSelection: AspectRatioSelection = .auto
@@ -844,6 +1181,7 @@ struct PlayerView: View {
     private let avPlayerEngine = AVPlayerEngine()
     private let ksPlayerEngine = KSPlayerEngine()
     private let playerEngineSelector = PlayerEngineSelector()
+    private let fallbackArtworkAssetName: String?
     private let disablesAutomaticTasks: Bool
     private let onImmersiveControlEvent: (@MainActor (PlayerImmersiveControlEvent) -> Void)?
     private let onAutoplayRuntimeEvent: (@MainActor (PlayerAutoplayRuntimeEvent) -> Void)?
@@ -892,6 +1230,10 @@ struct PlayerView: View {
         Self.shouldAnimateForAccessibility(reduceMotion: accessibilityReduceMotion)
     }
 
+    private var acceptsPlayerLifecycleCallbacks: Bool {
+        !didInitiateClose && !didCloseStalePlayerScene
+    }
+
     init(
         stream: StreamInfo,
         availableStreams: [StreamInfo] = [],
@@ -903,6 +1245,7 @@ struct PlayerView: View {
         nextEpisode: PlayerSessionRequest.NextEpisodeCandidate? = nil,
         sessionID: UUID? = nil,
         sessionRequest: PlayerSessionRequest? = nil,
+        fallbackArtworkAssetName: String? = nil,
         initialPlaybackState: PlayerPlaybackState = .preparing,
         initialPlaybackMessage: String? = nil,
         initialPlaybackError: String? = nil,
@@ -948,6 +1291,7 @@ struct PlayerView: View {
         self.nextEpisode = nextEpisode
         self.sessionID = sessionID
         self.sessionRequest = sessionRequest
+        self.fallbackArtworkAssetName = fallbackArtworkAssetName
         self.disablesAutomaticTasks = disablesAutomaticTasks
         self.onImmersiveControlEvent = onImmersiveControlEvent
         self.onAutoplayRuntimeEvent = onAutoplayRuntimeEvent
@@ -995,6 +1339,9 @@ struct PlayerView: View {
     var body: some View {
         playerCore
         #if os(visionOS)
+        .immersiveEnvironmentPicker {
+            playerSystemEnvironmentPickerEntries
+        }
         .modifier(ImmersiveControlHandlers(
             onToggleControls: {
                 recordImmersiveControlEvent(.toggleControls)
@@ -1085,6 +1432,12 @@ struct PlayerView: View {
             if let playerWindow {
                 applyWindowAspectRatio(to: playerWindow)
             }
+            // AVPlayer picks the new gravity up declaratively through
+            // AVPlayerSurfaceView; KSPlayer's coordinator is imperative and
+            // must be re-synced here or the surface keeps the stale
+            // fill/fit mode after an aspect change (visionOS already routes
+            // through applyVisionOSEnvironmentPresentationMode()).
+            applyAspectRatioPresentationMode()
         }
         .onChange(of: detectedVideoRatio) { _, _ in
             if let playerWindow, aspectRatioSelection == .auto {
@@ -1094,7 +1447,10 @@ struct PlayerView: View {
         #endif
         #if os(visionOS)
         .background(PlayerWindowSceneAccessor(windowScene: $playerWindowScene).frame(width: 0, height: 0))
-        .onChange(of: playerWindowScene) { _, _ in applyVisionOSWindowGeometry() }
+        .onChange(of: playerWindowScene) { _, _ in
+            expandPendingAppleEnvironmentWindowIfAvailable()
+            scheduleVisionOSWindowGeometryUpdate()
+        }
         .onChange(of: detectedVideoRatio) { _, newRatio in
             applyVisionOSWindowGeometry()
             syncCinemaAspectRatio(newRatio)
@@ -1104,6 +1460,7 @@ struct PlayerView: View {
             applyAspectRatioPresentationMode()
         }
         .preferredSurroundingsEffect(engine.isDimEnabled ? .systemDark : nil)
+        .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.50) : nil, value: engine.isDimEnabled)
         #endif
         .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.25) : nil, value: isShowingControls)
         .sheet(isPresented: $isShowingSubtitlePicker) {
@@ -1131,7 +1488,7 @@ struct PlayerView: View {
                     openCinemaEnvironmentAfterMenuDismissal()
                 },
                 onClear: {
-                    clearEnvironmentSelectionAfterMenuDismissal()
+                    openAppleEnvironmentAfterMenuDismissal()
                 }
             )
             .environment(appState)
@@ -1140,7 +1497,20 @@ struct PlayerView: View {
             handleControlModalVisibilityChange(isPresented: isPresented)
         }
         .sheet(isPresented: $isShowingCinemaSettings) {
-            CinemaSettingsPanel(settings: cinemaSettings)
+            NavigationStack {
+                CinemaSettingsPanel(settings: cinemaSettings)
+                    .navigationTitle("Cinema Settings")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button {
+                                isShowingCinemaSettings = false
+                            } label: {
+                                Label("Close", systemImage: "xmark")
+                            }
+                            .accessibilityLabel("Close cinema settings")
+                        }
+                    }
+            }
         }
         .onChange(of: isShowingCinemaSettings) { _, isPresented in
             handleControlModalVisibilityChange(isPresented: isPresented)
@@ -1212,10 +1582,12 @@ struct PlayerView: View {
     /// expression small enough for the compiler's type-checker.
     private var playerCore: some View {
         ZStack {
-            Color.black
-                .ignoresSafeArea()
+            playerBaseBackdrop
 
             playerVisualStage
+            #if os(visionOS)
+            appleEnvironmentSurfaceTreatment
+            #endif
             subtitleOverlay
             controlsOverlay
             autoPlayNextOverlay
@@ -1224,8 +1596,28 @@ struct PlayerView: View {
             transientPlayerMessageOverlay
             #endif
         }
+        // Single measured-geometry source for all size-aware chrome metrics.
+        // Fires on aspect-preset geometry updates, freeform corner drags, and
+        // Apple Environment expansion alike — the paths requestGeometryUpdate
+        // alone never surfaced to the chrome.
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { newSize in
+            guard measuredChromeContainerSize != newSize else { return }
+            measuredChromeContainerSize = newSize
+        }
         #if os(visionOS)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: PlayerCinematicChromePolicy.windowCornerRadius, style: .continuous))
+        .shadow(
+            color: .black.opacity(
+                usesAppleEnvironmentChromeLayout
+                    ? PlayerCinematicChromePolicy.appleEnvironmentWindowContactShadowOpacity
+                    : 0
+            ),
+            radius: PlayerCinematicChromePolicy.appleEnvironmentWindowContactShadowRadius,
+            y: PlayerCinematicChromePolicy.appleEnvironmentWindowContactShadowY
+        )
+        .persistentSystemOverlays(persistentSystemOverlayVisibility)
         #endif
         .animation(motionAnimationsEnabled ? .spring(response: 0.38, dampingFraction: 0.85) : nil, value: playbackState)
         .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.22) : nil, value: shouldElevatePlayerStageFallback)
@@ -1244,12 +1636,14 @@ struct PlayerView: View {
         }
         .task {
             guard !disablesAutomaticTasks else { return }
+            guard acceptsPlayerLifecycleCallbacks else { return }
             initialPlayerStateTask?.cancel()
             initialPlayerStateTask = Task { await loadInitialPlayerState() }
             await initialPlayerStateTask?.value
         }
         .task(id: currentStream.id) {
             guard !disablesAutomaticTasks else { return }
+            guard acceptsPlayerLifecycleCallbacks else { return }
             let preparationID = UUID()
             activePreparePlaybackID = preparationID
             preparePlaybackTask?.cancel()
@@ -1257,8 +1651,14 @@ struct PlayerView: View {
             await preparePlaybackTask?.value
         }
         .onAppear {
+            if let qaAspectRaw = QARuntimeOptions.playerAspectRatioSelection,
+               let qaAspect = AspectRatioSelection(rawValue: qaAspectRaw) {
+                aspectRatioSelection = qaAspect
+            }
             guard !disablesAutomaticTasks else { return }
-            #if os(macOS) || os(visionOS)
+            #if os(visionOS)
+            startPlayerSceneActivation()
+            #elseif os(macOS)
             scheduleMainWindowSuppressionIfNeeded()
             #endif
         }
@@ -1282,13 +1682,20 @@ struct PlayerView: View {
             memoryPressureTask?.cancel()
             avMediaOptionRefreshTask?.cancel()
             avMediaOptionRefreshTask = nil
+            #if os(visionOS)
+            playerSceneActivationTask?.cancel()
+            playerSceneActivationTask = nil
+            #endif
             audioTrackRefreshTask?.cancel()
             audioTrackRefreshTask = nil
             subtitleTrackRefreshTask?.cancel()
             subtitleTrackRefreshTask = nil
             autoPlayNextCountdownTask?.cancel()
             autoPlayNextResolveTask?.cancel()
-            cleanupPlayback()
+            cleanupPlayback(
+                clearSession: !didCloseStalePlayerScene,
+                resetSharedEngineState: !didCloseStalePlayerScene
+            )
             controlsHideTask?.cancel()
             controlsHideTask = nil
             RuntimeMemoryDiagnostics.capture(
@@ -1310,10 +1717,14 @@ struct PlayerView: View {
             transientPlayerMessageTask?.cancel()
             transientPlayerMessageTask = nil
             transientPlayerMessage = nil
-            scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)
+            if !didCloseStalePlayerScene {
+                scheduleImmersiveDismiss(reason: .playerClosed, restoresMainWindow: true)
+            }
             #elseif os(macOS)
             resetWindowAspectRatio()
-            scheduleMainWindowRestoreIfNeeded()
+            if !didCloseStalePlayerScene {
+                scheduleMainWindowRestoreIfNeeded()
+            }
             #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange)) { _ in
@@ -1322,8 +1733,17 @@ struct PlayerView: View {
             environmentAssetsTask = Task { await loadEnvironmentAssets() }
         }
         .onChange(of: appState.activePlayerSession?.id) { _, activeSessionID in
-            guard activeSessionID != sessionID else { return }
-            closePlayer()
+            switch PlayerViewStatePolicy.activeSessionChangeAction(
+                activeSessionID: activeSessionID,
+                playerSessionID: sessionID
+            ) {
+            case .keepOpen:
+                return
+            case .closeCurrentSession:
+                closePlayer()
+            case .closeStaleScene:
+                closeStalePlayerSceneForActiveSessionChange()
+            }
         }
         #if os(visionOS)
         .onChange(of: scenePhase) { _, phase in
@@ -1339,7 +1759,30 @@ struct PlayerView: View {
         }
         .onChange(of: appState.isImmersiveSpaceOpen) { _, _ in
             updateAPMPInjector()
+            applyVisionOSEnvironmentPresentationMode()
         }
+        .onChange(of: appState.activeEnvironment) { _, _ in
+            applyVisionOSEnvironmentPresentationMode()
+        }
+        .onChange(of: appState.selectedEnvironmentAsset?.id) { _, _ in
+            applyVisionOSEnvironmentPresentationMode()
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var playerBaseBackdrop: some View {
+        #if os(visionOS)
+        if usesAppleEnvironmentChromeLayout {
+            Color.clear
+                .ignoresSafeArea()
+        } else {
+            Color.black
+                .ignoresSafeArea()
+        }
+        #else
+        Color.black
+            .ignoresSafeArea()
         #endif
     }
 
@@ -1347,7 +1790,12 @@ struct PlayerView: View {
     /// The window itself is forced to the video's aspect ratio via geometry
     /// preferences, so fill never crops.
     private var currentVideoGravity: AVLayerVideoGravity {
-        PlayerAspectRatioPolicy.videoGravity(for: aspectRatioSelection)
+        #if os(visionOS)
+        if usesAppleEnvironmentChromeLayout {
+            return .resizeAspect
+        }
+        #endif
+        return PlayerAspectRatioPolicy.videoGravity(for: aspectRatioSelection)
     }
 
     private var shouldElevatePlayerStageFallback: Bool {
@@ -1355,8 +1803,20 @@ struct PlayerView: View {
             playbackState: playbackState,
             hasPlayedOnce: hasPlayedOnce,
             hasDetectedVideoFrame: detectedVideoRatio != nil,
-            hasExhaustedVideoFrameDetection: didExhaustAVVideoRatioDetection || didExhaustKSVideoRatioRetry
+            hasExhaustedVideoFrameDetection: didExhaustAVVideoRatioDetection || didExhaustKSVideoRatioRetry,
+            hasRenderablePlayerSurface: hasRenderablePlayerSurface
         )
+    }
+
+    private var hasRenderablePlayerSurface: Bool {
+        switch activeEngine {
+        case .avPlayer:
+            avPlayer != nil
+        case .ksPlayer:
+            ksPlayerCoordinator != nil && ksOptions != nil
+        case .none:
+            false
+        }
     }
 
     @ViewBuilder
@@ -1364,15 +1824,30 @@ struct PlayerView: View {
         if shouldElevatePlayerStageFallback {
             // Keep the renderer mounted so playback can warm up while the
             // visible stage shows artwork instead of an empty black layer.
-            playerSurface
+            // AnyView boxes the stage subtrees to keep debug-build stack frames
+            // within the 1MB device main-thread stack (see controlsOverlay).
+            AnyView(playerSurface)
                 .opacity(0.001)
                 .accessibilityHidden(true)
-            playerStageFallback
+            AnyView(playerStageFallback)
                 .transition(.opacity)
         } else {
-            playerStageFallback
-            playerSurface
+            AnyView(playerSurface)
+                .background(playerSurfaceBackdrop)
         }
+    }
+
+    @ViewBuilder
+    private var playerSurfaceBackdrop: some View {
+        #if os(visionOS)
+        if usesAppleEnvironmentChromeLayout {
+            Color.clear
+        } else {
+            Color.black
+        }
+        #else
+        Color.black
+        #endif
     }
 
     @ViewBuilder
@@ -1405,7 +1880,11 @@ struct PlayerView: View {
                         toggleControlsVisibility()
                     }
             } else {
-                AVPlayerSurfaceView(player: avPlayer, videoGravity: currentVideoGravity)
+                AVPlayerSurfaceView(
+                    player: avPlayer,
+                    videoGravity: currentVideoGravity,
+                    allowsTransparentBackground: usesAppleEnvironmentChromeLayout
+                )
                     .ignoresSafeArea()
                     .onTapGesture {
                         toggleControlsVisibility()
@@ -1420,6 +1899,79 @@ struct PlayerView: View {
             #endif
         }
     }
+
+    #if os(visionOS)
+    private var canExpandAppleEnvironmentWindow: Bool {
+        // Expansion availability matches cinema availability for every engine,
+        // so both route through the same policy check.
+        switch activeEngine {
+        default:
+            return PlayerCinemaEnvironmentPolicy.canOpen(
+                activeEngine: activeEngine,
+                hasAVPlayer: avPlayer != nil
+            )
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private var playerSystemEnvironmentPickerEntriesEmptyStateHint: some View {
+        if environmentAssets.isEmpty {
+            Text("No imported environments")
+        }
+    }
+
+    #if os(visionOS)
+    @ViewBuilder
+    private var playerSystemEnvironmentPickerEntries: some View {
+        Button {
+            Task { @MainActor in
+                await openAppleEnvironmentFromSystemPicker()
+            }
+        } label: {
+            Label {
+                Text(EnvironmentPreviewRowPolicy.appleEnvironmentTitle)
+            } icon: {
+                Image(systemName: "visionpro")
+            }
+            Text(PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit)
+        }
+
+        Button {
+            Task { @MainActor in
+                await openCinemaEnvironment()
+            }
+        } label: {
+            Label {
+                Text("Cinema Environment")
+            } icon: {
+                Image(systemName: "theatermasks.fill")
+            }
+            Text("VPStudio")
+        }
+        .disabled(!PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil))
+
+        ForEach(environmentAssets, id: \.id) { asset in
+            Button {
+                Task { @MainActor in
+                    await openEnvironment(asset)
+                }
+            } label: {
+                Label {
+                    Text(asset.name)
+                } icon: {
+                    Image(systemName: environmentAssetIcon(asset))
+                }
+                Text(EnvironmentPreviewRowPolicy.assetTypeLabel(
+                    sourceType: asset.sourceType,
+                    assetPath: asset.assetPath
+                ))
+            }
+        }
+
+        playerSystemEnvironmentPickerEntriesEmptyStateHint
+    }
+    #endif
 
     @ViewBuilder
     private var playerSurfaceFeedbackOverlay: some View {
@@ -1464,27 +2016,52 @@ struct PlayerView: View {
             switch sessionStageArtworkKind {
             case .backdrop:
                 if let url = sessionBackdropURL {
-                    playerStageBackdropImage(url: url, overlayOpacity: 0.32, blurRadius: 14)
+                    playerStageBackdropImage(
+                        url: url,
+                        overlayOpacity: PlayerArtworkPresentationPolicy.resolvedBackdropFallbackOverlayOpacity(
+                            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+                        ),
+                        blurRadius: PlayerArtworkPresentationPolicy.resolvedBackdropFallbackBlurRadius(
+                            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+                        )
+                    )
                 }
             case .posterOnly:
                 if let url = sessionPosterURL {
-                    playerStageBackdropImage(url: url, overlayOpacity: 0.48, blurRadius: 24)
+                    playerStageBackdropImage(
+                        url: url,
+                        overlayOpacity: PlayerArtworkPresentationPolicy.resolvedPosterFallbackOverlayOpacity(
+                            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+                        ),
+                        blurRadius: PlayerArtworkPresentationPolicy.resolvedPosterFallbackBlurRadius(
+                            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+                        )
+                    )
                         .saturation(0.82)
                 }
             case .none:
-                playerStageNoArtworkBackdrop
+                if let fallbackArtworkAssetName {
+                    playerStageBundledArtwork(name: fallbackArtworkAssetName)
+                } else {
+                    playerStageNoArtworkBackdrop
+                }
             }
 
-            if playbackState != .failed {
+            if PlayerArtworkPresentationPolicy.showsStageStatusBadge(
+                for: playbackState,
+                isElevatedFallback: shouldElevatePlayerStageFallback
+            ) {
                 VStack(spacing: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 18 : 14) {
                     if PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind),
                        let url = sessionPosterURL {
                         playerStagePosterCard(url: url)
                     }
 
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 38 : 54, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.58))
+                    Image(systemName: PlayerArtworkPresentationPolicy.stageStatusBadgeIconName(
+                        isElevatedFallback: shouldElevatePlayerStageFallback
+                    ))
+                        .font(.system(size: PlayerArtworkPresentationPolicy.showsPosterCard(for: sessionStageArtworkKind) ? 34 : 44, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.76))
 
                     VStack(spacing: 5) {
                         if !isShowingControls {
@@ -1495,14 +2072,45 @@ struct PlayerView: View {
                                 .lineLimit(2)
                         }
 
-                        Text(playbackStateTitle)
+                        Text(
+                            PlayerViewPolicy.playbackStateTitle(
+                                for: playbackState,
+                                isElevatedStageFallback: shouldElevatePlayerStageFallback
+                            )
+                        )
                             .font(.callout.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.74))
+                            .foregroundStyle(.white.opacity(0.88))
                             .multilineTextAlignment(.center)
                             .lineLimit(1)
                     }
                 }
-                .padding(.horizontal, 32)
+                .padding(.horizontal, 26)
+                .padding(.vertical, 18)
+                .background(
+                    .black.opacity(
+                        PlayerCinematicChromePolicy.resolvedStageStatusBadgeBackgroundOpacity(
+                            isElevatedFallback: shouldElevatePlayerStageFallback
+                        )
+                    ),
+                    in: RoundedRectangle(
+                        cornerRadius: PlayerCinematicChromePolicy.stageStatusBadgeCornerRadius,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: PlayerCinematicChromePolicy.stageStatusBadgeCornerRadius,
+                        style: .continuous
+                    )
+                    .strokeBorder(
+                        .white.opacity(
+                            PlayerCinematicChromePolicy.resolvedStageStatusBadgeBorderOpacity(
+                                isElevatedFallback: shouldElevatePlayerStageFallback
+                            )
+                        ),
+                        lineWidth: 0.8
+                    )
+                }
                 .accessibilityHidden(true)
             }
         }
@@ -1510,34 +2118,79 @@ struct PlayerView: View {
         .clipped()
     }
 
-    private var playerStageNoArtworkBackdrop: some View {
-        ZStack {
-            RadialGradient(
-                colors: [
-                    Color.white.opacity(0.12),
-                    Color(red: 0.11, green: 0.13, blue: 0.18).opacity(0.50),
-                    Color.clear,
-                ],
-                center: .center,
-                startRadius: 12,
-                endRadius: 560
-            )
+    private func playerStageBundledArtwork(name: String) -> some View {
+        Image(name)
+            .resizable()
+            .scaledToFill()
+            .saturation(PlayerArtworkPresentationPolicy.resolvedBundledFallbackSaturation(
+                usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+            ))
+            .blur(radius: PlayerArtworkPresentationPolicy.resolvedBundledFallbackBlurRadius(
+                usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+            ))
+            .overlay(.black.opacity(PlayerArtworkPresentationPolicy.resolvedBundledFallbackOverlayOpacity(
+                usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+            )))
+            .overlay {
+                if usesAppleEnvironmentChromeLayout {
+                    playerStageAppleEnvironmentFallbackVignette
+                }
+            }
+            .allowsHitTesting(false)
+    }
 
+    private var playerStageAppleEnvironmentFallbackVignette: some View {
+        ZStack {
             LinearGradient(
-                colors: [
-                    Color(red: 0.20, green: 0.22, blue: 0.28).opacity(0.20),
-                    Color.clear,
-                    Color(red: 0.02, green: 0.02, blue: 0.03).opacity(0.55),
+                stops: [
+                    .init(color: .black.opacity(PlayerArtworkPresentationPolicy.resolvedBundledFallbackVignetteOpacity(
+                        usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+                    )), location: 0.0),
+                    .init(color: .clear, location: 0.22),
+                    .init(color: .clear, location: 0.70),
+                    .init(color: .black.opacity(PlayerArtworkPresentationPolicy.resolvedBundledFallbackVignetteOpacity(
+                        usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+                    )), location: 1.0),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
 
-            Image(systemName: "film.stack")
-                .font(.system(size: 150, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.055))
-                .symbolRenderingMode(.hierarchical)
-                .accessibilityHidden(true)
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.12), location: 0.0),
+                    .init(color: .clear, location: 0.18),
+                    .init(color: .clear, location: 0.82),
+                    .init(color: .black.opacity(0.12), location: 1.0),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var playerStageNoArtworkBackdrop: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.065, green: 0.064, blue: 0.060).opacity(0.90),
+                    Color(red: 0.105, green: 0.104, blue: 0.096).opacity(0.62),
+                    Color(red: 0.018, green: 0.019, blue: 0.022).opacity(0.96),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            LinearGradient(
+                stops: [
+                    .init(color: .white.opacity(0.035), location: 0.0),
+                    .init(color: .clear, location: 0.36),
+                    .init(color: .black.opacity(0.54), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
         .allowsHitTesting(false)
     }
@@ -1683,6 +2336,7 @@ struct PlayerView: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, autoPlayNextBottomPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .zIndex(PlayerCinematicChromePolicy.autoPlayPromptZIndex)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .animation(
                     motionAnimationsEnabled ? .easeInOut(duration: 0.2) : nil,
@@ -1716,7 +2370,11 @@ struct PlayerView: View {
         PlayerViewStatePolicy.subtitleBottomPadding(
             isShowingControls: isShowingControls,
             showsTransportDock: isTransportDockVisible,
-            subtitleFontSize: subtitleFontSize
+            subtitleFontSize: subtitleFontSize,
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout,
+            videoAspectRatio: detectedVideoRatio,
+            videoUsesAspectFit: currentVideoGravity == .resizeAspect
         )
     }
 
@@ -1725,7 +2383,9 @@ struct PlayerView: View {
             isShowingControls: isShowingControls,
             showsTransportDock: isTransportDockVisible,
             hasVisibleSubtitles: engine.currentSubtitleText != nil,
-            subtitleFontSize: subtitleFontSize
+            subtitleFontSize: subtitleFontSize,
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
         )
     }
 
@@ -1764,12 +2424,17 @@ struct PlayerView: View {
     @ViewBuilder
     private var controlsOverlay: some View {
         if isShowingControls {
+            // AnyView boxes the heavy chrome subtrees: their fully-inlined opaque
+            // types otherwise overflow the 1MB device main-thread stack during the
+            // first debug-build render (EXC_BAD_ACCESS in the runtime demangler).
+            // Conditionals and transitions stay outside the erasure so view
+            // identity and animations are unaffected.
             ZStack(alignment: .bottom) {
                 VStack(spacing: 0) {
-                    titleBar
+                    AnyView(titleBar)
                         .compositingGroup()
 
-                    warningsOverlay
+                    AnyView(warningsOverlay)
                         .padding(.top, 6)
                         .compositingGroup()
 
@@ -1779,16 +2444,74 @@ struct PlayerView: View {
 
                 if isTransportDockVisible {
                     VStack(spacing: PlayerCinematicChromePolicy.controlsDockSpacing) {
-                        transportBar
+                        AnyView(transportBar)
                             .compositingGroup()
                     }
                     .padding(.horizontal, PlayerCinematicChromePolicy.controlsDockHorizontalPadding)
-                    .padding(.bottom, PlayerCinematicChromePolicy.controlsDockBottomPadding)
+                    .padding(.bottom, controlsDockBottomPadding)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
             }
             .transition(.opacity)
         }
+    }
+
+    private var usesAppleEnvironmentChromeLayout: Bool {
+        #if os(visionOS)
+        return usesAppleEnvironmentMode
+            && didExpandAppleEnvironmentWindow
+            && canExpandAppleEnvironmentWindow
+        #else
+        return false
+        #endif
+    }
+
+    private var controlsDockBottomPadding: CGFloat {
+        PlayerCinematicChromePolicy.resolvedControlsDockBottomPadding(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout,
+            containerSize: measuredChromeContainerSize
+        )
+    }
+
+    private var resolvedTopBarMaxWidth: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTopBarMaxWidth(
+            containerSize: measuredChromeContainerSize
+        )
+    }
+
+    private var resolvedTopBarButtonSize: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTopBarButtonSize(
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var resolvedPrimaryTransportButtonSize: CGFloat {
+        PlayerCinematicChromePolicy.resolvedPrimaryTransportButtonSize(
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var resolvedSecondaryTransportButtonSize: CGFloat {
+        PlayerCinematicChromePolicy.resolvedSecondaryTransportButtonSize(
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var resolvedPrimaryTransportGlyphSize: CGFloat {
+        PlayerCinematicChromePolicy.resolvedPrimaryTransportGlyphSize(
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var resolvedSecondaryTransportGlyphSize: CGFloat {
+        PlayerCinematicChromePolicy.resolvedSecondaryTransportGlyphSize(
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
     }
 
     // MARK: - Title Bar (top edge, overlaying video)
@@ -1803,6 +2526,7 @@ struct PlayerView: View {
                     accessibilityLabel: "Close player"
                 )
             }
+            .keyboardShortcut(.cancelAction)
             .buttonStyle(.plain)
             .accessibilityLabel("Close player")
             .accessibilityHint("Dismisses playback and returns to the previous screen.")
@@ -1834,7 +2558,7 @@ struct PlayerView: View {
                 } label: {
                     topBarUtilityButton(
                         systemName: availableAudioTrackCount > 1 ? "speaker.wave.2.fill" : "speaker.wave.2",
-                        isActive: isShowingAudioPicker || availableAudioTrackCount > 1,
+                        isActive: isShowingAudioPicker,
                         accessibilityLabel: "Audio Tracks"
                     )
                 }
@@ -1847,7 +2571,7 @@ struct PlayerView: View {
                     toggleControlsLock()
                 } label: {
                     topBarUtilityButton(
-                        systemName: isControlsLocked ? "lock.fill" : "lock.open",
+                        systemName: isControlsLocked ? "lock.fill" : "lock",
                         isActive: isControlsLocked,
                         accessibilityLabel: isControlsLocked ? "Unlock controls" : "Lock controls"
                     )
@@ -1855,6 +2579,24 @@ struct PlayerView: View {
                 .buttonStyle(.plain)
                 #if os(visionOS)
                 .hoverEffect(.lift)
+                #endif
+
+                #if os(visionOS)
+                if usesAppleEnvironmentMode {
+                    Button {
+                        keepControlsVisibleForMenuAction()
+                        expandAppleEnvironmentWindowIfAvailable(allowPending: true)
+                    } label: {
+                        topBarUtilityButton(
+                            systemName: "arrow.up.left.and.arrow.down.right",
+                            isActive: usesAppleEnvironmentChromeLayout,
+                            accessibilityLabel: "Expand Apple Environment"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Expands the player window and unlocks free resizing.")
+                    .hoverEffect(.lift)
+                }
                 #endif
 
                 Menu {
@@ -1881,31 +2623,20 @@ struct PlayerView: View {
                     }
 
                     Section("Aspect Ratio") {
-                        Button {
-                            keepControlsVisibleForMenuAction()
-                            aspectRatioSelection = aspectRatioSelection == .freeform ? .auto : .freeform
-                        } label: {
-                            HStack {
-                                Label("Freeflow Resize", systemImage: "arrow.up.left.and.arrow.down.right")
-                                if aspectRatioSelection == .freeform {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-
-                        ForEach(AspectRatioSelection.allCases.filter { $0 != .freeform }, id: \.id) { selection in
+                        #if os(visionOS)
+                        if usesAppleEnvironmentMode {
                             Button {
                                 keepControlsVisibleForMenuAction()
-                                aspectRatioSelection = selection
+                                expandAppleEnvironmentWindowIfAvailable(allowPending: true)
                             } label: {
-                                HStack {
-                                    Label(selection.label, systemImage: selection.icon)
-                                    if aspectRatioSelection == selection {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
+                                Label("Expand Window", systemImage: "arrow.up.left.and.arrow.down.right")
                             }
+                        } else {
+                            aspectRatioMenuItems
                         }
+                        #else
+                        aspectRatioMenuItems
+                        #endif
                     }
 
                     #if os(macOS)
@@ -1927,19 +2658,51 @@ struct PlayerView: View {
                     }
                     #endif
 
+                    Section {
+                        Button {
+                            closeOpenControlMenu()
+                        } label: {
+                            Label(
+                                PlayerCinematicChromePolicy.closeMenuTitle,
+                                systemImage: PlayerCinematicChromePolicy.closeMenuIconName
+                            )
+                        }
+                    }
+
                     #if os(visionOS)
                     Section("Environment") {
                         Button {
                             keepControlsVisibleForMenuAction()
-                            clearEnvironmentSelectionAfterMenuDismissal()
+                            openAppleEnvironmentAfterMenuDismissal()
                         } label: {
                             PlayerEnvironmentMenuLabel(
                                 spec: .standardRoom(
                                     selectedAssetID: effectiveEnvironmentAssetID,
                                     activeEnvironment: appState.activeEnvironment,
-                                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen,
+                                    canUseSystemVideoSurface: PlayerCinemaEnvironmentPolicy.canOpen(
+                                        activeEngine: activeEngine,
+                                        hasAVPlayer: avPlayer != nil
+                                    ),
+                                    isExpansionPending: pendingAppleEnvironmentWindowExpansion
                                 )
                             )
+                        }
+
+                        if PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+                            selectedAssetID: effectiveEnvironmentAssetID,
+                            activeEnvironment: appState.activeEnvironment,
+                            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                        ) {
+                            Button {
+                                keepControlsVisibleForMenuAction()
+                                expandAppleEnvironmentWindowIfAvailable(allowPending: true)
+                            } label: {
+                                Label(
+                                    PlayerEnvironmentMenuPolicy.appleEnvironmentExpandTitle,
+                                    systemImage: PlayerEnvironmentMenuPolicy.appleEnvironmentExpandIconName
+                                )
+                            }
                         }
 
                         Button {
@@ -1996,7 +2759,7 @@ struct PlayerView: View {
                             Label("Browse Environments", systemImage: "mountain.2")
                         }
                         if appState.isImmersiveSpaceOpen {
-                            Button(role: .destructive) {
+                            Button {
                                 keepControlsVisibleForMenuAction()
                                 dismissEnvironmentAfterMenuDismissal()
                             } label: {
@@ -2014,9 +2777,11 @@ struct PlayerView: View {
                 #endif
             }
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, PlayerCinematicChromePolicy.topBarHorizontalPadding)
         .padding(.top, 12)
         .padding(.bottom, 18)
+        .frame(maxWidth: resolvedTopBarMaxWidth)
+        .frame(maxWidth: .infinity, alignment: .center)
         .background(
             LinearGradient(
                 colors: useObsidianGlass
@@ -2038,34 +2803,88 @@ struct PlayerView: View {
         )
     }
 
+    @ViewBuilder
+    private var aspectRatioMenuItems: some View {
+        Button {
+            keepControlsVisibleForMenuAction()
+            aspectRatioSelection = aspectRatioSelection == .freeform ? .auto : .freeform
+        } label: {
+            HStack {
+                Label("Free Resize", systemImage: "arrow.up.left.and.arrow.down.right")
+                if aspectRatioSelection == .freeform {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+
+        ForEach(AspectRatioSelection.allCases.filter { $0 != .freeform }, id: \.id) { selection in
+            Button {
+                keepControlsVisibleForMenuAction()
+                aspectRatioSelection = selection
+            } label: {
+                HStack {
+                    Label(selection.label, systemImage: selection.icon)
+                    if aspectRatioSelection == selection {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+        }
+    }
+
     private var titleMetadataBlock: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(resolvedMediaTitle)
-                .font(.headline.weight(.semibold))
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .shadow(
+                    color: .black.opacity(PlayerCinematicChromePolicy.topBarTextShadowOpacity),
+                    radius: PlayerCinematicChromePolicy.topBarTextShadowRadius,
+                    y: PlayerCinematicChromePolicy.topBarTextShadowY
+                )
 
-            HStack(spacing: 8) {
-                if let chapter = engine.currentChapter(at: engine.currentTime) {
-                    Text(chapter.title)
-                        .lineLimit(1)
-                } else {
-                    Text(currentStream.quality.rawValue)
-                    if let activeEngine {
-                        Text(activeEngine.displayName)
+            HStack(spacing: 6) {
+                ForEach(titleMetadataItems.indices, id: \.self) { index in
+                    if index > 0 {
+                        Text("/")
+                            .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity * 0.72))
                     }
+                    Text(titleMetadataItems[index])
+                        .lineLimit(1)
                 }
-                #if os(visionOS)
-                Text(environmentChromeStatusText)
-                    .lineLimit(1)
-                #endif
             }
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(.white.opacity(PlayerCinematicVisualPolicy.timeLabelOpacity))
+            .font(.callout.weight(.medium))
+            .foregroundStyle(.white.opacity(PlayerCinematicChromePolicy.topBarMetadataOpacity))
             .lineLimit(1)
+            .shadow(
+                color: .black.opacity(PlayerCinematicChromePolicy.topBarTextShadowOpacity),
+                radius: PlayerCinematicChromePolicy.topBarTextShadowRadius,
+                y: PlayerCinematicChromePolicy.topBarTextShadowY
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private var titleMetadataItems: [String] {
+        var items: [String]
+        if let chapter = engine.currentChapter(at: engine.currentTime) {
+            items = [chapter.title]
+        } else {
+            items = [currentStream.quality.rawValue]
+            if let activeEngine {
+                items.append(activeEngine.displayName)
+            }
+        }
+
+        #if os(visionOS)
+        if !environmentChromeStatusText.isEmpty {
+            items.append(environmentChromeStatusText)
+        }
+        #endif
+
+        return items
     }
 
     #if os(visionOS)
@@ -2075,6 +2894,7 @@ struct PlayerView: View {
                 appStateSelectedAsset: appState.selectedEnvironmentAsset,
                 assets: environmentAssets
             ),
+            selectedAssetID: effectiveEnvironmentAssetID,
             activeEnvironment: appState.activeEnvironment,
             isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
         )
@@ -2093,6 +2913,53 @@ struct PlayerView: View {
             assets: environmentAssets
         )
     }
+
+    private var usesAppleEnvironmentMode: Bool {
+        PlayerEnvironmentMenuPolicy.usesAppleEnvironmentMode(
+            selectedAssetID: effectiveEnvironmentAssetID,
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        )
+    }
+
+    private var persistentSystemOverlayVisibility: Visibility {
+        usesAppleEnvironmentChromeLayout ? .hidden : (isShowingControls ? .automatic : .hidden)
+    }
+
+    @ViewBuilder
+    private var appleEnvironmentSurfaceTreatment: some View {
+        if usesAppleEnvironmentChromeLayout {
+            let shape = RoundedRectangle(
+                cornerRadius: PlayerCinematicChromePolicy.windowCornerRadius,
+                style: .continuous
+            )
+
+            ZStack {
+                shape
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(PlayerCinematicChromePolicy.appleEnvironmentSurfaceRimOpacity),
+                                .white.opacity(PlayerCinematicChromePolicy.appleEnvironmentSurfaceRimOpacity * 0.30),
+                                .black.opacity(PlayerCinematicChromePolicy.appleEnvironmentSurfaceInnerShadeOpacity)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: PlayerCinematicChromePolicy.appleEnvironmentSurfaceRimLineWidth
+                    )
+
+                shape
+                    .strokeBorder(
+                        .black.opacity(PlayerCinematicChromePolicy.appleEnvironmentSurfaceInnerShadeOpacity),
+                        lineWidth: PlayerCinematicChromePolicy.appleEnvironmentSurfaceInnerShadeLineWidth
+                    )
+                    .blendMode(.multiply)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
     #endif
 
     private func topBarUtilityButton(
@@ -2104,20 +2971,20 @@ struct PlayerView: View {
             .font(.body.weight(.semibold))
             .foregroundStyle(.white)
             .frame(
-                width: PlayerCinematicChromePolicy.topBarButtonSize,
-                height: PlayerCinematicChromePolicy.topBarButtonSize
+                width: resolvedTopBarButtonSize,
+                height: resolvedTopBarButtonSize
             )
-            .background(
-                useObsidianGlass
-                    ? (isActive ? AnyShapeStyle(VPColor.accentGlow) : AnyShapeStyle(VPElevation.raised.material))
-                    : (isActive ? AnyShapeStyle(.tint.opacity(0.34)) : AnyShapeStyle(.ultraThinMaterial)),
-                in: Circle()
-            )
+            .background {
+                topBarUtilityButtonBackground(isActive: isActive)
+            }
             .overlay {
-                if useObsidianGlass {
+                if isActive {
+                    Circle()
+                        .strokeBorder(VPColor.info.opacity(PlayerCinematicVisualPolicy.activeControlBorderOpacity), lineWidth: 1.5)
+                } else if useObsidianGlass {
                     Circle().strokeBorder(
                         LinearGradient(colors: [VPColor.specularBright, VPColor.specularDim],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                                       startPoint: .top, endPoint: .center),
                         lineWidth: VPElevation.raised.strokeWidth
                     )
                 } else {
@@ -2130,6 +2997,19 @@ struct PlayerView: View {
             .accessibilityLabel(accessibilityLabel)
     }
 
+    @ViewBuilder
+    private func topBarUtilityButtonBackground(isActive: Bool) -> some View {
+        if useObsidianGlass {
+            ZStack {
+                Circle().fill(VPElevation.raised.material)
+                Circle().fill(Color.black.opacity(PlayerCinematicChromePolicy.topBarButtonObsidianScrimOpacity))
+                Circle().fill(VPColor.glassTintRaised)
+            }
+        } else {
+            Circle().fill(.ultraThinMaterial)
+        }
+    }
+
     // MARK: - Info Pills Row (inside transport dock)
 
     private var infoPillsRow: some View {
@@ -2140,12 +3020,13 @@ struct PlayerView: View {
                     cyclePlaybackRate()
                 } label: {
                     Text("\(engine.playbackRate, specifier: "%.1f")x")
-                        .font(.caption2.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, PlayerCinematicChromePolicy.quickActionPillHorizontalPadding)
+                        .padding(.vertical, PlayerCinematicChromePolicy.quickActionPillVerticalPadding)
+                        .frame(minHeight: PlayerCinematicChromePolicy.quickActionPillMinHeight)
                         .background(.ultraThinMaterial, in: Capsule())
                         .overlay {
                             Capsule()
@@ -2174,13 +3055,18 @@ struct PlayerView: View {
                         keepControlsVisibleForMenuAction()
                         dismissEnvironmentAfterMenuDismissal()
                     },
+                    canUseSystemVideoSurface: PlayerCinemaEnvironmentPolicy.canOpen(
+                        activeEngine: activeEngine,
+                        hasAVPlayer: avPlayer != nil
+                    ),
                     canOpenCinema: PlayerCinemaEnvironmentPolicy.canOpen(
                         activeEngine: activeEngine,
                         hasAVPlayer: avPlayer != nil
                     ),
+                    isAppleEnvironmentExpansionPending: pendingAppleEnvironmentWindowExpansion,
                     onClear: {
                         keepControlsVisibleForMenuAction()
-                        clearEnvironmentSelectionAfterMenuDismissal()
+                        openAppleEnvironmentAfterMenuDismissal()
                     },
                     onShowCinemaSettings: {
                         keepControlsVisibleForMenuAction()
@@ -2189,10 +3075,41 @@ struct PlayerView: View {
                     onShowPicker: {
                         keepControlsVisibleForMenuAction()
                         showEnvironmentPickerAfterMenuDismissal()
+                    },
+                    onExpandAppleEnvironment: {
+                        keepControlsVisibleForMenuAction()
+                        expandAppleEnvironmentWindowIfAvailable(allowPending: true)
+                    },
+                    onCloseMenu: {
+                        closeOpenControlMenu()
                     }
                 )
                 .environment(appState)
                 .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.2) : nil, value: appState.isImmersiveSpaceOpen)
+
+                if usesAppleEnvironmentMode {
+                    Button {
+                        keepControlsVisibleForMenuAction()
+                        expandAppleEnvironmentWindowIfAvailable(allowPending: true)
+                    } label: {
+                        Label("Expand", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .padding(.horizontal, PlayerCinematicChromePolicy.quickActionPillHorizontalPadding)
+                            .padding(.vertical, PlayerCinematicChromePolicy.quickActionPillVerticalPadding)
+                            .frame(minHeight: PlayerCinematicChromePolicy.quickActionPillMinHeight)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Expand Apple Environment")
+                    .accessibilityHint("Expands the player window and unlocks free resizing.")
+                    .hoverEffect(.lift)
+                }
 
                 // Dim passthrough toggle pill
                 Button {
@@ -2206,11 +3123,12 @@ struct PlayerView: View {
                     }
                 } label: {
                     Label(engine.isDimEnabled ? "Dim On" : "Dim", systemImage: engine.isDimEnabled ? "sun.min.fill" : "sun.max")
-                        .font(.caption2.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, PlayerCinematicChromePolicy.quickActionPillHorizontalPadding)
+                        .padding(.vertical, PlayerCinematicChromePolicy.quickActionPillVerticalPadding)
+                        .frame(minHeight: PlayerCinematicChromePolicy.quickActionPillMinHeight)
                         .background(
                             engine.isDimEnabled
                                 ? AnyShapeStyle(.tint.opacity(0.35))
@@ -2239,46 +3157,145 @@ struct PlayerView: View {
             .padding(.horizontal, 2)
         }
         .frame(maxWidth: .infinity)
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: PlayerInfoPillScrollCuePolicy.trailingFadeStart),
+                    .init(color: .clear, location: PlayerInfoPillScrollCuePolicy.trailingFadeEnd),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
     }
 
     // MARK: - Transport Bar (bottom edge, overlaying video)
 
     private var transportBar: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: transportInternalSpacing) {
             infoPillsRow
                 .frame(maxWidth: PlayerCinematicChromePolicy.quickActionsMaxWidth)
 
-            playbackProgressBar
-            timeLabelsRow
+            VStack(spacing: PlayerCinematicChromePolicy.progressTimeLabelSpacing) {
+                playbackProgressBar
+                timeLabelsRow
+            }
+
             transportControlsRow
         }
         .padding(.horizontal, PlayerCinematicChromePolicy.transportCardHorizontalPadding)
-        .padding(.vertical, PlayerCinematicChromePolicy.transportCardVerticalPadding)
-        .frame(maxWidth: PlayerCinematicChromePolicy.transportCardMaxWidth)
-        .background(
-            .ultraThinMaterial,
-            in: RoundedRectangle(
-                cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
-                style: .continuous
-            )
+        .padding(.vertical, transportCardVerticalPadding)
+        .frame(
+            minWidth: transportCardMinWidth,
+            maxWidth: transportCardMaxWidth
         )
+        .background {
+            transportChromeBackground
+        }
         .overlay {
             RoundedRectangle(
                 cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
                 style: .continuous
             )
-            .strokeBorder(
-                LinearGradient(
-                    colors: useObsidianGlass
-                        ? [VPColor.specularBright, VPColor.specularDim]
-                        : [.white.opacity(0.26), .white.opacity(0.08)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
+                .strokeBorder(
+                    LinearGradient(
+                        colors: useObsidianGlass
+                            ? [VPColor.specularBright, VPColor.specularDim]
+                            : [.white.opacity(0.26), .white.opacity(0.08)],
+                    startPoint: .top,
+                    endPoint: .center
                 ),
                 lineWidth: 1
             )
         }
-        .shadow(color: .black.opacity(0.24), radius: 24, y: 10)
+        .shadow(
+            color: .black.opacity(transportShadowOpacity),
+            radius: transportShadowRadius,
+            y: transportShadowY
+        )
+    }
+
+    private var transportCardMinWidth: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTransportCardMinWidth(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout,
+            containerSize: measuredChromeContainerSize
+        )
+    }
+
+    private var transportCardMaxWidth: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTransportCardMaxWidth(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout,
+            containerSize: measuredChromeContainerSize
+        )
+    }
+
+    private var transportCardVerticalPadding: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTransportCardVerticalPadding(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportInternalSpacing: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTransportInternalSpacing(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportShadowOpacity: Double {
+        PlayerCinematicChromePolicy.resolvedTransportShadowOpacity(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportShadowRadius: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTransportShadowRadius(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportShadowY: CGFloat {
+        PlayerCinematicChromePolicy.resolvedTransportShadowY(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    @ViewBuilder
+    private var transportChromeBackground: some View {
+        let shape = RoundedRectangle(
+            cornerRadius: PlayerCinematicChromePolicy.transportCardCornerRadius,
+            style: .continuous
+        )
+
+        if useObsidianGlass {
+            ZStack {
+                shape.fill(transportUsesLightweightMaterial ? VPElevation.rest.material : VPElevation.raised.material)
+                shape.fill(Color.black.opacity(transportObsidianScrimOpacity))
+                shape.fill(usesAppleEnvironmentChromeLayout
+                    ? Color.white.opacity(transportGlassTintOpacity)
+                    : VPColor.glassTintRaised)
+            }
+        } else {
+            shape.fill(.ultraThinMaterial)
+        }
+    }
+
+    private var transportUsesLightweightMaterial: Bool {
+        PlayerCinematicChromePolicy.resolvedTransportUsesLightweightMaterial(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportObsidianScrimOpacity: Double {
+        PlayerCinematicChromePolicy.resolvedTransportObsidianScrimOpacity(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportGlassTintOpacity: Double {
+        PlayerCinematicChromePolicy.resolvedTransportGlassTintOpacity(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
     }
 
     private var playbackProgressBar: some View {
@@ -2294,7 +3311,9 @@ struct PlayerView: View {
                 duration: engine.duration
             )
             let progressFillWidth = barWidth * displayPercent
-            let knobSize: CGFloat = isScrubbing ? 16 : 10
+            let knobSize = isScrubbing
+                ? PlayerCinematicChromePolicy.progressBarScrubbingKnobSize
+                : PlayerCinematicChromePolicy.progressBarIdleKnobSize
             let progressX = PlayerViewPolicy.progressBarMarkerX(
                 percent: displayPercent,
                 barWidth: barWidth,
@@ -2316,18 +3335,18 @@ struct PlayerView: View {
                     .fill(.white)
                     .frame(width: progressFillWidth, height: barHeight)
 
-                if !engine.chapters.isEmpty && engine.duration > 0 {
+                if isScrubbing && !engine.chapters.isEmpty && engine.duration > 0 {
                     ForEach(engine.chapters) { chapter in
                         let chapterPercent = chapter.startTime / engine.duration
                         let tickX = PlayerViewPolicy.progressBarMarkerX(
                             percent: chapterPercent,
                             barWidth: barWidth,
-                            markerWidth: 2
+                            markerWidth: 1
                         )
                         if PlayerViewPolicy.shouldShowChapterMarker(chapterStartTime: chapter.startTime) {
-                            RoundedRectangle(cornerRadius: 0.75)
-                                .fill(.white.opacity(0.58))
-                                .frame(width: 2, height: barHeight + 5)
+                            Capsule()
+                                .fill(.white.opacity(0.34))
+                                .frame(width: 1, height: max(6, barHeight + 2))
                                 .position(x: tickX, y: geo.size.height / 2)
                         }
                     }
@@ -2419,15 +3438,17 @@ struct PlayerView: View {
     }
 
     private var transportControlsRow: some View {
-        HStack(spacing: 24) {
-            if !engine.chapters.isEmpty {
-                transportIconButton(
-                    systemName: PlayerCinematicVisualPolicy.previousChapterSymbolName,
-                    accessibilityLabel: "Previous chapter"
-                ) {
-                    if let time = engine.previousChapterTime() { seek(to: time) }
-                }
+        let hasChapters = !engine.chapters.isEmpty
+        return HStack(spacing: transportControlSpacing) {
+            transportChapterIconButton(
+                systemName: PlayerCinematicVisualPolicy.previousChapterSymbolName,
+                accessibilityLabel: "Previous chapter",
+                isVisible: hasChapters
+            ) {
+                if let time = engine.previousChapterTime() { seek(to: time) }
             }
+
+            transportChapterControlDivider(isVisible: hasChapters)
 
             transportIconButton(
                 systemName: PlayerCinematicVisualPolicy.skipBackSymbolName,
@@ -2440,12 +3461,12 @@ struct PlayerView: View {
                 togglePlayPause()
             } label: {
                 Image(systemName: playPausePresentation.symbolName)
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: resolvedPrimaryTransportGlyphSize, weight: .semibold))
                     // WHITE primary action: near-black glyph on a white pill (the app-wide hero look).
                     .foregroundStyle(VPColor.void)
                     .frame(
-                        width: PlayerCinematicChromePolicy.primaryTransportButtonSize,
-                        height: PlayerCinematicChromePolicy.primaryTransportButtonSize
+                        width: resolvedPrimaryTransportButtonSize,
+                        height: resolvedPrimaryTransportButtonSize
                     )
                     .background(.white, in: Circle())
                     .overlay {
@@ -2473,16 +3494,64 @@ struct PlayerView: View {
                 seekRelative(TimeInterval(PlayerCinematicChromePolicy.skipForwardInterval))
             }
 
-            if !engine.chapters.isEmpty {
-                transportIconButton(
-                    systemName: PlayerCinematicVisualPolicy.nextChapterSymbolName,
-                    accessibilityLabel: "Next chapter"
-                ) {
-                    if let time = engine.nextChapterTime() { seek(to: time) }
-                }
+            transportChapterControlDivider(isVisible: hasChapters)
+
+            transportChapterIconButton(
+                systemName: PlayerCinematicVisualPolicy.nextChapterSymbolName,
+                accessibilityLabel: "Next chapter",
+                isVisible: hasChapters
+            ) {
+                if let time = engine.nextChapterTime() { seek(to: time) }
             }
         }
-        .frame(minHeight: PlayerCinematicChromePolicy.primaryTransportButtonSize)
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: resolvedPrimaryTransportButtonSize)
+    }
+
+    private var transportControlSpacing: CGFloat {
+        // Spacing must compress with the same factor as the buttons, or the
+        // control row's intrinsic width can exceed the scaled card in narrow
+        // freeform windows and clip the outer controls.
+        PlayerCinematicChromePolicy.resolvedTransportControlSpacing(
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        ) * PlayerCinematicChromePolicy.chromeScale(
+            containerSize: measuredChromeContainerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout
+        )
+    }
+
+    private var transportControlDivider: some View {
+        Capsule()
+            .fill(.white.opacity(PlayerCinematicChromePolicy.transportControlDividerOpacity))
+            .frame(
+                width: 1,
+                height: PlayerCinematicChromePolicy.transportControlDividerHeight
+            )
+            .accessibilityHidden(true)
+    }
+
+    private func transportChapterIconButton(
+        systemName: String,
+        accessibilityLabel: String,
+        isVisible: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        transportIconButton(
+            systemName: systemName,
+            accessibilityLabel: accessibilityLabel,
+            action: action
+        )
+        .disabled(!isVisible)
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
+        .accessibilityHidden(!isVisible)
+        .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.18) : nil, value: isVisible)
+    }
+
+    private func transportChapterControlDivider(isVisible: Bool) -> some View {
+        transportControlDivider
+            .opacity(isVisible ? 1 : 0)
+            .animation(motionAnimationsEnabled ? .easeInOut(duration: 0.18) : nil, value: isVisible)
     }
 
     private func transportIconButton(
@@ -2492,11 +3561,11 @@ struct PlayerView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: resolvedSecondaryTransportGlyphSize, weight: .semibold))
                 .foregroundStyle(VPColor.textPrimary)
                 .frame(
-                    width: PlayerCinematicChromePolicy.secondaryTransportButtonSize,
-                    height: PlayerCinematicChromePolicy.secondaryTransportButtonSize
+                    width: resolvedSecondaryTransportButtonSize,
+                    height: resolvedSecondaryTransportButtonSize
                 )
                 // Secondary glass look on canonical tokens (matches VPButtonStyle .secondary / .icon).
                 .background {
@@ -2508,7 +3577,7 @@ struct PlayerView: View {
                 .overlay {
                     Circle().strokeBorder(
                         LinearGradient(colors: [VPColor.specularBright, VPColor.specularDim],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                                       startPoint: .top, endPoint: .center),
                         lineWidth: 1
                     )
                 }
@@ -2652,6 +3721,14 @@ struct PlayerView: View {
             .background(.ultraThinMaterial)
             .navigationTitle("Subtitles")
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        isShowingSubtitlePicker = false
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
+                    .accessibilityLabel("Close subtitle menu")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         refreshCurrentMediaTrackOptions()
@@ -2722,6 +3799,14 @@ struct PlayerView: View {
             .background(.ultraThinMaterial)
             .navigationTitle("Audio")
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        isShowingAudioPicker = false
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
+                    .accessibilityLabel("Close audio menu")
+                }
                 #if os(macOS)
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -2985,7 +4070,7 @@ struct PlayerView: View {
             } catch {
                 playbackMessage = PlayerViewStatePolicy.autoplayNextFailureMessage(
                     for: nextEpisode,
-                    errorDescription: error.localizedDescription
+                    errorDescription: PlayerViewErrorPresentationPolicy.displayMessage(for: error)
                 )
                 applyAutoPlayNextPromptState(
                     PlayerAutoplayNextPolicy.stateAfterFinishingResolution(
@@ -2998,6 +4083,10 @@ struct PlayerView: View {
     }
 
     private func closePlayer() {
+        if dismissPresentedControlModalForCloseRequest() {
+            return
+        }
+
         guard !didInitiateClose else {
             #if os(macOS) || os(visionOS)
             if PlayerLifecyclePolicy.closesDedicatedPlayerWindowOnBack {
@@ -3012,6 +4101,9 @@ struct PlayerView: View {
         }
 
         didInitiateClose = true
+        #if os(visionOS)
+        resetAppleEnvironmentExpansionState()
+        #endif
         RuntimeMemoryDiagnostics.capture(
             event: .playerCloseRequested,
             enabled: appState.runtimeDiagnosticsEnabled,
@@ -3045,6 +4137,7 @@ struct PlayerView: View {
         autoPlayNextCountdownTask = nil
         autoPlayNextResolveTask?.cancel()
         autoPlayNextResolveTask = nil
+        cancelAVPlayerStatusObservationIfNeeded()
         cancelVisionLifecycleTasksOnClose()
         controlsHideTask?.cancel()
         controlsHideTask = nil
@@ -3092,6 +4185,125 @@ struct PlayerView: View {
         cleanupPlayback(clearSession: true)
         dismiss()
         #endif
+    }
+
+    private func dismissPresentedControlModalForCloseRequest() -> Bool {
+        let action: PlayerViewPolicy.CloseRequestAction
+        #if os(visionOS)
+        action = PlayerViewPolicy.closeRequestAction(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: isShowingEnvironmentPicker,
+            isShowingCinemaSettings: isShowingCinemaSettings
+        )
+        #else
+        action = PlayerViewPolicy.closeRequestAction(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: false,
+            isShowingCinemaSettings: false
+        )
+        #endif
+
+        guard action == .dismissControlModal else { return false }
+
+        prepareForControlModalPresentation()
+        isShowingSubtitlePicker = false
+        isShowingAudioPicker = false
+        #if os(visionOS)
+        isShowingEnvironmentPicker = false
+        isShowingCinemaSettings = false
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = nil
+        #endif
+        return true
+    }
+
+    private func closeOpenControlMenu() {
+        let action: PlayerViewPolicy.CloseControlMenuAction
+        #if os(visionOS)
+        action = PlayerViewPolicy.closeControlMenuAction(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: isShowingEnvironmentPicker,
+            isShowingCinemaSettings: isShowingCinemaSettings,
+            isControlsLocked: isControlsLocked
+        )
+        #else
+        action = PlayerViewPolicy.closeControlMenuAction(
+            isShowingSubtitlePicker: isShowingSubtitlePicker,
+            isShowingAudioPicker: isShowingAudioPicker,
+            isShowingEnvironmentPicker: false,
+            isShowingCinemaSettings: false,
+            isControlsLocked: isControlsLocked
+        )
+        #endif
+
+        switch action {
+        case .dismissControlModal:
+            _ = dismissPresentedControlModalForCloseRequest()
+        case .hideControls:
+            controlsHideTask?.cancel()
+            controlsHideTask = nil
+            performOptionalAnimation(.easeInOut(duration: PlayerControlVisibilityPolicy.fadeOutDuration)) {
+                isShowingControls = false
+            }
+        case .keepLockedControlsVisible:
+            controlsHideTask?.cancel()
+            controlsHideTask = nil
+        }
+    }
+
+    private func closeStalePlayerSceneForActiveSessionChange() {
+        guard !didCloseStalePlayerScene else {
+            dismissCurrentPlayerSceneOnly()
+            return
+        }
+
+        didCloseStalePlayerScene = true
+        didInitiateClose = true
+
+        initialPlayerStateTask?.cancel()
+        initialPlayerStateTask = nil
+        activePreparePlaybackID = nil
+        preparePlaybackTask?.cancel()
+        preparePlaybackTask = nil
+        subtitleCatalogTask?.cancel()
+        subtitleCatalogTask = nil
+        subtitleDownloadTask?.cancel()
+        subtitleDownloadTask = nil
+        environmentAssetsTask?.cancel()
+        environmentAssetsTask = nil
+        audioTrackRefreshTask?.cancel()
+        audioTrackRefreshTask = nil
+        subtitleTrackRefreshTask?.cancel()
+        subtitleTrackRefreshTask = nil
+        autoPlayNextCountdownTask?.cancel()
+        autoPlayNextCountdownTask = nil
+        autoPlayNextResolveTask?.cancel()
+        autoPlayNextResolveTask = nil
+        cancelAVPlayerStatusObservationIfNeeded()
+        cancelVisionLifecycleTasksOnClose()
+        controlsHideTask?.cancel()
+        controlsHideTask = nil
+
+        avPlayer?.pause()
+        #if os(visionOS)
+        apmpInjector.stop()
+        isAPMPActive = false
+        #endif
+
+        cleanupPlayback(clearSession: false, resetSharedEngineState: false)
+        dismissCurrentPlayerSceneOnly()
+    }
+
+    private func dismissCurrentPlayerSceneOnly() {
+        #if os(macOS) || os(visionOS)
+        if let sessionRequest {
+            dismissWindow(id: "player", value: sessionRequest)
+        }
+        #endif
+        dismiss()
     }
 
     #if os(macOS) || os(visionOS)
@@ -3155,13 +4367,22 @@ struct PlayerView: View {
     }
 
     private func presentSubtitlePicker() {
-        prepareForControlModalPresentation()
-        isShowingSubtitlePicker = true
+        presentControlModal(.subtitles)
     }
 
     private func presentAudioPicker() {
+        presentControlModal(.audio)
+    }
+
+    private func presentControlModal(_ modal: PlayerViewPolicy.ControlModal) {
         prepareForControlModalPresentation()
-        isShowingAudioPicker = true
+        let flags = PlayerViewPolicy.controlModalPresentationFlags(for: modal)
+        isShowingSubtitlePicker = flags.isShowingSubtitlePicker
+        isShowingAudioPicker = flags.isShowingAudioPicker
+        #if os(visionOS)
+        isShowingEnvironmentPicker = flags.isShowingEnvironmentPicker
+        isShowingCinemaSettings = flags.isShowingCinemaSettings
+        #endif
     }
 
     private func refreshCurrentMediaTrackOptions() {
@@ -3205,7 +4426,10 @@ struct PlayerView: View {
     }
 
     private func handleControlModalVisibilityChange(isPresented: Bool) {
-        switch PlayerViewStatePolicy.controlModalVisibilityAction(isPresented: isPresented) {
+        switch PlayerViewStatePolicy.controlModalVisibilityAction(
+            isPresented: isPresented,
+            hasPresentedControlModal: isControlModalPresented
+        ) {
         case .prepareForPresentation:
             prepareForControlModalPresentation()
         case .scheduleHide:
@@ -3262,20 +4486,26 @@ struct PlayerView: View {
     }
 
     private func loadInitialPlayerState() async {
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
         streamQueue = await PlayerSessionRouting.playbackQueue(
             primary: currentStream,
             available: availableStreams
         )
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
         engine.currentTitle = resolvedMediaTitle
         evaluateCapabilities(for: currentStream)
         await loadEnvironmentAssets()
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+        #if os(visionOS)
+        applyInitialDimDefaultIfNeeded()
+        #endif
         await loadPrivacyPreferences()
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
         if !guestModeEnabled {
             startProgressPersistence()
         }
         await loadSubtitleAppearance()
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
         let catalogMutationID = UUID()
         subtitleCatalogMutationID = catalogMutationID
         await refreshSubtitleCatalog(
@@ -3283,18 +4513,20 @@ struct PlayerView: View {
             requestedStreamID: currentStream.id,
             mutationID: catalogMutationID
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
         await autoLoadSubtitlesIfEnabled(for: currentStream)
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
         scheduleControlsHide()
         #if os(visionOS)
-        await loadDimPassthroughPreference()
         await autoOpenEnvironmentIfNeeded()
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+        await loadDimPassthroughPreference()
         #endif
     }
 
     @MainActor
     private func startPlaybackPreparation(for stream: StreamInfo) {
+        guard acceptsPlayerLifecycleCallbacks else { return }
         let preparationID = UUID()
         activePreparePlaybackID = preparationID
         preparePlaybackTask?.cancel()
@@ -3348,11 +4580,20 @@ struct PlayerView: View {
     }
 
     #if os(visionOS)
+    private func applyInitialDimDefaultIfNeeded() {
+        guard !didApplyInitialDimDefault else { return }
+        didApplyInitialDimDefault = true
+        engine.isDimEnabled = PlayerViewPolicy.defaultDimPassthrough(
+            usesAppleEnvironmentMode: usesAppleEnvironmentMode
+        )
+    }
+
     private func loadDimPassthroughPreference() async {
-        engine.isDimEnabled = (try? await appState.settingsManager.getBool(
-            key: SettingsKeys.playerDimPassthrough,
-            default: true
-        )) ?? true
+        let storedValue = try? await appState.settingsManager.getString(key: SettingsKeys.playerDimPassthrough)
+        engine.isDimEnabled = PlayerViewPolicy.resolvedDimPassthrough(
+            storedValue: storedValue,
+            usesAppleEnvironmentMode: usesAppleEnvironmentMode
+        )
     }
     #endif
 
@@ -3380,12 +4621,9 @@ struct PlayerView: View {
                 guard await appState.selectSuggestedEnvironmentAsset(match) else { return }
             }
         }
-        if effectiveEnvironmentAsset == nil,
-           let fallback = await defaultEnvironmentAssetForAutoOpen() {
-            guard await appState.selectSuggestedEnvironmentAsset(fallback) else { return }
-        }
 
         guard let asset = effectiveEnvironmentAsset else { return }
+        await loadDimPassthroughPreference()
         await openImmersiveSpaceIfPossible(for: asset)
     }
 
@@ -3400,12 +4638,6 @@ struct PlayerView: View {
         }
         return try? await appState.environmentCatalogManager.asset(matchingTag: suggestion.matchKey)
     }
-
-    private func defaultEnvironmentAssetForAutoOpen() async -> EnvironmentAsset? {
-        try? await appState.environmentCatalogManager.asset(
-            matchingTag: GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey
-        )
-    }
     #endif
 
     @MainActor
@@ -3419,10 +4651,20 @@ struct PlayerView: View {
             }
         }
 
+        guard acceptsPlayerLifecycleCallbacks else {
+            return
+        }
+
+        #if os(visionOS)
+        guard await waitForPlayerSceneAttachmentIfNeeded(preparationID: preparationID) else {
+            return
+        }
+        #endif
+
         guard Self.preparePlaybackShouldRun(
             requestedPreparationID: preparationID,
             activePreparationID: activePreparePlaybackID
-        ) else {
+        ), !Task.isCancelled else {
             return
         }
 
@@ -3432,11 +4674,27 @@ struct PlayerView: View {
             context: stream.fileName
         )
 
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
+            playbackState = .failed
+            activeEngine = nil
+            playbackError = PlayerViewErrorPresentationPolicy.displayMessage(
+                for: PlayerEngineError.invalidStreamURL(IndexerLogSanitizer.redactedURL(stream.streamURL))
+            )
+            playbackMessage = "Choose another stream or refresh the source."
+            RuntimeMemoryDiagnostics.capture(
+                event: .playerPrepareFailed,
+                enabled: appState.runtimeDiagnosticsEnabled,
+                context: "not-launchable:\(stream.fileName)"
+            )
+            return
+        }
+
         playbackState = .preparing
         playbackError = nil
         playbackMessage = PlayerViewStatePolicy.preparationStartMessage()
         isShowingControls = true
         hasPlayedOnce = false
+        lastObservedKSPlaybackTime = 0
         // New stream/episode: re-arm the one-shot completion save and drop the previous
         // episode's captured frame so it isn't reused for this one.
         didPersistCompletion = false
@@ -3445,7 +4703,7 @@ struct PlayerView: View {
         guard Self.preparePlaybackShouldRun(
             requestedPreparationID: preparationID,
             activePreparationID: activePreparePlaybackID
-        ), !Task.isCancelled else {
+        ), acceptsPlayerLifecycleCallbacks, !Task.isCancelled else {
             return
         }
         cleanupPlayback(clearSession: false)
@@ -3468,23 +4726,27 @@ struct PlayerView: View {
         evaluateCapabilities(for: stream)
 
         // Re-activate the audio session before playback — the session from
-        // app init may not survive window transitions on visionOS.
+        // app init may not survive window transitions on visionOS. Use the
+        // same category/mode/policy KSPlayer's KSOptions.setAudioSession()
+        // applies (playback / moviePlayback / longFormVideo) so the package's
+        // main-thread setCategory + setActive during engine startup becomes an
+        // idempotent no-op instead of a full session reconfiguration.
         #if !os(macOS)
-        AudioSessionConfigurator.configurePlaybackAsync(policy: .standard)
+        AudioSessionConfigurator.configurePlaybackAsync(policy: .longFormVideo)
         #endif
 
         let resumeTarget = await loadResumeTarget()
         guard Self.preparePlaybackShouldRun(
             requestedPreparationID: preparationID,
             activePreparationID: activePreparePlaybackID
-        ), !Task.isCancelled else {
+        ), acceptsPlayerLifecycleCallbacks, !Task.isCancelled else {
             return
         }
         let engineStrategy = await loadPlayerEngineStrategy()
         guard Self.preparePlaybackShouldRun(
             requestedPreparationID: preparationID,
             activePreparationID: activePreparePlaybackID
-        ), !Task.isCancelled else {
+        ), acceptsPlayerLifecycleCallbacks, !Task.isCancelled else {
             return
         }
 
@@ -3495,7 +4757,7 @@ struct PlayerView: View {
             guard Self.preparePlaybackShouldRun(
                 requestedPreparationID: preparationID,
                 activePreparationID: activePreparePlaybackID
-            ), !Task.isCancelled else {
+            ), acceptsPlayerLifecycleCallbacks, !Task.isCancelled else {
                 return
             }
 
@@ -3507,7 +4769,7 @@ struct PlayerView: View {
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
                         activePreparationID: activePreparePlaybackID
-                    ) else {
+                    ), acceptsPlayerLifecycleCallbacks else {
                         return
                     }
                     guard let coordinator = prepared.ksPlayerCoordinator,
@@ -3520,6 +4782,7 @@ struct PlayerView: View {
                         key: SettingsKeys.hardwareDecoding, default: true
                     )) ?? true
                     try Task.checkCancellation()
+                    guard acceptsPlayerLifecycleCallbacks else { return }
                     options.hardwareDecode = hwDecode
 
                     configureKSCallbacks(coordinator)
@@ -3549,7 +4812,7 @@ struct PlayerView: View {
                             guard Self.preparePlaybackShouldRun(
                                 requestedPreparationID: preparationID,
                                 activePreparationID: activePreparePlaybackID
-                            ) else {
+                            ), acceptsPlayerLifecycleCallbacks else {
                                 return
                             }
                             playbackState = state
@@ -3561,7 +4824,7 @@ struct PlayerView: View {
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
                         activePreparationID: activePreparePlaybackID
-                    ) else {
+                    ), acceptsPlayerLifecycleCallbacks else {
                         return
                     }
                     refreshKSAudioTracks(for: stream)
@@ -3585,6 +4848,7 @@ struct PlayerView: View {
                     scheduleKSTrackRefresh(for: stream)
                     await autoLoadSubtitlesIfEnabled(for: stream)
                     try Task.checkCancellation()
+                    guard acceptsPlayerLifecycleCallbacks else { return }
                     scheduleControlsHide()
                     RuntimeMemoryDiagnostics.capture(
                         event: .playerPrepareSucceeded,
@@ -3604,7 +4868,7 @@ struct PlayerView: View {
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
                         activePreparationID: activePreparePlaybackID
-                    ) else {
+                    ), acceptsPlayerLifecycleCallbacks else {
                         return
                     }
                     guard let player = prepared.avPlayer else {
@@ -3618,6 +4882,10 @@ struct PlayerView: View {
                     selectedKSSubtitleID = nil
                     avPlayer = player
                     appState.activeAVPlayer = player
+                    #if os(visionOS)
+                    expandPendingAppleEnvironmentWindowIfAvailable()
+                    applyVisionOSEnvironmentPresentationMode()
+                    #endif
                     playbackState = .preparing
                     playbackMessage = PlayerViewStatePolicy.preparationAttemptMessage(for: .avPlayer)
 
@@ -3625,13 +4893,13 @@ struct PlayerView: View {
                     #if os(visionOS)
                     updateAPMPInjector()
                     #endif
-                    player.playImmediately(atRate: PlayerViewStatePolicy.playbackStartRate(engine.playbackRate))
+                    startAVPlayerPlayback(player)
 
                     let onState: (PlayerPlaybackState, String?) -> Void = { state, diagnostics in
                         guard Self.preparePlaybackShouldRun(
                             requestedPreparationID: preparationID,
                             activePreparationID: activePreparePlaybackID
-                        ) else {
+                        ), acceptsPlayerLifecycleCallbacks else {
                             return
                         }
                         playbackState = state
@@ -3649,12 +4917,13 @@ struct PlayerView: View {
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
                         activePreparationID: activePreparePlaybackID
-                    ) else {
+                    ), acceptsPlayerLifecycleCallbacks else {
                         return
                     }
 
                     await refreshAVMediaOptions(for: player)
                     try Task.checkCancellation()
+                    guard acceptsPlayerLifecycleCallbacks else { return }
                     // Torrent/direct streams may not expose audio tracks immediately.
                     // Refresh again after the stream has had time to load track metadata.
                     let streamID = stream.id
@@ -3662,6 +4931,8 @@ struct PlayerView: View {
                     audioTrackRefreshTask = Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(2000))
                         guard !Task.isCancelled,
+                              acceptsPlayerLifecycleCallbacks,
+                              isCurrentAVPlayer(player),
                               Self.audioTrackRefreshShouldRun(
                                   requestedStreamID: streamID,
                                   currentStreamID: currentStream.id
@@ -3673,13 +4944,15 @@ struct PlayerView: View {
                     try Task.checkCancellation()
                     await loadChapters(from: player)
                     try Task.checkCancellation()
+                    guard acceptsPlayerLifecycleCallbacks, isCurrentAVPlayer(player) else { return }
                     if let resumeTarget {
                         await seekAVPlayer(player, to: resumeTarget)
                         try Task.checkCancellation()
+                        guard acceptsPlayerLifecycleCallbacks, isCurrentAVPlayer(player) else { return }
                         engine.currentTime = resumeTarget
                         playbackMessage = PlayerViewStatePolicy.preparationResumeMessage(for: resumeTarget)
                     }
-                    player.playImmediately(atRate: PlayerViewStatePolicy.playbackStartRate(engine.playbackRate))
+                    startAVPlayerPlayback(player)
 
                     playbackState = .playing
                     playbackMessage = PlayerViewStatePolicy.preparationSuccessMessage(
@@ -3688,6 +4961,7 @@ struct PlayerView: View {
                     )
                     await autoLoadSubtitlesIfEnabled(for: stream)
                     try Task.checkCancellation()
+                    guard acceptsPlayerLifecycleCallbacks, isCurrentAVPlayer(player) else { return }
                     scheduleControlsHide()
                     RuntimeMemoryDiagnostics.capture(
                         event: .playerPrepareSucceeded,
@@ -3700,7 +4974,7 @@ struct PlayerView: View {
                 guard Self.preparePlaybackShouldRun(
                     requestedPreparationID: preparationID,
                     activePreparationID: activePreparePlaybackID
-                ) else {
+                ), acceptsPlayerLifecycleCallbacks else {
                     return
                 }
                 cleanupPlayback(clearSession: false)
@@ -3709,14 +4983,14 @@ struct PlayerView: View {
                 guard Self.preparePlaybackShouldRun(
                     requestedPreparationID: preparationID,
                     activePreparationID: activePreparePlaybackID
-                ) else {
+                ), acceptsPlayerLifecycleCallbacks else {
                     return
                 }
                 if let refreshedStream = await refreshedStartupStreamIfNeeded(after: error, for: stream) {
                     guard Self.preparePlaybackShouldRun(
                         requestedPreparationID: preparationID,
                         activePreparationID: activePreparePlaybackID
-                    ) else {
+                    ), acceptsPlayerLifecycleCallbacks else {
                         return
                     }
                     currentStream = refreshedStream
@@ -3728,7 +5002,7 @@ struct PlayerView: View {
                 failures.append(
                     PlayerViewStatePolicy.preparationFailureLine(
                         kind: kind,
-                        errorDescription: error.localizedDescription
+                        errorDescription: PlayerViewErrorPresentationPolicy.displayMessage(for: error)
                     )
                 )
                 cleanupPlayback(clearSession: false)
@@ -3738,7 +5012,7 @@ struct PlayerView: View {
         guard Self.preparePlaybackShouldRun(
             requestedPreparationID: preparationID,
             activePreparationID: activePreparePlaybackID
-        ) else {
+        ), acceptsPlayerLifecycleCallbacks else {
             return
         }
         playbackState = .failed
@@ -3768,11 +5042,11 @@ struct PlayerView: View {
     }
 
     private func isCurrentAVPlayer(_ player: AVPlayer) -> Bool {
-        activeEngine == .avPlayer && avPlayer === player
+        acceptsPlayerLifecycleCallbacks && activeEngine == .avPlayer && avPlayer === player
     }
 
     private func isCurrentKSPlayerCoordinator(_ coordinator: KSVideoPlayer.Coordinator) -> Bool {
-        activeEngine == .ksPlayer && ksPlayerCoordinator === coordinator
+        acceptsPlayerLifecycleCallbacks && activeEngine == .ksPlayer && ksPlayerCoordinator === coordinator
     }
 
     private func removeAVTimeObserverIfNeeded() {
@@ -3788,6 +5062,11 @@ struct PlayerView: View {
         timeObserverPlayer = nil
     }
 
+    private func cancelAVPlayerStatusObservationIfNeeded() {
+        avPlayerStatusObservationTask?.cancel()
+        avPlayerStatusObservationTask = nil
+    }
+
     private func configureKSCallbacks(_ coordinator: KSVideoPlayer.Coordinator) {
         coordinator.onStateChanged = { playerLayer, state in
             Task { @MainActor in
@@ -3798,14 +5077,20 @@ struct PlayerView: View {
                     engine.isBuffering = true
                     engine.isPlaying = false
                 case .readyToPlay, .buffering:
+                    let observedPlaybackState = PlayerViewStatePolicy.ksPlayerObservedPlaybackState(
+                        currentState: playbackState,
+                        observedState: state,
+                        hasPlayedOnce: hasPlayedOnce,
+                        bufferedPercent: engine.bufferedPercent
+                    )
                     playbackMessage = PlayerViewStatePolicy.playbackMessageAfterObservedState(
                         currentMessage: playbackMessage,
-                        observedPlaybackState: .buffering,
+                        observedPlaybackState: observedPlaybackState,
                         hasPlayedOnce: hasPlayedOnce
                     )
-                    playbackState = .buffering
-                    engine.isBuffering = true
-                    engine.isPlaying = false
+                    playbackState = observedPlaybackState
+                    engine.isBuffering = observedPlaybackState == .buffering
+                    engine.isPlaying = observedPlaybackState == .playing
                     refreshKSAudioTracks(from: coordinator)
                     refreshKSSubtitleTracks(from: coordinator)
                     // Detect video ratio from KSPlayer once ready, then apply
@@ -3852,8 +5137,28 @@ struct PlayerView: View {
                 if abs(engine.duration - newDuration) > 1.0 {
                     engine.duration = newDuration
                 }
+                let progressPlaybackState = PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                    currentState: playbackState,
+                    observedState: coordinator.state,
+                    currentTime: newTime,
+                    duration: newDuration
+                )
+                if progressPlaybackState != playbackState {
+                    playbackState = progressPlaybackState
+                    if progressPlaybackState == .playing {
+                        playbackMessage = nil
+                        engine.isBuffering = false
+                        engine.isPlaying = true
+                    }
+                }
                 handlePlaybackProgressForAutoplay(currentTime: newTime, duration: newDuration)
                 persistCompletionIfCrossedThreshold(currentTime: newTime, duration: newDuration)
+                if PlayerViewStatePolicy.shouldRecordKSPlaybackProgress(
+                    currentTime: newTime,
+                    duration: newDuration
+                ) {
+                    lastObservedKSPlaybackTime = newTime
+                }
             }
         }
 
@@ -3862,8 +5167,20 @@ struct PlayerView: View {
                 guard self.isCurrentKSPlayerCoordinator(coordinator) else { return }
                 if let error {
                     playbackState = .failed
-                    playbackError = error.localizedDescription
+                    playbackError = PlayerViewErrorPresentationPolicy.displayMessage(for: error)
                     playbackMessage = "This stream failed during playback."
+                } else if PlayerViewStatePolicy.isPrematureKSPlayerFinish(
+                    lastObservedPlaybackTime: lastObservedKSPlaybackTime,
+                    duration: engine.duration
+                ) {
+                    // FFmpeg reports a dead/truncated stream ("File ended
+                    // prematurely") as a plain end-of-file, so KSPlayer finishes
+                    // with no error. Surface it as a failure with the retry /
+                    // try-next-stream actions instead of waiting forever.
+                    cancelAutoPlayNextCountdown()
+                    playbackState = .failed
+                    playbackError = "The stream ended long before the video's full runtime. The source may be dead or truncated."
+                    playbackMessage = "Use retry or try the next stream."
                 }
             }
         }
@@ -3949,6 +5266,7 @@ struct PlayerView: View {
 
     private func startObservingAVPlayer(_ player: AVPlayer) {
         removeAVTimeObserverIfNeeded()
+        cancelAVPlayerStatusObservationIfNeeded()
         videoRatioDetectionTask?.cancel()
         videoRatioDetectionTask = nil
         hdrMetadataExtractionTask?.cancel()
@@ -3990,40 +5308,7 @@ struct PlayerView: View {
                     scheduleAVHDRMetadataExtraction(from: asset, player: player)
                 }
 
-                // Buffered range
-                if let loadedRange = player.currentItem?.loadedTimeRanges.first?.timeRangeValue,
-                   let itemDuration = player.currentItem?.duration.seconds,
-                   let newBuffered = PlayerViewPolicy.bufferedPercent(
-                    loadedRangeStart: loadedRange.start.seconds,
-                    loadedRangeDuration: loadedRange.duration.seconds,
-                    itemDuration: itemDuration
-                   ) {
-                    if abs(engine.bufferedPercent - newBuffered) > 0.01 {
-                        engine.bufferedPercent = newBuffered
-                    }
-                }
-
-                let nowPlaying = player.timeControlStatus == .playing
-                let nowBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-                if engine.isPlaying != nowPlaying { engine.isPlaying = nowPlaying }
-                if engine.isBuffering != nowBuffering { engine.isBuffering = nowBuffering }
-                let observedPlaybackState = PlayerViewStatePolicy.avPlayerObservedPlaybackState(
-                    currentState: playbackState,
-                    isPlaying: nowPlaying,
-                    isBuffering: nowBuffering,
-                    hasPlayedOnce: hasPlayedOnce
-                )
-                let observedPlaybackMessage = PlayerViewStatePolicy.playbackMessageAfterObservedState(
-                    currentMessage: playbackMessage,
-                    observedPlaybackState: observedPlaybackState,
-                    hasPlayedOnce: hasPlayedOnce
-                )
-                if playbackMessage != observedPlaybackMessage {
-                    playbackMessage = observedPlaybackMessage
-                }
-                if playbackState != observedPlaybackState {
-                    playbackState = observedPlaybackState
-                }
+                refreshAVPlayerPlaybackObservation(player)
             }
         }
         if let avTimeObserverHooks {
@@ -4032,9 +5317,98 @@ struct PlayerView: View {
             timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main, using: observer)
         }
         timeObserverPlayer = player
+        startAVPlayerStatusObservation(player)
+    }
+
+    private func startAVPlayerStatusObservation(_ player: AVPlayer) {
+        guard !disablesAutomaticTasks else { return }
+        avPlayerStatusObservationTask = Task { @MainActor in
+            defer {
+                if self.isCurrentAVPlayer(player) {
+                    avPlayerStatusObservationTask = nil
+                }
+            }
+
+            while !Task.isCancelled, acceptsPlayerLifecycleCallbacks, isCurrentAVPlayer(player) {
+                refreshAVPlayerPlaybackObservation(player)
+                try? await Task.sleep(for: .milliseconds(Self.avPlayerStatusObserverIntervalMilliseconds))
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshAVPlayerPlaybackObservation(_ player: AVPlayer) {
+        guard acceptsPlayerLifecycleCallbacks, isCurrentAVPlayer(player) else { return }
+
+        let loadedRanges = player.currentItem?.loadedTimeRanges.map(\.timeRangeValue) ?? []
+        let loadedRangeSamples = loadedRanges.map {
+            (start: $0.start.seconds, duration: $0.duration.seconds)
+        }
+        let currentSeconds = player.currentTime().seconds
+        let newBuffered = PlayerViewPolicy.observedBufferedPercent(
+            loadedRanges: loadedRangeSamples,
+            itemDuration: player.currentItem?.duration.seconds
+        )
+        let bufferedSecondsAhead = PlayerViewPolicy.observedBufferedSecondsAhead(
+            loadedRanges: loadedRangeSamples,
+            currentTime: currentSeconds
+        )
+        if PlayerViewPolicy.shouldUpdateBufferedPercent(
+            current: engine.bufferedPercent,
+            observed: newBuffered
+        ) {
+            engine.bufferedPercent = newBuffered
+        }
+
+        let nowPlaying = player.timeControlStatus == .playing
+        let nowBuffering = PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+            isPlaybackBufferEmpty: player.currentItem?.isPlaybackBufferEmpty ?? false,
+            isPlaybackLikelyToKeepUp: player.currentItem?.isPlaybackLikelyToKeepUp ?? true,
+            hasPlayedOnce: hasPlayedOnce,
+            isPlaybackPaused: player.timeControlStatus == .paused,
+            bufferedPercent: engine.bufferedPercent,
+            bufferedSecondsAhead: bufferedSecondsAhead
+        )
+        if engine.isPlaying != nowPlaying { engine.isPlaying = nowPlaying }
+        let observedPlaybackState = PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+            currentState: playbackState,
+            isPlaying: nowPlaying,
+            isBuffering: nowBuffering,
+            hasPlayedOnce: hasPlayedOnce,
+            bufferedPercent: engine.bufferedPercent,
+            bufferedSecondsAhead: bufferedSecondsAhead
+        )
+        let effectiveBuffering = nowBuffering && observedPlaybackState == .buffering
+        if engine.isBuffering != effectiveBuffering { engine.isBuffering = effectiveBuffering }
+        let observedPlaybackMessage = PlayerViewStatePolicy.playbackMessageAfterObservedState(
+            currentMessage: playbackMessage,
+            observedPlaybackState: observedPlaybackState,
+            hasPlayedOnce: hasPlayedOnce
+        )
+        if playbackMessage != observedPlaybackMessage {
+            playbackMessage = observedPlaybackMessage
+        }
+        if playbackState != observedPlaybackState {
+            playbackState = observedPlaybackState
+        }
+    }
+
+    private func startAVPlayerPlayback(_ player: AVPlayer) {
+        let rate = PlayerViewStatePolicy.playbackStartRate(engine.playbackRate)
+        switch PlayerViewStatePolicy.avPlayerStartupAction(
+            automaticallyWaitsToMinimizeStalling: player.automaticallyWaitsToMinimizeStalling
+        ) {
+        case .playImmediately:
+            player.playImmediately(atRate: rate)
+        case .playAfterMinimizingStalls:
+            player.defaultRate = rate
+            player.play()
+        }
     }
 
     static let avPlayerPeriodicObserverIntervalSeconds: TimeInterval = PlayerViewPolicy.avPlayerPeriodicObserverIntervalSeconds
+    static let avPlayerStatusObserverIntervalMilliseconds: Int64 = PlayerViewPolicy.avPlayerStatusObserverIntervalMilliseconds
 
     @MainActor
     private func detectVideoRatio(from asset: AVAsset, player: AVPlayer) async {
@@ -4210,10 +5584,14 @@ struct PlayerView: View {
         }
     }
 
-    private func cleanupPlayback(clearSession: Bool = true) {
+    private func cleanupPlayback(
+        clearSession: Bool = true,
+        resetSharedEngineState: Bool = true
+    ) {
         resetAutoPlayNextStateForStreamTransition()
 
         removeAVTimeObserverIfNeeded()
+        cancelAVPlayerStatusObservationIfNeeded()
 
         #if os(visionOS)
         apmpInjector.stop()
@@ -4221,6 +5599,10 @@ struct PlayerView: View {
         #endif
 
         avPlayer?.pause()
+        // Detach the current item so a dead stream's loading pipeline is torn
+        // down deterministically instead of waiting for the AVPlayer instance
+        // to deallocate (a wedged scene can retain it via the surface view).
+        avPlayer?.replaceCurrentItem(with: nil)
         avPlayer = nil
         appState.releasePlayerResources(clearSession: clearSession, sessionID: sessionID)
 
@@ -4246,7 +5628,19 @@ struct PlayerView: View {
         didExhaustKSVideoRatioRetry = false
         didAttemptHDRMetadataExtraction = false
 
-        clearKSSubtitleSelection()
+        if resetSharedEngineState {
+            clearKSSubtitleSelection()
+        } else {
+            selectedKSSubtitleID = nil
+        }
+        // KSPlayer's Coordinator.resetPlayer() only pauses the layer
+        // (playerLayer didSet -> oldValue?.pause()); the FFmpeg read/decode
+        // threads and audio engine are torn down only when ARC releases the
+        // layer. If the dismissing scene wedges and keeps the player graph
+        // alive, a dead stream keeps reading (and holds the audio session)
+        // into the next session. Stop the core explicitly so a close always
+        // kills the engine deterministically.
+        ksPlayerCoordinator?.playerLayer?.stop()
         ksPlayerCoordinator?.resetPlayer()
         ksPlayerCoordinator = nil
         ksOptions = nil
@@ -4264,15 +5658,22 @@ struct PlayerView: View {
         subtitleDownloadTask = nil
         subtitleService = nil
         subtitleServiceAPIKey = nil
-        engine.resetSessionState()
+        if resetSharedEngineState {
+            engine.resetSessionState()
+        }
 
         if clearSession {
             activeEngine = nil
         }
 
-        engine.isPlaying = false
-        engine.isBuffering = false
-        clearTransientSubtitleState(removeDownloadedFile: clearSession)
+        if resetSharedEngineState {
+            engine.isPlaying = false
+            engine.isBuffering = false
+        }
+        clearTransientSubtitleState(
+            removeDownloadedFile: clearSession,
+            resetSharedEngineState: resetSharedEngineState
+        )
     }
 
     // MARK: - Scrobbling
@@ -4285,7 +5686,7 @@ struct PlayerView: View {
     }
 
     private func scrobbleStart() {
-        guard let mediaId = PlayerViewPolicy.scrobbleIMDbID(mediaId: mediaId, imdbId: imdbId) else { return }
+        guard let mediaId = PlayerViewPolicy.scrobbleSyncID(mediaId: mediaId, imdbId: imdbId, tmdbId: tmdbId) else { return }
         let progress = scrobbleProgress
         let type: MediaType = activeEpisodeId != nil ? .series : .movie
         scrobbleTask?.cancel()
@@ -4302,7 +5703,7 @@ struct PlayerView: View {
     }
 
     private func scrobblePause() {
-        guard PlayerViewPolicy.scrobbleIMDbID(mediaId: mediaId, imdbId: imdbId) != nil else { return }
+        guard PlayerViewPolicy.scrobbleSyncID(mediaId: mediaId, imdbId: imdbId, tmdbId: tmdbId) != nil else { return }
         let progress = scrobbleProgress
         scrobbleTask?.cancel()
         scrobbleTask = Task {
@@ -4312,7 +5713,7 @@ struct PlayerView: View {
     }
 
     private func scrobbleResume() {
-        guard PlayerViewPolicy.scrobbleIMDbID(mediaId: mediaId, imdbId: imdbId) != nil else { return }
+        guard PlayerViewPolicy.scrobbleSyncID(mediaId: mediaId, imdbId: imdbId, tmdbId: tmdbId) != nil else { return }
         let progress = scrobbleProgress
         scrobbleTask?.cancel()
         scrobbleTask = Task {
@@ -4322,7 +5723,7 @@ struct PlayerView: View {
     }
 
     private func scrobbleStop() {
-        guard PlayerViewPolicy.scrobbleIMDbID(mediaId: mediaId, imdbId: imdbId) != nil else { return }
+        guard PlayerViewPolicy.scrobbleSyncID(mediaId: mediaId, imdbId: imdbId, tmdbId: tmdbId) != nil else { return }
         let progress = scrobbleProgress
         scrobbleTask?.cancel()
         scrobbleTask = Task {
@@ -4378,26 +5779,154 @@ struct PlayerView: View {
     #endif
 
     #if os(visionOS)
-    private func applyVisionOSWindowGeometry() {
-        // Seeded QA previews (Test Mode) render this chrome with `disablesAutomaticTasks` and share
-        // the presenting window's scene — they must never request a geometry update, which would
-        // resize the host window. The other automatic paths are already gated; this one is reached
-        // via the window-scene accessor's onChange, so guard it here too.
-        guard !disablesAutomaticTasks else { return }
-        visionGeometryTask?.cancel()
+    private func applyVisionOSEnvironmentPresentationMode() {
+        applyVisionOSWindowGeometry()
+        applyAspectRatioPresentationMode()
+    }
+
+    private func expandAppleEnvironmentWindow() {
+        pendingAppleEnvironmentWindowExpansion = false
+        didExpandAppleEnvironmentWindow = true
+        aspectRatioSelection = .freeform
+        applyAppleEnvironmentExpandedWindowGeometry()
+        showTransientPlayerMessage("Apple Environment expanded. Drag a corner to fine-tune the window.")
+    }
+
+    private func resetAppleEnvironmentExpansionState() {
+        pendingAppleEnvironmentWindowExpansion = false
+        didExpandAppleEnvironmentWindow = false
+    }
+
+    @discardableResult
+    private func expandAppleEnvironmentWindowIfAvailable(allowPending: Bool = false) -> Bool {
+        guard canExpandAppleEnvironmentWindow else {
+            let fallbackMessage: String
+            if allowPending {
+                pendingAppleEnvironmentWindowExpansion = true
+                fallbackMessage = PlayerEnvironmentMenuPolicy.appleEnvironmentPendingBenefit
+            } else {
+                fallbackMessage = PlayerEnvironmentMenuPolicy.appleEnvironmentFallbackBenefit
+            }
+            showTransientPlayerMessage(fallbackMessage)
+            return false
+        }
+        expandAppleEnvironmentWindow()
+        return true
+    }
+
+    private func expandPendingAppleEnvironmentWindowIfAvailable() {
+        guard pendingAppleEnvironmentWindowExpansion,
+              usesAppleEnvironmentMode,
+              canExpandAppleEnvironmentWindow else {
+            return
+        }
+        expandAppleEnvironmentWindow()
+    }
+
+    private func applyAppleEnvironmentExpandedWindowGeometry() {
+        guard !disablesAutomaticTasks, acceptsPlayerLifecycleCallbacks else { return }
 
         guard let windowScene = playerWindowScene else {
             visionGeometryTask = nil
             return
         }
 
+        requestAppleEnvironmentExpandedWindowGeometry(on: windowScene)
+    }
+
+    private func requestAppleEnvironmentExpandedWindowGeometry(on windowScene: UIWindowScene) {
+        visionGeometryTask?.cancel()
+        visionGeometryTask = nil
+
+        let expandedSize = PlayerCinematicChromePolicy.appleEnvironmentExpandedWindowSize
+        let expandedGeometry = UIWindowScene.GeometryPreferences.Vision(
+            minimumSize: expandedSize,
+            maximumSize: expandedSize,
+            resizingRestrictions: UIWindowScene.ResizingRestrictions.none
+        )
+        windowScene.requestGeometryUpdate(expandedGeometry)
+
+        let trackedSceneID = ObjectIdentifier(windowScene)
+        visionGeometryTask = Task { @MainActor in
+            try? await Task.sleep(for: PlayerCinematicChromePolicy.appleEnvironmentExpansionRelaxDelay)
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            guard let liveScene = playerWindowScene,
+                  ObjectIdentifier(liveScene) == trackedSceneID else { return }
+
+            liveScene.requestGeometryUpdate(appleEnvironmentFreeformGeometryPreferences())
+            visionGeometryTask = nil
+        }
+    }
+
+    private func startPlayerSceneActivation() {
+        playerSceneActivationTask?.cancel()
+        playerSceneActivationTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            scheduleMainWindowSuppressionIfNeeded()
+            scheduleVisionOSWindowGeometryUpdate()
+            guard !Task.isCancelled else { return }
+            playerSceneActivationTask = nil
+        }
+    }
+
+    private func scheduleVisionOSWindowGeometryUpdate() {
+        guard !disablesAutomaticTasks, acceptsPlayerLifecycleCallbacks else { return }
+        let trackedSceneID = playerWindowScene.map { ObjectIdentifier($0) }
+        visionGeometryTask?.cancel()
+        visionGeometryTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            guard playerWindowScene.map({ ObjectIdentifier($0) }) == trackedSceneID else { return }
+            applyVisionOSWindowGeometry(cancelPendingTask: false)
+        }
+    }
+
+    private func waitForPlayerSceneAttachmentIfNeeded(preparationID: UUID) async -> Bool {
+        guard playerWindowScene == nil else { return true }
+
+        for _ in 0..<PlayerLifecyclePolicy.playerSceneAttachmentWaitAttempts {
+            guard Self.preparePlaybackShouldRun(
+                requestedPreparationID: preparationID,
+                activePreparationID: activePreparePlaybackID
+            ), acceptsPlayerLifecycleCallbacks, !Task.isCancelled else {
+                return false
+            }
+            await Task.yield()
+            if playerWindowScene != nil {
+                return true
+            }
+        }
+
+        return Self.preparePlaybackShouldRun(
+            requestedPreparationID: preparationID,
+            activePreparationID: activePreparePlaybackID
+        ) && acceptsPlayerLifecycleCallbacks && !Task.isCancelled
+    }
+
+    private func applyVisionOSWindowGeometry(cancelPendingTask: Bool = true) {
+        // Seeded QA previews (Test Mode) render this chrome with `disablesAutomaticTasks` and share
+        // the presenting window's scene — they must never request a geometry update, which would
+        // resize the host window. The other automatic paths are already gated; this one is reached
+        // via the window-scene accessor's onChange, so guard it here too.
+        guard !disablesAutomaticTasks, acceptsPlayerLifecycleCallbacks else { return }
+        if cancelPendingTask {
+            visionGeometryTask?.cancel()
+            visionGeometryTask = nil
+        }
+
+        guard let windowScene = playerWindowScene else {
+            visionGeometryTask = nil
+            return
+        }
+
+        if usesAppleEnvironmentChromeLayout {
+            requestAppleEnvironmentExpandedWindowGeometry(on: windowScene)
+            return
+        }
+
         if !aspectRatioSelection.locksWindowRatio {
-            let freeform = UIWindowScene.GeometryPreferences.Vision(
-                minimumSize: CGSize(width: 640, height: 360),
-                maximumSize: CGSize(width: 3840, height: 3840),
-                resizingRestrictions: UIWindowScene.ResizingRestrictions.none
-            )
-            windowScene.requestGeometryUpdate(freeform)
+            windowScene.requestGeometryUpdate(appleEnvironmentFreeformGeometryPreferences())
             visionGeometryTask = nil
             return
         }
@@ -4450,16 +5979,25 @@ struct PlayerView: View {
             visionGeometryTask = nil
         }
     }
+
+    private func appleEnvironmentFreeformGeometryPreferences() -> UIWindowScene.GeometryPreferences.Vision {
+        UIWindowScene.GeometryPreferences.Vision(
+            minimumSize: PlayerCinematicChromePolicy.appleEnvironmentWindowMinimumSize,
+            maximumSize: PlayerCinematicChromePolicy.appleEnvironmentWindowMaximumSize,
+            resizingRestrictions: UIWindowScene.ResizingRestrictions.none
+        )
+    }
     #endif
 
     #if os(macOS) || os(visionOS)
     private func scheduleMainWindowSuppressionIfNeeded() {
+        guard let sessionID else { return }
         guard PlayerViewStatePolicy.mainWindowSuppressionAction(
             isSuppressed: appState.isMainWindowSuppressedForPlayer
         ) == .dismissMainAndMarkSuppressed else {
             return
         }
-        appState.isMainWindowSuppressedForPlayer = true
+        appState.beginMainWindowSuppressionForPlayer(sessionID: sessionID)
         dismissWindow(id: "main")
     }
 
@@ -4469,8 +6007,8 @@ struct PlayerView: View {
         ) == .openMainAndMarkRestored else {
             return
         }
+        appState.clearMainWindowSuppressionForPlayer(sessionID: sessionID)
         openWindow(id: "main")
-        appState.isMainWindowSuppressedForPlayer = false
     }
     #endif
 
@@ -4481,6 +6019,8 @@ struct PlayerView: View {
     }
 
     private func openEnvironment(_ asset: EnvironmentAsset) async {
+        guard acceptsPlayerLifecycleCallbacks else { return }
+        resetAppleEnvironmentExpansionState()
         let plan = PlayerImmersiveTransitionPolicy.environmentOpenPlan(
             requestedAssetID: asset.id,
             selectedAssetID: effectiveEnvironmentAssetID,
@@ -4511,86 +6051,129 @@ struct PlayerView: View {
     }
 
     private func openCinemaEnvironmentAfterMenuDismissal() {
+        dismissControlModalsForDeferredEnvironmentAction()
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             await openCinemaEnvironment()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             environmentMenuActionTask = nil
         }
     }
 
     private func openEnvironmentAfterMenuDismissal(_ asset: EnvironmentAsset) {
+        dismissControlModalsForDeferredEnvironmentAction()
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             await openEnvironment(asset)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             environmentMenuActionTask = nil
         }
     }
 
     private func showEnvironmentPickerAfterMenuDismissal() {
+        guard !isShowingEnvironmentPickerForAutoHide else {
+            environmentMenuActionTask?.cancel()
+            environmentMenuActionTask = nil
+            return
+        }
+        dismissControlModalsForDeferredEnvironmentAction()
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !Task.isCancelled else { return }
-            guard !isShowingEnvironmentPicker else {
-                environmentMenuActionTask = nil
-                return
-            }
-            isShowingEnvironmentPicker = true
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            presentControlModal(.environmentPicker)
             environmentMenuActionTask = nil
         }
     }
 
     private func showCinemaSettingsAfterMenuDismissal() {
+        guard !isShowingCinemaSettingsForAutoHide else {
+            environmentMenuActionTask?.cancel()
+            environmentMenuActionTask = nil
+            return
+        }
+        dismissControlModalsForDeferredEnvironmentAction()
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !Task.isCancelled else { return }
-            guard !isShowingCinemaSettings else {
-                environmentMenuActionTask = nil
-                return
-            }
-            isShowingCinemaSettings = true
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            presentControlModal(.cinemaSettings)
             environmentMenuActionTask = nil
         }
     }
 
     private func dismissEnvironmentAfterMenuDismissal() {
+        dismissControlModalsForDeferredEnvironmentAction()
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             let didDismiss = await dismissImmersiveIfNeeded(reason: .userInitiated)
             if !didDismiss {
                 showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.transitionBusyMessage)
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             environmentMenuActionTask = nil
         }
     }
 
     private func clearEnvironmentSelectionAfterMenuDismissal() {
+        dismissControlModalsForDeferredEnvironmentAction()
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = Task { @MainActor in
             await waitForMenuDismissal()
-            guard !Task.isCancelled else { return }
-            await clearEnvironmentSelection()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            _ = await clearEnvironmentSelection()
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
             environmentMenuActionTask = nil
         }
     }
 
-    private func clearEnvironmentSelection() async {
-        guard await dismissImmersiveIfNeeded(reason: .userInitiated) else {
-            showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.transitionBusyMessage)
+    private func openAppleEnvironmentAfterMenuDismissal() {
+        dismissControlModalsForDeferredEnvironmentAction()
+        environmentMenuActionTask?.cancel()
+        environmentMenuActionTask = Task { @MainActor in
+            await waitForMenuDismissal()
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            await openAppleEnvironmentFromSystemPicker()
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            environmentMenuActionTask = nil
+        }
+    }
+
+    private func dismissControlModalsForDeferredEnvironmentAction() {
+        isShowingSubtitlePicker = false
+        isShowingAudioPicker = false
+        isShowingEnvironmentPicker = false
+        isShowingCinemaSettings = false
+    }
+
+    private func openAppleEnvironmentFromSystemPicker() async {
+        guard await clearEnvironmentSelection() else {
+            pendingAppleEnvironmentWindowExpansion = false
             return
         }
+        guard acceptsPlayerLifecycleCallbacks else {
+            pendingAppleEnvironmentWindowExpansion = false
+            return
+        }
+        expandAppleEnvironmentWindowIfAvailable(allowPending: true)
+    }
+
+    @discardableResult
+    private func clearEnvironmentSelection() async -> Bool {
+        guard acceptsPlayerLifecycleCallbacks else { return false }
+        guard await dismissImmersiveIfNeeded(reason: .userInitiated) else {
+            showTransientPlayerMessage(PlayerImmersiveTransitionPolicy.transitionBusyMessage)
+            return false
+        }
         await appState.clearEnvironmentSelection()
+        resetAppleEnvironmentExpansionState()
+        return true
     }
 
     private func waitForMenuDismissal() async {
@@ -4599,6 +6182,7 @@ struct PlayerView: View {
     }
 
     private func showTransientPlayerMessage(_ message: String) {
+        guard acceptsPlayerLifecycleCallbacks else { return }
         transientPlayerMessageTask?.cancel()
         transientPlayerMessage = message
         transientPlayerMessageTask = Task { @MainActor in
@@ -4610,6 +6194,8 @@ struct PlayerView: View {
     }
 
     private func openCinemaEnvironment() async {
+        guard acceptsPlayerLifecycleCallbacks else { return }
+        resetAppleEnvironmentExpansionState()
         let canOpen = PlayerCinemaEnvironmentPolicy.canOpen(activeEngine: activeEngine, hasAVPlayer: avPlayer != nil)
         switch PlayerImmersiveTransitionPolicy.cinemaOpenPlan(
             canOpen: canOpen,
@@ -4658,6 +6244,7 @@ struct PlayerView: View {
     }
 
     private func openImmersiveSpaceIfPossible(for asset: EnvironmentAsset) async {
+        guard acceptsPlayerLifecycleCallbacks else { return }
         guard await ensureEnvironmentAssetCanOpen(asset) else {
             return
         }
@@ -4826,18 +6413,31 @@ struct PlayerView: View {
     }
 
     private func loadEnvironmentAssets() async {
-        environmentAssets = (try? await appState.environmentCatalogManager.fetchAssets()) ?? []
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+        let assets: [EnvironmentAsset]
+        do {
+            assets = try await appState.environmentCatalogManager.fetchAssets()
+        } catch {
+            guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+            environmentAssets = []
+            return
+        }
+        guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }
+        environmentAssets = assets
+        appState.reconcileEnvironmentSelection(withLoadedAssets: assets)
     }
 
     @MainActor
     private func requestEnvironmentPicker() {
-        environmentAssetsTask?.cancel()
-        #if os(visionOS)
-        guard !isShowingEnvironmentPicker else {
+        guard acceptsPlayerLifecycleCallbacks else { return }
+        guard !isShowingEnvironmentPickerForAutoHide else {
+            environmentAssetsTask?.cancel()
             environmentAssetsTask = Task { await loadEnvironmentAssets() }
             return
         }
-        isShowingEnvironmentPicker = true
+        environmentAssetsTask?.cancel()
+        #if os(visionOS)
+        presentControlModal(.environmentPicker)
         #endif
         environmentAssetsTask = Task { await loadEnvironmentAssets() }
     }
@@ -5130,8 +6730,17 @@ struct PlayerView: View {
 
     private func clearTransientSubtitleState(
         removeDownloadedFile: Bool,
-        clearCurrentItemSelection: Bool = false
+        clearCurrentItemSelection: Bool = false,
+        resetSharedEngineState: Bool = true
     ) {
+        guard resetSharedEngineState else {
+            clearTransientSubtitleStatePreservingSharedEngine(
+                removeDownloadedFile: removeDownloadedFile,
+                clearCurrentItemSelection: clearCurrentItemSelection
+            )
+            return
+        }
+
         if clearCurrentItemSelection, let avSubtitleGroup {
             avPlayer?.currentItem?.select(nil, in: avSubtitleGroup)
         }
@@ -5146,6 +6755,31 @@ struct PlayerView: View {
         clearKSSubtitleSelection()
         engine.loadExternalSubtitles([])
         engine.clearSubtitleSelection()
+
+        guard removeDownloadedFile, let subtitleFileURL = downloadedSubtitleFileURL else { return }
+        try? FileManager.default.removeItem(at: subtitleFileURL)
+        downloadedSubtitleFileURL = nil
+    }
+
+    // A stale-scene teardown must not reset engine-shared subtitle state that the
+    // replacement player session may already rely on, so only this view's local
+    // subtitle state is cleared here.
+    private func clearTransientSubtitleStatePreservingSharedEngine(
+        removeDownloadedFile: Bool,
+        clearCurrentItemSelection: Bool
+    ) {
+        if clearCurrentItemSelection, let avSubtitleGroup {
+            avPlayer?.currentItem?.select(nil, in: avSubtitleGroup)
+        }
+
+        subtitleCandidates = []
+        subtitleCatalogMessage = nil
+        isRefreshingSubtitleCatalog = false
+        isDownloadingSubtitle = false
+        subtitleCatalogMutationID = nil
+        subtitleDownloadMutationID = nil
+        selectedAVSubtitleID = nil
+        selectedKSSubtitleID = nil
 
         guard removeDownloadedFile, let subtitleFileURL = downloadedSubtitleFileURL else { return }
         try? FileManager.default.removeItem(at: subtitleFileURL)
@@ -5211,7 +6845,7 @@ struct PlayerView: View {
                 return
             }
             subtitleCatalogMessage = PlayerSubtitleServicePolicy.automaticDownloadFailureMessage(
-                errorDescription: error.localizedDescription
+                errorDescription: PlayerViewErrorPresentationPolicy.displayMessage(for: error)
             )
             recordSubtitleRuntimeState()
         }
@@ -5236,12 +6870,13 @@ struct PlayerView: View {
                 Text(title)
             }
         }
-        .font(.caption2.weight(.semibold))
+        .font(.callout.weight(.semibold))
         .foregroundStyle(.white)
         .lineLimit(1)
         .minimumScaleFactor(0.85)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, PlayerCinematicChromePolicy.quickActionPillHorizontalPadding)
+        .padding(.vertical, PlayerCinematicChromePolicy.quickActionPillVerticalPadding)
+        .frame(minHeight: PlayerCinematicChromePolicy.quickActionPillMinHeight)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay {
             Capsule()
@@ -5704,10 +7339,14 @@ struct PlayerView: View {
         memoryPressureTask?.cancel()
         memoryPressureTask = nil
         #if os(visionOS)
+        playerSceneActivationTask?.cancel()
+        playerSceneActivationTask = nil
         environmentMenuActionTask?.cancel()
         environmentMenuActionTask = nil
         immersiveDismissTask?.cancel()
         immersiveDismissTask = nil
+        visionGeometryTask?.cancel()
+        visionGeometryTask = nil
         ksGeometryRetryTask?.cancel()
         ksGeometryRetryTask = nil
         #endif
@@ -5826,7 +7465,7 @@ struct PlayerView: View {
                 return
             }
             subtitleCandidates = []
-            subtitleCatalogMessage = error.localizedDescription
+            subtitleCatalogMessage = PlayerViewErrorPresentationPolicy.displayMessage(for: error)
             recordSubtitleRuntimeState()
         }
     }
@@ -5943,7 +7582,7 @@ struct PlayerView: View {
             ) else {
                 return
             }
-            subtitleCatalogMessage = error.localizedDescription
+            subtitleCatalogMessage = PlayerViewErrorPresentationPolicy.displayMessage(for: error)
             recordSubtitleRuntimeState()
         }
     }

@@ -9,6 +9,7 @@ struct TorznabIndexer: TorrentIndexer {
     private let apiKeyTransport: IndexerConfig.APIKeyTransport
     private let session: URLSession
     private static let requestLimiter = IndexerRequestLimiter()
+    private static let maximumParsedResults = 500
 
     init(
         name: String,
@@ -137,12 +138,15 @@ struct TorznabIndexer: TorrentIndexer {
 
     internal func parseTorznabXML(_ data: Data) throws -> [TorrentResult] {
         let parser = XMLParser(data: data)
-        let delegate = TorznabXMLParserDelegate(indexerName: name)
+        let delegate = TorznabXMLParserDelegate(
+            indexerName: name,
+            maximumResults: Self.maximumParsedResults
+        )
         parser.delegate = delegate
         parser.shouldProcessNamespaces = false
         parser.shouldResolveExternalEntities = false
 
-        guard parser.parse() else {
+        guard parser.parse() || delegate.didReachResultLimit else {
             let reason = parser.parserError.map { $0.localizedDescription } ?? "unknown XML parser error"
             throw IndexerParseError.invalidPayload(
                 indexer: name,
@@ -187,7 +191,7 @@ struct TorznabIndexer: TorrentIndexer {
             )
         }
 
-        let results: [TorrentResult] = items.compactMap { item in
+        let results: [TorrentResult] = items.prefix(Self.maximumParsedResults).compactMap { item in
             let title = (item["title"] as? String) ?? (item["name"] as? String) ?? "Unknown"
             let infoHash = (item["infoHash"] as? String)
                 ?? (item["hash"] as? String)
@@ -242,10 +246,11 @@ struct TorznabIndexer: TorrentIndexer {
         if let categoryFilter, !categoryFilter.isEmpty {
             merged.append(URLQueryItem(name: "cat", value: categoryFilter))
         }
+        let normalizedAPIKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         if apiKeyTransport == .query,
-           let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !apiKey.isEmpty {
-            merged.append(URLQueryItem(name: "apikey", value: apiKey))
+           let normalizedAPIKey,
+           !normalizedAPIKey.isEmpty {
+            merged.append(URLQueryItem(name: "apikey", value: normalizedAPIKey))
         }
         components.queryItems = merged
 
@@ -255,13 +260,20 @@ struct TorznabIndexer: TorrentIndexer {
         guard IndexerURLSecurityPolicy.permits(url: url) else {
             throw URLError(.unsupportedURL)
         }
+        // NOTE: the API-key cleartext-transport rule (`permitsAPIKeyTransport`) is
+        // deliberately NOT re-enforced on the search path. It is enforced where
+        // users configure indexers (IndexerSettingsView draft validation) and when
+        // they test them (IndexerConnectivityTester.makeRequest). Re-enforcing it
+        // on every search request silently zeroes results from configs persisted
+        // before the rule existed (e.g. Jackett/Prowlarr at http://<LAN-IP> with
+        // an API key), which users experience as "half my sources disappeared".
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         if apiKeyTransport == .header,
-           let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
+           let normalizedAPIKey,
+           !normalizedAPIKey.isEmpty {
+            request.setValue(normalizedAPIKey, forHTTPHeaderField: "X-Api-Key")
         }
         return request
     }
@@ -312,15 +324,18 @@ private final class TorznabXMLParserDelegate: NSObject, XMLParserDelegate {
     private static let textElements: Set<String> = ["title", "link", "guid"]
 
     let indexerName: String
+    let maximumResults: Int
     private(set) var results: [TorrentResult] = []
     private(set) var rawText = ""
+    private(set) var didReachResultLimit = false
 
     private var currentItem: ParsedItem?
     private var currentElement: String?
     private var currentCharacters = ""
 
-    init(indexerName: String) {
+    init(indexerName: String, maximumResults: Int) {
         self.indexerName = indexerName
+        self.maximumResults = max(1, maximumResults)
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
@@ -423,7 +438,10 @@ private final class TorznabXMLParserDelegate: NSObject, XMLParserDelegate {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             currentCharacters = ""
         } else if lower == "item" {
-            if let item = currentItem,
+            if results.count >= maximumResults {
+                didReachResultLimit = true
+                parser.abortParsing()
+            } else if let item = currentItem,
                let title = item.title, !title.isEmpty,
                let infoHash = resolvedInfoHash(for: item), !infoHash.isEmpty {
                 results.append(TorrentResult.fromSearch(

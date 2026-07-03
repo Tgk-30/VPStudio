@@ -467,6 +467,9 @@ struct DebridSettingsView: View {
         for config in normalized {
             try await appState.database.saveDebridConfig(config)
         }
+        for config in normalized where config.shouldDeleteStoredSecretAfterPersisting {
+            try? await config.deleteStoredSecret(using: appState.secretStore)
+        }
     }
 
     private func resolveToken(for config: DebridConfig) async throws -> String? {

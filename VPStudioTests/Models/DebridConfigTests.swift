@@ -155,8 +155,8 @@ struct DebridConfigTokenTests {
         #expect(try await store.getSecret(for: config.secretKey) == "premium-token")
     }
 
-    @Test("Persisted copy clears blank token and deletes stale stored secret")
-    func persistedCopyClearsBlankTokenAndDeletesStoredSecret() async throws {
+    @Test("Persisted copy clears blank token without deleting stale stored secret before commit")
+    func persistedCopyClearsBlankTokenWithoutPreCommitSecretDelete() async throws {
         let store = InMemorySecretStore()
         let config = DebridConfig(
             id: "blank-token",
@@ -169,6 +169,10 @@ struct DebridConfigTokenTests {
 
         #expect(persisted.changed)
         #expect(persisted.config.apiTokenRef == "")
+        #expect(persisted.config.shouldDeleteStoredSecretAfterPersisting)
+        #expect(try await store.getSecret(for: config.secretKey) == "stale-token")
+
+        try await persisted.config.deleteStoredSecret(using: store)
         #expect(try await store.getSecret(for: config.secretKey) == nil)
     }
 
@@ -528,8 +532,8 @@ struct IndexerConfigSecretNormalizationTests {
         #expect(try await encoded.resolvedAPIKey(using: store) == "stored-indexer-key")
     }
 
-    @Test("Persisted copy clears blanks and preserves canonical references")
-    func persistedCopyClearsBlankAndPreservesCanonicalReference() async throws {
+    @Test("Persisted copy clears blanks after commit and preserves canonical references")
+    func persistedCopyClearsBlankAfterCommitAndPreservesCanonicalReference() async throws {
         let store = InMemorySecretStore()
         let blank = IndexerConfig(
             id: "blank-indexer",
@@ -543,6 +547,10 @@ struct IndexerConfigSecretNormalizationTests {
 
         #expect(cleared.changed)
         #expect(cleared.config.apiKey == nil)
+        #expect(cleared.config.shouldDeleteStoredSecretAfterPersisting)
+        #expect(try await store.getSecret(for: blank.secretKey) == "stale-key")
+
+        try await cleared.config.deleteStoredSecret(using: store)
         #expect(try await store.getSecret(for: blank.secretKey) == nil)
 
         let canonicalKey = IndexerConfig.secretKey(for: "canonical-indexer")

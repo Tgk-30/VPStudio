@@ -320,6 +320,7 @@ struct StremioIndexerTestsStremioindexertests {
                       "request": {
                         "User-Agent": "Stremio",
                         "Referer": "https://app.strem.io/",
+                        "Authorization": "Bearer ignored",
                         "X-Blank": "   "
                       },
                       "response": {
@@ -340,6 +341,7 @@ struct StremioIndexerTestsStremioindexertests {
         let stream = try #require(results.first?.directStreamInfo)
         #expect(stream.requestHeaders?["User-Agent"] == "Stremio")
         #expect(stream.requestHeaders?["Referer"] == "https://app.strem.io/")
+        #expect(stream.requestHeaders?["Authorization"] == nil)
         #expect(stream.requestHeaders?["X-Blank"] == nil)
         #expect(stream.requestHeaders?["Set-Cookie"] == nil)
     }

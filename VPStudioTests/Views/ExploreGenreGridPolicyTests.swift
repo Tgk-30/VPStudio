@@ -20,12 +20,45 @@ struct ExploreGenreGridPolicyTests {
         )
 
         #expect(ExploreGenreTilePolicy.imageName(for: card) == "genre-art-scifi")
-        #expect(ExploreGenreTilePolicy.imageName(for: fallbackCard) == "genre-ref-custom")
+        #expect(ExploreGenreTilePolicy.imageName(for: fallbackCard) == ExploreGenreTilePolicy.defaultFallbackImageName)
+        #expect(!ExploreGenreTilePolicy.imageName(for: fallbackCard).hasPrefix("genre-ref-"))
         #expect(ExploreGenreTilePolicy.accessibilityLabel(for: card) == "\(card.title), \(card.subtitle)")
         #expect(ExploreGenreTilePolicy.cornerRadius == VPRadius.control)
         #expect(abs(ExploreGenreTilePolicy.referenceAspectRatio - CGFloat(128.0 / 142.0)) < 0.0001)
         #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.0) < 0.0001)
         #expect(abs(ExploreGenreTilePolicy.tileHeight - (ExploreGenreTilePolicy.tileWidth / ExploreGenreTilePolicy.referenceAspectRatio)) < 0.0001)
+    }
+
+    @Test
+    func tilePolicyKeepsFallbacksOnFullBleedGenreArtwork() throws {
+        let knownIDFallback = ExploreMoodCard(
+            id: "action",
+            title: "Action",
+            subtitle: "Fallback",
+            symbol: "bolt.fill",
+            artImageName: "missing-artwork",
+            color: .orange,
+            movieGenreId: 28,
+            tvGenreId: 10759
+        )
+        let unknownFallback = ExploreMoodCard(
+            id: "custom",
+            title: "Custom",
+            subtitle: "Fallback",
+            symbol: "sparkles",
+            artImageName: nil,
+            color: .cyan,
+            movieGenreId: 1,
+            tvGenreId: 1
+        )
+        let source = try sourceContents(of: "VPStudio/Views/Windows/Search/ExploreGenreGrid.swift")
+
+        #expect(knownIDFallback.artImageName == nil)
+        #expect(ExploreGenreTilePolicy.imageName(for: knownIDFallback) == "genre-art-action")
+        #expect(ExploreGenreTilePolicy.imageName(for: unknownFallback) == ExploreGenreTilePolicy.defaultFallbackImageName)
+        #expect(!ExploreGenreTilePolicy.imageName(for: knownIDFallback).hasPrefix("genre-ref-"))
+        #expect(!ExploreGenreTilePolicy.imageName(for: unknownFallback).hasPrefix("genre-ref-"))
+        #expect(!source.contains("genre-ref-"))
     }
 
     @Test

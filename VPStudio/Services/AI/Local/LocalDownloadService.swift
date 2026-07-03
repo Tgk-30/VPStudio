@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Hub
 import os
 
@@ -6,12 +7,15 @@ import os
 actor LocalDownloadService {
     typealias SnapshotDownloader = @Sendable (
         _ repo: String,
+        _ revision: String,
         _ progressHandler: @escaping @Sendable (Progress) -> Void
     ) async throws -> URL
+    typealias RevisionResolver = @Sendable (_ repo: String, _ revision: String) async throws -> String
     typealias DiskSpaceProvider = @Sendable (URL) -> Int64?
 
     private let catalogStore: LocalModelCatalogStore
     private let snapshotDownloader: SnapshotDownloader
+    private let revisionResolver: RevisionResolver
     private let diskSpaceProvider: DiskSpaceProvider?
     private let fileManager: FileManager
     private let appSupportDirectory: URL?
@@ -31,6 +35,7 @@ actor LocalDownloadService {
     ) {
         self.catalogStore = catalogStore
         self.snapshotDownloader = Self.defaultSnapshotDownloader
+        self.revisionResolver = Self.defaultRevisionResolver
         self.diskSpaceProvider = diskSpaceProvider
         self.fileManager = fileManager
         self.appSupportDirectory = appSupportDirectory
@@ -40,6 +45,7 @@ actor LocalDownloadService {
     init(
         catalogStore: LocalModelCatalogStore,
         snapshotDownloader: @escaping SnapshotDownloader,
+        revisionResolver: @escaping RevisionResolver = LocalDownloadService.defaultRevisionResolver,
         fileManager: FileManager = .default,
         appSupportDirectory: URL? = nil,
         cachesDirectory: URL? = nil,
@@ -47,6 +53,7 @@ actor LocalDownloadService {
     ) {
         self.catalogStore = catalogStore
         self.snapshotDownloader = snapshotDownloader
+        self.revisionResolver = revisionResolver
         self.diskSpaceProvider = diskSpaceProvider
         self.fileManager = fileManager
         self.appSupportDirectory = appSupportDirectory
@@ -99,8 +106,31 @@ actor LocalDownloadService {
             return
         }
 
+        let repo = model.huggingFaceRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !repo.isEmpty else {
+            logger.error("Refusing to download local model \(id): Hugging Face repo is blank")
+            try? await catalogStore.updateStatus(id: id, to: .failed)
+            return
+        }
+        guard Self.permitsRemoteSnapshotDownload(model) else {
+            logger.error("Refusing to download local model \(id): mutable revision requires a catalog checksum")
+            try? await catalogStore.updateStatus(id: id, to: .failed)
+            return
+        }
+
+        let revision: String
+        do {
+            revision = try await resolveImmutableRevision(for: model, repo: repo)
+        } catch {
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            logger.error("Refusing to download local model \(id): \(reason)")
+            try? await catalogStore.updateStatus(id: id, to: .failed)
+            return
+        }
+
         // Preflight: check disk space
         let requiredBytes = Int64(model.diskSizeMB) * 1_048_576
+        let maximumSnapshotBytes = Self.maximumSnapshotBytes(forDiskSizeMB: model.diskSizeMB)
         if let available = diskSpaceAvailable(), available < requiredBytes {
             logger.error("Insufficient disk space: need \(model.diskSizeMB)MB, have \(available / 1_048_576)MB")
             try? await catalogStore.updateStatus(id: id, to: .failed)
@@ -113,9 +143,9 @@ actor LocalDownloadService {
         try? await catalogStore.updateStatus(id: id, to: .downloading)
         await postDidChange() // Notify UI immediately so status shows "downloading"
 
-        let repo = model.huggingFaceRepo
         let catalogStore = self.catalogStore
         let throttle = ProgressNotifyThrottle()
+        let expectedChecksum = model.checksumSHA256
 
         let task = Task {
             do {
@@ -124,6 +154,7 @@ actor LocalDownloadService {
                 // Download model snapshot from HuggingFace Hub
                 let localDir = try await self.snapshotDownloader(
                     repo,
+                    revision,
                     { progress in
                         Task {
                             // Drop writes from a download that was cancelled or superseded
@@ -145,6 +176,16 @@ actor LocalDownloadService {
                     }
                 )
 
+                try LocalModelSnapshotIntegrity.verifySnapshotSize(
+                    at: localDir,
+                    maximumBytes: maximumSnapshotBytes,
+                    fileManager: self.fileManager
+                )
+                try LocalModelSnapshotIntegrity.verifySnapshot(
+                    at: localDir,
+                    expectedSHA256: expectedChecksum,
+                    fileManager: self.fileManager
+                )
                 try? await catalogStore.updateStatus(id: id, to: .downloaded, localPath: localDir.path)
                 self.clearActiveTaskIfCurrent(token: taskToken, modelID: id)
                 await self.postDidChange()
@@ -247,6 +288,38 @@ actor LocalDownloadService {
         }
     }
 
+    private func resolveImmutableRevision(for model: LocalModelDescriptor, repo: String) async throws -> String {
+        if let immutableRevision = LocalModelRevisionPolicy.normalizedImmutableRevision(model.revision) {
+            return immutableRevision
+        }
+
+        let requestedRevision = model.revision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestedRevision.isEmpty else {
+            throw LocalModelDownloadPreflightError.blankRevision
+        }
+
+        let resolvedRevision = try await revisionResolver(repo, requestedRevision)
+        guard let immutableRevision = LocalModelRevisionPolicy.normalizedImmutableRevision(resolvedRevision) else {
+            throw LocalModelDownloadPreflightError.mutableRevision(requestedRevision)
+        }
+
+        try? await catalogStore.updateRevision(id: model.id, to: immutableRevision)
+        return immutableRevision
+    }
+
+    private static func permitsRemoteSnapshotDownload(_ model: LocalModelDescriptor) -> Bool {
+        if LocalModelRevisionPolicy.normalizedImmutableRevision(model.revision) != nil {
+            return true
+        }
+        return model.checksumSHA256?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private static func maximumSnapshotBytes(forDiskSizeMB diskSizeMB: Int) -> Int64 {
+        let expectedBytes = Int64(max(1, diskSizeMB)) * 1_048_576
+        let tolerance = max(Int64(64 * 1_048_576), expectedBytes / 5)
+        return expectedBytes + tolerance
+    }
+
     private func clearActiveTaskIfCurrent(token: UUID, modelID: String) {
         guard activeTaskToken == token, activeModelID == modelID else { return }
         activeTask = nil
@@ -256,14 +329,41 @@ actor LocalDownloadService {
 
     private static func defaultSnapshotDownloader(
         repo: String,
+        revision: String,
         progressHandler: @escaping @Sendable (Progress) -> Void
     ) async throws -> URL {
         let hubRepo = Hub.Repo(id: repo)
         return try await HubApi.shared.snapshot(
             from: hubRepo,
+            revision: revision,
             matching: ["*.mlmodelc/*", "*.mlpackage/*", "*.json", "*.jinja", "tokenizer*", "*.safetensors"],
             progressHandler: progressHandler
         )
+    }
+
+    private static func defaultRevisionResolver(repo: String, revision: String) async throws -> String {
+        guard let url = HuggingFaceRevisionAPI.modelRevisionURL(repo: repo, revision: revision) else {
+            throw LocalModelDownloadPreflightError.invalidRevisionURL
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await BoundedHTTPResponseLoader.data(
+                from: url,
+                session: .shared,
+                maximumBytes: HTTPResponseBudget.modelRevisionMetadata
+            )
+        } catch is BoundedHTTPResponseError {
+            throw LocalModelDownloadPreflightError.revisionResolutionFailed
+        }
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw LocalModelDownloadPreflightError.revisionResolutionFailed
+        }
+
+        let payload = try JSONDecoder().decode(HuggingFaceRevisionAPI.Response.self, from: data)
+        return payload.sha
     }
 
 #if DEBUG
@@ -275,6 +375,167 @@ actor LocalDownloadService {
         clearActiveTaskIfCurrent(token: token, modelID: modelID)
     }
 #endif
+}
+
+// MARK: - Revision and Integrity Guards
+
+enum LocalModelRevisionPolicy {
+    private static let fullGitSHARegex = SensitiveURLQueryPolicy.regularExpression(pattern: #"^[0-9a-fA-F]{40}$"#)
+
+    static func normalizedImmutableRevision(_ revision: String) -> String? {
+        let trimmed = revision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let fullGitSHARegex else { return nil }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard fullGitSHARegex.firstMatch(in: trimmed, range: range) != nil else { return nil }
+        return trimmed.lowercased()
+    }
+}
+
+enum LocalModelDownloadPreflightError: LocalizedError {
+    case blankRevision
+    case invalidRevisionURL
+    case revisionResolutionFailed
+    case mutableRevision(String)
+    case snapshotTooLarge(limitBytes: Int64, actualBytes: Int64)
+    case checksumMismatch(expected: String, actual: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .blankRevision:
+            return "local model revision is blank"
+        case .invalidRevisionURL:
+            return "local model revision could not be encoded for Hugging Face"
+        case .revisionResolutionFailed:
+            return "Hugging Face did not return an immutable commit revision"
+        case .mutableRevision(let revision):
+            return "revision '\(revision)' did not resolve to an immutable commit"
+        case .snapshotTooLarge(let limitBytes, let actualBytes):
+            return "snapshot exceeded local size budget; limit \(limitBytes) bytes, got \(actualBytes) bytes"
+        case .checksumMismatch(let expected, let actual):
+            return "snapshot checksum mismatch; expected \(expected), got \(actual)"
+        }
+    }
+}
+
+private enum HuggingFaceRevisionAPI {
+    struct Response: Decodable {
+        let sha: String
+    }
+
+    static func modelRevisionURL(repo: String, revision: String) -> URL? {
+        let repoPath = repo
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .compactMap { encodePathComponent(String($0)) }
+            .joined(separator: "/")
+        guard !repoPath.isEmpty,
+              let encodedRevision = encodePathComponent(revision.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return URL(string: "https://huggingface.co/api/models/\(repoPath)/revision/\(encodedRevision)")
+    }
+
+    private static func encodePathComponent(_ component: String) -> String? {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return component.addingPercentEncoding(withAllowedCharacters: allowed)
+    }
+}
+
+enum LocalModelSnapshotIntegrity {
+    static func verifySnapshotSize(
+        at directory: URL,
+        maximumBytes: Int64,
+        fileManager: FileManager = .default
+    ) throws {
+        let actual = try snapshotSizeBytes(at: directory, fileManager: fileManager)
+        guard actual <= maximumBytes else {
+            throw LocalModelDownloadPreflightError.snapshotTooLarge(
+                limitBytes: maximumBytes,
+                actualBytes: actual
+            )
+        }
+    }
+
+    static func verifySnapshot(
+        at directory: URL,
+        expectedSHA256: String?,
+        fileManager: FileManager = .default
+    ) throws {
+        guard let expectedSHA256,
+              !expectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+
+        let actual = try snapshotDigest(at: directory, fileManager: fileManager)
+        guard actual.caseInsensitiveCompare(expectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame else {
+            throw LocalModelDownloadPreflightError.checksumMismatch(expected: expectedSHA256, actual: actual)
+        }
+    }
+
+    static func snapshotSizeBytes(at directory: URL, fileManager: FileManager = .default) throws -> Int64 {
+        let resourceKeys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .totalFileAllocatedSizeKey]
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: resourceKeys,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+        for item in enumerator {
+            guard let url = item as? URL else { continue }
+            let values = try url.resourceValues(forKeys: Set(resourceKeys))
+            guard values.isRegularFile == true else { continue }
+            let size = values.totalFileAllocatedSize ?? values.fileSize ?? 0
+            let safeSize = Int64(max(0, size))
+            if total > Int64.max - safeSize {
+                throw LocalModelDownloadPreflightError.snapshotTooLarge(
+                    limitBytes: Int64.max,
+                    actualBytes: Int64.max
+                )
+            }
+            total += safeSize
+        }
+        return total
+    }
+
+    static func snapshotDigest(at directory: URL, fileManager: FileManager = .default) throws -> String {
+        let resourceKeys: [URLResourceKey] = [.isRegularFileKey]
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: resourceKeys,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return ""
+        }
+
+        var files: [URL] = []
+        for item in enumerator {
+            guard let url = item as? URL else { continue }
+            let values = try url.resourceValues(forKeys: Set(resourceKeys))
+            if values.isRegularFile == true {
+                files.append(url)
+            }
+        }
+        files.sort { $0.path < $1.path }
+
+        var hasher = SHA256()
+        for fileURL in files {
+            let relativePath = fileURL.path.replacingOccurrences(of: directory.path + "/", with: "")
+            hasher.update(data: Data(relativePath.utf8))
+            hasher.update(data: Data([0]))
+
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            try? handle.close()
+            hasher.update(data: Data([0]))
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 // MARK: - Thread-safe Progress Throttle

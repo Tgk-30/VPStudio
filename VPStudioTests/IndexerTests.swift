@@ -960,6 +960,47 @@ struct IndexerRequestLimiterTests {
         #expect(state.count == 1)
     }
 
+    @Test func rejectsFinalPrivateNetworkDestinationFromPublicIndexer() async throws {
+        let session = URLProtocolHarness.makeSession { _ in
+            let finalURL = try #require(URL(string: "http://169.254.169.254/latest/meta-data"))
+            let response = HTTPURLResponse(url: finalURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"ok":true}"#.utf8))
+        }
+
+        let limiter = IndexerRequestLimiter(minimumRequestInterval: 0.001, maximumBackoffInterval: 0.001, maximumAttempts: 1)
+        let request = URLRequest(url: URL(string: "https://indexer.example/api")!)
+
+        do {
+            _ = try await limiter.data(for: request, session: session)
+            Issue.record("Expected private redirect destination to be blocked")
+        } catch IndexerRequestError.blockedRedirect(let url) {
+            #expect(url?.host == "169.254.169.254")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func rejectsCrossHostFinalDestinationWhenRequestCarriesAPIKey() async throws {
+        let session = URLProtocolHarness.makeSession { _ in
+            let finalURL = try #require(URL(string: "https://cdn.example.org/api"))
+            let response = HTTPURLResponse(url: finalURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"ok":true}"#.utf8))
+        }
+
+        let limiter = IndexerRequestLimiter(minimumRequestInterval: 0.001, maximumBackoffInterval: 0.001, maximumAttempts: 1)
+        var request = URLRequest(url: URL(string: "https://indexer.example/api")!)
+        request.setValue("secret", forHTTPHeaderField: "X-Api-Key")
+
+        do {
+            _ = try await limiter.data(for: request, session: session)
+            Issue.record("Expected credentialed cross-host redirect to be blocked")
+        } catch IndexerRequestError.blockedRedirect(let url) {
+            #expect(url?.host == "cdn.example.org")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func propagatesCancellationError() async {
         let session = URLProtocolHarness.makeSession { _ in
             throw CancellationError()

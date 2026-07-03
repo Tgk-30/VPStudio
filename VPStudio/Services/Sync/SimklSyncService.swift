@@ -8,6 +8,11 @@ actor SimklSyncService {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 90
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
         return URLSession(configuration: configuration)
     }()
 
@@ -117,9 +122,9 @@ actor SimklSyncService {
     }
 
     func addToList(imdbId: String, type: MediaType, list: String = "plantowatch") async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
+        let ids = try Self.simklMediaIds(from: imdbId)
         let key = type == .movie ? "movies" : "shows"
-        let item = SimklAddItem(ids: SimklAddIds(imdb: normalizedIMDbID), to: list, watchedAt: nil)
+        let item = SimklAddItem(ids: ids, to: list, watchedAt: nil)
 
         var dict: [String: [SimklAddItem]] = [:]
         dict[key] = [item]
@@ -132,11 +137,11 @@ actor SimklSyncService {
         type: MediaType,
         watchedAt: Date = Date()
     ) async throws {
-        let normalizedIMDbID = try Self.validIMDbID(imdbId)
+        let ids = try Self.simklMediaIds(from: imdbId)
         let key = type == .movie ? "movies" : "shows"
         let formatter = ISO8601DateFormatter()
         let item = SimklAddItem(
-            ids: SimklAddIds(imdb: normalizedIMDbID),
+            ids: ids,
             to: nil,
             watchedAt: formatter.string(from: watchedAt)
         )
@@ -146,11 +151,14 @@ actor SimklSyncService {
         let _: SimklActionResponse = try await postData(path: "/sync/history", data: wrappedData)
     }
 
-    private static func validIMDbID(_ imdbId: String) throws -> String {
-        guard let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) else {
-            throw SimklError.invalidIMDbID
+    private static func simklMediaIds(from mediaId: String) throws -> SimklAddIds {
+        if let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: mediaId) {
+            return SimklAddIds(imdb: normalizedIMDbID, tmdb: nil)
         }
-        return normalizedIMDbID
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+            return SimklAddIds(imdb: nil, tmdb: String(tmdbID))
+        }
+        throw SimklError.invalidIMDbID
     }
 
     // MARK: - Networking
@@ -186,8 +194,13 @@ actor SimklSyncService {
         request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue(self.clientId, forHTTPHeaderField: "simkl-api-key")
         request.httpBody = encodedFormBody(parameters)
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw SimklError.httpError(0)
         }
@@ -221,8 +234,13 @@ actor SimklSyncService {
 
         var request = buildRequest()
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw SimklError.httpError(0)
         }
@@ -310,6 +328,13 @@ actor SimklSyncService {
         }
         baseComponents.percentEncodedQuery = pathComponents.percentEncodedQuery
         return baseComponents.url
+    }
+
+    private nonisolated static func prepareSensitiveRequest(_ request: inout URLRequest) {
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
     }
 
     private func beginAuthorizationSession() -> PendingSimklAuthorizationSession {
@@ -426,7 +451,8 @@ private extension Data {
 // MARK: - Request Models
 
 private struct SimklAddIds: Codable, Sendable {
-    let imdb: String
+    let imdb: String?
+    let tmdb: String?
 }
 
 private struct SimklAddItem: Codable, Sendable {
@@ -528,7 +554,7 @@ enum SimklError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid Simkl URL"
-        case .invalidIMDbID: return "Invalid IMDb ID"
+        case .invalidIMDbID: return "Invalid IMDb, OMDb, or TMDb ID"
         case .httpError(let code): return "Simkl API error: HTTP \(code)"
         case .unauthorized: return "Simkl authorization expired"
         case .notConnected: return "Not connected to Simkl"

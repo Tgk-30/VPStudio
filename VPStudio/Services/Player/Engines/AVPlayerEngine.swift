@@ -4,9 +4,14 @@ import CoreGraphics
 
 struct AVPlayerEngine: PlayerEngine {
     let kind: PlayerEngineKind = .avPlayer
+    private let resolveStream: @Sendable (StreamInfo) async throws -> StreamInfo
+
+    init(resolveStream: @escaping @Sendable (StreamInfo) async throws -> StreamInfo = PlaybackStreamURLResolver.resolve) {
+        self.resolveStream = resolveStream
+    }
 
     func canHandle(stream: StreamInfo) -> Bool {
-        URL(string: stream.streamURL.absoluteString) != nil
+        PlayerStreamURLPolicy.isLaunchable(stream)
     }
 
     @MainActor
@@ -15,7 +20,11 @@ struct AVPlayerEngine: PlayerEngine {
         // straight to AVPlayer; container/codec compatibility is handled by
         // engine selection (PlayerEngineSelector / DirectPlayPolicy), never by
         // rewriting the media.
-        guard URL(string: stream.streamURL.absoluteString) != nil else {
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
+            throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
+        }
+        let stream = try await resolveStream(stream)
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
             throw PlayerEngineError.invalidStreamURL(stream.streamURL.absoluteString)
         }
 
@@ -29,9 +38,11 @@ struct AVPlayerEngine: PlayerEngine {
         item.preferredForwardBufferDuration = preferredForwardBufferDuration(for: stream)
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         let player = AVPlayer(playerItem: item)
-        // Prefer faster first-frame start and lower memory pressure; fallback
-        // logic handles streams that still need compatibility decoding.
-        player.automaticallyWaitsToMinimizeStalling = false
+        // Ordinary streams start fastest with stall-minimization off. High-demand
+        // streams (4K/HDR/AV1/lossless/remux) stall far less — the main cause of
+        // "stuck rebuffering" on big streams — when AVPlayer is allowed to build a
+        // buffer before starting, so opt those into stall-minimization waiting.
+        player.automaticallyWaitsToMinimizeStalling = Self.isHighDemandStream(stream)
 
         return PreparedPlaybackSession(
             engineKind: kind,
@@ -43,10 +54,19 @@ struct AVPlayerEngine: PlayerEngine {
     }
 
     private func preferredForwardBufferDuration(for stream: StreamInfo) -> TimeInterval {
-        if stream.quality == .uhd4k || stream.hdr == .dolbyVision || stream.hdr == .hdr10Plus {
-            return 3.0
-        }
-        return 1.5
+        // A deeper forward buffer keeps demanding streams from stalling; ordinary
+        // streams keep a small buffer for fast startup and low memory use.
+        Self.isHighDemandStream(stream) ? 3.0 : 1.5
+    }
+
+    /// Streams whose codec/bitrate make them meaningfully more stall-prone than
+    /// standard 1080p H.264, warranting a deeper buffer and stall-minimization.
+    static func isHighDemandStream(_ stream: StreamInfo) -> Bool {
+        if stream.quality == .uhd4k { return true }
+        if stream.codec == .av1 { return true }
+        if stream.hdr == .dolbyVision || stream.hdr == .hdr10Plus { return true }
+        if stream.audio == .atmos || stream.audio == .trueHD || stream.audio == .dtsHDMA { return true }
+        return stream.fileName.lowercased().contains("remux")
     }
 
     static func assetOptions(for stream: StreamInfo) -> [String: Any]? {
@@ -184,7 +204,7 @@ struct AVPlayerEngine: PlayerEngine {
         let trimmedComment = comment?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if statusCode > 0, let trimmedComment, !trimmedComment.isEmpty {
-            return "HTTP \(statusCode): \(trimmedComment)"
+            return "HTTP \(statusCode): \(IndexerLogSanitizer.redactedMessage(trimmedComment))"
         }
 
         if statusCode > 0 {
@@ -192,11 +212,11 @@ struct AVPlayerEngine: PlayerEngine {
         }
 
         if let trimmedComment, !trimmedComment.isEmpty {
-            return trimmedComment
+            return IndexerLogSanitizer.redactedMessage(trimmedComment)
         }
 
         if let itemError = itemError {
-            return itemError.localizedDescription
+            return IndexerLogSanitizer.redactedErrorMessage(itemError)
         }
 
         return "Unknown AVPlayer item error"

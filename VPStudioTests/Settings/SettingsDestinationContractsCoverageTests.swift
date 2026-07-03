@@ -35,28 +35,70 @@ struct SettingsDestinationContractsCoverageTests {
         let source = try loadSource(at: "VPStudio/Views/Windows/Settings/Destinations/MetadataSettingsView.swift")
 
         #expect(source.contains("SecureField(\"OMDb API Key\", text: $omdbApiKey)"))
+        #expect(source.contains("SecureField(\"TMDb API Key or Read Token\", text: $tmdbApiKey)"))
+        #expect(source.contains("metadataPlanSelector("))
+        #expect(source.contains("planTitle: \"OMDb Plan\""))
+        #expect(source.contains("planTitle: \"TMDb Plan\""))
+        #expect(source.contains("selectedPlanTitle: omdbPlan == .paid ? \"Paid\" : \"Free\""))
+        #expect(source.contains("selectedPlanTitle: tmdbPlan == .paid ? \"Expanded\" : \"Standard\""))
+        #expect(source.contains("hasUnsavedPlanChange: MetadataSettingsPolicy.hasUnsavedPlanChange("))
+        #expect(source.contains("private func metadataPlanStateRow("))
+        #expect(source.contains("systemImage: isUnsaved ? \"circle.dashed\" : \"checkmark.circle\""))
+        #expect(source.contains("title: \"Save changes\""))
+        #expect(source.contains("static let selectedPlanFill = VPColor.info.opacity(0.24)"))
+        #expect(source.contains("static let selectedPlanStroke = VPColor.info.opacity(0.88)"))
+        #expect(source.contains("MetadataSettingsPolicy.selectedPlanFill"))
+        #expect(source.contains("MetadataSettingsPolicy.selectedPlanStroke"))
+        #expect(source.contains("VPColor.accent.opacity(0.28)") == false)
+        #expect(source.contains("VPColor.accent.opacity(0.95)") == false)
         #expect(source.contains("MetadataSettingsPolicy.normalizedAPIKey(omdbApiKey)"))
-        #expect(source.contains("MetadataSettingsPolicy.hasUnsavedAPIKeyChange(current: omdbApiKey, baseline: initialOMDbApiKey)"))
+        #expect(source.contains("MetadataSettingsPolicy.hasUnsavedConfigurationChange("))
+        #expect(source.contains("currentOMDb: omdbApiKey"))
+        #expect(source.contains("baselineOMDb: initialOMDbApiKey"))
+        #expect(source.contains("currentOMDbPlan: omdbPlan"))
+        #expect(source.contains("baselineOMDbPlan: initialOMDbPlan"))
+        #expect(source.contains("currentTMDb: tmdbApiKey"))
+        #expect(source.contains("baselineTMDb: initialTMDbApiKey"))
+        #expect(source.contains("currentTMDbPlan: tmdbPlan"))
+        #expect(source.contains("baselineTMDbPlan: initialTMDbPlan"))
+        #expect(source.contains("MetadataSettingsPolicy.shouldInvalidateSavedState("))
         #expect(source.contains("SettingsInputValidation.normalizedSecret(value)"))
         #expect(source.contains("SettingsInputValidation.hasUnsavedSecretChange(current: current, initial: baseline)"))
 
         expectNoPlaintextDisplays(of: ["omdbApiKey"], in: source)
+        expectNoPlaintextDisplays(of: ["tmdbApiKey"], in: source)
 
         // Saving should use SettingsManager so empty/whitespace clears the stored secret deterministically.
-        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.omdbApiKey, value: normalized)"))
+        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.omdbApiKey, value: configuration.omdbApiKey)"))
+        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.tmdbApiKey, value: configuration.tmdbApiKey)"))
+        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.omdbProviderPlan, value: configuration.omdbPlan.rawValue)"))
+        #expect(source.contains("appState.settingsManager.setString(key: SettingsKeys.tmdbProviderPlan, value: configuration.tmdbPlan.rawValue)"))
         #expect(source.contains("NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)"))
         #expect(source.contains("notice = MetadataSettingsPolicy.missingAPIKeyNotice"))
-        #expect(source.contains(".foregroundStyle(VPColor.success)"))
+        #expect(source.contains("MetadataSettingsPolicy.validationFailureDescription(for: firstFailure.error)"))
+        #expect(source.contains("failureDescription: firstFailure.error.localizedDescription") == false)
+        #expect(source.contains("metadataFooterActionButton("))
+        #expect(source.contains("static let footerActionMinWidth"))
+        #expect(source.contains("metadataStatusChip(title: \"Saved\", systemImage: \"checkmark.circle.fill\", tint: VPColor.success)"))
+        #expect(source.contains("metadataStatusChip(title: \"Unsaved\", systemImage: \"circle.dashed\", tint: VPColor.warning)"))
         #expect(source.contains(".foregroundStyle(.green)") == false)
+        #expect(source.contains("VPBackground()"))
+        #expect(source.contains(".scrollContentBackground(.hidden)"))
 
         // Provider/service creation should be lazy (only inside explicit test action).
-        let testFnRange = try requiredRange(of: "private func testOMDbAPIKey() async {", in: source)
-        let serviceUseRange = try requiredRange(
-            of: "let service = appState.createMetadataService(apiKey: apiKey)",
+        let testFnRange = try requiredRange(of: "private func testMetadataAPIKeys() async {", in: source)
+        let omdbUseRange = try requiredRange(
+            of: "OMDbService(apiKey: omdbApiKey, includesPaidArtwork: configuration.omdbPlan.usesPaidResources)",
             in: source,
             range: testFnRange.lowerBound..<source.endIndex
         )
-        #expect(testFnRange.lowerBound < serviceUseRange.lowerBound)
+        let tmdbUseRange = try requiredRange(
+            of: "TMDBService(apiKey: tmdbApiKey, plan: configuration.tmdbPlan)",
+            in: source,
+            range: testFnRange.lowerBound..<source.endIndex
+        )
+        #expect(testFnRange.lowerBound < omdbUseRange.lowerBound)
+        #expect(testFnRange.lowerBound < tmdbUseRange.lowerBound)
     }
 
     @Test

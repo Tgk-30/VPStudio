@@ -22,7 +22,11 @@ struct DetailFeedbackTests {
         }
     }
 
-    private func makePreview(id: String = "preview-\(UUID().uuidString)", title: String = "Rating Candidate") -> MediaPreview {
+    private func makePreview(
+        id: String = "preview-\(UUID().uuidString)",
+        title: String = "Rating Candidate",
+        tmdbId: Int? = nil
+    ) -> MediaPreview {
         MediaPreview(
             id: id,
             type: .movie,
@@ -30,7 +34,7 @@ struct DetailFeedbackTests {
             year: 2026,
             posterPath: nil,
             imdbRating: nil,
-            tmdbId: nil
+            tmdbId: tmdbId
         )
     }
 
@@ -82,7 +86,7 @@ struct DetailFeedbackTests {
         await viewModel.submitFeedback(value: 9)
 
         let latest = try await appState.database.fetchLatestTasteRating(mediaId: "tt1160419")
-        #expect(latest?.mediaId == "tt1160419")
+        #expect(latest?.mediaId == "movie-omdb-tt1160419")
         #expect(latest?.metadata["title"] == "Dune")
         #expect(viewModel.currentFeedbackSummary == "9/10")
     }
@@ -104,8 +108,40 @@ struct DetailFeedbackTests {
         await viewModel.submitFeedback(value: 9)
 
         let latest = try await appState.database.fetchLatestTasteRating(mediaId: "tt1160419")
-        #expect(latest?.mediaId == "tt1160419")
+        #expect(latest?.mediaId == "movie-omdb-tt1160419")
         #expect(try await appState.database.fetchLatestTasteRating(mediaId: "movie-imdb-tt1160419")?.id == latest?.id)
+    }
+
+    @MainActor
+    @Test func submitFeedbackUsesProviderAliasInsteadOfLocalFetchedItemID() async throws {
+        let (appState, tempDir) = try makeIsolatedAppState()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await appState.database.migrate()
+        try await appState.settingsManager.setString(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+
+        let preview = makePreview(
+            id: "local-library-dune",
+            title: "Dune",
+            tmdbId: 438_631
+        )
+        let viewModel = DetailViewModel(appState: appState)
+        viewModel.setPreviewContext(preview)
+        viewModel.mediaItem = MediaItem(
+            id: "local-library-dune",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438_631
+        )
+
+        await viewModel.submitFeedback(value: 9)
+
+        let latest = try await appState.database.fetchLatestTasteRating(mediaId: "movie-tmdb-438631")
+        #expect(latest?.mediaId == "movie-tmdb-438631")
+        #expect(latest?.feedbackValue == 9)
     }
 
     @MainActor

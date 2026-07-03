@@ -151,7 +151,11 @@ struct SettingsDestinationViewConstructionCoverageTests {
             initialRecentDestination: .metadata,
             disablesAutomaticTasks: true
         )
-        SwiftUIViewDiagnosticHost.render(normal.environment(AppState()), width: 900, height: 980)
+        SwiftUIViewDiagnosticHost.render(
+            NavigationStack { normal.environment(AppState()) },
+            width: 900,
+            height: 980
+        )
 
         let emptyState = SettingsView(
             initialQuery: "zzz-no-match",
@@ -162,6 +166,10 @@ struct SettingsDestinationViewConstructionCoverageTests {
             initialRecentDestination: .metadata,
             disablesAutomaticTasks: true
         )
-        SwiftUIViewDiagnosticHost.render(emptyState.environment(AppState()), width: 900, height: 980)
+        SwiftUIViewDiagnosticHost.render(
+            NavigationStack { emptyState.environment(AppState()) },
+            width: 900,
+            height: 980
+        )
     }
 }

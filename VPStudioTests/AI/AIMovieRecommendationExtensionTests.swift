@@ -19,7 +19,28 @@ struct AIMovieRecommendationExtensionTests {
 
         let mediaPreview = recommendation.toMediaPreview()
 
-        #expect(recommendation.id == "movie-imdb-tt1160419")
+        #expect(recommendation.id == "movie-omdb-tt1160419")
+        #expect(mediaPreview.id == "tt1160419")
+        #expect(mediaPreview.tmdbId == nil)
+    }
+
+    @Test("toMediaPreview with OMDb-prefixed imdbId")
+    func toMediaPreviewWithOMDbPrefixedImdbId() {
+        let recommendation = AIMovieRecommendation(
+            title: "Dune",
+            year: 2021,
+            type: .movie,
+            reason: "Great visual effects",
+            imdbId: "movie-omdb-TT1160419",
+            tmdbId: 438631,
+            score: 0.95
+        )
+
+        let mediaPreview = recommendation.toMediaPreview()
+
+        #expect(recommendation.canonicalIMDbID == "tt1160419")
+        #expect(recommendation.canonicalOMDbMediaID == "movie-omdb-tt1160419")
+        #expect(recommendation.id == "movie-omdb-tt1160419")
         #expect(mediaPreview.id == "tt1160419")
         #expect(mediaPreview.tmdbId == nil)
     }

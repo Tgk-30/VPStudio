@@ -4,14 +4,45 @@ import Testing
 @Suite("SetupWizardPersistencePolicy")
 struct SetupWizardPersistencePolicyTests {
     @Test
-    func metadataSavePlanRequiresTrimmedOMDbKey() {
+    func metadataSavePlanRequiresOneTrimmedMetadataKey() {
         let decision = SetupWizardPersistencePolicy.metadataSavePlan(
             omdbApiKey: " \n ",
+            tmdbApiKey: " \t ",
             selectedAIProvider: .openAI,
             aiApiKey: " key "
         )
 
-        #expect(decision == .invalid(message: SetupWizardValidationPolicy.requiredOMDbMessage))
+        #expect(decision == .invalid(message: SetupWizardValidationPolicy.requiredMetadataKeyMessage))
+    }
+
+    @Test
+    func metadataSavePlanRejectsTMDbOnlyConfiguration() {
+        let decision = SetupWizardPersistencePolicy.metadataSavePlan(
+            omdbApiKey: " \n ",
+            tmdbApiKey: " tmdb-key ",
+            selectedAIProvider: .none,
+            aiApiKey: ""
+        )
+
+        #expect(decision == .invalid(message: SetupWizardValidationPolicy.requiredMetadataKeyMessage))
+    }
+
+    @Test
+    func metadataSavePlanPersistsSelectedProviderPlans() throws {
+        let decision = SetupWizardPersistencePolicy.metadataSavePlan(
+            omdbApiKey: " omdb-key ",
+            tmdbApiKey: " tmdb-key ",
+            omdbPlan: .paid,
+            tmdbPlan: .paid,
+            selectedAIProvider: .none,
+            aiApiKey: ""
+        )
+        let plan = try #require(savePlan(from: decision))
+
+        #expect(plan.omdbApiKey == "omdb-key")
+        #expect(plan.tmdbApiKey == "tmdb-key")
+        #expect(plan.omdbPlanRawValue == MetadataProviderPlan.paid.rawValue)
+        #expect(plan.tmdbPlanRawValue == MetadataProviderPlan.paid.rawValue)
     }
 
     @Test
@@ -24,6 +55,9 @@ struct SetupWizardPersistencePolicyTests {
         let plan = try #require(savePlan(from: decision))
 
         #expect(plan.omdbApiKey == "omdb-key")
+        #expect(plan.tmdbApiKey == "")
+        #expect(plan.omdbPlanRawValue == MetadataProviderPlan.free.rawValue)
+        #expect(plan.tmdbPlanRawValue == MetadataProviderPlan.free.rawValue)
         #expect(plan.defaultAIProviderRawValue == nil)
         #expect(plan.aiKeyWrite == nil)
     }

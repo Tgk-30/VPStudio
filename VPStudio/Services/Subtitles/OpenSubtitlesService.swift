@@ -108,7 +108,7 @@ actor OpenSubtitlesService {
         var params: [String: String] = [
             "languages": languages.joined(separator: ","),
         ]
-        if let imdbId = IMDbIdentifierPolicy.firstID(in: imdbId) {
+        if let imdbId = IMDbIdentifierPolicy.appScopedID(in: imdbId) {
             params["imdb_id"] = String(imdbId.dropFirst(2))
         }
         if let tmdbId { params["tmdb_id"] = String(tmdbId) }
@@ -135,9 +135,7 @@ actor OpenSubtitlesService {
         let body: [String: Any] = ["file_id": fileId]
         let response: DownloadResponse = try await post(path: "/download", body: body)
         guard let url = URL(string: response.link),
-              let scheme = url.scheme?.lowercased(),
-              (scheme == "http" || scheme == "https"),
-              url.host != nil else {
+              Self.permitsSubtitleDownloadURL(url) else {
             throw SubtitleError.invalidDownloadURL
         }
         return url
@@ -146,7 +144,17 @@ actor OpenSubtitlesService {
     func downloadSubtitle(fileId: Int) async throws -> String {
         let url = try await getDownloadURL(fileId: fileId)
         let request = URLRequest(url: url)
-        let (data, _) = try await sendRequest(request)
+        let (data, response) = try await sendRequest(
+            request,
+            maximumBytes: SubtitleParser.maximumInputBytes
+        )
+        guard let finalURL = response.url,
+              Self.permitsSubtitleDownloadURL(finalURL) else {
+            throw SubtitleError.invalidDownloadURL
+        }
+        guard data.count <= SubtitleParser.maximumInputBytes else {
+            throw SubtitleError.subtitleDownloadTooLarge
+        }
         guard let content = decodeSubtitleContent(from: data) else {
             throw SubtitleError.decodingFailed
         }
@@ -236,7 +244,10 @@ actor OpenSubtitlesService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, _) = try await sendRequest(request)
+        let (data, _) = try await sendRequest(
+            request,
+            maximumBytes: HTTPResponseBudget.subtitleMetadata
+        )
         return try decodeResponse(data, as: T.self)
     }
 
@@ -259,19 +270,38 @@ actor OpenSubtitlesService {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await sendRequest(request)
+        let (data, _) = try await sendRequest(
+            request,
+            maximumBytes: HTTPResponseBudget.subtitleMetadata
+        )
         return try decodeResponse(data, as: T.self)
     }
 
-    private func sendRequest(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    private func sendRequest(
+        _ request: URLRequest,
+        maximumBytes: Int
+    ) async throws -> (Data, HTTPURLResponse) {
         var attempt = 0
         while true {
             attempt += 1
             try await waitForRequestSlot()
 
             let (data, response): (Data, URLResponse)
+            let redirectGuard = OpenSubtitlesRedirectGuard(originalRequest: request)
             do {
-                (data, response) = try await session.data(for: request)
+                (data, response) = try await BoundedHTTPResponseLoader.data(
+                    for: request,
+                    session: session,
+                    delegate: redirectGuard,
+                    maximumBytes: maximumBytes
+                )
+            } catch is BoundedHTTPResponseError {
+                if maximumBytes == SubtitleParser.maximumInputBytes {
+                    throw SubtitleError.subtitleDownloadTooLarge
+                }
+                throw SubtitleError.httpError(0)
+            } catch let urlError as URLError where urlError.code == .cancelled && redirectGuard.blockedRedirectURL != nil {
+                throw SubtitleError.invalidDownloadURL
             } catch let urlError as URLError {
                 // A transient transport failure (timeout/offline/connection-lost) is NOT a
                 // config error — don't mislabel it as "Invalid subtitle API URL". Propagate
@@ -282,6 +312,9 @@ actor OpenSubtitlesService {
             }
             guard let http = response as? HTTPURLResponse else {
                 throw SubtitleError.httpError(0)
+            }
+            guard OpenSubtitlesRedirectPolicy.permitsFinalResponse(for: request, responseURL: http.url) else {
+                throw SubtitleError.invalidDownloadURL
             }
 
             switch http.statusCode {
@@ -391,6 +424,7 @@ actor OpenSubtitlesService {
 
     func isLikelyTextSubtitleData(_ data: Data) -> Bool {
         guard !data.isEmpty else { return true }
+        guard data.count <= SubtitleParser.maximumInputBytes else { return false }
         var controlCount = 0
         for byte in data {
             if byte == 0 { return false }
@@ -403,6 +437,7 @@ actor OpenSubtitlesService {
 
     func isLikelySubtitleText(_ content: String) -> Bool {
         guard !content.isEmpty else { return true }
+        guard content.utf8.count <= SubtitleParser.maximumInputBytes else { return false }
         var controlCount = 0
         var totalCount = 0
         for scalar in content.unicodeScalars {
@@ -430,6 +465,101 @@ actor OpenSubtitlesService {
             .appendingPathExtension(extensionForFile)
         try content.trimmingLeadingBOM().write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private nonisolated static func permitsSubtitleDownloadURL(_ url: URL) -> Bool {
+        OpenSubtitlesRedirectPolicy.permitsPublicHTTPURL(url)
+    }
+}
+
+private final class OpenSubtitlesRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let originalRequest: URLRequest
+    private let lock = NSLock()
+    private var blockedURL: URL?
+
+    init(originalRequest: URLRequest) {
+        self.originalRequest = originalRequest
+    }
+
+    var blockedRedirectURL: URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return blockedURL
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard OpenSubtitlesRedirectPolicy.allowsRedirect(from: originalRequest, to: request) else {
+            lock.lock()
+            blockedURL = request.url
+            lock.unlock()
+            completionHandler(nil)
+            task.cancel()
+            return
+        }
+
+        completionHandler(request)
+    }
+}
+
+enum OpenSubtitlesRedirectPolicy {
+    static func allowsRedirect(from originalRequest: URLRequest, to redirectRequest: URLRequest) -> Bool {
+        permitsFinalResponse(for: originalRequest, responseURL: redirectRequest.url)
+    }
+
+    static func permitsFinalResponse(for originalRequest: URLRequest, responseURL: URL?) -> Bool {
+        guard let responseURL,
+              permitsPublicHTTPURL(responseURL) else {
+            return false
+        }
+
+        guard containsSensitiveCredential(originalRequest) else {
+            return true
+        }
+
+        guard let originalHost = normalizedHost(originalRequest.url),
+              let responseHost = normalizedHost(responseURL) else {
+            return false
+        }
+        return originalHost == responseHost
+    }
+
+    static func permitsPublicHTTPURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = url.host,
+              !host.isEmpty,
+              !PrivateNetworkHostPolicy.isPrivateOrReserved(host: host),
+              !PublicNetworkHostResolver.resolvesToPrivateOrReservedAddress(host: host) else {
+            return false
+        }
+        return true
+    }
+
+    private static func containsSensitiveCredential(_ request: URLRequest) -> Bool {
+        if request.value(forHTTPHeaderField: "Api-Key")?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+        if request.value(forHTTPHeaderField: "Authorization")?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+        return false
+    }
+
+    private static func normalizedHost(_ url: URL?) -> String? {
+        guard let url,
+              let host = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host else {
+            return nil
+        }
+        return host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
     }
 }
 
@@ -500,6 +630,7 @@ enum SubtitleError: LocalizedError, Equatable {
     case unauthorized
     case decodingFailed
     case invalidDownloadURL
+    case subtitleDownloadTooLarge
     case noSubtitlesFound
 
     var errorDescription: String? {
@@ -509,6 +640,7 @@ enum SubtitleError: LocalizedError, Equatable {
         case .unauthorized: return "OpenSubtitles authorization expired"
         case .decodingFailed: return "Failed to decode subtitle content"
         case .invalidDownloadURL: return "Invalid subtitle download URL"
+        case .subtitleDownloadTooLarge: return "Subtitle download is too large"
         case .noSubtitlesFound: return "No subtitles found"
         }
     }

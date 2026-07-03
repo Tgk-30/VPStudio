@@ -354,6 +354,24 @@ struct DebridMagnetInputTestsDebridserviceprotocolconformancetests {
         #expect(try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied) == supplied)
     }
 
+    @Test func preferredMagnetURIRejectsNonMagnetURLEvenWhenItContainsTheHash() throws {
+        // A compromised indexer must not be able to smuggle an arbitrary http(s)
+        // URL into a debrid provider's add-magnet endpoint just because the hash
+        // appears in the path. Such a value carries no tracker list, so it is
+        // always rebuilt as a safe bare magnet from the validated hash.
+        let normalized = "0123456789abcdef0123456789abcdef01234567"
+        let httpURL = "https://attacker.example/t/\(normalized)?apikey=secret"
+        #expect(
+            try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: httpURL)
+            == "magnet:?xt=urn:btih:\(normalized)"
+        )
+        // A raw hash string (no magnet: scheme) is likewise normalized to a bare magnet.
+        #expect(
+            try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: normalized)
+            == "magnet:?xt=urn:btih:\(normalized)"
+        )
+    }
+
     @Test func preferredMagnetURIFallsBackToBareURIWhenUppercaseSuppliedHashMismatches() throws {
         let normalized = "0123456789abcdef0123456789abcdef01234567"
         let other = String(repeating: "1", count: 40)
@@ -392,11 +410,14 @@ struct DebridMagnetInputTestsDebridserviceprotocolconformancetests {
         )
     }
 
-    @Test func preferredMagnetURIAcceptsNonMagnetURLWhenItContainsMatchingHash() throws {
+    @Test func preferredMagnetURIRejectsNonMagnetHTTPURLEvenWhenItContainsMatchingHash() throws {
+        // Security: a non-magnet http(s) URL must never be forwarded to a debrid
+        // provider's add-magnet endpoint (server-side SSRF). It carries no tracker
+        // list, so it is always rebuilt as a safe bare magnet from the hash.
         let normalized = "0123456789abcdef0123456789abcdef01234567"
         let supplied = "https://cdn.example.com/\(normalized)/file.mkv"
         let result = try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied)
-        #expect(result == supplied)
+        #expect(result == "magnet:?xt=urn:btih:\(normalized)")
     }
 
     @Test func preferredMagnetURIReturnsSuppliedURIWhenAnyXTTagMatchesHash() throws {
@@ -425,12 +446,14 @@ struct DebridMagnetInputTestsDebridserviceprotocolconformancetests {
         )
     }
 
-    @Test func preferredMagnetURIReturnsCandidateWhenItContainsMatchingHashWithoutURLEncoding() throws {
+    @Test func preferredMagnetURIRejectsNonMagnetSchemeURLEvenWhenItContainsMatchingHash() throws {
+        // Security: any non-`magnet:` scheme (even an exotic one) that merely
+        // contains the hash is rebuilt as a bare magnet rather than forwarded.
         let normalized = "0123456789abcdef0123456789abcdef01234567"
         let supplied = "not://a-real.url/contains/\(normalized)/segment"
         #expect(
             try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied)
-            == supplied
+            == "magnet:?xt=urn:btih:\(normalized)"
         )
     }
 
@@ -881,12 +904,14 @@ struct StreamInfoTestsDebridserviceprotocolconformancetests {
     @Test func streamInfoNormalizesRequestHeadersAndDropsInvalidEntries() {
         let normalized = StreamInfo.normalizedRequestHeaders([
             " Host ": " example.com ",
+            " Referer ": " https://app.example.com/ ",
             "X-Empty": "   ",
             "Bad\nHeader": "value",
             "BadValue": "line\r\nbreak",
             "User-Agent": " VPStudio/1.0 "
         ])
-        #expect(normalized?["Host"] == "example.com")
+        #expect(normalized?["Host"] == nil)
+        #expect(normalized?["Referer"] == "https://app.example.com/")
         #expect(normalized?["User-Agent"] == "VPStudio/1.0")
         #expect(normalized?["X-Empty"] == nil)
         #expect(normalized?["Bad\nHeader"] == nil)

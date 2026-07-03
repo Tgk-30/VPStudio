@@ -7,26 +7,25 @@ struct SetupWizardViewTests {
 
     // MARK: - SetupWizardValidationPolicy Tests
 
-    @Suite("SetupWizardValidationPolicy - OMDb Validation")
-    struct OMDbValidationTests {
+    @Suite("SetupWizardValidationPolicy - Metadata Provider Validation")
+    struct MetadataProviderValidationTests {
         @Test
         func canContinueFromMetadataStepRequiresNonEmptyKey() {
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "") == false)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "   ") == false)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\n\t") == false)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\r\n") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "", tmdbApiKey: "") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "   ", tmdbApiKey: "") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\n\t", tmdbApiKey: " \r\n") == false)
         }
 
         @Test
-        func canContinueFromMetadataStepAcceptsValidKey() {
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "abc123") == true)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "  abc123  ") == true)
-            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\tabc123\n") == true)
+        func canContinueFromMetadataStepRequiresOMDbKey() {
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "abc123", tmdbApiKey: "") == true)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "", tmdbApiKey: "tmdb123") == false)
+            #expect(SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: "\tabc123\n", tmdbApiKey: " tmdb123 ") == true)
         }
 
         @Test
-        func requiredOMDbMessageIsDescriptive() {
-            #expect(SetupWizardValidationPolicy.requiredOMDbMessage == "OMDb API key is required to continue.")
+        func requiredMetadataKeyMessageIsDescriptive() {
+            #expect(SetupWizardValidationPolicy.requiredMetadataKeyMessage == "Enter an OMDb API key to continue.")
         }
     }
 

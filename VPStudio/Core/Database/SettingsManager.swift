@@ -75,8 +75,16 @@ actor SettingsManager {
                 throw error
             }
         } else {
-            try await secretStore.deleteSecret(for: secretKey)
+            let existingStoredValue = try await database.getSetting(key: key)
             try await database.setSetting(key: key, value: nil)
+            do {
+                try await secretStore.deleteSecret(for: secretKey)
+            } catch {
+                if let existingStoredValue {
+                    try? await database.setSetting(key: key, value: existingStoredValue)
+                }
+                throw error
+            }
         }
     }
 
@@ -96,11 +104,28 @@ actor SettingsManager {
     }
 
     func getTMDBApiKey() async throws -> String? {
-        try await getValue(forKey: SettingsKeys.tmdbApiKey)
+        normalizedSecretValue(try await getValue(forKey: SettingsKeys.tmdbApiKey))
     }
 
     func getMetadataApiKey() async throws -> String? {
         normalizedSecretValue(try await getValue(forKey: SettingsKeys.omdbApiKey))
+    }
+
+    func getMetadataProviderConfiguration() async throws -> MetadataProviderConfiguration {
+        let omdbApiKey = normalizedSecretValue(try await getValue(forKey: SettingsKeys.omdbApiKey))
+        let tmdbApiKey = normalizedSecretValue(try await getValue(forKey: SettingsKeys.tmdbApiKey))
+        let omdbPlan = MetadataProviderPlan.fromStoredValue(try await getValue(forKey: SettingsKeys.omdbProviderPlan))
+        let tmdbPlan = MetadataProviderPlan.fromStoredValue(try await getValue(forKey: SettingsKeys.tmdbProviderPlan))
+        return MetadataProviderConfiguration(
+            omdbApiKey: omdbApiKey,
+            tmdbApiKey: tmdbApiKey,
+            omdbPlan: omdbPlan,
+            tmdbPlan: tmdbPlan
+        )
+    }
+
+    func hasMetadataProviderConfiguration() async throws -> Bool {
+        try await getMetadataProviderConfiguration().isConfigured
     }
 
     func getPreferredQuality() async throws -> VideoQuality {
@@ -127,6 +152,8 @@ actor SettingsManager {
 enum SettingsKeys {
     nonisolated static let omdbApiKey = "omdb_api_key"
     nonisolated static let tmdbApiKey = "tmdb_api_key"
+    nonisolated static let omdbProviderPlan = "omdb_provider_plan"
+    nonisolated static let tmdbProviderPlan = "tmdb_provider_plan"
     nonisolated static let preferredQuality = "preferred_quality"
     nonisolated static let subtitleLanguage = "subtitle_language"
     nonisolated static let audioLanguage = "audio_language"

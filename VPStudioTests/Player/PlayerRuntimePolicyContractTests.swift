@@ -2,6 +2,20 @@ import Foundation
 import Testing
 @testable import VPStudio
 
+@Suite("Player View Runtime Policy Contracts - Error Presentation")
+struct PlayerViewRuntimeErrorPresentationContractTests {
+    @Test
+    func runtimeErrorsUseSharedPlayerPresentationPolicy() throws {
+        let source = try playerViewSource()
+
+        #expect(source.contains("enum PlayerViewErrorPresentationPolicy"))
+        #expect(source.contains("PlayerViewErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(source.contains("errorDescription: error.localizedDescription") == false)
+        #expect(source.contains("playbackError = error.localizedDescription") == false)
+        #expect(source.contains("subtitleCatalogMessage = error.localizedDescription") == false)
+    }
+}
+
 @Suite("Player View Runtime Policy Contracts - Autoplay")
 struct PlayerViewRuntimeAutoplayPolicyContractTests {
     @Test

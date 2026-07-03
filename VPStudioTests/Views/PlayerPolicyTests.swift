@@ -19,10 +19,10 @@ struct PlayerBufferingPolicyTestsViewsPlayerpolicytests {
         #expect(result == "Rebuffering\u{2026}")
     }
 
-    @Test("rebufferText returns rebuffering message when complete")
-    func rebufferTextReturnsRebufferingWhenComplete() {
+    @Test("rebufferText returns ready message when complete")
+    func rebufferTextReturnsReadyWhenComplete() {
         let result = PlayerBufferingPolicy.rebufferText(bufferedPercent: 1.0)
-        #expect(result == "Rebuffering\u{2026}")
+        #expect(result == "Buffer ready")
     }
 
     @Test("qualityToastDuration is 3.0 seconds")
@@ -153,9 +153,9 @@ struct PlayerCinemaEnvironmentPolicyTestsViewsPlayerpolicytests {
 
 @Suite("PlayerCinematicChromePolicy Tests")
 struct PlayerCinematicChromePolicyTestsViewsPlayerpolicytests {
-    @Test("transportCardCornerRadius is 26")
+    @Test("transportCardCornerRadius is 22")
     func transportCardCornerRadiusIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.transportCardCornerRadius == 26)
+        #expect(PlayerCinematicChromePolicy.transportCardCornerRadius == 22)
     }
 
     @Test("topScrimHeight is 96")
@@ -173,9 +173,9 @@ struct PlayerCinematicChromePolicyTestsViewsPlayerpolicytests {
         #expect(PlayerCinematicChromePolicy.quickActionsCornerRadius == 20)
     }
 
-    @Test("topBarButtonSize is 50")
+    @Test("topBarButtonSize matches the minimum tap target")
     func topBarButtonSizeIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.topBarButtonSize == 50)
+        #expect(PlayerCinematicChromePolicy.topBarButtonSize == VPSpace.minTapTarget)
     }
 
     @Test("primaryTransportButtonSize is 72")
@@ -188,19 +188,28 @@ struct PlayerCinematicChromePolicyTestsViewsPlayerpolicytests {
         #expect(PlayerCinematicChromePolicy.secondaryTransportButtonSize == VPSpace.minTapTarget)
     }
 
-    @Test("controlsDockMaxWidth is 860")
+    @Test("controlsDockMaxWidth is 960")
     func controlsDockMaxWidthIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.controlsDockMaxWidth == 860)
+        #expect(PlayerCinematicChromePolicy.controlsDockMaxWidth == 960)
     }
 
-    @Test("quickActionsMaxWidth is 640")
+    @Test("quickActionsMaxWidth is 700")
     func quickActionsMaxWidthIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.quickActionsMaxWidth == 640)
+        #expect(PlayerCinematicChromePolicy.quickActionsMaxWidth == 700)
     }
 
-    @Test("transportCardMaxWidth is 780")
+    @Test("info pill scroll cue fades trailing overflow")
+    func infoPillScrollCueConstantsAreCorrect() {
+        #expect(PlayerInfoPillScrollCuePolicy.trailingFadeStart == 0.93)
+        #expect(PlayerInfoPillScrollCuePolicy.trailingFadeStart < PlayerInfoPillScrollCuePolicy.trailingFadeEnd)
+        #expect(PlayerInfoPillScrollCuePolicy.trailingFadeEnd == 1.0)
+    }
+
+    @Test("transport card width bounds are balanced")
     func transportCardMaxWidthIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.transportCardMaxWidth == 780)
+        #expect(PlayerCinematicChromePolicy.transportCardMinWidth == 660)
+        #expect(PlayerCinematicChromePolicy.transportCardMaxWidth == 840)
+        #expect(PlayerCinematicChromePolicy.transportCardMinWidth < PlayerCinematicChromePolicy.transportCardMaxWidth)
     }
 
     @Test("skipBackInterval is 10")
@@ -213,19 +222,19 @@ struct PlayerCinematicChromePolicyTestsViewsPlayerpolicytests {
         #expect(PlayerCinematicChromePolicy.skipForwardInterval == 10)
     }
 
-    @Test("progressBarIdleHeight is 4")
+    @Test("progressBarIdleHeight is 5")
     func progressBarIdleHeightIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.progressBarIdleHeight == 4)
+        #expect(PlayerCinematicChromePolicy.progressBarIdleHeight == 5)
     }
 
-    @Test("progressBarScrubbingHeight is 8")
+    @Test("progressBarScrubbingHeight is 9")
     func progressBarScrubbingHeightIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.progressBarScrubbingHeight == 8)
+        #expect(PlayerCinematicChromePolicy.progressBarScrubbingHeight == 9)
     }
 
-    @Test("windowCornerRadius is 28")
+    @Test("windowCornerRadius is 46")
     func windowCornerRadiusIsCorrect() {
-        #expect(PlayerCinematicChromePolicy.windowCornerRadius == 28)
+        #expect(PlayerCinematicChromePolicy.windowCornerRadius == 46)
     }
 }
 

@@ -6,20 +6,55 @@ import RealityKit
 
 private let logger = Logger(subsystem: "com.vpstudio.app", category: "CustomEnvironment")
 
+enum CustomEnvironmentFailureCopy {
+    static let noEnvironmentSelected = "No environment selected. Playing on a plain screen."
+    static let missingEnvironmentFile = "The selected environment file is missing. Playing on a plain screen."
+    static let missingScreenSurface = "No screen surface was found in this environment. Playing on a plain screen."
+    static let resourceFailure = "The environment failed to load. Playing on a plain screen."
+}
+
 private final class CustomEnvironmentRenderState {
     var cinemaScreen: ModelEntity?
     var controlsAnchor: Entity?
+    var tapCatcher: Entity?
     var lastMaterialSourceID: ObjectIdentifier?
     var subtitleEntity: Entity?
     var autoDismissTask: Task<Void, Never>?
+    var activeEnvironmentAssetID: String?
+    var activeEnvironmentLoadID: UUID?
+
+    func beginEnvironmentLoad(assetID: String) -> UUID {
+        let loadID = UUID()
+        activeEnvironmentAssetID = assetID
+        activeEnvironmentLoadID = loadID
+        cinemaScreen = nil
+        subtitleEntity = nil
+        lastMaterialSourceID = nil
+        return loadID
+    }
+
+    func isCurrentEnvironmentLoad(_ loadID: UUID, assetID: String) -> Bool {
+        activeEnvironmentLoadID == loadID && activeEnvironmentAssetID == assetID
+    }
+
+    func cancelEnvironmentLoad() {
+        activeEnvironmentAssetID = nil
+        activeEnvironmentLoadID = nil
+        cinemaScreen = nil
+        subtitleEntity = nil
+        lastMaterialSourceID = nil
+    }
 
     func reset() {
         autoDismissTask?.cancel()
         autoDismissTask = nil
         cinemaScreen = nil
         controlsAnchor = nil
+        tapCatcher = nil
         subtitleEntity = nil
         lastMaterialSourceID = nil
+        activeEnvironmentAssetID = nil
+        activeEnvironmentLoadID = nil
     }
 }
 
@@ -45,13 +80,18 @@ struct CustomEnvironmentView: View {
             setLoadingState(.loading)
 
             // MARK: TapCatcher
-            let tapShape = ShapeResource.generateBox(size: [200, 200, 0.5])
             let tapCatcher = Entity()
             tapCatcher.name = "tap-catcher"
-            tapCatcher.components.set(CollisionComponent(shapes: [tapShape], mode: .trigger, filter: .default))
             tapCatcher.components.set(InputTargetComponent(allowedInputTypes: .indirect))
-            tapCatcher.position = SIMD3<Float>(0, 0, -5)
+            updateTapCatcher(
+                tapCatcher,
+                screenPosition: SIMD3<Float>(0, ImmersiveControlsPolicy.fallbackEyeHeight, -4),
+                screenOrientation: simd_quatf(),
+                width: ScreenSizePreset.personal.width,
+                height: ScreenSizePreset.personal.height
+            )
             content.add(tapCatcher)
+            renderState.tapCatcher = tapCatcher
 
             // MARK: Controls anchor
             let anchor = Entity()
@@ -70,29 +110,31 @@ struct CustomEnvironmentView: View {
             }
 
             guard let selected = appState.selectedEnvironmentAsset else {
+                renderState.cancelEnvironmentLoad()
                 logger.warning("No selectedEnvironmentAsset — space opened prematurely?")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
                 renderState.cinemaScreen = fallbackScreen
-                setLoadingState(.failed("No environment selected. Showing a fallback screen."))
+                setLoadingState(.failed(CustomEnvironmentFailureCopy.noEnvironmentSelected))
                 return
             }
-            let selectedAssetID = selected.id
+            let environmentLoadID = renderState.beginEnvironmentLoad(assetID: selected.id)
+            setLoadingState(.loading)
 
             guard let url = await appState.environmentCatalogManager.resolvedAssetURL(for: selected) else {
-                guard isCurrentSelection(selectedAssetID) else { return }
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: selected.id) else { return }
                 logger.warning("resolvedAssetURL returned nil for asset — file missing?")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
                 renderState.cinemaScreen = fallbackScreen
-                setLoadingState(.failed("The selected environment file is missing. Showing a fallback screen."))
+                setLoadingState(.failed(CustomEnvironmentFailureCopy.missingEnvironmentFile))
                 return
             }
-            guard isCurrentSelection(selectedAssetID) else { return }
+            guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: selected.id) else { return }
 
             do {
                 let entity = try await Entity(contentsOf: url)
-                guard isCurrentSelection(selectedAssetID) else { return }
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: selected.id) else { return }
                 content.add(entity)
                 if let screen = findScreenEntity(in: entity) {
                     renderState.cinemaScreen = screen
@@ -102,15 +144,16 @@ struct CustomEnvironmentView: View {
                     content.add(fallbackScreen)
                     renderState.cinemaScreen = fallbackScreen
                     logger.warning("No screen mesh found in custom environment '\(selected.name, privacy: .public)'")
-                    setLoadingState(.failed("No screen surface was found in this environment. Showing a fallback screen."))
+                    setLoadingState(.failed(CustomEnvironmentFailureCopy.missingScreenSurface))
                 }
             } catch {
-                guard isCurrentSelection(selectedAssetID) else { return }
-                logger.error("Entity(contentsOf:) failed — \(error.localizedDescription, privacy: .public)")
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: selected.id) else { return }
+                let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+                logger.error("Entity(contentsOf:) failed — \(reason, privacy: .public)")
                 let fallbackScreen = makeFallbackScreen()
                 content.add(fallbackScreen)
                 renderState.cinemaScreen = fallbackScreen
-                setLoadingState(.failed("The environment failed to load. Showing a fallback screen."))
+                setLoadingState(.failed(CustomEnvironmentFailureCopy.resourceFailure))
             }
 
             // MARK: Subtitle attachment
@@ -152,6 +195,18 @@ struct CustomEnvironmentView: View {
                 }
             }
 
+            if let tapCatcher = renderState.tapCatcher,
+               let screen = renderState.cinemaScreen {
+                let bounds = screen.visualBounds(relativeTo: nil)
+                updateTapCatcher(
+                    tapCatcher,
+                    screenPosition: screen.position,
+                    screenOrientation: screen.orientation,
+                    width: max(ScreenSizePreset.personal.width, bounds.extents.x),
+                    height: max(ScreenSizePreset.personal.height, bounds.extents.y)
+                )
+            }
+
             // MARK: Subtitle position tracking
             if let subEnt = attachments.entity(for: "immersiveSubtitle"),
                let screen = renderState.cinemaScreen {
@@ -177,7 +232,10 @@ struct CustomEnvironmentView: View {
                     )
                     let col2 = m.columns.2
                     let forward = ImmersiveControlsPolicy.safeHorizontalForward(from: col2)
-                    let target = headPos + forward * ImmersiveControlsPolicy.controlsForwardOffset
+                    let controlsOffset = ImmersiveControlsPolicy.controlsForwardOffset(
+                        forScreenDistance: ScreenSizePreset.cinema.distance
+                    )
+                    let target = headPos + forward * controlsOffset
                     anchor.position = ImmersiveControlsPolicy.smoothedPosition(
                         current: anchor.position,
                         target: target
@@ -284,10 +342,6 @@ struct CustomEnvironmentView: View {
         loadingState = state
     }
 
-    private func isCurrentSelection(_ assetID: String) -> Bool {
-        appState.selectedEnvironmentAsset?.id == assetID
-    }
-
     private func performOptionalAnimation(_ animation: Animation, updates: () -> Void) {
         if accessibilityReduceMotion {
             updates()
@@ -334,6 +388,21 @@ struct CustomEnvironmentView: View {
         return screen
     }
 
+    private func updateTapCatcher(
+        _ tapCatcher: Entity,
+        screenPosition: SIMD3<Float>,
+        screenOrientation: simd_quatf,
+        width: Float,
+        height: Float
+    ) {
+        let tapShape = ShapeResource.generateBox(
+            size: ImmersiveControlsPolicy.tapCatcherSize(screenWidth: width, screenHeight: height)
+        )
+        tapCatcher.components.set(CollisionComponent(shapes: [tapShape], mode: .trigger, filter: .default))
+        tapCatcher.position = ImmersiveControlsPolicy.tapCatcherPosition(forScreenPosition: screenPosition)
+        tapCatcher.orientation = screenOrientation
+    }
+
     private var loadingView: some View {
         VStack(spacing: 12) {
             ProgressView()
@@ -351,7 +420,7 @@ struct CustomEnvironmentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.title2)
                 .foregroundStyle(.yellow)
-            Text("Environment Warning")
+            Text("Environment Issue")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
             Text(message)
@@ -361,7 +430,7 @@ struct CustomEnvironmentView: View {
             Button {
                 NotificationCenter.default.post(name: .immersiveControlDismiss, object: nil)
             } label: {
-                Text("Close")
+                Text("Exit Environment")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)

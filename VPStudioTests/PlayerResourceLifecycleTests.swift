@@ -556,7 +556,10 @@ struct PlayerViewTaskTeardownContractTests {
             to: "RuntimeMemoryDiagnostics.capture(",
             in: source
         )
-        let cleanupRange = try requiredRange(of: "cleanupPlayback()", in: onDisappearSection)
+        let cleanupRange = try requiredRange(
+            of: "resetSharedEngineState: !didCloseStalePlayerScene",
+            in: onDisappearSection
+        )
 
         for taskName in [
             "initialPlayerStateTask",

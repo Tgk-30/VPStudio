@@ -66,7 +66,7 @@ struct SettingsStatusFormatterTests {
     }
 
     @Test
-    func metadataStatusWarnsWhenOMDbMissing() {
+    func metadataStatusWarnsWhenMetadataMissing() {
         var snapshot = SettingsStatusSnapshot()
         snapshot.hasMetadataKey = false
 
@@ -76,14 +76,15 @@ struct SettingsStatusFormatterTests {
     }
 
     @Test
-    func metadataStatusIsPositiveWhenOMDbIsConfigured() {
+    func metadataStatusIsPositiveWhenMetadataIsConfigured() {
         var snapshot = SettingsStatusSnapshot()
         snapshot.hasMetadataKey = true
+        snapshot.metadataProviderSummary = "OMDb + legacy TMDb fallback"
 
         let status = SettingsStatusFormatter.status(for: .metadata, snapshot: snapshot)
 
         #expect(status.kind == .positive)
-        #expect(status.message == "OMDb key configured")
+        #expect(status.message == "OMDb + legacy TMDb fallback")
     }
 
     @Test
@@ -110,8 +111,8 @@ struct SettingsStatusFormatterTests {
         snapshot.hasOllamaEndpoint = false
 
         let warningStatus = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
-        #expect(warningStatus.kind == .warning)
-        #expect(warningStatus.message == "OpenRouter needs credentials")
+        #expect(warningStatus.kind == .neutral)
+        #expect(warningStatus.message == "OpenRouter not set")
 
         snapshot.hasOpenRouterKey = true
         let okStatus = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
@@ -128,12 +129,12 @@ struct SettingsStatusFormatterTests {
         snapshot.hasOllamaEndpoint = false
 
         let disabledStatus = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
-        #expect(disabledStatus.kind == .warning)
+        #expect(disabledStatus.kind == .neutral)
         #expect(disabledStatus.message == "On-Device (Local) is disabled")
 
         snapshot.isLocalAIEnabled = true
         let missingModelStatus = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
-        #expect(missingModelStatus.kind == .warning)
+        #expect(missingModelStatus.kind == .neutral)
         #expect(missingModelStatus.message == "On-Device (Local) needs a downloaded model")
 
         snapshot.hasUsableLocalModel = true
@@ -171,13 +172,13 @@ struct SettingsStatusFormatterTests {
     }
 
     @Test
-    func environmentsStatusWarnsWhenNoneImported() {
+    func environmentsStatusUsesAppleEnvironmentWhenNoneImported() {
         var snapshot = SettingsStatusSnapshot()
         snapshot.environmentAssetCount = 0
 
         let status = SettingsStatusFormatter.status(for: .environments, snapshot: snapshot)
-        #expect(status.kind == .warning)
-        #expect(status.message == "No environments added")
+        #expect(status.kind == .neutral)
+        #expect(status.message == "Apple Environment available")
     }
 
     @Test
@@ -222,7 +223,7 @@ struct SettingsStatusFormatterTests {
             (.library, "Browse your library"),
             (.downloads, "Manage downloads"),
             (.resetData, "Erase all app data"),
-            (.testMode, "9 screens to preview")
+            (.testMode, "10 screens to preview")
         ]
 
         for (destination, expectedMessage) in cases {
@@ -253,8 +254,8 @@ struct SettingsStatusFormatterTests {
         let traktStatus = SettingsStatusFormatter.status(for: .trakt, snapshot: snapshot)
         let simklStatus = SettingsStatusFormatter.status(for: .simkl, snapshot: snapshot)
 
-        #expect(traktStatus.kind == .warning)
-        #expect(traktStatus.message == "Not connected")
+        #expect(traktStatus.kind == .neutral)
+        #expect(traktStatus.message == "Optional")
         #expect(simklStatus.kind == .neutral)
         #expect(simklStatus.message == "Unavailable in this build")
     }

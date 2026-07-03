@@ -8,13 +8,16 @@ struct LocalDownloadServiceTests {
         private let lock = NSLock()
         private var continuations: [String: CheckedContinuation<URL, Error>] = [:]
         private var startedRepos: [String] = []
+        private var startedRevisions: [String: String] = [:]
         private var progressHandlers: [String: @Sendable (Progress) -> Void] = [:]
 
         func downloader(
             repo: String,
+            revision: String,
             progressHandler: @escaping @Sendable (Progress) -> Void
         ) async throws -> URL {
             recordStarted(repo: repo)
+            recordRevision(revision, for: repo)
             storeProgressHandler(progressHandler, for: repo)
 
             return try await withCheckedThrowingContinuation { continuation in
@@ -46,6 +49,12 @@ struct LocalDownloadServiceTests {
             lock.lock()
             defer { lock.unlock() }
             return startedRepos.count
+        }
+
+        func revision(for repo: String) -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return startedRevisions[repo]
         }
 
         func readyToResume(repo: String) -> Bool {
@@ -81,6 +90,12 @@ struct LocalDownloadServiceTests {
             startedRepos.append(repo)
         }
 
+        private func recordRevision(_ revision: String, for repo: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            startedRevisions[repo] = revision
+        }
+
         private func storeContinuation(_ continuation: CheckedContinuation<URL, Error>, for repo: String) {
             lock.lock()
             defer { lock.unlock() }
@@ -100,6 +115,29 @@ struct LocalDownloadServiceTests {
         }
     }
 
+    private actor RevisionResolverProbe {
+        private let resolvedRevision: String?
+        private var requests: [(repo: String, revision: String)] = []
+
+        init(resolvedRevision: String?) {
+            self.resolvedRevision = resolvedRevision
+        }
+
+        func resolver(repo: String, revision: String) async throws -> String {
+            requests.append((repo, revision))
+            guard let resolvedRevision else { throw URLError(.badServerResponse) }
+            return resolvedRevision
+        }
+
+        func requestCount() -> Int {
+            requests.count
+        }
+
+        func firstRequest() -> (repo: String, revision: String)? {
+            requests.first
+        }
+    }
+
     private func makeTemporaryDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -111,14 +149,16 @@ struct LocalDownloadServiceTests {
 
     private func makeLocalModel(
         id: String,
-        displayName: String
+        displayName: String,
+        revision: String = "0123456789012345678901234567890123456789",
+        checksumSHA256: String? = nil
     ) -> LocalModelDescriptor {
         let now = Date()
         return LocalModelDescriptor(
             id: id,
             displayName: displayName,
             huggingFaceRepo: id,
-            revision: "main",
+            revision: revision,
             parameterCount: "360M",
             quantization: "float16",
             diskSizeMB: 700,
@@ -132,7 +172,7 @@ struct LocalDownloadServiceTests {
             downloadedBytes: 0,
             totalBytes: 0,
             lastProgressAt: nil,
-            checksumSHA256: nil,
+            checksumSHA256: checksumSHA256,
             validationState: .pending,
             localPath: nil,
             partialDownloadPath: nil,
@@ -257,7 +297,11 @@ struct LocalDownloadServiceTests {
         let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-success.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let model = makeLocalModel(id: "apple/success-model", displayName: "Success")
+        let model = makeLocalModel(
+            id: "apple/success-model",
+            displayName: "Success",
+            revision: "0123456789012345678901234567890123456789"
+        )
         try await database.saveLocalModel(model)
 
         let store = LocalModelCatalogStore(database: database)
@@ -268,6 +312,7 @@ struct LocalDownloadServiceTests {
 
         await service.downloadModel(id: model.id)
         await downloader.waitUntilStarted(repo: model.huggingFaceRepo)
+        #expect(downloader.revision(for: model.huggingFaceRepo) == model.revision)
         downloader.reportProgress(repo: model.huggingFaceRepo, completed: 64, total: 128)
         let progressed = try await waitForProgress(store: store, id: model.id, minimumProgress: 0.5)
         #expect(progressed.downloadedBytes == 64)
@@ -333,6 +378,100 @@ struct LocalDownloadServiceTests {
         let state = await service.activeDownloadStateForTesting()
         #expect(state.modelID == nil)
         #expect(state.token == nil)
+    }
+
+    @Test
+    func mutableRevisionResolvesAndPersistsImmutableCommitBeforeSnapshot() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-revision-resolve.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let resolvedRevision = "abcdef0123456789abcdef0123456789abcdef01"
+        let model = makeLocalModel(
+            id: "apple/revision-resolve",
+            displayName: "RevisionResolve",
+            revision: "main",
+            checksumSHA256: String(repeating: "1", count: 64)
+        )
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let resolver = RevisionResolverProbe(resolvedRevision: resolvedRevision)
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            revisionResolver: resolver.resolver
+        )
+
+        await service.downloadModel(id: model.id)
+        await downloader.waitUntilStarted(repo: model.huggingFaceRepo)
+
+        #expect(downloader.revision(for: model.huggingFaceRepo) == resolvedRevision)
+        #expect(try #require(try await store.model(id: model.id)).revision == resolvedRevision)
+        #expect(await resolver.requestCount() == 1)
+        let firstRequest = await resolver.firstRequest()
+        #expect(firstRequest?.revision == "main")
+
+        downloader.fail(repo: model.huggingFaceRepo, error: CancellationError())
+    }
+
+    @Test
+    func blankRevisionFailsBeforeResolverOrSnapshotFetch() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-blank-revision.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(
+            id: "apple/blank-revision",
+            displayName: "BlankRevision",
+            revision: " \n "
+        )
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let resolver = RevisionResolverProbe(resolvedRevision: "abcdef0123456789abcdef0123456789abcdef01")
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            revisionResolver: resolver.resolver
+        )
+
+        await service.downloadModel(id: model.id)
+
+        _ = try await waitForStatus(store: store, id: model.id, status: .failed)
+        #expect(downloader.startCount() == 0)
+        #expect(await resolver.requestCount() == 0)
+        #expect((await service.activeDownloadStateForTesting()).modelID == nil)
+    }
+
+    @Test
+    func unresolvedMutableRevisionFailsBeforeSnapshotFetch() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-unresolved-revision.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(
+            id: "apple/unresolved-revision",
+            displayName: "UnresolvedRevision",
+            revision: "main",
+            checksumSHA256: String(repeating: "2", count: 64)
+        )
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let resolver = RevisionResolverProbe(resolvedRevision: "main")
+        let service = LocalDownloadService(
+            catalogStore: store,
+            snapshotDownloader: downloader.downloader,
+            revisionResolver: resolver.resolver
+        )
+
+        await service.downloadModel(id: model.id)
+
+        _ = try await waitForStatus(store: store, id: model.id, status: .failed)
+        #expect(downloader.startCount() == 0)
+        #expect(await resolver.requestCount() == 1)
+        #expect((await service.activeDownloadStateForTesting()).modelID == nil)
     }
 
     @Test
@@ -639,5 +778,36 @@ struct LocalDownloadServiceTests {
 
         let downloaded = try await waitForStatus(store: store, id: model.id, status: .downloaded)
         #expect(downloaded.localPath == downloadURL.path)
+    }
+
+    @Test
+    func checksumMismatchMarksDownloadFailedBeforeLocalPathIsPersisted() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "local-download-checksum-mismatch.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let model = makeLocalModel(
+            id: "apple/checksum-mismatch",
+            displayName: "ChecksumMismatch",
+            checksumSHA256: String(repeating: "0", count: 64)
+        )
+        try await database.saveLocalModel(model)
+
+        let store = LocalModelCatalogStore(database: database)
+        let downloader = ControlledSnapshotDownloader()
+        let service = LocalDownloadService(catalogStore: store, snapshotDownloader: downloader.downloader)
+        let downloadURL = tempDir.appendingPathComponent("downloaded", isDirectory: true)
+        try FileManager.default.createDirectory(at: downloadURL, withIntermediateDirectories: true)
+        try "tampered".write(
+            to: downloadURL.appendingPathComponent("model.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        await service.downloadModel(id: model.id)
+        await downloader.waitUntilStarted(repo: model.huggingFaceRepo)
+        downloader.complete(repo: model.huggingFaceRepo, url: downloadURL)
+
+        let failed = try await waitForStatus(store: store, id: model.id, status: .failed)
+        #expect(failed.localPath == nil)
     }
 }

@@ -41,17 +41,6 @@ struct MetadataProviderExtensionTests {
                 throw CancellationError()
             }
 
-            func getSeasons(tmdbId: Int) async throws -> [Season] {
-                throw CancellationError()
-            }
-
-            func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] {
-                throw CancellationError()
-            }
-
-            func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds {
-                throw CancellationError()
-            }
         }
 
         let provider = MockProvider()
@@ -61,6 +50,56 @@ struct MetadataProviderExtensionTests {
         #expect(provider.lastQuery == "Test Movie")
         #expect(provider.lastType == .movie)
         #expect(provider.lastPage == 1)
+    }
+
+    @Test("TMDb-only hooks are optional defaults for non-TMDb providers")
+    func tmdbOnlyHooksDefaultToUnsupportedIdentifier() async throws {
+        final class MockProvider: MetadataProvider, @unchecked Sendable {
+            func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
+                MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+            }
+
+            func getDetail(id: String, type: MediaType) async throws -> MediaItem {
+                MediaItem(id: id, type: type, title: "Detail")
+            }
+
+            func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult {
+                MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+            }
+
+            func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult {
+                MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+            }
+
+            func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+                MetadataSearchResult(items: [], page: filters.page, totalPages: 1, totalResults: 0)
+            }
+
+            func getGenres(type: MediaType) async throws -> [Genre] { [] }
+        }
+
+        let provider = MockProvider()
+
+        do {
+            _ = try await provider.getSeasons(tmdbId: 1399)
+            Issue.record("Expected unsupported identifier error")
+        } catch let error as MetadataProviderError {
+            #expect(error == .unsupportedIdentifier("tmdb-1399"))
+        }
+
+        do {
+            _ = try await provider.getEpisodes(tmdbId: 1399, season: 1)
+            Issue.record("Expected unsupported identifier error")
+        } catch let error as MetadataProviderError {
+            #expect(error == .unsupportedIdentifier("tmdb-1399"))
+        }
+
+        do {
+            _ = try await provider.getExternalIds(tmdbId: 1399, type: .series)
+            Issue.record("Expected unsupported identifier error")
+        } catch let error as MetadataProviderError {
+            #expect(error == .unsupportedIdentifier("tmdb-1399"))
+        }
     }
 }
 

@@ -327,6 +327,125 @@ struct TMDBServiceResponseParsingTests {
         #expect(item.tmdbId == 123)
     }
 
+    @Test func paidPlanRequestsExpandedImagesAndUsesHighestRatedFallbackArtwork() async throws {
+        final class QueryRecorder: @unchecked Sendable { var queryItems: [URLQueryItem] = [] }
+        let recorder = QueryRecorder()
+        let json = """
+        {
+            "id": 123,
+            "title": "Test Movie",
+            "external_ids": {"imdb_id": "tt1234567"},
+            "images": {
+                "posters": [
+                    {"file_path": "/poster-low.jpg", "vote_average": 6.0, "vote_count": 200},
+                    {"file_path": "/poster-high.jpg", "vote_average": 8.0, "vote_count": 12}
+                ],
+                "backdrops": [
+                    {"file_path": "/backdrop-low.jpg", "vote_average": 6.0, "vote_count": 200},
+                    {"file_path": "/backdrop-high.jpg", "vote_average": 8.0, "vote_count": 12}
+                ]
+            }
+        }
+        """
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            recorder.queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(json.utf8))
+        }
+
+        let service = TMDBService(apiKey: "key", plan: .paid, session: session)
+        let item = try await service.getDetail(id: "123", type: .movie)
+
+        #expect(recorder.queryItems.first(where: { $0.name == "append_to_response" })?.value == "external_ids,credits,images")
+        #expect(item.posterPath == "/poster-high.jpg")
+        #expect(item.backdropPath == "/backdrop-high.jpg")
+    }
+
+    @Test func paidPlanEnrichesSearchPreviewsWithExpandedImages() async throws {
+        final class RequestRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var values: [String] = []
+
+            func append(_ value: String) {
+                lock.lock()
+                values.append(value)
+                lock.unlock()
+            }
+
+            var paths: [String] {
+                lock.lock()
+                defer { lock.unlock() }
+                return values
+            }
+        }
+        let recorder = RequestRecorder()
+
+        let session = makeStubSession { request in
+            let url = try #require(request.url)
+            recorder.append(url.path)
+
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            switch url.path {
+            case "/3/search/movie":
+                let body = """
+                {
+                    "page": 1,
+                    "total_pages": 1,
+                    "total_results": 1,
+                    "results": [
+                        {
+                            "id": 123,
+                            "title": "Test Movie",
+                            "release_date": "2024-01-01",
+                            "poster_path": "/poster-search.jpg",
+                            "backdrop_path": "/backdrop-search.jpg",
+                            "vote_average": 7.1
+                        }
+                    ]
+                }
+                """
+                return (response, Data(body.utf8))
+            case "/3/movie/123":
+                let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                #expect(queryItems.first(where: { $0.name == "append_to_response" })?.value == "external_ids,credits,images")
+                let body = """
+                {
+                    "id": 123,
+                    "title": "Test Movie",
+                    "release_date": "2024-01-01",
+                    "poster_path": "/poster-detail.jpg",
+                    "backdrop_path": "/backdrop-detail.jpg",
+                    "external_ids": {"imdb_id": "tt1234567"},
+                    "images": {
+                        "posters": [
+                            {"file_path": "/poster-expanded.jpg", "vote_average": 8.2, "vote_count": 10}
+                        ],
+                        "backdrops": [
+                            {"file_path": "/backdrop-expanded.jpg", "vote_average": 8.4, "vote_count": 10}
+                        ]
+                    }
+                }
+                """
+                return (response, Data(body.utf8))
+            default:
+                let body = #"{"status_message":"unexpected path"}"#
+                let notFound = HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!
+                return (notFound, Data(body.utf8))
+            }
+        }
+
+        let service = TMDBService(apiKey: "key", plan: .paid, session: session)
+        let result = try await service.search(query: "test", type: .movie, page: 1)
+        let preview = try #require(result.items.first)
+
+        #expect(preview.posterPath == "/poster-expanded.jpg")
+        #expect(preview.backdropPath == "/backdrop-expanded.jpg")
+        #expect(recorder.paths.contains("/3/search/movie"))
+        #expect(recorder.paths.contains("/3/movie/123"))
+    }
+
     @Test func getDetailUsesEpisodeRunTimeWhenRuntimeIsZero() async throws {
         let json = """
         {
@@ -635,6 +754,39 @@ struct TMDBServiceErrorHandlingTests {
             } else {
                 Issue.record("Expected httpError, got \(error)")
             }
+        } catch {
+            Issue.record("Expected TMDBError, got \(error)")
+        }
+    }
+
+    @Test func httpErrorRedactsSecretBearingResponseBody() async {
+        let session = makeStubSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            let body = #"failed https://api.themoviedb.org/3/movie/1?api_key=secret-key&x-amz-credential=aws-cred&x-amz-security-token=aws-token and bearer=plain-secret Authorization: Bearer header-secret"#
+            return (response, Data(body.utf8))
+        }
+
+        let service = TMDBService(apiKey: "key", session: session)
+
+        do {
+            _ = try await service.search(query: "Test", type: .movie)
+            Issue.record("Expected error")
+        } catch let error as TMDBError {
+            guard case .httpError(let code, let body) = error else {
+                Issue.record("Expected httpError, got \(error)")
+                return
+            }
+            #expect(code == 500)
+            #expect(body.contains("api_key=REDACTED"))
+            #expect(body.contains("x-amz-credential=REDACTED"))
+            #expect(body.contains("x-amz-security-token=REDACTED"))
+            #expect(body.contains("bearer=REDACTED"))
+            #expect(body.contains("Bearer REDACTED"))
+            #expect(!body.contains("secret-key"))
+            #expect(!body.contains("aws-cred"))
+            #expect(!body.contains("aws-token"))
+            #expect(!body.contains("plain-secret"))
+            #expect(!body.contains("header-secret"))
         } catch {
             Issue.record("Expected TMDBError, got \(error)")
         }

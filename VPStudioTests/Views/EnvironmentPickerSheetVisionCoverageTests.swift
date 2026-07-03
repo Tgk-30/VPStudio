@@ -182,8 +182,17 @@ private func tearDownVisionWindow(_ window: UIWindow) {
     window.isUserInteractionEnabled = false
     window.resignKey()
     window.frame = CGRect(x: -10_000, y: -10_000, width: 1, height: 1)
-    window.isHidden = true
-    window.rootViewController = nil
+    EnvironmentPickerCoverageWindowRetainer.windows.append(window)
+    if EnvironmentPickerCoverageWindowRetainer.windows.count > 8 {
+        EnvironmentPickerCoverageWindowRetainer.windows.removeFirst(
+            EnvironmentPickerCoverageWindowRetainer.windows.count - 8
+        )
+    }
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+}
+
+@MainActor
+private enum EnvironmentPickerCoverageWindowRetainer {
+    static var windows: [UIWindow] = []
 }
 #endif

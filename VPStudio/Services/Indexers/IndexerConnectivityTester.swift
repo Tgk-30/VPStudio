@@ -23,14 +23,190 @@ enum IndexerConnectivityError: LocalizedError {
     }
 }
 
-enum IndexerRequestError: LocalizedError {
+enum IndexerRequestError: LocalizedError, Equatable {
+    case blockedRedirect(URL?)
     case rateLimited
 
     var errorDescription: String? {
         switch self {
+        case .blockedRedirect:
+            return "Indexer redirect was blocked."
         case .rateLimited:
             return "Indexer rate limit was exceeded."
         }
+    }
+}
+
+private final class IndexerRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let originalRequest: URLRequest
+    private let lock = NSLock()
+    private var blockedURL: URL?
+
+    init(originalRequest: URLRequest) {
+        self.originalRequest = originalRequest
+    }
+
+    var blockedRedirectURL: URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return blockedURL
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard IndexerRedirectPolicy.allowsRedirect(from: originalRequest, to: request) else {
+            lock.lock()
+            blockedURL = request.url
+            lock.unlock()
+            completionHandler(nil)
+            task.cancel()
+            return
+        }
+
+        completionHandler(request)
+    }
+}
+
+enum IndexerRedirectPolicy {
+    static func permitsInitialRequest(_ request: URLRequest) -> Bool {
+        guard let url = request.url,
+              IndexerURLSecurityPolicy.permits(url: url),
+              normalizedHost(url) != nil else {
+            return false
+        }
+        if containsSensitiveCredential(request),
+           !IndexerURLSecurityPolicy.permitsCredentialedTransport(url: url) {
+            return false
+        }
+        // The initial destination is the user-typed indexer base URL — trusted
+        // configuration, not attacker-supplied data. Do not pre-resolve it against
+        // the private-address blocklist: split-horizon DNS, Tailscale, and VPN
+        // setups legitimately resolve a user's own HTTPS hostname to a private
+        // address, and the synchronous getaddrinfo would block the shared limiter
+        // actor. Resolver screening still applies to redirected (cross-host)
+        // destinations via `permitsFinalResponse`.
+        return true
+    }
+
+    /// Gate for routine search traffic to an already-persisted indexer config.
+    /// Enforces the scheme/host base-URL policy but not the API-key
+    /// cleartext-transport rule: configs saved before that rule existed must keep
+    /// returning results, while Settings validation and the connectivity tester
+    /// (`permitsInitialRequest`) steer users toward compliant base URLs.
+    static func permitsSearchTraffic(_ request: URLRequest) -> Bool {
+        guard let url = request.url,
+              IndexerURLSecurityPolicy.permits(url: url),
+              normalizedHost(url) != nil else {
+            return false
+        }
+        return true
+    }
+
+    static func allowsRedirect(from originalRequest: URLRequest, to redirectRequest: URLRequest) -> Bool {
+        guard let redirectURL = redirectRequest.url,
+              permitsFinalResponse(for: originalRequest, responseURL: redirectURL) else {
+            return false
+        }
+        return true
+    }
+
+    static func permitsFinalResponse(for originalRequest: URLRequest, responseURL: URL?) -> Bool {
+        guard let responseURL,
+              IndexerURLSecurityPolicy.permits(url: responseURL) else {
+            return false
+        }
+
+        let originalHost = normalizedHost(originalRequest.url)
+        guard let responseHost = normalizedHost(responseURL) else {
+            return false
+        }
+
+        // Whether the response landed somewhere other than the user-configured
+        // destination (i.e. a redirect changed host or scheme). The transport and
+        // resolver screens below exist to stop hostile redirects; the original
+        // destination was already vetted before the request went out, and
+        // re-resolving the user's own hostname breaks split-horizon DNS /
+        // Tailscale setups that legitimately resolve to private addresses.
+        // Port is part of the origin: a same-host redirect onto a different
+        // port is a different service (e.g. Prowlarr on :9696 redirecting to
+        // another daemon on :8080) and must re-pass the credential and
+        // resolver screens rather than riding the original vetting.
+        let destinationChanged = originalHost != responseHost
+            || originalRequest.url?.scheme?.lowercased() != responseURL.scheme?.lowercased()
+            || originalRequest.url?.port != responseURL.port
+
+        let carriesSensitiveCredential = containsSensitiveCredential(originalRequest)
+        if carriesSensitiveCredential,
+           destinationChanged,
+           !IndexerURLSecurityPolicy.permitsCredentialedTransport(url: responseURL) {
+            return false
+        }
+
+        guard PrivateNetworkHostPolicy.isPrivateOrReserved(host: responseHost) else {
+            if destinationChanged,
+               PublicNetworkHostResolver.resolvesToPrivateOrReservedAddress(host: responseHost) {
+                return false
+            }
+            if carriesSensitiveCredential {
+                guard let originalHost else {
+                    return false
+                }
+                guard sameHost(originalHost, responseHost) else {
+                    return false
+                }
+            }
+            return true
+        }
+
+        guard let originalHost else {
+            return false
+        }
+
+        return sameHost(originalHost, responseHost) && IndexerURLSecurityPolicy.isLocalOrPrivateHost(originalHost)
+    }
+
+    private static func containsSensitiveCredential(_ request: URLRequest) -> Bool {
+        if request.value(forHTTPHeaderField: "X-Api-Key")?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+
+        guard let url = request.url,
+              let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
+            return false
+        }
+
+        return queryItems.contains { item in
+            item.name.caseInsensitiveCompare("apikey") == .orderedSame
+                && item.value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+    }
+
+    private static func sameHost(_ lhs: URL?, _ rhs: URL) -> Bool {
+        guard let lhsHost = normalizedHost(lhs),
+              let rhsHost = normalizedHost(rhs) else {
+            return false
+        }
+        return sameHost(lhsHost, rhsHost)
+    }
+
+    private static func sameHost(_ lhs: String, _ rhs: String) -> Bool {
+        lhs == rhs
+    }
+
+    private static func normalizedHost(_ url: URL?) -> String? {
+        guard let url,
+              let host = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host else {
+            return nil
+        }
+        return host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
     }
 }
 
@@ -155,6 +331,10 @@ enum IndexerConnectivityTester {
             request.setValue(key, forHTTPHeaderField: "X-Api-Key")
         }
 
+        if !IndexerRedirectPolicy.permitsInitialRequest(request) {
+            throw IndexerConnectivityError.invalidBaseURL
+        }
+
         return request
     }
 
@@ -239,6 +419,7 @@ actor IndexerRequestLimiter {
     private let minimumRequestInterval: TimeInterval
     private let maximumBackoffInterval: TimeInterval
     private let maximumAttempts: Int
+    private let maximumResponseBytes: Int
     private var lastRequestDate: Date?
     private var nextAllowedRequestDate: Date?
     private let retryableStatusCodes: Set<Int> = [408, 425, 429, 500, 502, 503, 504]
@@ -255,11 +436,13 @@ actor IndexerRequestLimiter {
     init(
         minimumRequestInterval: TimeInterval = 0.15,
         maximumBackoffInterval: TimeInterval = 5,
-        maximumAttempts: Int = 3
+        maximumAttempts: Int = 3,
+        maximumResponseBytes: Int = HTTPResponseBudget.indexer
     ) {
         self.minimumRequestInterval = minimumRequestInterval
         self.maximumBackoffInterval = maximumBackoffInterval
         self.maximumAttempts = max(1, maximumAttempts)
+        self.maximumResponseBytes = max(1, maximumResponseBytes)
     }
 
     func data(from url: URL, session: URLSession) async throws -> (Data, URLResponse) {
@@ -278,10 +461,21 @@ actor IndexerRequestLimiter {
 
             let data: Data
             let response: URLResponse
+            let redirectGuard = IndexerRedirectGuard(originalRequest: request)
             do {
-                (data, response) = try await session.data(for: request)
+                guard IndexerRedirectPolicy.permitsSearchTraffic(request) else {
+                    throw IndexerRequestError.blockedRedirect(request.url)
+                }
+                (data, response) = try await BoundedHTTPResponseLoader.data(
+                    for: request,
+                    session: session,
+                    delegate: redirectGuard,
+                    maximumBytes: maximumResponseBytes
+                )
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let urlError as URLError where urlError.code == .cancelled && redirectGuard.blockedRedirectURL != nil {
+                throw IndexerRequestError.blockedRedirect(redirectGuard.blockedRedirectURL)
             } catch let urlError as URLError where retryableTransportErrorCodes.contains(urlError.code) && attempt < maximumAttempts {
                 let delay = exponentialBackoffDelay(for: attempt)
                 nextAllowedRequestDate = Date().addingTimeInterval(max(delay, minimumRequestInterval))
@@ -291,6 +485,10 @@ actor IndexerRequestLimiter {
 
             guard let http = response as? HTTPURLResponse else {
                 return (data, response)
+            }
+
+            guard IndexerRedirectPolicy.permitsFinalResponse(for: request, responseURL: http.url) else {
+                throw IndexerRequestError.blockedRedirect(http.url)
             }
 
             guard retryableStatusCodes.contains(http.statusCode) else {

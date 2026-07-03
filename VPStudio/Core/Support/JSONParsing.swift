@@ -3,9 +3,7 @@ import Foundation
 /// Shared JSON value-extraction helpers used by indexer parsers that process
 /// untyped `JSONSerialization` payloads (Stremio, Torznab/Prowlarr, etc.).
 enum JSONValueParsing {
-    private static let infoHashRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: "(?i)[0-9a-f]{40,64}")
-    }()
+    private static let infoHashRegex = SensitiveURLQueryPolicy.regularExpression(pattern: "(?i)[0-9a-f]{40,64}")
 
     /// Coerce a loosely-typed JSON value to `Int`.
     /// Handles `Int`, `Int64`, `Double`, and numeric `String` representations.
@@ -63,22 +61,15 @@ enum JSONValueParsing {
     }
 
     private static func normalizedHexHash(from value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let validLengths = Set([40, 64])
-        guard validLengths.contains(trimmed.count) else {
-            return nil
-        }
-
-        let hexCharacters = CharacterSet(charactersIn: "0123456789abcdef")
-        guard trimmed.unicodeScalars.allSatisfy({ hexCharacters.contains($0) }) else {
-            return nil
-        }
-
-        return trimmed
+        // Delegate to the shared validator so magnet parsing accepts the same
+        // hash forms as the rest of the app — including 32-character RFC 4648
+        // base32 `btih` hashes, which some Torznab/indexer feeds emit and which
+        // would otherwise be silently dropped here (no hash → result discarded).
+        DebridHashValidator.normalizedInfoHash(value)
     }
 
     private static func extractInfoHashFromTorrentURL(_ value: String) -> String? {
+        guard let infoHashRegex else { return nil }
         if let components = URLComponents(string: value),
            let queryItems = components.queryItems {
             let candidates = queryItems.compactMap { item -> String? in

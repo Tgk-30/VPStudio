@@ -201,13 +201,29 @@ struct AppErrorInitMappingTestsRootapperrortests {
         #expect(mapped == .unknown("named error"))
     }
 
+    @Test func appErrorDescriptionRedactsSensitiveProviderDetails() {
+        let error = AppError.network(
+            .server(
+                statusCode: 500,
+                message: "Failed https://api.example.com/title?apikey=omdb-banner-secret&token=tmdb-banner-secret Authorization: Bearer appErrorBearerSecret123456 clientSecret=app-error-client-secret-1234567890"
+            )
+        )
+        let description = error.errorDescription ?? ""
+
+        #expect(description.contains("REDACTED"))
+        #expect(!description.contains("omdb-banner-secret"))
+        #expect(!description.contains("tmdb-banner-secret"))
+        #expect(!description.contains("appErrorBearerSecret123456"))
+        #expect(!description.contains("app-error-client-secret-1234567890"))
+    }
+
     @Test func metadataSetupRequiredMarksActionableSetupErrorsOnly() {
         let setup = AppError.metadataSetupRequired(feature: "Search")
         let plain = AppError.unknown("Search needs an OMDb API key.")
         let network = AppError.network(.unauthorized)
 
         #expect(setup.requiresMetadataSetupAction)
-        #expect(setup.errorDescription?.contains("Search needs an OMDb API key") == true)
+        #expect(setup.errorDescription?.contains("Search needs an OMDb metadata API key") == true)
         #expect(!plain.requiresMetadataSetupAction)
         #expect(!network.requiresMetadataSetupAction)
     }
@@ -263,6 +279,16 @@ struct NetworkErrorDescriptionTestsRootapperrortests {
         #expect(err.errorDescription?.contains("SSL error") == true)
     }
 
+    @Test func networkDescriptionsRedactSecretBearingURLsAndTokens() {
+        let secretURL = "https://cdn.example.test/video.mkv?apikey=network-secret&token=stream-secret"
+        let bearer = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"
+
+        #expect(NetworkError.invalidURL(secretURL).errorDescription?.contains("network-secret") == false)
+        #expect(NetworkError.server(statusCode: 500, message: secretURL).errorDescription?.contains("stream-secret") == false)
+        #expect(NetworkError.transport(bearer).errorDescription?.contains("abcdefghijklmnopqrstuvwxyz123456") == false)
+        #expect(NetworkError.transport(bearer).errorDescription?.contains("Bearer REDACTED") == true)
+    }
+
     @Test func recoverySuggestionsCoverEveryNetworkErrorFamily() {
         let cases: [NetworkError] = [
             .invalidURL("bad://url"),
@@ -297,6 +323,15 @@ struct IndexerErrorDescriptionTestsRootapperrortests {
         #expect(err.errorDescription?.contains("bad query") == true)
     }
 
+    @Test func indexerDescriptionsRedactSecretBearingDetails() {
+        let err = IndexerError.allIndexersFailed(
+            "failed https://indexer.example.test/api?t=search&apikey=indexer-secret"
+        )
+
+        #expect(err.errorDescription?.contains("indexer-secret") == false)
+        #expect(err.errorDescription?.contains("apikey=REDACTED") == true)
+    }
+
     @Test func notConfiguredDescription() {
         let err = IndexerError.notConfigured
         #expect(err.errorDescription?.isEmpty == false)
@@ -326,6 +361,15 @@ struct PlayerErrorDescriptionTestsRootapperrortests {
     @Test func invalidStreamURLDescription() {
         let err = PlayerError.invalidStreamURL("bad://url")
         #expect(err.errorDescription?.contains("bad://url") == true)
+    }
+
+    @Test func playerDescriptionsRedactSecretBearingURLsAndMessages() {
+        let streamURL = "https://cdn.example.test/movie.mkv?token=player-secret"
+        let playbackError = "playback failed Authorization: Bearer playerbearersecret123456"
+
+        #expect(PlayerError.invalidStreamURL(streamURL).errorDescription?.contains("player-secret") == false)
+        #expect(PlayerError.playbackFailed(playbackError).errorDescription?.contains("playerbearersecret123456") == false)
+        #expect(PlayerError.playbackFailed(playbackError).errorDescription?.contains("Bearer REDACTED") == true)
     }
 
     @Test func startupTimeoutDescriptionContainsEngineName() {

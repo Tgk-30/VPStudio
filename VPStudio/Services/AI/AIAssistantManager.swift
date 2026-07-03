@@ -327,7 +327,7 @@ actor AIAssistantManager {
         case .mistral:
             return AIModelCatalog.mistralSmallLatest.id
         case .minimax:
-            return AIModelCatalog.minimaxM27.id
+            return AIModelCatalog.minimaxM3.id
         case .local:
             return AIModelCatalog.localSmolLM2.id
         }
@@ -759,7 +759,7 @@ actor AIAssistantManager {
                 }
 
                 if let imdbString = firstString(for: [.imdbId, .imdbID, .imdbSnake, .imdb]) {
-                    imdbId = IMDbIdentifierPolicy.firstID(in: imdbString)
+                    imdbId = IMDbIdentifierPolicy.appScopedID(in: imdbString)
                 } else {
                     imdbId = nil
                 }
@@ -827,22 +827,10 @@ actor AIAssistantManager {
                 let normalizedTitle = raw.title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !normalizedTitle.isEmpty else { return nil }
 
-                let normalizedType = (raw.type ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                let isSeriesType = [
-                    "series",
-                    "show",
-                    "tv",
-                    "tv series",
-                    "tvseries",
-                    "tv_show",
-                    "tv-show",
-                    "tv show",
-                    "television",
-                ].contains(normalizedType)
                 return AIMovieRecommendation(
                     title: normalizedTitle,
                     year: raw.year,
-                    type: isSeriesType ? .series : .movie,
+                    type: Self.recommendationMediaType(fromRawType: raw.type),
                     reason: raw.reason ?? "",
                     imdbId: raw.imdbId,
                     tmdbId: raw.imdbId == nil ? raw.tmdbId : nil
@@ -998,6 +986,24 @@ actor AIAssistantManager {
         }
 
         return mapRecommendations(raws)
+    }
+
+    static func recommendationMediaType(fromRawType rawType: String?) -> MediaType {
+        let normalizedType = (rawType ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedType.isEmpty else { return .movie }
+
+        if normalizedType.contains("movie") || normalizedType.contains("film") {
+            return .movie
+        }
+
+        let seriesMarkers = ["series", "show", "tv", "television", "kdrama", "k-drama", "anime"]
+        if seriesMarkers.contains(where: normalizedType.contains) {
+            return .series
+        }
+
+        return .movie
     }
 
     private func recommendationData(from content: String) -> Data? {
@@ -1263,9 +1269,10 @@ actor AIAssistantManager {
             try await database.saveAIUsageRecord(record)
             lastUsagePersistenceErrorMessage = nil
         } catch {
-            lastUsagePersistenceErrorMessage = error.localizedDescription
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            lastUsagePersistenceErrorMessage = reason
             Self.logger.error(
-                "Failed to persist AI usage record: \(error.localizedDescription, privacy: .public)"
+                "Failed to persist AI usage record: \(reason, privacy: .public)"
             )
         }
     }
@@ -1297,7 +1304,17 @@ enum AIHTTPTransport {
         var attempt = 0
 
         while true {
-            let (data, response) = try await session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await BoundedHTTPResponseLoader.data(
+                    for: request,
+                    session: session,
+                    maximumBytes: HTTPResponseBudget.aiProvider
+                )
+            } catch is BoundedHTTPResponseError {
+                throw AIError.invalidResponse
+            }
             guard let http = response as? HTTPURLResponse else {
                 throw AIError.invalidResponse
             }
@@ -1313,6 +1330,13 @@ enum AIHTTPTransport {
             attempt += 1
             try await sleep(retryDelay(from: http, attempt: attempt))
         }
+    }
+
+    static func sanitizedHTTPErrorMessage(from data: Data) -> String {
+        guard let message = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return IndexerLogSanitizer.redactedMessage(message)
     }
 
     static func retryDelay(from response: HTTPURLResponse, attempt: Int) -> TimeInterval {

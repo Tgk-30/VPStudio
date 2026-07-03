@@ -9,7 +9,7 @@ enum PlayerSessionRouting {
         routed.append(primary)
         seen.insert(primary.id)
 
-        for stream in available where !seen.contains(stream.id) {
+        for stream in available where !seen.contains(stream.id) && PlayerStreamURLPolicy.isLaunchable(stream) {
             routed.append(stream)
             seen.insert(stream.id)
         }

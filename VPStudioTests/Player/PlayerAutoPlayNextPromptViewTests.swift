@@ -10,6 +10,13 @@ struct PlayerAutoPlayNextPromptViewTests {
         #expect(PlayerAutoPlayNextPromptStylePolicy.promptMaxWidth == 440)
         #expect(PlayerAutoPlayNextPromptStylePolicy.titleColumnMaxWidth < PlayerAutoPlayNextPromptStylePolicy.promptMaxWidth)
         #expect(PlayerAutoPlayNextPromptStylePolicy.titleLineLimit == 3)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.cancelButtonSize == VPSpace.minTapTarget)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonMinWidth >= 96)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonIconSlotSize >= 14)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.titleMinimumScaleFactor >= 0.85)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.resolvingStateAnimationDuration <= 0.2)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.resolvingStateAnimation(reduceMotion: false) != nil)
+        #expect(PlayerAutoPlayNextPromptStylePolicy.resolvingStateAnimation(reduceMotion: true) == nil)
         #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: false) == 1.0)
         #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonOpacity(isResolving: true) < 1.0)
         #expect(PlayerAutoPlayNextPromptStylePolicy.primaryButtonBackgroundOpacity(isResolving: true) < 1.0)
@@ -94,5 +101,32 @@ struct PlayerAutoPlayNextPromptViewTests {
         .background(Color.black)
 
         SwiftUIViewDiagnosticHost.render(view, width: 180, height: 110)
+    }
+
+    @Test
+    func promptSourceCrossfadesResolvingStateWithoutButtonLayoutJump() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Player/PlayerAutoPlayNextPromptView.swift")
+
+        #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
+        #expect(source.contains("primaryButtonMinWidth"))
+        #expect(source.contains("primaryButtonIconSlotSize"))
+        #expect(source.contains(".frame(minWidth: PlayerAutoPlayNextPromptStylePolicy.primaryButtonMinWidth)"))
+        #expect(source.contains(".transition(.opacity)"))
+        #expect(source.contains("resolvingStateAnimation(reduceMotion: reduceMotion)"))
+    }
+
+    private func contents(of relativePath: String) throws -> String {
+        let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
+        return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func repoRootURL() -> URL {
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }
+            url = parent
+        }
+        return url
     }
 }

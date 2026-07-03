@@ -252,6 +252,36 @@ struct KSPlayerEngineReadinessPollTests {
         }
     }
 
+    @Test func readinessObservationTreatsOnlyPlaybackStatesAsStarted() {
+        let ready = KSPlayerEngine.readinessObservation(for: .readyToPlay)
+        #expect(ready.playbackState == .buffering)
+        #expect(ready.hasStartedPlayback == false)
+        #expect(ready.terminalFailureMessage == nil)
+
+        // .buffering fires on play() request before any frame renders, so it
+        // must not satisfy startup readiness — otherwise startupTimeout never
+        // fires for a stream stuck buffering forever.
+        let buffering = KSPlayerEngine.readinessObservation(for: .buffering)
+        #expect(buffering.playbackState == .buffering)
+        #expect(buffering.hasStartedPlayback == false)
+        #expect(buffering.terminalFailureMessage == nil)
+
+        let finished = KSPlayerEngine.readinessObservation(for: .bufferFinished)
+        #expect(finished.playbackState == .playing)
+        #expect(finished.hasStartedPlayback)
+        #expect(finished.terminalFailureMessage == nil)
+
+        let paused = KSPlayerEngine.readinessObservation(for: .paused)
+        #expect(paused.playbackState == .buffering)
+        #expect(paused.hasStartedPlayback == false)
+        #expect(paused.terminalFailureMessage == nil)
+
+        let ended = KSPlayerEngine.readinessObservation(for: .playedToTheEnd)
+        #expect(ended.playbackState == .failed)
+        #expect(ended.hasStartedPlayback == false)
+        #expect(ended.terminalFailureMessage?.contains("before playback started") == true)
+    }
+
     @Test func waitUntilReadyPropagatesCancellation() async {
         let coordinator = KSVideoPlayer.Coordinator()
 
@@ -294,7 +324,7 @@ struct KSPlayerEngineErrorHandlingContractTests {
 
     @Test func waitUntilReadySourceContainsDetailErrorMessage() throws {
         let source = try contents(of: "VPStudio/Services/Player/Engines/KSPlayerEngine.swift")
-        #expect(source.contains("\"KSPlayer decode error: \\(detail)\""))
+        #expect(source.contains("\"KSPlayer decode error: \\(IndexerLogSanitizer.redactedMessage(detail))\""))
     }
 
     @Test func waitUntilReadySourceContainsFallbackErrorMessage() throws {

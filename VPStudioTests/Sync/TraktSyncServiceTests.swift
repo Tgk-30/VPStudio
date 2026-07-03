@@ -453,6 +453,7 @@ struct TraktErrorDeviceCodeTests {
             .httpError(500),
             .unauthorized,
             .notConnected,
+            .invalidIdentifier("Invalid IMDb, OMDb, or TMDb ID."),
             .deviceCodeExpired,
             .deviceCodeDenied,
             .deviceCodeInvalid,
@@ -462,6 +463,22 @@ struct TraktErrorDeviceCodeTests {
             #expect(error.errorDescription != nil)
             #expect(!error.errorDescription!.isEmpty)
         }
+    }
+
+    @Test func invalidIdentifierDescriptionIncludesOMDb() {
+        let error = TraktError.invalidIdentifier("Invalid IMDb, OMDb, or TMDb ID.")
+        #expect(error.errorDescription == "Invalid IMDb, OMDb, or TMDb ID.")
+    }
+
+    @Test func invalidIdentifierDescriptionRedactsSecretBearingInput() {
+        let error = TraktError.invalidIdentifier(
+            "Invalid https://api.trakt.tv/sync?access_token=trakt-secret-token Authorization: Bearer traktBearerSecret1234567890"
+        )
+        let description = error.errorDescription ?? ""
+
+        #expect(description.contains("REDACTED"))
+        #expect(!description.contains("trakt-secret-token"))
+        #expect(!description.contains("traktBearerSecret1234567890"))
     }
 }
 

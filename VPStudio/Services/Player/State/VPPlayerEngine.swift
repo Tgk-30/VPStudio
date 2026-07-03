@@ -295,7 +295,16 @@ final class VPPlayerEngine {
     }
 
     private func loadSubtitleCues(from subtitleURL: URL, format: SubtitleFormat) -> [SubtitleParser.SubtitleCue]? {
+        if let values = try? subtitleURL.resourceValues(forKeys: [.fileSizeKey]),
+           let fileSize = values.fileSize,
+           fileSize > SubtitleParser.maximumInputBytes {
+            return nil
+        }
+
         guard let data = try? Data(contentsOf: subtitleURL) else {
+            return nil
+        }
+        guard data.count <= SubtitleParser.maximumInputBytes else {
             return nil
         }
 

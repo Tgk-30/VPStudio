@@ -91,6 +91,30 @@ struct TraktSyncServiceScrobblingTests {
         #expect(ids?["imdb"] == "tt1160419")
     }
 
+    @Test func startScrobbleAcceptsTMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":12,"action":"start"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.startScrobble(imdbId: "movie-tmdb-438631", type: .movie, progress: 12.0)
+
+        let movie = state.capturedBody?["movie"] as? [String: Any]
+        let ids = movie?["ids"] as? [String: Any]
+        #expect(ids?["tmdb"] as? Int == 438_631)
+        #expect(ids?["imdb"] == nil)
+    }
+
     @Test func startScrobbleShowSendsCorrectBody() async throws {
         final class CapturedState: @unchecked Sendable {
             var capturedBody: [String: Any]?
@@ -113,6 +137,93 @@ struct TraktSyncServiceScrobblingTests {
         #expect(show != nil)
         let ids = show?["ids"] as? [String: String]
         #expect(ids?["imdb"] == "tt7654321")
+    }
+
+    @Test func startScrobbleSeriesEpisodeUsesEpisodeIdentityWhenAvailable() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":22,"action":"start"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.startScrobble(
+            imdbId: "tt7654321",
+            type: .series,
+            progress: 10.0,
+            episodeId: "episode-imdb-TT1234567"
+        )
+
+        #expect(state.capturedBody?["show"] == nil)
+        let episode = state.capturedBody?["episode"] as? [String: Any]
+        let ids = episode?["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1234567")
+        #expect(state.capturedBody?["progress"] as? Double == 10.0)
+    }
+
+    @Test func pauseScrobbleSeriesEpisodeAcceptsTMDBEpisodeIdentity() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":23,"action":"pause"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.pauseScrobble(
+            imdbId: "tt7654321",
+            type: .series,
+            progress: 50.0,
+            episodeId: "tmdb-456"
+        )
+
+        let episode = state.capturedBody?["episode"] as? [String: Any]
+        let ids = episode?["ids"] as? [String: Any]
+        #expect(ids?["tmdb"] as? Int == 456)
+    }
+
+    @Test func stopScrobbleSeriesEpisodeAcceptsOMDbEpisodeIdentity() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":24,"action":"stop"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.stopScrobble(
+            imdbId: "series-omdb-tt7654321",
+            type: .series,
+            progress: 90.0,
+            episodeId: "episode-omdb-TT1234567"
+        )
+
+        #expect(state.capturedBody?["show"] == nil)
+        let episode = state.capturedBody?["episode"] as? [String: Any]
+        let ids = episode?["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1234567")
     }
 
     @Test func pauseScrobbleSendsCorrectPath() async throws {
@@ -153,6 +264,29 @@ struct TraktSyncServiceScrobblingTests {
         try await service.pauseScrobble(imdbId: "tt2222222", type: .movie, progress: 75.5)
 
         #expect(state.capturedBody?["progress"] as? Double == 75.5)
+    }
+
+    @Test func pauseScrobbleNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":12,"action":"pause"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.pauseScrobble(imdbId: "movie-omdb-TT1160419", type: .movie, progress: 42.0)
+
+        let movie = state.capturedBody?["movie"] as? [String: Any]
+        let ids = movie?["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1160419")
     }
 
     @Test func stopScrobbleSendsCorrectPath() async throws {
@@ -196,6 +330,29 @@ struct TraktSyncServiceScrobblingTests {
         let ids = movie?["ids"] as? [String: String]
         #expect(ids?["imdb"] == "tt4444444")
         #expect(state.capturedBody?["progress"] as? Double == 100.0)
+    }
+
+    @Test func stopScrobbleNormalizesOMDbCompositeMediaID() async throws {
+        final class CapturedState: @unchecked Sendable {
+            var capturedBody: [String: Any]?
+        }
+        let state = CapturedState()
+
+        let session = makeTraktStubSession { request in
+            if let body = request.httpBody ?? readStream(request.httpBodyStream) {
+                state.capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":13,"action":"stop"}"#.utf8))
+        }
+
+        let service = TraktSyncService(clientId: "client", clientSecret: "secret", session: session)
+        await service.setTokens(access: "token", refresh: nil)
+        try await service.stopScrobble(imdbId: "movie-omdb-TT1160419", type: .movie, progress: 96.0)
+
+        let movie = state.capturedBody?["movie"] as? [String: Any]
+        let ids = movie?["ids"] as? [String: String]
+        #expect(ids?["imdb"] == "tt1160419")
     }
 
     @Test func scrobbleThrowsNotConnectedWithoutToken() async {

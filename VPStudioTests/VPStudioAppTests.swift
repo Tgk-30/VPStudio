@@ -36,9 +36,9 @@ struct VPStudioAppTests {
     }
 
     @Test
-    func mainWindowGroupUses1200x800DefaultSize() throws {
+    func mainWindowGroupUsesLeanVisionFriendlyDefaultSize() throws {
         let source = try Self.contents(of: "VPStudio/App/VPStudioApp.swift")
-        #expect(source.contains(".defaultSize(width: 1200, height: 800)"))
+        #expect(source.contains(".defaultSize(width: 1280, height: 780)"))
     }
 
     @Test

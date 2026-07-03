@@ -19,9 +19,18 @@ struct PlayerViewRuntimeWrapperCoverageTests {
         // Gradient sits behind the artwork so loading never flashes the stage.
         #expect(gradientRange.lowerBound < artworkRange.lowerBound)
         #expect(fallbackBody.contains("case .none:"))
+        #expect(fallbackBody.contains("playerStageBundledArtwork(name: fallbackArtworkAssetName)"))
         #expect(fallbackBody.contains("playerStageNoArtworkBackdrop"))
-        #expect(fallbackBody.contains("RadialGradient"))
-        #expect(fallbackBody.contains("film.stack"))
+        #expect(fallbackBody.contains("LinearGradient"))
+        #expect(!fallbackBody.contains("RadialGradient"))
+        #expect(!fallbackBody.contains("film.stack"))
+        #expect(fallbackBody.contains(".foregroundStyle(.white.opacity(0.76))"))
+        #expect(fallbackBody.contains("PlayerCinematicChromePolicy.resolvedStageStatusBadgeBackgroundOpacity"))
+        #expect(fallbackBody.contains("PlayerCinematicChromePolicy.stageStatusBadgeCornerRadius"))
+        #expect(fallbackBody.contains("PlayerCinematicChromePolicy.resolvedStageStatusBadgeBorderOpacity"))
+        #expect(fallbackBody.contains("PlayerArtworkPresentationPolicy.resolvedBackdropFallbackOverlayOpacity"))
+        #expect(fallbackBody.contains("PlayerArtworkPresentationPolicy.resolvedPosterFallbackOverlayOpacity"))
+        #expect(fallbackBody.contains("usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout"))
         #expect(!fallbackBody.contains("case .none:\n                EmptyView()"))
 
         // The backdrop AsyncImage fades in on success and clears (Color.clear) on
@@ -40,6 +49,26 @@ struct PlayerViewRuntimeWrapperCoverageTests {
         #expect(unknownClearRange.lowerBound > emptyClearRange.lowerBound)
         #expect(backdropBody.contains("Color.clear"))
         #expect(!backdropBody.contains("playerStageGradient"))
+
+        let bundledBody = try section(
+            from: "private func playerStageBundledArtwork(name: String) -> some View {",
+            to: "private var playerStageNoArtworkBackdrop",
+            in: source
+        )
+        #expect(bundledBody.contains("PlayerArtworkPresentationPolicy.resolvedBundledFallbackSaturation"))
+        #expect(bundledBody.contains("PlayerArtworkPresentationPolicy.resolvedBundledFallbackBlurRadius"))
+        #expect(bundledBody.contains("PlayerArtworkPresentationPolicy.resolvedBundledFallbackOverlayOpacity"))
+        #expect(bundledBody.contains("playerStageAppleEnvironmentFallbackVignette"))
+        #expect(bundledBody.contains("usesAppleEnvironmentMode: usesAppleEnvironmentChromeLayout"))
+
+        let appleVignetteBody = try section(
+            from: "private var playerStageAppleEnvironmentFallbackVignette: some View {",
+            to: "private var playerStageNoArtworkBackdrop",
+            in: source
+        )
+        #expect(appleVignetteBody.contains("PlayerArtworkPresentationPolicy.resolvedBundledFallbackVignetteOpacity"))
+        #expect(appleVignetteBody.contains("LinearGradient"))
+        #expect(!appleVignetteBody.contains("RadialGradient"))
     }
 
     @Test
@@ -60,16 +89,25 @@ struct PlayerViewRuntimeWrapperCoverageTests {
     }
 
     @Test
-    func seededPlayerPreviewFeedsSessionArtworkIntoRealPlayerSurface() throws {
+    func seededPlayerPreviewFeedsBundledArtworkIntoRealPlayerSurface() throws {
         let seedSource = try contents(of: "VPStudio/Core/Support/PlayerPreviewSeed.swift")
         let testModeSource = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/TestModeView.swift")
 
         #expect(seedSource.contains("static var sessionRequest: PlayerSessionRequest"))
-        #expect(seedSource.contains("https://m.media-amazon.com/images/M/vpstudio-player-preview.jpg"))
+        #expect(seedSource.contains("static let fallbackArtworkAssetName = \"genre-art-scifi\""))
         #expect(seedSource.contains("imdbId: imdbID"))
         #expect(testModeSource.contains("let sessionRequest = PlayerPreviewSeed.sessionRequest"))
         #expect(testModeSource.contains("sessionRequest: sessionRequest"))
         #expect(testModeSource.contains("imdbId: sessionRequest.imdbId"))
+        #expect(testModeSource.contains("fallbackArtworkAssetName: PlayerPreviewSeed.fallbackArtworkAssetName"))
+        #expect(testModeSource.contains("initialEnvironmentAssets: QARuntimeOptions.playerAppleEnvironmentMode"))
+        #expect(testModeSource.contains("? EnvironmentVisualQASeed.inactiveAssets"))
+        #expect(testModeSource.contains(": EnvironmentVisualQASeed.assets"))
+        #expect(testModeSource.contains("static var inactiveAssets: [EnvironmentAsset]"))
+        #expect(testModeSource.contains("await appState.clearEnvironmentSelection()"))
+        #expect(testModeSource.contains("appState.isImmersiveSpaceOpen = false"))
+        #expect(testModeSource.contains("appState.selectedEnvironmentAsset = activeAsset"))
+        #expect(testModeSource.contains("case .environmentPicker, .player:"))
     }
 
     @Test
@@ -94,6 +132,75 @@ struct PlayerViewRuntimeWrapperCoverageTests {
     }
 
     @Test
+    func transportChromeUsesRaisedObsidianGlassOverBrightPassthrough() throws {
+        let source = try playerViewSource()
+        let transportBody = try section(
+            from: "private var transportBar: some View {",
+            to: "private var playbackProgressBar: some View {",
+            in: source
+        )
+        let chromeBody = try section(
+            from: "private var transportChromeBackground: some View {",
+            to: "private var playbackProgressBar: some View {",
+            in: source
+        )
+
+        #expect(transportBody.contains(".background {\n            transportChromeBackground\n        }"))
+        #expect(chromeBody.contains("if useObsidianGlass"))
+        #expect(chromeBody.contains("VPElevation.raised.material"))
+        #expect(chromeBody.contains("transportObsidianScrimOpacity"))
+        #expect(chromeBody.contains("PlayerCinematicChromePolicy.resolvedTransportObsidianScrimOpacity"))
+        #expect(chromeBody.contains("VPColor.glassTintRaised"))
+        #expect(chromeBody.contains("shape.fill(.ultraThinMaterial)"))
+    }
+
+    @Test
+    func topBarButtonsUseRaisedObsidianGlassOverBrightPassthrough() throws {
+        let source = try playerViewSource()
+        let buttonBody = try section(
+            from: "private func topBarUtilityButton(",
+            to: "// MARK: - Info Pills Row",
+            in: source
+        )
+
+        #expect(buttonBody.contains(".background {\n                topBarUtilityButtonBackground(isActive: isActive)\n            }"))
+        #expect(buttonBody.contains("private func topBarUtilityButtonBackground(isActive: Bool) -> some View"))
+        #expect(buttonBody.contains("if isActive"))
+        #expect(buttonBody.contains("VPColor.info.opacity(PlayerCinematicVisualPolicy.activeControlBorderOpacity)"))
+        #expect(!buttonBody.contains("VPColor.accent.opacity(0.90)"))
+        #expect(!buttonBody.contains("isShowingAudioPicker || availableAudioTrackCount > 1"))
+        #expect(buttonBody.contains("Circle().fill(VPElevation.raised.material)"))
+        #expect(buttonBody.contains("Circle().fill(Color.black.opacity(PlayerCinematicChromePolicy.topBarButtonObsidianScrimOpacity))"))
+        #expect(buttonBody.contains("Circle().fill(VPColor.glassTintRaised)"))
+        #expect(buttonBody.contains("Circle().fill(.ultraThinMaterial)"))
+        #expect(!buttonBody.contains("Circle().fill(isActive ? VPColor.accent.opacity(0.30) : VPColor.glassTintRaised)"))
+        #expect(!buttonBody.contains("Circle().fill(isActive ? AnyShapeStyle(.tint.opacity(0.34)) : AnyShapeStyle(.ultraThinMaterial))"))
+    }
+
+    @Test
+    func playerChromeTextUsesReadableVisionScale() throws {
+        let source = try playerViewSource()
+        let titleBody = try section(
+            from: "private var titleMetadataBlock: some View {",
+            to: "private var titleMetadataItems: [String]",
+            in: source
+        )
+        let infoPillsBody = try section(
+            from: "private var infoPillsRow: some View {",
+            to: "// MARK: - Transport Bar",
+            in: source
+        )
+
+        #expect(titleBody.contains(".font(.title2.weight(.semibold))"))
+        #expect(titleBody.contains(".font(.callout.weight(.medium))"))
+        #expect(!titleBody.contains(".font(.caption2.weight(.medium))"))
+        #expect(infoPillsBody.contains(".font(.callout.weight(.semibold))"))
+        #expect(infoPillsBody.contains("PlayerCinematicChromePolicy.quickActionPillMinHeight"))
+        #expect(!infoPillsBody.contains(".font(.footnote.weight(.semibold))"))
+        #expect(!infoPillsBody.contains(".font(.caption2.weight(.semibold))"))
+    }
+
+    @Test
     func playerFallbackWaitsForDetectedVideoFrameAndDoesNotDuplicateFailureMessaging() throws {
         let source = try playerViewSource()
         let fallbackBody = try section(
@@ -109,12 +216,19 @@ struct PlayerViewRuntimeWrapperCoverageTests {
 
         #expect(source.contains("hasDetectedVideoFrame: detectedVideoRatio != nil"))
         #expect(source.contains("hasExhaustedVideoFrameDetection: didExhaustAVVideoRatioDetection || didExhaustKSVideoRatioRetry"))
+        #expect(source.contains("hasRenderablePlayerSurface: hasRenderablePlayerSurface"))
+        #expect(source.contains("private var hasRenderablePlayerSurface: Bool"))
         #expect(source.contains("didExhaustAVVideoRatioDetection = true"))
         #expect(source.contains("didExhaustKSVideoRatioRetry = true"))
+        #expect(source.contains(".padding(.horizontal, PlayerCinematicChromePolicy.topBarHorizontalPadding)"))
+        #expect(source.contains(".frame(maxWidth: resolvedTopBarMaxWidth)"))
+        #expect(source.contains("PlayerCinematicChromePolicy.resolvedTopBarMaxWidth("))
         #expect(ksRatioBody.contains("#else"))
         #expect(ksRatioBody.contains("didExhaustKSVideoRatioRetry = true"))
         #expect(fallbackPolicyBody.contains("hasExhaustedVideoFrameDetection && playbackState == .playing"))
-        #expect(fallbackBody.contains("if playbackState != .failed"))
+        #expect(fallbackBody.contains("isElevatedFallback: shouldElevatePlayerStageFallback"))
+        #expect(fallbackBody.contains("isElevatedStageFallback: shouldElevatePlayerStageFallback"))
+        #expect(fallbackBody.contains("PlayerArtworkPresentationPolicy.stageStatusBadgeIconName"))
         #expect(!fallbackBody.contains("exclamationmark.triangle.fill"))
     }
 
@@ -143,6 +257,7 @@ struct PlayerViewRuntimeWrapperCoverageTests {
         )
 
         #expect(promptBody.contains(".padding(.bottom, autoPlayNextBottomPadding)"))
+        #expect(promptBody.contains(".zIndex(PlayerCinematicChromePolicy.autoPlayPromptZIndex)"))
         #expect(!promptBody.contains(".padding(.bottom, 150)"))
         #expect(source.contains("private var autoPlayNextBottomPadding: CGFloat"))
         #expect(source.contains("PlayerViewStatePolicy.autoPlayNextBottomPadding("))
@@ -306,7 +421,7 @@ struct PlayerViewTrackMenuContractCoverageTests {
     func lockButtonToggleIsWiredToControlsState() throws {
         let source = try playerViewSource()
         #expect(source.contains("toggleControlsLock()"))
-        #expect(source.contains("systemName: isControlsLocked ? \"lock.fill\" : \"lock.open\""))
+        #expect(source.contains("systemName: isControlsLocked ? \"lock.fill\" : \"lock\""))
         #expect(source.contains("isActive: isControlsLocked"))
         #expect(source.contains("accessibilityLabel: isControlsLocked ? \"Unlock controls\" : \"Lock controls\""))
     }
@@ -331,6 +446,39 @@ struct PlayerViewTrackMenuContractCoverageTests {
         #expect(body.contains("isShowingControls = true"))
         #expect(body.contains("scheduleControlsHide()"))
         #expect(body.contains("else if isShowingControls, isControlModalPresented == false"))
+    }
+
+    @Test
+    func closePlayerDismissesPresentedControlModalBeforePlaybackTeardown() throws {
+        let source = try playerViewSource()
+        let closeBody = try functionBody(named: "closePlayer", in: source)
+        let dismissBody = try functionBody(named: "dismissPresentedControlModalForCloseRequest", in: source)
+
+        let modalDismissRange = try requiredRange(of: "dismissPresentedControlModalForCloseRequest()", in: closeBody)
+        let closeGuardRange = try requiredRange(of: "guard !didInitiateClose else", in: closeBody)
+        #expect(modalDismissRange.lowerBound < closeGuardRange.lowerBound)
+        #expect(dismissBody.contains("PlayerViewPolicy.closeRequestAction("))
+        #expect(dismissBody.contains("guard action == .dismissControlModal else { return false }"))
+        #expect(dismissBody.contains("isShowingSubtitlePicker = false"))
+        #expect(dismissBody.contains("isShowingAudioPicker = false"))
+        #expect(dismissBody.contains("isShowingEnvironmentPicker = false"))
+        #expect(dismissBody.contains("isShowingCinemaSettings = false"))
+        #expect(dismissBody.contains("environmentMenuActionTask?.cancel()"))
+        #expect(dismissBody.contains("return true"))
+    }
+
+    @Test
+    func playerCloseControlExposesCancelShortcutThroughClosePolicy() throws {
+        let source = try playerViewSource()
+        let titleBarBody = try section(
+            from: "private var titleBar: some View {",
+            to: "private var titleMetadataBlock: some View {",
+            in: source
+        )
+
+        let closeActionRange = try requiredRange(of: "closePlayer()", in: titleBarBody)
+        let shortcutRange = try requiredRange(of: ".keyboardShortcut(.cancelAction)", in: titleBarBody)
+        #expect(closeActionRange.lowerBound < shortcutRange.lowerBound)
     }
 
     @Test
@@ -529,21 +677,26 @@ struct PlayerViewCleanupAndPerformanceContractCoverageTests {
         for functionName in [
             "openCinemaEnvironmentAfterMenuDismissal",
             "openEnvironmentAfterMenuDismissal",
+            "openAppleEnvironmentAfterMenuDismissal",
             "showEnvironmentPickerAfterMenuDismissal",
             "showCinemaSettingsAfterMenuDismissal",
-            "dismissEnvironmentAfterMenuDismissal"
+            "dismissEnvironmentAfterMenuDismissal",
+            "clearEnvironmentSelectionAfterMenuDismissal"
         ] {
             let body = try functionBody(named: functionName, in: source)
 
             #expect(body.contains("environmentMenuActionTask?.cancel()"))
             #expect(body.contains("environmentMenuActionTask = Task { @MainActor in"))
             #expect(body.contains("await waitForMenuDismissal()"))
-            #expect(body.contains("guard !Task.isCancelled else { return }"))
+            #expect(body.contains("guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }"))
 
             let cancelRange = try requiredRange(of: "environmentMenuActionTask?.cancel()", in: body)
             let taskRange = try requiredRange(of: "environmentMenuActionTask = Task { @MainActor in", in: body)
             let waitRange = try requiredRange(of: "await waitForMenuDismissal()", in: body)
-            let guardRange = try requiredRange(of: "guard !Task.isCancelled else { return }", in: body)
+            let guardRange = try requiredRange(
+                of: "guard !Task.isCancelled, acceptsPlayerLifecycleCallbacks else { return }",
+                in: body
+            )
 
             #expect(cancelRange.lowerBound < taskRange.lowerBound)
             #expect(taskRange.lowerBound < waitRange.lowerBound)
@@ -640,7 +793,7 @@ struct PlayerViewCleanupAndPerformanceContractCoverageTests {
     }
 
     @Test
-    func autoSuggestedEnvironmentMustPersistBeforeOpeningImmersiveSpace() throws {
+    func autoSuggestedEnvironmentMustPersistBeforeOpeningImmersiveSpaceWithoutNeutralFallback() throws {
         let source = try playerViewSource()
         let autoOpenBody = try functionBody(named: "autoOpenEnvironmentIfNeeded", in: source)
 
@@ -649,18 +802,195 @@ struct PlayerViewCleanupAndPerformanceContractCoverageTests {
             of: "guard await appState.selectSuggestedEnvironmentAsset(match) else { return }",
             in: autoOpenBody
         )
-        let fallbackRange = try requiredRange(
-            of: "guard await appState.selectSuggestedEnvironmentAsset(fallback) else { return }",
-            in: autoOpenBody
-        )
         let openRange = try requiredRange(of: "await openImmersiveSpaceIfPossible(for: asset)", in: autoOpenBody)
+        let dimRange = try requiredRange(of: "await loadDimPassthroughPreference()", in: autoOpenBody)
         #expect(suggestRange.lowerBound < openRange.lowerBound)
-        #expect(fallbackRange.lowerBound < openRange.lowerBound)
-        #expect(autoOpenBody.contains("let fallback = await defaultEnvironmentAssetForAutoOpen()"))
+        #expect(suggestRange.lowerBound < dimRange.lowerBound)
+        #expect(dimRange.lowerBound < openRange.lowerBound)
         #expect(!autoOpenBody.contains("appState.selectSuggestedEnvironmentAsset(match)\n"))
+        #expect(!autoOpenBody.contains("defaultEnvironmentAssetForAutoOpen"))
+        #expect(!autoOpenBody.contains("GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey"))
 
-        #expect(source.contains("private func defaultEnvironmentAssetForAutoOpen() async -> EnvironmentAsset?"))
-        #expect(source.contains("GenreEnvironmentSuggestionPolicy.neutralDefault.matchKey"))
+        let settingsSource = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/EnvironmentSettingsView.swift")
+        #expect(settingsSource.contains("If nothing matches, playback stays in Apple Environment."))
+        #expect(!settingsSource.contains("falling back to the neutral environment"))
+    }
+
+    @Test
+    func appleEnvironmentModeUsesSystemWindowExpansionInsteadOfForcedRatio() throws {
+        let source = try playerViewSource()
+        let gravityBody = try section(
+            from: "private var currentVideoGravity: AVLayerVideoGravity {",
+            to: "private var shouldElevatePlayerStageFallback: Bool {",
+            in: source
+        )
+        let geometryBody = try functionBody(named: "applyVisionOSWindowGeometry", in: source)
+
+        #expect(source.contains("private var usesAppleEnvironmentMode: Bool"))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.usesAppleEnvironmentMode("))
+        #expect(source.contains("@State private var didApplyInitialDimDefault = false"))
+        #expect(source.contains("@State private var didExpandAppleEnvironmentWindow = false"))
+        #expect(source.contains("@State private var playerSceneActivationTask: Task<Void, Never>?"))
+        #expect(source.contains("applyInitialDimDefaultIfNeeded()"))
+        #expect(source.contains("private func applyInitialDimDefaultIfNeeded()"))
+        #expect(source.contains("PlayerViewPolicy.defaultDimPassthrough("))
+        let initialLoadBody = try functionBody(named: "loadInitialPlayerState", in: source)
+        let loadAssetsRange = try requiredRange(of: "await loadEnvironmentAssets()", in: initialLoadBody)
+        let initialDimRange = try requiredRange(of: "applyInitialDimDefaultIfNeeded()", in: initialLoadBody)
+        let privacyRange = try requiredRange(of: "await loadPrivacyPreferences()", in: initialLoadBody)
+        let autoOpenRange = try requiredRange(of: "await autoOpenEnvironmentIfNeeded()", in: initialLoadBody)
+        let loadDimRange = try requiredRange(of: "await loadDimPassthroughPreference()", in: initialLoadBody)
+        #expect(loadAssetsRange.lowerBound < initialDimRange.lowerBound)
+        #expect(initialDimRange.lowerBound < privacyRange.lowerBound)
+        #expect(loadAssetsRange.lowerBound < autoOpenRange.lowerBound)
+        #expect(autoOpenRange.lowerBound < loadDimRange.lowerBound)
+        let onAppearBody = try section(
+            from: ".onAppear {",
+            to: ".onDisappear {",
+            in: source
+        )
+        #expect(!onAppearBody.contains("applyInitialDimDefaultIfNeeded()"))
+        #expect(onAppearBody.contains("startPlayerSceneActivation()"))
+        let activationBody = try functionBody(named: "startPlayerSceneActivation", in: source)
+        let activationYieldRange = try requiredRange(of: "await Task.yield()", in: activationBody)
+        let activationSuppressRange = try requiredRange(of: "scheduleMainWindowSuppressionIfNeeded()", in: activationBody)
+        let activationGeometryRange = try requiredRange(of: "scheduleVisionOSWindowGeometryUpdate()", in: activationBody)
+        #expect(activationYieldRange.lowerBound < activationSuppressRange.lowerBound)
+        #expect(activationSuppressRange.lowerBound < activationGeometryRange.lowerBound)
+        let scheduledGeometryBody = try functionBody(named: "scheduleVisionOSWindowGeometryUpdate", in: source)
+        #expect(source.contains(".onChange(of: playerWindowScene) { _, _ in\n            expandPendingAppleEnvironmentWindowIfAvailable()\n            scheduleVisionOSWindowGeometryUpdate()\n        }"))
+        #expect(scheduledGeometryBody.contains("await Task.yield()"))
+        #expect(scheduledGeometryBody.contains("guard playerWindowScene.map({ ObjectIdentifier($0) }) == trackedSceneID else { return }"))
+        #expect(scheduledGeometryBody.contains("applyVisionOSWindowGeometry(cancelPendingTask: false)"))
+        #expect(source.contains("private func applyVisionOSWindowGeometry(cancelPendingTask: Bool = true)"))
+        #expect(geometryBody.contains("if cancelPendingTask"))
+        #expect(gravityBody.contains("if usesAppleEnvironmentChromeLayout"))
+        #expect(gravityBody.contains("return .resizeAspect"))
+        #expect(geometryBody.contains("if usesAppleEnvironmentChromeLayout"))
+        #expect(geometryBody.contains("requestAppleEnvironmentExpandedWindowGeometry(on: windowScene)"))
+        #expect(geometryBody.contains("if !aspectRatioSelection.locksWindowRatio"))
+        #expect(source.contains("private var playerBaseBackdrop: some View"))
+        #expect(source.contains("private var playerSurfaceBackdrop: some View"))
+        #expect(source.contains("if usesAppleEnvironmentChromeLayout {\n            Color.clear"))
+        #expect(source.contains("allowsTransparentBackground: usesAppleEnvironmentChromeLayout"))
+        #expect(source.contains(".immersiveEnvironmentPicker {\n            playerSystemEnvironmentPickerEntries\n        }"))
+        let systemPickerBody = try section(
+            from: "private var playerSystemEnvironmentPickerEntries: some View {",
+            to: "#endif\n\n    @ViewBuilder\n    private var playerSurfaceFeedbackOverlay",
+            in: source
+        )
+        #expect(systemPickerBody.contains("Text(EnvironmentPreviewRowPolicy.appleEnvironmentTitle)"))
+        #expect(systemPickerBody.contains("Image(systemName: \"visionpro\")"))
+        #expect(systemPickerBody.contains("Text(PlayerEnvironmentMenuPolicy.appleEnvironmentMenuBenefit)"))
+        #expect(systemPickerBody.contains("await openAppleEnvironmentFromSystemPicker()"))
+        let appleEnvironmentPickerBody = try functionBody(named: "openAppleEnvironmentFromSystemPicker", in: source)
+        #expect(appleEnvironmentPickerBody.contains("guard await clearEnvironmentSelection() else"))
+        #expect(appleEnvironmentPickerBody.contains("pendingAppleEnvironmentWindowExpansion = false"))
+        #expect(appleEnvironmentPickerBody.contains("expandAppleEnvironmentWindowIfAvailable(allowPending: true)"))
+        let appleEnvironmentMenuBody = try functionBody(named: "openAppleEnvironmentAfterMenuDismissal", in: source)
+        #expect(appleEnvironmentMenuBody.contains("await openAppleEnvironmentFromSystemPicker()"))
+        let appleEnvironmentExpandBody = try functionBody(named: "expandAppleEnvironmentWindowIfAvailable", in: source)
+        #expect(appleEnvironmentExpandBody.contains("guard canExpandAppleEnvironmentWindow else"))
+        #expect(appleEnvironmentExpandBody.contains("pendingAppleEnvironmentWindowExpansion = true"))
+        #expect(appleEnvironmentExpandBody.contains("PlayerEnvironmentMenuPolicy.appleEnvironmentPendingBenefit"))
+        #expect(appleEnvironmentExpandBody.contains("PlayerEnvironmentMenuPolicy.appleEnvironmentFallbackBenefit"))
+        #expect(appleEnvironmentExpandBody.contains("expandAppleEnvironmentWindow()"))
+        let pendingExpandBody = try functionBody(named: "expandPendingAppleEnvironmentWindowIfAvailable", in: source)
+        #expect(pendingExpandBody.contains("pendingAppleEnvironmentWindowExpansion"))
+        #expect(pendingExpandBody.contains("usesAppleEnvironmentMode"))
+        #expect(pendingExpandBody.contains("canExpandAppleEnvironmentWindow"))
+        #expect(pendingExpandBody.contains("expandAppleEnvironmentWindow()"))
+        #expect(source.contains("private func applyVisionOSEnvironmentPresentationMode()"))
+        #expect(source.contains(".persistentSystemOverlays(persistentSystemOverlayVisibility)"))
+        #expect(source.contains("private var persistentSystemOverlayVisibility: Visibility"))
+        #expect(source.contains("usesAppleEnvironmentChromeLayout ? .hidden : (isShowingControls ? .automatic : .hidden)"))
+        #expect(source.contains("private var usesAppleEnvironmentChromeLayout: Bool"))
+        #expect(source.contains("return usesAppleEnvironmentMode\n            && didExpandAppleEnvironmentWindow\n            && canExpandAppleEnvironmentWindow"))
+        #expect(source.contains("private var canExpandAppleEnvironmentWindow: Bool"))
+        #expect(source.contains("PlayerCinemaEnvironmentPolicy.canOpen(\n                activeEngine: activeEngine,\n                hasAVPlayer: avPlayer != nil\n            )"))
+        #expect(source.contains("accessibilityLabel: \"Expand Apple Environment\""))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction("))
+        #expect(source.contains("PlayerEnvironmentMenuPolicy.appleEnvironmentExpandTitle"))
+        #expect(source.contains("PlayerCinematicChromePolicy.closeMenuTitle"))
+        #expect(source.contains("PlayerCinematicChromePolicy.closeMenuIconName"))
+        #expect(source.contains("onExpandAppleEnvironment: {"))
+        #expect(source.components(separatedBy: "expandAppleEnvironmentWindowIfAvailable(allowPending: true)").count - 1 >= 6)
+        #expect(!source.contains("expandAppleEnvironmentWindowIfAvailable()\n"))
+        #expect(source.contains("onClear: {\n                        keepControlsVisibleForMenuAction()\n                        openAppleEnvironmentAfterMenuDismissal()\n                    }"))
+        #expect(source.contains("isAppleEnvironmentExpansionPending: pendingAppleEnvironmentWindowExpansion"))
+        #expect(source.contains("isExpansionPending: pendingAppleEnvironmentWindowExpansion"))
+        #expect(source.contains("onCloseMenu: {\n                        closeOpenControlMenu()\n                    }"))
+        #expect(!source.contains(".disabled(!canExpandAppleEnvironmentWindow)"))
+        #expect(source.contains("private func applyAppleEnvironmentExpandedWindowGeometry()"))
+        #expect(source.contains("private func requestAppleEnvironmentExpandedWindowGeometry(on windowScene: UIWindowScene)"))
+        #expect(source.contains("visionGeometryTask = nil\n            return\n        }\n\n        requestAppleEnvironmentExpandedWindowGeometry(on: windowScene)"))
+        #expect(source.contains("PlayerCinematicChromePolicy.appleEnvironmentExpandedWindowSize"))
+        #expect(source.contains("PlayerCinematicChromePolicy.appleEnvironmentExpansionRelaxDelay"))
+        #expect(source.contains("appleEnvironmentFreeformGeometryPreferences()"))
+        let preparePlaybackBody = try functionBody(named: "preparePlayback", in: source)
+        let activePlayerRange = try requiredRange(of: "appState.activeAVPlayer = player", in: preparePlaybackBody)
+        let pendingExpandRange = try requiredRange(of: "expandPendingAppleEnvironmentWindowIfAvailable()", in: preparePlaybackBody)
+        let presentationRange = try requiredRange(of: "applyVisionOSEnvironmentPresentationMode()", in: preparePlaybackBody)
+        #expect(activePlayerRange.lowerBound < pendingExpandRange.lowerBound)
+        #expect(pendingExpandRange.lowerBound < presentationRange.lowerBound)
+        #expect(source.contains(".onChange(of: playerWindowScene) { _, _ in\n            expandPendingAppleEnvironmentWindowIfAvailable()"))
+        let playerCoreBody = try section(
+            from: "private var playerCore: some View {",
+            to: "private var persistentSystemOverlayVisibility: Visibility {",
+            in: source
+        )
+        let visualStageRange = try requiredRange(of: "playerVisualStage", in: playerCoreBody)
+        let surfaceTreatmentRange = try requiredRange(of: "appleEnvironmentSurfaceTreatment", in: playerCoreBody)
+        let subtitleOverlayRange = try requiredRange(of: "subtitleOverlay", in: playerCoreBody)
+        let controlsOverlayRange = try requiredRange(of: "controlsOverlay", in: playerCoreBody)
+        #expect(visualStageRange.lowerBound < surfaceTreatmentRange.lowerBound)
+        #expect(surfaceTreatmentRange.lowerBound < subtitleOverlayRange.lowerBound)
+        #expect(surfaceTreatmentRange.lowerBound < controlsOverlayRange.lowerBound)
+        #expect(!playerCoreBody.contains(".overlay {\n            appleEnvironmentSurfaceTreatment\n        }"))
+        let playerSurfaceContentBody = try section(
+            from: "private var playerSurfaceContent: some View {",
+            to: "#endif\n\n    @ViewBuilder\n    private var playerSystemEnvironmentPickerEntries",
+            in: source
+        )
+        #expect(!playerSurfaceContentBody.contains(".immersiveEnvironmentPicker"))
+        #expect(source.contains("private var appleEnvironmentSurfaceTreatment: some View"))
+        #expect(source.contains("if usesAppleEnvironmentChromeLayout"))
+        #expect(source.contains("PlayerCinematicChromePolicy.appleEnvironmentSurfaceRimOpacity"))
+        #expect(!source.contains("appleEnvironmentSurfaceTopSheen"))
+        #expect(!source.contains("appleEnvironmentSurfaceSideReflection"))
+        #expect(!source.contains("appleEnvironmentSurfaceLowerReflection"))
+        #expect(!source.contains("appleEnvironmentSurfaceLowerShade"))
+        #expect(source.contains("PlayerCinematicChromePolicy.resolvedControlsDockBottomPadding("))
+        #expect(source.contains("PlayerCinematicChromePolicy.resolvedTransportCardMaxWidth("))
+        #expect(source.contains(".onChange(of: appState.isImmersiveSpaceOpen)"))
+        #expect(source.contains(".onChange(of: appState.activeEnvironment)"))
+        #expect(source.contains(".onChange(of: appState.selectedEnvironmentAsset?.id)"))
+        #expect(source.contains("applyVisionOSEnvironmentPresentationMode()"))
+        #expect(source.contains("Free Resize"))
+    }
+
+    @Test
+    func appleEnvironmentExpansionStateIsExplicitAndResetsOnEnvironmentSwitches() throws {
+        let source = try playerViewSource()
+        let expandBody = try functionBody(named: "expandAppleEnvironmentWindow", in: source)
+        let resetBody = try functionBody(named: "resetAppleEnvironmentExpansionState", in: source)
+        let closeBody = try functionBody(named: "closePlayer", in: source)
+        let clearBody = try functionBody(named: "clearEnvironmentSelection", in: source)
+        let openEnvironmentBody = try functionBody(named: "openEnvironment", in: source)
+        let openCinemaBody = try functionBody(named: "openCinemaEnvironment", in: source)
+
+        let expandStateRange = try requiredRange(of: "didExpandAppleEnvironmentWindow = true", in: expandBody)
+        let freeformRange = try requiredRange(of: "aspectRatioSelection = .freeform", in: expandBody)
+        let geometryRange = try requiredRange(of: "applyAppleEnvironmentExpandedWindowGeometry()", in: expandBody)
+        #expect(expandStateRange.lowerBound < freeformRange.lowerBound)
+        #expect(freeformRange.lowerBound < geometryRange.lowerBound)
+
+        #expect(resetBody.contains("pendingAppleEnvironmentWindowExpansion = false"))
+        #expect(resetBody.contains("didExpandAppleEnvironmentWindow = false"))
+        #expect(closeBody.contains("resetAppleEnvironmentExpansionState()"))
+        #expect(clearBody.contains("resetAppleEnvironmentExpansionState()"))
+        #expect(openEnvironmentBody.contains("resetAppleEnvironmentExpansionState()"))
+        #expect(openCinemaBody.contains("resetAppleEnvironmentExpansionState()"))
     }
 
     @Test
@@ -706,6 +1036,30 @@ struct PlayerViewCleanupAndPerformanceContractCoverageTests {
         #expect(deleteRange.lowerBound < clearRange.lowerBound)
         #expect(clearRange.lowerBound < reloadRange.lowerBound)
         #expect(reloadRange.lowerBound < messageRange.lowerBound)
+    }
+
+    @Test
+    func successfulEnvironmentCatalogLoadReconcilesStaleSelectedAsset() throws {
+        let body = try functionBody(named: "loadEnvironmentAssets", in: try playerViewSource())
+
+        #expect(body.contains("assets = try await appState.environmentCatalogManager.fetchAssets()"))
+        #expect(body.contains("environmentAssets = []"))
+        #expect(body.contains("appState.reconcileEnvironmentSelection(withLoadedAssets: assets)"))
+        #expect(!body.contains("(try? await appState.environmentCatalogManager.fetchAssets()) ?? []"))
+
+        let fetchRange = try requiredRange(
+            of: "assets = try await appState.environmentCatalogManager.fetchAssets()",
+            in: body
+        )
+        let loadedRange = try requiredRange(of: "environmentAssets = assets", in: body)
+        let reconcileRange = try requiredRange(
+            of: "appState.reconcileEnvironmentSelection(withLoadedAssets: assets)",
+            in: body
+        )
+        let failureRange = try requiredRange(of: "environmentAssets = []", in: body)
+        #expect(fetchRange.lowerBound < loadedRange.lowerBound)
+        #expect(loadedRange.lowerBound < reconcileRange.lowerBound)
+        #expect(failureRange.lowerBound < reconcileRange.lowerBound)
     }
 
     @Test

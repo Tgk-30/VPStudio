@@ -203,6 +203,19 @@ private final class SyncCounter: @unchecked Sendable {
 
 @Suite(.serialized)
 struct DownloadManagerTests {
+    @Test func downloadRedirectPolicyAllowsOnlyPublicHTTPDestinations() {
+        #expect(DownloadRedirectPolicy.allowsDownloadURL(URL(string: "https://cdn.example.com/movie.mkv")))
+        #expect(DownloadRedirectPolicy.allowsDownloadURL(URL(string: "http://127.0.0.1/movie.mkv")) == false)
+        #expect(DownloadRedirectPolicy.allowsDownloadURL(URL(string: "http://169.254.169.254/latest/meta-data")) == false)
+        #expect(DownloadRedirectPolicy.allowsDownloadURL(URL(string: "https://media.internal/movie.mkv")) == false)
+        #expect(DownloadRedirectPolicy.allowsDownloadURL(URL(string: "ftp://cdn.example.com/movie.mkv")) == false)
+
+        let allowedRequest = URLRequest(url: URL(string: "https://stream.example.com/redirected.mkv")!)
+        let blockedRequest = URLRequest(url: URL(string: "http://192.168.1.1/admin")!)
+        #expect(DownloadRedirectPolicy.allowsRedirect(to: allowedRequest))
+        #expect(DownloadRedirectPolicy.allowsRedirect(to: blockedRequest) == false)
+    }
+
     @Test func cancellationControllerInvokesCallbacksOnceAndLateCallbacksImmediately() {
         final class CallbackRecorder: @unchecked Sendable {
             private let lock = NSLock()
@@ -238,10 +251,12 @@ struct DownloadManagerTests {
 
     @Test func downloadTransferErrorDescriptionsRemainUserFacing() {
         let badStatus = DownloadTransferError.badHTTPStatus(429)
+        let blockedFinalURL = DownloadTransferError.blockedFinalURL(URL(string: "http://127.0.0.1/video.mkv"))
         let insufficientSpace = DownloadTransferError.insufficientDiskSpace(required: 10_000, available: -1)
         let paused = DownloadTransferError.resumeDataProduced(Data("resume".utf8))
 
         #expect(badStatus.errorDescription == "Download failed with HTTP 429.")
+        #expect(blockedFinalURL.errorDescription == "Download response was blocked because the final destination is not a public HTTP(S) URL.")
         #expect(insufficientSpace.errorDescription?.contains("Not enough free space to start this download.") == true)
         #expect(insufficientSpace.errorDescription?.contains("only") == true)
         #expect(insufficientSpace.errorDescription?.contains("is available.") == true)
@@ -425,6 +440,39 @@ struct DownloadManagerTests {
 
     @Test func serverErrorResponsesDoNotCompleteDownload() async throws {
         try await assertHTTPErrorResponseDoesNotComplete(statusCode: 500, fileName: "server-error.mkv", databaseName: "download-manager-http-500.sqlite")
+    }
+
+    @Test func privateFinalResponseURLDoesNotCompleteDownload() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "download-manager-private-final-url.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let downloadsDir = rootDir.appendingPathComponent("downloads", isDirectory: true)
+        let tempURL = rootDir.appendingPathComponent("private-final-response.bin")
+        let manager = DownloadManager(
+            database: database,
+            downloadsDirectory: downloadsDir,
+            performer: { _, _, _ in
+                try Data(repeating: 0x59, count: 512).write(to: tempURL)
+                let response = HTTPURLResponse(
+                    url: URL(string: "http://127.0.0.1/private-final.mkv")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "video/x-matroska"]
+                )!
+                return (tempURL, response)
+            }
+        )
+
+        let task = try await manager.enqueueDownload(
+            stream: makeStream(name: "private-final.mkv"),
+            mediaId: "tt-private-final-url",
+            episodeId: nil
+        )
+
+        let failed = try await waitForStatus(database: database, id: task.id, expected: .failed)
+        #expect(failed.destinationURL == nil)
+        #expect(failed.errorMessage == DownloadTransferError.blockedFinalURL(URL(string: "http://127.0.0.1/private-final.mkv")).localizedDescription)
+        #expect(!FileManager.default.fileExists(atPath: tempURL.path))
     }
 
     @Test func cancelMarksTaskCancelled() async throws {
@@ -4863,7 +4911,10 @@ struct DownloadManagerTests {
             infoHash: "abcabcabcabcabcabcabcabcabcabcabcabcabc1",
             preferredService: .realDebrid
         )!
-        let headers = ["Authorization": "Bearer original"]
+        let headers = [
+            "User-Agent": "VPStudio",
+            "Referer": "https://app.example.com/"
+        ]
 
         let performer: DownloadManager.DownloadPerformer = { request, _, _ in
             await recorder.record(request: request)

@@ -2,6 +2,21 @@
 import SwiftUI
 
 enum PlayerEnvironmentMenuPolicy {
+    static let triggerDisclosureIconName = "chevron.down"
+    static let appleEnvironmentMenuBenefit = "System expansion when available"
+    static let appleEnvironmentFallbackBenefit = "Standard window until supported playback is active"
+    static let appleEnvironmentPendingBenefit = "Expansion queued until supported playback is active"
+    static let appleEnvironmentChromeStatus = "Apple Environment"
+    static let appleEnvironmentExpandTitle = "Expand Apple Environment"
+    static let appleEnvironmentExpandIconName = "arrow.up.left.and.arrow.down.right"
+    static let closeMenuTitle = PlayerCinematicChromePolicy.closeMenuTitle
+    static let closeMenuIconName = PlayerCinematicChromePolicy.closeMenuIconName
+    static let compactTriggerMinWidth: CGFloat = 170
+    static let compactTriggerMaxWidth: CGFloat = 328
+    static let compactTriggerMinHeight: CGFloat = PlayerCinematicChromePolicy.quickActionPillMinHeight
+    static let compactTriggerMinimumScaleFactor: CGFloat = 0.88
+    static let menuRowMinimumScaleFactor: CGFloat = 0.78
+
     static func effectiveSelectedAssetID(
         appStateSelectedID: String?,
         assets: [EnvironmentAsset]
@@ -16,35 +31,21 @@ enum PlayerEnvironmentMenuPolicy {
         appStateSelectedAsset: EnvironmentAsset?,
         assets: [EnvironmentAsset]
     ) -> EnvironmentAsset? {
-        if let appStateSelectedAsset,
-           !normalizedID(appStateSelectedAsset.id).isEmpty {
-            return appStateSelectedAsset
-        }
-
-        guard let selectedID = effectiveSelectedAssetID(
-            appStateSelectedID: appStateSelectedAsset?.id,
+        EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: appStateSelectedAsset,
             assets: assets
-        ) else {
-            return nil
-        }
-
-        return assets.first { normalizedID($0.id) == selectedID }
+        )
     }
 
     static func effectiveSelectedAssetName(
         appStateSelectedAsset: EnvironmentAsset?,
         assets: [EnvironmentAsset]
     ) -> String? {
-        let appStateName = appStateSelectedAsset?.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let appStateName, !appStateName.isEmpty {
-            return appStateName
-        }
-
-        let catalogName = effectiveSelectedAsset(
+        let selectedName = effectiveSelectedAsset(
             appStateSelectedAsset: appStateSelectedAsset,
             assets: assets
         )?.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return catalogName?.isEmpty == false ? catalogName : nil
+        return selectedName?.isEmpty == false ? selectedName : nil
     }
 
     static func cinemaIconName(
@@ -71,7 +72,7 @@ enum PlayerEnvironmentMenuPolicy {
     }
 
     static func standardRoomIconName(isSelected: Bool) -> String {
-        isSelected ? "checkmark" : "rectangle.dashed"
+        isSelected ? "checkmark" : "visionpro"
     }
 
     static func isStandardRoomSelected(
@@ -80,7 +81,7 @@ enum PlayerEnvironmentMenuPolicy {
         isImmersiveSpaceOpen: Bool
     ) -> Bool {
         guard normalizedID(selectedAssetID).isEmpty else { return false }
-        return !(activeEnvironment != nil && isImmersiveSpaceOpen)
+        return activeEnvironment == nil
     }
 
     static func compactAssetIconName(forAssetPath assetPath: String) -> String {
@@ -104,13 +105,18 @@ enum PlayerEnvironmentMenuPolicy {
     static func standardRoomStateText(
         selectedAssetID: String?,
         activeEnvironment: EnvironmentType?,
-        isImmersiveSpaceOpen: Bool
+        isImmersiveSpaceOpen: Bool,
+        canUseSystemVideoSurface: Bool = true,
+        isExpansionPending: Bool = false
     ) -> String? {
-        isStandardRoomSelected(
+        if isStandardRoomSelected(
             selectedAssetID: selectedAssetID,
             activeEnvironment: activeEnvironment,
             isImmersiveSpaceOpen: isImmersiveSpaceOpen
-        ) ? "Active now" : nil
+        ) {
+            return isExpansionPending ? appleEnvironmentPendingBenefit : "Active now"
+        }
+        return canUseSystemVideoSurface ? appleEnvironmentMenuBenefit : appleEnvironmentFallbackBenefit
     }
 
     static func cinemaStateText(
@@ -146,8 +152,60 @@ enum PlayerEnvironmentMenuPolicy {
         isImmersiveSpaceOpen ? "mountain.2.fill" : "mountain.2"
     }
 
+    static func triggerIconName(
+        selectedAssetID: String?,
+        activeEnvironment: EnvironmentType?,
+        isImmersiveSpaceOpen: Bool
+    ) -> String {
+        if usesAppleEnvironmentMode(
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: activeEnvironment,
+            isImmersiveSpaceOpen: isImmersiveSpaceOpen
+        ) {
+            return "visionpro"
+        }
+        return triggerIconName(isImmersiveSpaceOpen: isImmersiveSpaceOpen)
+    }
+
+    static func triggerTitle(
+        selectedAssetID: String?,
+        selectedAssetName: String? = nil,
+        activeEnvironment: EnvironmentType?,
+        isImmersiveSpaceOpen: Bool
+    ) -> String {
+        if usesAppleEnvironmentMode(
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: activeEnvironment,
+            isImmersiveSpaceOpen: isImmersiveSpaceOpen
+        ) {
+            return EnvironmentPreviewRowPolicy.appleEnvironmentTitle
+        }
+
+        if isImmersiveSpaceOpen {
+            return "Environment On"
+        }
+
+        if let selectedAssetName = displayableAssetName(selectedAssetName) {
+            return selectedAssetName
+        }
+
+        return normalizedID(selectedAssetID).isEmpty ? "Environment" : "Environment Selected"
+    }
+
     static func showsExitEnvironment(isImmersiveSpaceOpen: Bool) -> Bool {
         isImmersiveSpaceOpen
+    }
+
+    static func showsAppleEnvironmentExpandAction(
+        selectedAssetID: String?,
+        activeEnvironment: EnvironmentType?,
+        isImmersiveSpaceOpen: Bool
+    ) -> Bool {
+        usesAppleEnvironmentMode(
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: activeEnvironment,
+            isImmersiveSpaceOpen: isImmersiveSpaceOpen
+        )
     }
 
     static func showsEmptyAssetMessage(assetCount: Int) -> Bool {
@@ -160,9 +218,18 @@ enum PlayerEnvironmentMenuPolicy {
 
     static func chromeStatusText(
         selectedAssetName: String?,
+        selectedAssetID: String?,
         activeEnvironment: EnvironmentType?,
         isImmersiveSpaceOpen: Bool
     ) -> String {
+        if usesAppleEnvironmentMode(
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: activeEnvironment,
+            isImmersiveSpaceOpen: isImmersiveSpaceOpen
+        ) {
+            return appleEnvironmentChromeStatus
+        }
+
         let selectedName = selectedAssetName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedSelectedName = selectedName?.isEmpty == false ? selectedName : nil
 
@@ -177,10 +244,19 @@ enum PlayerEnvironmentMenuPolicy {
             }
         }
 
-        if let resolvedSelectedName {
-            return "\(resolvedSelectedName) Selected"
-        }
-        return "Standard Room"
+        return ""
+    }
+
+    static func usesAppleEnvironmentMode(
+        selectedAssetID: String?,
+        activeEnvironment: EnvironmentType?,
+        isImmersiveSpaceOpen: Bool
+    ) -> Bool {
+        isStandardRoomSelected(
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: activeEnvironment,
+            isImmersiveSpaceOpen: isImmersiveSpaceOpen
+        )
     }
 
     private static func isAssetSelected(
@@ -217,6 +293,11 @@ enum PlayerEnvironmentMenuPolicy {
     private static func normalizedID(_ id: String?) -> String {
         id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
+
+    private static func displayableAssetName(_ name: String?) -> String? {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
 }
 
 struct PlayerEnvironmentMenuLabelSpec: Equatable, Sendable {
@@ -228,6 +309,12 @@ struct PlayerEnvironmentMenuLabelSpec: Equatable, Sendable {
     var menuTitle: String {
         guard let subtitle, !subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return title
+        }
+        if subtitle == "Active now" || subtitle == "Selected" {
+            return title
+        }
+        if subtitle == PlayerCinemaEnvironmentPolicy.unavailableMessage {
+            return "\(title) - Requires supported playback"
         }
         return "\(title) - \(subtitle)"
     }
@@ -304,7 +391,9 @@ struct PlayerEnvironmentMenuLabelSpec: Equatable, Sendable {
     static func standardRoom(
         selectedAssetID: String?,
         activeEnvironment: EnvironmentType?,
-        isImmersiveSpaceOpen: Bool
+        isImmersiveSpaceOpen: Bool,
+        canUseSystemVideoSurface: Bool = true,
+        isExpansionPending: Bool = false
     ) -> Self {
         let isSelected = PlayerEnvironmentMenuPolicy.isStandardRoomSelected(
             selectedAssetID: selectedAssetID,
@@ -312,11 +401,13 @@ struct PlayerEnvironmentMenuLabelSpec: Equatable, Sendable {
             isImmersiveSpaceOpen: isImmersiveSpaceOpen
         )
         return Self(
-            title: "Standard Room",
+            title: EnvironmentPreviewRowPolicy.appleEnvironmentTitle,
             subtitle: PlayerEnvironmentMenuPolicy.standardRoomStateText(
                 selectedAssetID: selectedAssetID,
                 activeEnvironment: activeEnvironment,
-                isImmersiveSpaceOpen: isImmersiveSpaceOpen
+                isImmersiveSpaceOpen: isImmersiveSpaceOpen,
+                canUseSystemVideoSurface: canUseSystemVideoSurface,
+                isExpansionPending: isExpansionPending
             ),
             leadingSystemImage: PlayerEnvironmentMenuPolicy.standardRoomIconName(isSelected: isSelected),
             trailingSystemImage: nil
@@ -330,9 +421,13 @@ struct PlayerEnvironmentMenuLabel: View {
     var body: some View {
         HStack(spacing: 8) {
             Label(spec.menuTitle, systemImage: spec.leadingSystemImage)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .minimumScaleFactor(PlayerEnvironmentMenuPolicy.menuRowMinimumScaleFactor)
             if let trailingSystemImage = spec.trailingSystemImage {
                 Spacer(minLength: 8)
                 Image(systemName: trailingSystemImage)
+                    .fixedSize()
             }
         }
     }
@@ -433,6 +528,40 @@ struct PlayerEnvironmentExitRow: View {
     }
 }
 
+struct PlayerEnvironmentAppleExpandRow: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: performAction) {
+            Label(
+                PlayerEnvironmentMenuPolicy.appleEnvironmentExpandTitle,
+                systemImage: PlayerEnvironmentMenuPolicy.appleEnvironmentExpandIconName
+            )
+        }
+    }
+
+    func performAction() {
+        action()
+    }
+}
+
+struct PlayerEnvironmentCloseMenuRow: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: performAction) {
+            Label(
+                PlayerEnvironmentMenuPolicy.closeMenuTitle,
+                systemImage: PlayerEnvironmentMenuPolicy.closeMenuIconName
+            )
+        }
+    }
+
+    func performAction() {
+        action()
+    }
+}
+
 /// Isolated subview for the environment picker in the player transport controls.
 ///
 /// By separating this into its own View struct, SwiftUI gives it an independent
@@ -443,7 +572,11 @@ struct PlayerEnvironmentMenu: View {
     let onSelectCinema: () -> Void
     let onSelect: (EnvironmentAsset) -> Void
     let onDismiss: () -> Void
+    var canUseSystemVideoSurface = true
+    var isAppleEnvironmentExpansionPending = false
     var onClear: () -> Void = {}
+    var onExpandAppleEnvironment: (() -> Void)? = nil
+    var onCloseMenu: () -> Void = {}
 
     @Environment(AppState.self) private var appState
 
@@ -454,10 +587,20 @@ struct PlayerEnvironmentMenu: View {
                 spec: .standardRoom(
                     selectedAssetID: selectedAssetID,
                     activeEnvironment: appState.activeEnvironment,
-                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen,
+                    canUseSystemVideoSurface: canUseSystemVideoSurface,
+                    isExpansionPending: isAppleEnvironmentExpansionPending
                 ),
                 action: onClear
             )
+            if let onExpandAppleEnvironment,
+               PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+                selectedAssetID: selectedAssetID,
+                activeEnvironment: appState.activeEnvironment,
+                isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+               ) {
+                PlayerEnvironmentAppleExpandRow(action: onExpandAppleEnvironment)
+            }
             PlayerEnvironmentCinemaRow(
                 spec: .cinema(
                     activeEnvironment: appState.activeEnvironment,
@@ -479,16 +622,35 @@ struct PlayerEnvironmentMenu: View {
                 Divider()
                 PlayerEnvironmentExitRow(role: nil, action: onDismiss)
             }
+            Divider()
+            PlayerEnvironmentCloseMenuRow(action: onCloseMenu)
         } label: {
-            Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen))
+            Image(systemName: PlayerEnvironmentMenuPolicy.triggerIconName(
+                selectedAssetID: selectedAssetID,
+                activeEnvironment: appState.activeEnvironment,
+                isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+            ))
                 .font(.title3)
-                .foregroundStyle(appState.isImmersiveSpaceOpen ? .blue : .primary)
+                .foregroundStyle(appState.isImmersiveSpaceOpen ? VPColor.info : .primary)
         }
+        .accessibilityLabel(PlayerEnvironmentMenuPolicy.triggerTitle(
+            selectedAssetID: selectedAssetID,
+            selectedAssetName: effectiveSelectedAssetName,
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        ))
     }
 
     private var effectiveSelectedAssetID: String? {
         PlayerEnvironmentMenuPolicy.effectiveSelectedAssetID(
             appStateSelectedID: appState.selectedEnvironmentAsset?.id,
+            assets: assets
+        )
+    }
+
+    private var effectiveSelectedAssetName: String? {
+        PlayerEnvironmentMenuPolicy.effectiveSelectedAssetName(
+            appStateSelectedAsset: appState.selectedEnvironmentAsset,
             assets: assets
         )
     }
@@ -504,10 +666,14 @@ struct PlayerEnvironmentButton: View {
     let onSelectCinema: () -> Void
     let onSelect: (EnvironmentAsset) -> Void
     let onDismiss: () -> Void
+    var canUseSystemVideoSurface = true
     var canOpenCinema = true
+    var isAppleEnvironmentExpansionPending = false
     var onClear: () -> Void = {}
     var onShowCinemaSettings: (() -> Void)? = nil
     var onShowPicker: (() -> Void)? = nil
+    var onExpandAppleEnvironment: (() -> Void)? = nil
+    var onCloseMenu: () -> Void = {}
 
     @Environment(AppState.self) private var appState
 
@@ -518,10 +684,20 @@ struct PlayerEnvironmentButton: View {
                 spec: .standardRoom(
                     selectedAssetID: selectedAssetID,
                     activeEnvironment: appState.activeEnvironment,
-                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                    isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen,
+                    canUseSystemVideoSurface: canUseSystemVideoSurface,
+                    isExpansionPending: isAppleEnvironmentExpansionPending
                 ),
                 action: onClear
             )
+            if let onExpandAppleEnvironment,
+               PlayerEnvironmentMenuPolicy.showsAppleEnvironmentExpandAction(
+                selectedAssetID: selectedAssetID,
+                activeEnvironment: appState.activeEnvironment,
+                isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+               ) {
+                PlayerEnvironmentAppleExpandRow(action: onExpandAppleEnvironment)
+            }
             PlayerEnvironmentCinemaRow(
                 spec: .cinema(
                     activeEnvironment: appState.activeEnvironment,
@@ -558,20 +734,49 @@ struct PlayerEnvironmentButton: View {
             }
             if PlayerEnvironmentMenuPolicy.showsExitEnvironment(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen) {
                 Divider()
-                PlayerEnvironmentExitRow(role: .destructive, action: onDismiss)
+                PlayerEnvironmentExitRow(role: nil, action: onDismiss)
             }
+            Divider()
+            PlayerEnvironmentCloseMenuRow(action: onCloseMenu)
         } label: {
-            Label(
-                appState.isImmersiveSpaceOpen ? "Room On" : "Room",
-                systemImage: PlayerEnvironmentMenuPolicy.triggerIconName(isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen)
-            )
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(appState.isImmersiveSpaceOpen ? .white : .primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+            HStack(spacing: 8) {
+                Label(
+                    PlayerEnvironmentMenuPolicy.triggerTitle(
+                        selectedAssetID: selectedAssetID,
+                        selectedAssetName: effectiveSelectedAssetName,
+                        activeEnvironment: appState.activeEnvironment,
+                        isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                    ),
+                    systemImage: PlayerEnvironmentMenuPolicy.triggerIconName(
+                        selectedAssetID: selectedAssetID,
+                        activeEnvironment: appState.activeEnvironment,
+                        isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+                    )
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .minimumScaleFactor(PlayerEnvironmentMenuPolicy.compactTriggerMinimumScaleFactor)
+                .layoutPriority(1)
+
+                Image(systemName: PlayerEnvironmentMenuPolicy.triggerDisclosureIconName)
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .fixedSize()
+                    .accessibilityHidden(true)
+            }
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, PlayerCinematicChromePolicy.quickActionPillHorizontalPadding)
+                .padding(.vertical, PlayerCinematicChromePolicy.quickActionPillVerticalPadding)
+                .frame(
+                    minWidth: PlayerEnvironmentMenuPolicy.compactTriggerMinWidth,
+                    maxWidth: PlayerEnvironmentMenuPolicy.compactTriggerMaxWidth,
+                    minHeight: PlayerEnvironmentMenuPolicy.compactTriggerMinHeight,
+                    alignment: .leading
+                )
                 .background(
                     appState.isImmersiveSpaceOpen
-                        ? AnyShapeStyle(.blue.opacity(0.25))
+                        ? AnyShapeStyle(VPColor.info.opacity(0.25))
                         : AnyShapeStyle(.ultraThinMaterial),
                     in: Capsule()
                 )
@@ -580,7 +785,7 @@ struct PlayerEnvironmentButton: View {
                         .strokeBorder(
                             LinearGradient(
                                 colors: appState.isImmersiveSpaceOpen
-                                    ? [.blue.opacity(0.6), .blue.opacity(0.2)]
+                                    ? [VPColor.info.opacity(0.6), VPColor.info.opacity(0.2)]
                                     : [.white.opacity(0.28), .white.opacity(0.06)],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -588,15 +793,23 @@ struct PlayerEnvironmentButton: View {
                             lineWidth: 0.5
                         )
                 }
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open immersive environments")
+        .accessibilityLabel("Choose playback environment")
         .hoverEffect(.lift)
     }
 
     private var effectiveSelectedAssetID: String? {
         PlayerEnvironmentMenuPolicy.effectiveSelectedAssetID(
             appStateSelectedID: appState.selectedEnvironmentAsset?.id,
+            assets: assets
+        )
+    }
+
+    private var effectiveSelectedAssetName: String? {
+        PlayerEnvironmentMenuPolicy.effectiveSelectedAssetName(
+            appStateSelectedAsset: appState.selectedEnvironmentAsset,
             assets: assets
         )
     }

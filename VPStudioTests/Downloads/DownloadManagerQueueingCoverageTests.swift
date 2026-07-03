@@ -1868,7 +1868,10 @@ struct DownloadManagerQueueingCoverageTests {
         let downloadsDir = rootDir.appendingPathComponent("downloads", isDirectory: true)
         let counter = AttemptCounter()
         let requestRecorder = TransferRequestRecorder()
-        let headers = ["Authorization": "Bearer unit-test"]
+        let headers = [
+            "User-Agent": "VPStudio",
+            "Referer": "https://app.example.com/"
+        ]
         let stream = makeStream(name: "headers-retry.mkv", sizeBytes: 1).withRequestHeaders(headers)
 
         let manager = DownloadManager(

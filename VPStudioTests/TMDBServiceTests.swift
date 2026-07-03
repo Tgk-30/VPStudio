@@ -361,7 +361,7 @@ struct TMDBIDExtractionTestsTmdbservicetests {
         }
 
         let service = TMDBService(apiKey: "key", session: session)
-        let extracted = try await service.getDetail(id: "movie-tmdb-438631", type: .movie)
+        let extracted = try await service.getDetail(id: " MOVIE-TMDB-438631 ", type: .movie)
         let numeric = try await service.getDetail(id: "438631", type: .movie)
 
         #expect(extracted.id == "tt1160419")
@@ -747,6 +747,37 @@ struct TMDBIDExtractionTestsTmdbservicetests {
         }
     }
 
+    @Test func serverErrorsRedactSecretBearingBodies() async {
+        let session = makeStubSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            let body = #"failed https://api.themoviedb.org/3/movie/1?api_key=secret-key&x-goog-credential=goog-cred&x-goog-signature=goog-sig and clientSecret=plain-secret"#
+            return (response, Data(body.utf8))
+        }
+
+        let service = TMDBService(apiKey: "key", session: session)
+
+        do {
+            _ = try await service.search(query: "Test", type: .movie)
+            Issue.record("Expected error")
+        } catch let error as TMDBError {
+            guard case .httpError(let code, let body) = error else {
+                Issue.record("Expected httpError, got \(error)")
+                return
+            }
+            #expect(code == 500)
+            #expect(body.contains("api_key=REDACTED"))
+            #expect(body.contains("x-goog-credential=REDACTED"))
+            #expect(body.contains("x-goog-signature=REDACTED"))
+            #expect(body.contains("clientSecret=REDACTED"))
+            #expect(!body.contains("secret-key"))
+            #expect(!body.contains("=goog-cred"))
+            #expect(!body.contains("=goog-sig"))
+            #expect(!body.contains("plain-secret"))
+        } catch {
+            Issue.record("Expected TMDBError, got \(error)")
+        }
+    }
+
     @Test func malformedPathThrowsInvalidURLInsteadOfCrashing() async {
         // Paths with characters that make URLComponents return nil should throw, not crash
         let session = makeStubSession { request in
@@ -913,5 +944,9 @@ struct TMDBErrorTestsTmdbservicetests {
         #expect(TMDBError.rateLimited == TMDBError.rateLimited)
         #expect(TMDBError.notFound("a") == TMDBError.notFound("a"))
         #expect(TMDBError.notFound("a") != TMDBError.notFound("b"))
+    }
+
+    @Test func unauthorizedDescriptionNamesTMDbCredential() {
+        #expect(TMDBError.unauthorized.errorDescription == "Invalid TMDb API key or read token")
     }
 }

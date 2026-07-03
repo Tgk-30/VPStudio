@@ -12,10 +12,20 @@ enum SidebarLayoutPolicy {
     /// Icon frame size for each sidebar button. Pinned to the minimum tap target (60) so each
     /// nav item meets the mandated primary-control hit area before `chromeScale` is applied.
     static let iconFrame: CGFloat = VPSpace.minTapTarget
+    /// Horizontal breathing room around the 60pt target. The rendered rail must include the
+    /// target plus this chrome inset so selected circles do not visually overflow the bar.
+    static let railChromeInset: CGFloat = 9
+    /// Gap between the main rail and the Environments mini rail. Kept tight so the standalone
+    /// picker control reads as part of the same navigation cluster instead of a detached orb.
+    static let environmentButtonSpacing: CGFloat = 5
 
     /// The tabs shown in the main sidebar group (excludes environments, which is separate).
     static var sidebarMainTabs: [SidebarTab] {
         [.discover, .search, .library, .downloads]
+    }
+
+    static func resolvedRailWidth(chromeScale: CGFloat) -> CGFloat {
+        max(collapsedWidth, iconFrame + railChromeInset * 2) * chromeScale
     }
 }
 
@@ -53,7 +63,7 @@ struct VPSidebarView: View {
     private var chromeScale: CGFloat { 1 }
     #endif
 
-    private var collapsedWidth: CGFloat { SidebarLayoutPolicy.collapsedWidth * chromeScale }
+    private var railWidth: CGFloat { SidebarLayoutPolicy.resolvedRailWidth(chromeScale: chromeScale) }
     private var cornerRadius: CGFloat { SidebarLayoutPolicy.cornerRadius * chromeScale }
     private var iconFrame: CGFloat { SidebarLayoutPolicy.iconFrame * chromeScale }
     private var paddingVertical: CGFloat { 9 * chromeScale }
@@ -66,6 +76,7 @@ struct VPSidebarView: View {
     private var badgeOffsetX: CGFloat { -4 * chromeScale }
     private var badgeOffsetY: CGFloat { 4 * chromeScale }
     private var environmentIconSize: CGFloat { 18 * chromeScale }
+    private var environmentButtonSpacing: CGFloat { SidebarLayoutPolicy.environmentButtonSpacing * chromeScale }
     /// Gap between an icon and its hover-revealed name label.
     private var hoverLabelGap: CGFloat { VPSpace.tight * chromeScale }
     /// Inset inside the floating hover-label capsule.
@@ -73,11 +84,11 @@ struct VPSidebarView: View {
     private var hoverLabelPaddingV: CGFloat { VPSpace.micro * chromeScale }
 
     var body: some View {
-        VStack(spacing: 10 * chromeScale) {
+        VStack(spacing: environmentButtonSpacing) {
             mainSidebarPill
 
             #if os(visionOS)
-            environmentButton
+            environmentSidebarPill
             #endif
         }
     }
@@ -113,7 +124,7 @@ struct VPSidebarView: View {
         .padding(containerInset)
         .padding(.vertical, paddingVertical)
         .padding(.horizontal, paddingHorizontal)
-        .frame(width: collapsedWidth)
+        .frame(width: railWidth)
         .vpChromeSurface(.roundedRect(cornerRadius: cornerRadius))
     }
 
@@ -163,6 +174,7 @@ struct VPSidebarView: View {
     @ViewBuilder
     private func hoverLabel(for tab: SidebarTab) -> some View {
         if hoveredTab == tab {
+            let hoverLabelLeadingOffset = -(iconFrame + hoverLabelGap)
             Text(tab.rawValue)
                 .font(VPFont.label)
                 .foregroundStyle(VPColor.textPrimary)
@@ -172,7 +184,7 @@ struct VPSidebarView: View {
                 .vpChromeSurface(.capsule)
                 .fixedSize()
                 // Place the capsule just past the icon's trailing edge without widening the rail.
-                .alignmentGuide(.leading) { _ in -(iconFrame + hoverLabelGap) }
+                .alignmentGuide(.leading) { _ in hoverLabelLeadingOffset }
                 .allowsHitTesting(false)
                 .transition(.opacity.combined(with: .move(edge: .leading)))
                 .accessibilityHidden(true)
@@ -183,6 +195,13 @@ struct VPSidebarView: View {
     // MARK: - Environments Button (separate circle, visionOS only)
 
     #if os(visionOS)
+    private var environmentSidebarPill: some View {
+        environmentButton
+            .padding(containerInset)
+            .frame(width: railWidth)
+            .vpChromeSurface(.roundedRect(cornerRadius: cornerRadius))
+    }
+
     private var environmentButton: some View {
         Button {
             switch BottomTabRoutingPolicy.action(
@@ -200,9 +219,8 @@ struct VPSidebarView: View {
                 .font(.system(size: environmentIconSize, weight: isSelected ? .semibold : .medium))
                 .foregroundStyle(VPNavForeground.tint(isSelected: isSelected))
                 .frame(width: iconFrame, height: iconFrame)
-                // Standalone button: when selected use the shared glass + accent ring + glow
-                // selection; otherwise the resting raised Obsidian-Glass circle. Only ONE is
-                // applied so the chrome's clipShape never crops the selection's accent glow.
+                // The outer mini rail supplies the chrome. The button only resolves selected
+                // state so the accent never overflows as a detached orb in sidebar layout.
                 .modifier(EnvironmentSelectionBackground(isSelected: isSelected))
                 .overlay(alignment: .leading) { hoverLabel(for: .environments) }
         }
@@ -221,14 +239,15 @@ struct VPSidebarView: View {
 #if os(visionOS)
 /// Resolves the standalone Environments button's background without stacking the chrome surface
 /// and the selection background — stacking lets the chrome's clipShape crop the selection's accent
-/// glow. Selected → shared glass + accent ring + glow; otherwise the resting Obsidian-Glass circle.
+/// glow. The surrounding mini rail owns the resting chrome; selected uses the shared glass + accent
+/// ring + glow, while unselected stays clear inside that rail.
 private struct EnvironmentSelectionBackground: ViewModifier {
     let isSelected: Bool
     func body(content: Content) -> some View {
         if isSelected {
             content.vpNavItemSelection(isSelected: true, shape: Circle())
         } else {
-            content.vpChromeSurface(.capsule)
+            content
         }
     }
 }

@@ -28,6 +28,11 @@ struct EnvironmentLoaderTaskLifecycleTests {
         #expect(source.contains(".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))"))
         #expect(source.contains("environmentLoadTask?.cancel()"))
         #expect(source.contains("environmentLoadTask = Task { await loadEnvironments() }"))
+        #expect(source.contains("let latestEnvironments = try await appState.environmentCatalogManager.fetchAssets()"))
+        #expect(source.contains("appState.reconcileEnvironmentSelection(withLoadedAssets: latestEnvironments)"))
+        #expect(source.contains("importError = nil"))
+        #expect(source.contains("importError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(!source.contains("let latestEnvironments = (try? await appState.environmentCatalogManager.fetchAssets()) ?? []"))
         #expect(source.contains(".onDisappear"))
         #expect(source.contains("environmentLoadTask = nil"))
     }
@@ -40,8 +45,26 @@ struct EnvironmentLoaderTaskLifecycleTests {
         #expect(source.contains(".onReceive(NotificationCenter.default.publisher(for: .environmentsDidChange))"))
         #expect(source.contains("assetLoadTask?.cancel()"))
         #expect(source.contains("assetLoadTask = Task { await loadAssets() }"))
+        #expect(source.contains("appState.reconcileEnvironmentSelection(withLoadedAssets: latestAssets)"))
         #expect(source.contains(".onDisappear"))
         #expect(source.contains("assetLoadTask = nil"))
+    }
+
+    @Test
+    func environmentsTabReconcilesLoadedAssetsAndDoesNotSilentlyEmptyOnFailure() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
+        let body = try section(
+            from: "private func loadEnvironments() async {",
+            to: "    private func isPresetInstalled",
+            in: source
+        )
+
+        #expect(body.contains("let latestEnvironments = try await appState.environmentCatalogManager.fetchAssets()"))
+        #expect(body.contains("environments = latestEnvironments"))
+        #expect(body.contains("appState.reconcileEnvironmentSelection(withLoadedAssets: latestEnvironments)"))
+        #expect(body.contains("environmentError = nil"))
+        #expect(body.contains("environmentError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(!body.contains("(try? await appState.environmentCatalogManager.fetchAssets()) ?? []"))
     }
 
     @Test
@@ -73,7 +96,7 @@ struct EnvironmentLoaderTaskLifecycleTests {
         #expect(contentSource.contains("openImmersiveSpace(id: EnvironmentType.cinemaEnvironment.immersiveSpaceId)"))
         #expect(settingsSource.contains("builtInCinemaRow"))
         #expect(settingsSource.contains("Text(\"Cinema Environment\")"))
-        #expect(settingsSource.contains("Text(\"Built-In\")"))
+        #expect(settingsSource.contains("Text(\"Built-in\")"))
     }
 
     @Test
@@ -86,19 +109,37 @@ struct EnvironmentLoaderTaskLifecycleTests {
     }
 
     @Test
-    func nonPlayerEnvironmentSurfacesDeleteMissingImportedAssetsBeforeActivation() throws {
+    func nonPlayerEnvironmentSurfacesValidateAssetsBeforeActivation() throws {
         let contentSource = try contents(of: "VPStudio/Views/Windows/ContentView.swift")
         let settingsSource = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/EnvironmentSettingsView.swift")
 
         for source in [contentSource, settingsSource] {
-            #expect(source.contains("private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool"))
-            #expect(source.contains("guard asset.sourceType == .imported else { return true }"))
+            #expect(source.contains("private func ensureEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool"))
+            #expect(!source.contains("guard asset.sourceType == .imported else { return true }"))
             #expect(source.contains("resolvedAssetURL(for: asset)"))
-            #expect(source.contains("deleteAsset(id: asset.id)"))
+            #expect(source.contains("if asset.sourceType == .imported {"))
+            #expect(source.contains("try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)"))
             #expect(source.contains("clearEnvironmentSelectionIfCurrent(assetID: asset.id)"))
+            #expect(source.contains("return false"))
         }
-        #expect(contentSource.contains("guard await ensureImportedEnvironmentAssetExists(asset) else {"))
-        #expect(settingsSource.contains("guard await ensureImportedEnvironmentAssetExists(asset) else {"))
+        #expect(contentSource.contains("guard await ensureEnvironmentAssetExists(asset) else {"))
+        #expect(settingsSource.contains("guard await ensureEnvironmentAssetExists(asset) else {"))
+    }
+
+    @Test
+    func nonPlayerEnvironmentSurfacesFailClosedForMissingBundledAssets() throws {
+        let surfacePaths = [
+            "VPStudio/Views/Windows/ContentView.swift",
+            "VPStudio/Views/Windows/Settings/Destinations/EnvironmentSettingsView.swift",
+        ]
+
+        for path in surfacePaths {
+            let source = try contents(of: path)
+            let normalized = source.components(separatedBy: .whitespacesAndNewlines).joined()
+            #expect(normalized.contains("ifawaitappState.environmentCatalogManager.resolvedAssetURL(for:asset)!=nil{returntrue}"))
+            #expect(normalized.contains("ifasset.sourceType==.imported{try?awaitappState.environmentCatalogManager.deleteAsset(id:asset.id)"))
+            #expect(normalized.contains("}returnfalse}"))
+        }
     }
 
     @Test
@@ -155,18 +196,21 @@ struct EnvironmentLoaderTaskLifecycleTests {
         #expect(source.contains("Text(\"More Environments\")"))
         #expect(source.contains("ForEach(onlinePresets) { preset in"))
         #expect(source.contains(".padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)"))
-        #expect(source.contains("Use Standard Room"))
-        #expect(source.contains("No immersive room selected"))
-        #expect(source.contains("Playback will stay in the standard windowed room."))
-        #expect(source.contains("return \"Windowed\""))
+        #expect(source.contains("Use Apple Environment"))
+        #expect(source.contains("EnvironmentPreviewRowPolicy.appleEnvironmentSelectedTitle"))
+        #expect(source.contains("EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody"))
+        #expect(!source.contains("private var environmentStatusBadgeText: String"))
         #expect(source.contains("Task { await installPreset(preset) }"))
         #expect(source.contains("Text(\"Adding\")"))
         #expect(source.contains("Label(\"Added\", systemImage: \"checkmark.circle.fill\")"))
+        #expect(source.contains("Label(\"Activate\", systemImage: \"play.circle\")"))
+        #expect(source.contains("Task { await selectEnvironment(installedAsset) }"))
         #expect(source.contains("environmentErrorBanner(environmentError)"))
         #expect(source.contains("Button(\"Dismiss\") { environmentError = nil }"))
-        #expect(source.contains("Text(\"Add a curated room below, or import your own files from Settings.\")"))
+        #expect(source.contains("Text(\"Add a curated environment below, or import your own files from Settings.\")"))
         #expect(normalized.contains("guard!isPresetInstalled(preset),!installingPresetIDs.contains(preset.id)else{return}"))
-        #expect(normalized.contains("environmentError=error.localizedDescription"))
+        #expect(normalized.contains("environmentError=EnvironmentErrorPresentationPolicy.displayMessage(for:error)"))
+        #expect(!normalized.contains("environmentError=error.localizedDescription"))
     }
 
     private func dismissImmersiveCallsAreImmediatelyCompleted(in source: String) -> Bool {
@@ -188,6 +232,12 @@ struct EnvironmentLoaderTaskLifecycleTests {
     private func contents(of relativePath: String) throws -> String {
         let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
         return try String(contentsOfFile: absolutePath, encoding: .utf8)
+    }
+
+    private func section(from startToken: String, to endToken: String, in source: String) throws -> String {
+        let start = try #require(source.range(of: startToken))
+        let end = try #require(source.range(of: endToken, range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
     }
 
     private func repoRootURL() -> URL {

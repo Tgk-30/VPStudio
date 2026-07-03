@@ -128,6 +128,19 @@ enum SeriesSeasonLoadingPresentationPolicy {
 }
 
 enum SeriesDetailPresentationPolicy {
+    static let heroHeight: CGFloat = 244
+    static let overviewMaxWidth: CGFloat = 760
+    static let overviewLineLimit = 3
+    static let bottomContentPadding: CGFloat = 168
+    static let bottomViewportInset: CGFloat = 128
+    static let contentSpacing: CGFloat = 18
+    static let contentTopPadding: CGFloat = 18
+    static let episodesSectionSpacing: CGFloat = 14
+    static let episodesSectionTopPadding: CGFloat = 12
+    static let episodeCardWidth: CGFloat = 220
+    static let episodeCardHeight: CGFloat = 124
+    static let postEpisodeExtrasTopPadding: CGFloat = VPSpace.roomy
+
     static func seasonCountText(_ count: Int) -> String? {
         guard count > 0 else { return nil }
         return "\(count) Season\(count == 1 ? "" : "s")"
@@ -241,7 +254,7 @@ enum SeriesRateControlPolicy {
 struct SeriesDetailLayout: View {
     let viewModel: DetailViewModel
     let title: String
-    let metadataApiKey: String
+    let metadataConfiguration: MetadataProviderConfiguration
     let mediaType: MediaType
     let streamResultsAnchor: String
     let shareItem: String
@@ -257,6 +270,7 @@ struct SeriesDetailLayout: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isPlayButtonLoading = false
     @State private var episodeScrollRequest = 0
+    @State private var heroOverlayFrame: CGRect = .zero
 
     private let episodesSectionID = "episodes-section"
 
@@ -302,12 +316,12 @@ struct SeriesDetailLayout: View {
                     heroImage
                         // Bias the fill toward the top so character heads clip less than a
                         // centered crop would.
-                        .frame(height: 380, alignment: .top)
+                        .frame(height: SeriesDetailPresentationPolicy.heroHeight, alignment: .top)
                         .clipped()
                         .overlay(heroOverlay)
 
                     // MARK: - Main Content
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: SeriesDetailPresentationPolicy.contentSpacing) {
                         // Title now lives on the hero artwork (see heroOverlay).
                         // Metadata row
                         metadataRow
@@ -333,16 +347,21 @@ struct SeriesDetailLayout: View {
                             Text(overview)
                                 .font(.body)
                                 .foregroundStyle(.white.opacity(0.85))
-                                .lineLimit(4)
+                                .lineLimit(SeriesDetailPresentationPolicy.overviewLineLimit)
+                                .frame(
+                                    maxWidth: SeriesDetailPresentationPolicy.overviewMaxWidth,
+                                    alignment: .leading
+                                )
                                 .padding(.top, 4)
                         }
 
-                        // AI Analysis
-                        DetailAIAnalysis(viewModel: viewModel)
-                            .padding(.top, 16)
+                        if mediaType != .series {
+                            DetailAIAnalysis(viewModel: viewModel)
+                                .padding(.top, 16)
 
-                        if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
-                            genrePills(genres)
+                            if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
+                                genrePills(genres)
+                            }
                         }
 
                         if let status = viewModel.libraryStatusMessage {
@@ -362,15 +381,24 @@ struct SeriesDetailLayout: View {
                                 .id(episodesSectionID)
                         }
 
+                        if mediaType == .series {
+                            DetailAIAnalysis(viewModel: viewModel)
+                                .padding(.top, SeriesDetailPresentationPolicy.postEpisodeExtrasTopPadding)
+
+                            if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
+                                genrePills(genres)
+                            }
+                        }
+
                         // Torrents
                         if shouldShowTorrentsSection {
                             torrentsSection
                         }
 
-                        Spacer(minLength: 128)
+                        Spacer(minLength: SeriesDetailPresentationPolicy.bottomContentPadding)
                     }
                     .padding(.horizontal, 24)
-                    .padding(.top, 20)
+                    .padding(.top, SeriesDetailPresentationPolicy.contentTopPadding)
                 }
             }
             .onChange(of: episodeScrollRequest) { _, _ in
@@ -379,8 +407,12 @@ struct SeriesDetailLayout: View {
                     scrollProxy.scrollTo(episodesSectionID, anchor: .top)
                 }
             }
+            .defaultScrollAnchor(QARuntimeOptions.scrollAnchorBottom ? .bottom : .top)
         }
         .background(Color.black)
+        .safeAreaInset(edge: .bottom) {
+            VPBottomViewportScrim(height: SeriesDetailPresentationPolicy.bottomViewportInset)
+        }
         .foregroundStyle(.white)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
@@ -392,6 +424,11 @@ struct SeriesDetailLayout: View {
         }
         .onChange(of: viewModel.selectedEpisode?.id) { _, newValue in
             SeriesDetailQAScrollDebug.log("selectedEpisode=\(newValue ?? "nil")")
+        }
+        .onChange(of: viewModel.episodes.count) { _, newValue in
+            SeriesDetailQAScrollDebug.log(
+                "episodesCount=\(newValue) seasons=\(viewModel.seasons.count) showEpisodesSection=\(shouldShowEpisodesSection)"
+            )
         }
         .onChange(of: viewModel.torrentSearch.results.count) { _, newValue in
             SeriesDetailQAScrollDebug.log("torrentResults=\(newValue)")
@@ -460,9 +497,18 @@ struct SeriesDetailLayout: View {
     }
     
     private var heroOverlay: some View {
-        GeometryReader { proxy in
-            heroOverlayBody(availableWidth: proxy.size.width)
-        }
+        // Reads the overlay width without a GeometryReader container: GeometryReader
+        // inside the detail ScrollView triggers repeated layout measurement passes
+        // and scroll thrashing. `onGeometryChange` captures the width into state and
+        // only re-runs the body when the measured width actually changes. The local
+        // `proxy` snapshot keeps the measured-geometry spelling at the call site.
+        let proxy = heroOverlayFrame
+        return heroOverlayBody(availableWidth: proxy.size.width)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.width
+            } action: { newWidth in
+                heroOverlayFrame.size.width = newWidth
+            }
     }
 
     private func heroOverlayBody(availableWidth: CGFloat) -> some View {
@@ -471,11 +517,11 @@ struct SeriesDetailLayout: View {
             // strong fade to near-black at the bottom so the title reads on the artwork.
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.45), location: 0.0),
-                    .init(color: .clear, location: 0.28),
-                    .init(color: .black.opacity(0.55), location: 0.62),
-                    .init(color: .black.opacity(0.75), location: 0.80),
-                    .init(color: .black.opacity(0.95), location: 1.0),
+                    .init(color: .black.opacity(0.52), location: 0.0),
+                    .init(color: .black.opacity(0.16), location: 0.26),
+                    .init(color: .black.opacity(0.68), location: 0.58),
+                    .init(color: .black.opacity(0.88), location: 0.78),
+                    .init(color: .black.opacity(0.98), location: 1.0),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -640,25 +686,25 @@ struct SeriesDetailLayout: View {
             if let year = viewModel.mediaItem?.year {
                 Text(String(year))
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.76))
             }
 
             if mediaType == .series, !viewModel.seasons.isEmpty {
                 // Series: show seasons + episode count, not a single (misleading) runtime.
                 Text(SeriesDetailPresentationPolicy.seasonCountText(viewModel.seasons.count) ?? "")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.76))
 
                 let episodeTotal = viewModel.seasons.reduce(0) { $0 + $1.episodeCount }
                 if episodeTotal > 0 {
                     Text("\(episodeTotal) Episodes")
                         .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(.white.opacity(0.76))
                 }
             } else if let runtimeText = SeriesDetailPresentationPolicy.runtimeText(minutes: viewModel.mediaItem?.runtime) {
                 Text(runtimeText)
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.76))
             }
 
             if let ratingText = SeriesDetailPresentationPolicy.imdbRatingText(viewModel.mediaItem?.imdbRating) {
@@ -978,7 +1024,7 @@ struct SeriesDetailLayout: View {
     }
     
     private var seasonsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: SeriesDetailPresentationPolicy.episodesSectionSpacing) {
             HStack(alignment: .center, spacing: 12) {
                 Text("Seasons")
                     .font(.headline)
@@ -1008,7 +1054,7 @@ struct SeriesDetailLayout: View {
         
         return Button {
             Task {
-                await viewModel.loadSeason(season.seasonNumber, apiKey: metadataApiKey)
+                await viewModel.loadSeason(season.seasonNumber, configuration: metadataConfiguration)
             }
         } label: {
             // Season tabs are a selection control (>=44 dense target), so identity reads
@@ -1038,6 +1084,9 @@ struct SeriesDetailLayout: View {
                 Text("Episodes")
                     .font(.headline)
                     .foregroundStyle(.white)
+                    .onAppear {
+                        SeriesDetailQAScrollDebug.log("episodesSection mounted, episodes=\(viewModel.episodes.count)")
+                    }
 
                 Spacer()
 
@@ -1054,7 +1103,7 @@ struct SeriesDetailLayout: View {
                     .foregroundStyle(.white.opacity(0.65))
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 16) {
+                    LazyHStack(spacing: SeriesDetailPresentationPolicy.episodesSectionSpacing) {
                         ForEach(viewModel.episodes) { episode in
                             episodeCard(episode: episode)
                         }
@@ -1063,7 +1112,7 @@ struct SeriesDetailLayout: View {
                 .allowsHitTesting(!viewModel.isLoading(.seasonEpisodes))
             }
         }
-        .padding(.top, 16)
+        .padding(.top, SeriesDetailPresentationPolicy.episodesSectionTopPadding)
     }
     
     private func episodeCard(episode: Episode) -> some View {
@@ -1094,12 +1143,18 @@ struct SeriesDetailLayout: View {
                                     .fill(.gray.opacity(0.3))
                             }
                         }
-                        .frame(width: 240, height: 135)
+                        .frame(
+                            width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                            height: SeriesDetailPresentationPolicy.episodeCardHeight
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     } else {
                         Rectangle()
                             .fill(.gray.opacity(0.3))
-                            .frame(width: 240, height: 135)
+                            .frame(
+                                width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                                height: SeriesDetailPresentationPolicy.episodeCardHeight
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 
@@ -1137,7 +1192,10 @@ struct SeriesDetailLayout: View {
                         .background(.black.opacity(0.6), in: Capsule())
                         .padding(8)
                 }
-                .frame(width: 240, height: 135)
+                .frame(
+                    width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                    height: SeriesDetailPresentationPolicy.episodeCardHeight
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(isSelected ? Color.white : Color.clear, lineWidth: 2)
@@ -1168,7 +1226,7 @@ struct SeriesDetailLayout: View {
                     }
                     .foregroundStyle(isWatched ? .green : .white.opacity(0.62))
                 }
-                .frame(width: 240, alignment: .leading)
+                .frame(width: SeriesDetailPresentationPolicy.episodeCardWidth, alignment: .leading)
             }
         }
         .buttonStyle(.plain)
@@ -1195,10 +1253,14 @@ struct SeriesDetailLayout: View {
     
     private var seasonLoadingEpisodePlaceholders: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 16) {
+            HStack(spacing: SeriesDetailPresentationPolicy.episodesSectionSpacing) {
                 ForEach(0..<3, id: \.self) { _ in
                     VStack(alignment: .leading, spacing: 8) {
-                        SkeletonBlock(width: 240, height: 135, cornerRadius: 8)
+                        SkeletonBlock(
+                            width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                            height: SeriesDetailPresentationPolicy.episodeCardHeight,
+                            cornerRadius: 8
+                        )
                         SkeletonBlock(width: 180, height: 16, cornerRadius: 6)
                         SkeletonBlock(width: 72, height: 12, cornerRadius: 6)
                     }

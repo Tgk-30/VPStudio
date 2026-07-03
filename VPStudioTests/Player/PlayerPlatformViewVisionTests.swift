@@ -9,6 +9,143 @@ import UIKit
 @MainActor
 @Suite("Player Platform Views")
 struct PlayerPlatformViewVisionTests {
+    #if os(visionOS)
+    @Test func avPlayerSurfaceUsesLayerBackedViewForStableWindowPlayback() throws {
+        let player = AVPlayer()
+        let hostedSurface = try hostInVisibleWindow(
+            AVPlayerSurfaceView(player: player, videoGravity: .resizeAspect)
+        )
+        let host = hostedSurface.host
+        let window = hostedSurface.window
+        defer { tearDownWindow(window) }
+
+        host.view.frame = CGRect(x: 0, y: 0, width: 320, height: 180)
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+
+        let surface = try #require(host.view.firstSubview(ofType: AVPlayerSurfaceUIView.self))
+        #expect(surface.layer is AVPlayerLayer)
+        #expect(surface.player === player)
+        #expect(surface.playerLayer.videoGravity == .resizeAspect)
+        #expect(surface.backgroundColor == .black)
+        #expect(surface.isOpaque)
+    }
+
+    @Test func avPlayerSurfaceCanUseTransparentBackgroundForAppleEnvironment() throws {
+        let player = AVPlayer()
+        let hostedSurface = try hostInVisibleWindow(
+            AVPlayerSurfaceView(
+                player: player,
+                videoGravity: .resizeAspect,
+                allowsTransparentBackground: true
+            )
+        )
+        let host = hostedSurface.host
+        let window = hostedSurface.window
+        defer { tearDownWindow(window) }
+
+        host.view.frame = CGRect(x: 0, y: 0, width: 320, height: 180)
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+
+        let surface = try #require(host.view.firstSubview(ofType: AVPlayerSurfaceUIView.self))
+        #expect(surface.player === player)
+        #expect(surface.playerLayer.videoGravity == .resizeAspect)
+        #expect(surface.backgroundColor == .clear)
+        #expect(surface.isOpaque == false)
+    }
+
+    @Test func transparentAppleEnvironmentSurfaceClearsNestedPlayerViews() {
+        let container = UIView()
+        container.backgroundColor = .black
+        container.isOpaque = true
+
+        let nestedSurface = UIView()
+        nestedSurface.backgroundColor = .black
+        nestedSurface.isOpaque = true
+        container.addSubview(nestedSurface)
+
+        AVPlayerSurfaceView.applyTransparentBackground(to: container, enabled: true)
+
+        #expect(container.backgroundColor == .clear)
+        #expect(container.isOpaque == false)
+        #expect(nestedSurface.backgroundColor == .clear)
+        #expect(nestedSurface.isOpaque == false)
+    }
+
+    @Test func normalAppleEnvironmentSurfaceRestoresNestedPlayerViews() {
+        let container = UIView()
+        container.backgroundColor = .clear
+        container.isOpaque = false
+
+        let nestedSurface = UIView()
+        nestedSurface.backgroundColor = .clear
+        nestedSurface.isOpaque = false
+        container.addSubview(nestedSurface)
+
+        AVPlayerSurfaceView.applyTransparentBackground(to: container, enabled: false)
+
+        #expect(container.backgroundColor == .black)
+        #expect(container.isOpaque)
+        #expect(nestedSurface.backgroundColor == .black)
+        #expect(nestedSurface.isOpaque)
+    }
+
+    @Test func avPlayerSurfaceDismantleClearsPlayer() {
+        let view = AVPlayerSurfaceUIView()
+        let player = AVPlayer()
+        view.player = player
+
+        AVPlayerSurfaceView.dismantleUIView(view, coordinator: ())
+
+        #expect(view.player == nil)
+    }
+
+    @Test func defaultSurfaceViewUsesResizeAspectFill() throws {
+        let player = AVPlayer()
+        let hostedSurface = try hostInVisibleWindow(AVPlayerSurfaceView(player: player))
+        let host = hostedSurface.host
+        let window = hostedSurface.window
+        defer { tearDownWindow(window) }
+
+        host.view.frame = CGRect(x: 0, y: 0, width: 320, height: 180)
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+
+        let surface = try #require(host.view.firstSubview(ofType: AVPlayerSurfaceUIView.self))
+        #expect(surface.player === player)
+        #expect(surface.playerLayer.videoGravity == .resizeAspectFill)
+    }
+
+    @Test func hostedAVPlayerSurfaceUpdatesConfiguredLayerBackedView() throws {
+        let originalPlayer = AVPlayer()
+        let replacementPlayer = AVPlayer()
+        let hostedSurface = try hostInVisibleWindow(
+            AVPlayerSurfaceView(player: originalPlayer, videoGravity: .resizeAspect)
+        )
+        let host = hostedSurface.host
+        let window = hostedSurface.window
+        defer { tearDownWindow(window) }
+
+        host.view.frame = CGRect(x: 0, y: 0, width: 320, height: 180)
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+
+        host.rootView = AVPlayerSurfaceView(player: replacementPlayer, videoGravity: .resizeAspectFill)
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+
+        let surface = try #require(host.view.firstSubview(ofType: AVPlayerSurfaceUIView.self))
+        #expect(surface.player === replacementPlayer)
+        #expect(surface.playerLayer.videoGravity == .resizeAspectFill)
+        #expect(surface.backgroundColor == .black)
+        #expect(surface.isOpaque)
+    }
+    #else
     @Test func avPlayerSurfaceUIViewUsesAVPlayerLayerAndStoresPlayer() {
         let view = AVPlayerSurfaceUIView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
         let player = AVPlayer()
@@ -95,6 +232,7 @@ struct PlayerPlatformViewVisionTests {
         #expect(surface?.player === replacementPlayer)
         #expect(surface?.playerLayer.videoGravity == .resizeAspectFill)
     }
+    #endif
 
     @Test func apmpDisplayViewInstallsReplacesLaysOutAndClearsDisplayLayer() {
         let view = APMPDisplayView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
@@ -168,7 +306,7 @@ struct PlayerPlatformViewVisionTests {
         #expect(displayLayer.superlayer == nil)
     }
 
-    @Test func windowSceneObservingViewReportsNilWhenDetached() {
+    @Test func windowSceneObservingViewReportsNilWhenDetached() async {
         let view = WindowSceneObservingView()
         var callbackScene: UIWindowScene?
         var didCallCallback = false
@@ -178,6 +316,10 @@ struct PlayerPlatformViewVisionTests {
         }
 
         view.didMoveToWindow()
+
+        #expect(!didCallCallback)
+        await Task.yield()
+        await Task.yield()
 
         #expect(didCallCallback)
         #expect(callbackScene == nil)
@@ -873,6 +1015,22 @@ private extension UIView {
         }
 
         return nil
+    }
+}
+
+private extension UIViewController {
+    func firstChildController<T: UIViewController>(ofType type: T.Type) -> T? {
+        if let controller = self as? T {
+            return controller
+        }
+
+        for child in children {
+            if let match = child.firstChildController(ofType: type) {
+                return match
+            }
+        }
+
+        return presentedViewController?.firstChildController(ofType: type)
     }
 }
 

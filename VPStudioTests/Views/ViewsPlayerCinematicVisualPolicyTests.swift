@@ -68,6 +68,11 @@ struct PlayerCinematicVisualPolicyTestsViewsViewsplayercinematicvisualpolicytest
         #expect(PlayerCinematicVisualPolicy.iconSurfaceShadowOpacity == 0.44)
     }
 
+    @Test("Active control border opacity")
+    func activeControlBorderOpacity() {
+        #expect(PlayerCinematicVisualPolicy.activeControlBorderOpacity == 0.88)
+    }
+
     @Test("Progress track opacity")
     func progressTrackOpacity() {
         #expect(PlayerCinematicVisualPolicy.progressTrackOpacity == 0.18)
@@ -99,6 +104,7 @@ struct PlayerCinematicVisualPolicyTestsViewsViewsplayercinematicvisualpolicytest
             PlayerCinematicVisualPolicy.iconSurfaceBorderOpacity,
             PlayerCinematicVisualPolicy.iconSurfaceHighlightOpacity,
             PlayerCinematicVisualPolicy.iconSurfaceShadowOpacity,
+            PlayerCinematicVisualPolicy.activeControlBorderOpacity,
             PlayerCinematicVisualPolicy.progressTrackOpacity,
             PlayerCinematicVisualPolicy.progressBufferedOpacity,
             PlayerCinematicVisualPolicy.timeLabelOpacity,

@@ -118,7 +118,9 @@ private struct QATestScreenPresentationModifier: ViewModifier {
             .fullScreenCover(item: $screen) { screen in
                 TestScreenSheet(screen: screen)
                     .environment(appState)
-        }
+                    .presentationBackground(.clear)
+                    .persistentSystemOverlays(.hidden)
+            }
     }
 }
 #else
@@ -128,11 +130,17 @@ private struct QATestScreenPresentationModifier: ViewModifier {
 #if os(macOS) || os(visionOS)
 private struct MainWindowPlayerTerminationModifier: ViewModifier {
     let scenePhase: ScenePhase
+    let markVisible: () -> Void
+    let markHidden: () -> Void
     let terminate: () -> Void
 
     func body(content: Content) -> some View {
         content
-            .onAppear(perform: terminate)
+            .onAppear {
+                markVisible()
+                terminate()
+            }
+            .onDisappear(perform: markHidden)
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
                 terminate()
@@ -157,6 +165,7 @@ struct ContentView: View {
     @State private var activeDownloadCount = 0
     @State private var settingsWarningCount = 0
     @State private var rootNavigationPath = NavigationPath()
+    @State private var isRestoringLaunchNavigation = false
     @State private var qaPresentedTestScreen: TestScreen?
     @State private var downloadBadgeRefreshTask: Task<Void, Never>?
     @State private var settingsBadgeRefreshTask: Task<Void, Never>?
@@ -222,7 +231,7 @@ struct ContentView: View {
                 qaTestScreenRawValue: QARuntimeOptions.testScreenRawValue
             ) {
                 LaunchScreen()
-                    .transition(.opacity)
+                    .transition(.identity)
                     .zIndex(100)
             }
         }
@@ -288,6 +297,8 @@ struct ContentView: View {
         }
         .modifier(MainWindowPlayerTerminationModifier(
             scenePhase: scenePhase,
+            markVisible: { appState.markMainWindowDidReappearForPlayer() },
+            markHidden: { appState.markMainWindowDidDisappearForPlayer() },
             terminate: { terminatePlayerIfMainWindowOpened() }
         ))
         #endif
@@ -296,24 +307,7 @@ struct ContentView: View {
             presentQATestScreenIfRequested()
             discoverViewModel.configure(database: appState.database)
             await appState.bootstrap()
-            // Restore persisted tab selection after bootstrap (settings DB is now ready)
-            if let savedTab = try? await appState.settingsManager.getString(key: SettingsKeys.lastSelectedTab) {
-                // Backward compat: accept legacy "Search" raw value after rename to "Explore"
-                if let tab = QuickStartPromptPolicy.restoredTab(from: savedTab) {
-                    appState.selectedTab = tab
-                }
-            }
-            // Restore persisted navigation layout
-            if let savedLayout = try? await appState.settingsManager.getString(key: SettingsKeys.navigationLayout),
-               let layout = NavigationLayout(rawValue: savedLayout) {
-                appState.navigationLayout = layout
-            }
-            if let qaSelectedTab = QARuntimeOptions.selectedTab {
-                appState.selectedTab = qaSelectedTab
-            }
-            if let qaNavigationLayout = QARuntimeOptions.navigationLayout {
-                appState.navigationLayout = qaNavigationLayout
-            }
+            await restoreLaunchNavigationState()
             await refreshRootBadgeCounts()
             await appState.runQATraktRefreshIfRequested()
             RuntimeMemoryDiagnostics.capture(
@@ -352,6 +346,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: state.selectedTab) { previous, next in
+            guard !isRestoringLaunchNavigation else { return }
             if RootTabSelectionPolicy.shouldClearNavigationPath(currentTab: previous, selectedTab: next) {
                 rootNavigationPath = NavigationPath()
             }
@@ -436,6 +431,7 @@ struct ContentView: View {
                 }
             )
             .environment(appState)
+            .presentationBackground(.clear)
         }
         .alert(
             "Environment Error",
@@ -485,7 +481,7 @@ struct ContentView: View {
 
     #if os(macOS) || os(visionOS)
     private func terminatePlayerIfMainWindowOpened() {
-        guard appState.activePlayerSession != nil || appState.isMainWindowSuppressedForPlayer else { return }
+        guard appState.shouldTerminatePlayerForMainWindowActivation() else { return }
 
         // Prefer the live session, then fall back to the retained pending-dismiss
         // target so the value-keyed dismiss can still match the window even if
@@ -510,10 +506,6 @@ struct ContentView: View {
             currentTab: state.selectedTab,
             selectedTab: tab
         )
-
-        if navigationAction == .clearPath {
-            rootNavigationPath = NavigationPath()
-        }
 
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             state.selectedTab = tab
@@ -553,11 +545,58 @@ struct ContentView: View {
     private func presentQATestScreenIfRequested() {
         guard let screen = TestScreenLaunchPolicy.screen(for: QARuntimeOptions.testScreenRawValue) else { return }
 
-        softSetupPromptDismissed = true
-        isShowingQuickStartPrompt = false
-        appState.isShowingSetup = false
-        appState.isBootstrapping = false
-        qaPresentedTestScreen = screen
+        if !softSetupPromptDismissed {
+            softSetupPromptDismissed = true
+        }
+        if isShowingQuickStartPrompt {
+            isShowingQuickStartPrompt = false
+        }
+        if appState.isShowingSetup {
+            appState.isShowingSetup = false
+        }
+        if appState.isBootstrapping {
+            appState.isBootstrapping = false
+        }
+        if qaPresentedTestScreen != screen {
+            qaPresentedTestScreen = screen
+        }
+    }
+
+    private func restoreLaunchNavigationState() async {
+        // Restore after bootstrap (settings DB is ready), but resolve the final
+        // launch values before mutating SwiftUI navigation state. That avoids
+        // stacked same-frame NavigationStack updates when persisted state and QA
+        // launch overrides both exist.
+        let savedTab = (try? await appState.settingsManager.getString(key: SettingsKeys.lastSelectedTab))
+            .flatMap { QuickStartPromptPolicy.restoredTab(from: $0) }
+        let launchTab = QARuntimeOptions.selectedTab ?? savedTab
+        let shouldUpdateTab = launchTab.map { appState.selectedTab != $0 } ?? false
+
+        let savedLayout = (try? await appState.settingsManager.getString(key: SettingsKeys.navigationLayout))
+            .flatMap { NavigationLayout(rawValue: $0) }
+        let launchLayout = QARuntimeOptions.navigationLayout ?? savedLayout
+        let shouldUpdateLayout = launchLayout.map { appState.navigationLayout != $0 } ?? false
+
+        if shouldUpdateTab || shouldUpdateLayout {
+            isRestoringLaunchNavigation = true
+        }
+
+        if let launchTab, shouldUpdateTab {
+            appState.selectedTab = launchTab
+        }
+
+        if let launchLayout, shouldUpdateLayout {
+            appState.navigationLayout = launchLayout
+        }
+
+        if shouldUpdateTab || shouldUpdateLayout {
+            // Keep the restoration guard alive through SwiftUI's next update pass. A child task
+            // can resume before `.onChange(of: selectedTab)` observes the launch mutation, which
+            // reintroduces same-frame NavigationStack path writes during app start.
+            await Task.yield()
+            await Task.yield()
+            isRestoringLaunchNavigation = false
+        }
     }
 
     private func refreshRootBadgeCounts() async {
@@ -635,8 +674,7 @@ struct ContentView: View {
             snapshot.activeIndexerCount = configs.filter(\.isActive).count
         }
 
-        let metadataApiKey = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
-        snapshot.hasMetadataKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        snapshot.hasMetadataKey = ((try? await appState.settingsManager.hasMetadataProviderConfiguration()) ?? false)
         snapshot.hasOpenSubtitlesKey = await hasNonEmptyString(for: SettingsKeys.openSubtitlesApiKey)
 
         if let assets = try? await appState.environmentCatalogManager.fetchAssets() {
@@ -713,7 +751,13 @@ struct ContentView: View {
     }
 
     private func openEnvironment(_ asset: EnvironmentAsset) async {
-        if asset.id == appState.selectedEnvironmentAsset?.id, appState.isImmersiveSpaceOpen {
+        let selectedAssetID = appState.selectedEnvironmentAsset?.id ?? (asset.isActive ? asset.id : nil)
+        if EnvironmentPreviewRowPolicy.assetStatus(
+            assetID: asset.id,
+            selectedAssetID: selectedAssetID,
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        ) == .active {
             guard await dismissEnvironmentIfNeeded(reason: .userInitiated) else {
                 environmentPickerError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
                 return
@@ -721,7 +765,7 @@ struct ContentView: View {
             return
         }
 
-        guard await ensureImportedEnvironmentAssetExists(asset) else {
+        guard await ensureEnvironmentAssetExists(asset) else {
             environmentPickerError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
             return
         }
@@ -755,14 +799,15 @@ struct ContentView: View {
         }
     }
 
-    private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
-        guard asset.sourceType == .imported else { return true }
+    private func ensureEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
         if await appState.environmentCatalogManager.resolvedAssetURL(for: asset) != nil {
             return true
         }
 
-        try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
-        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        if asset.sourceType == .imported {
+            try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        }
         return false
     }
 
@@ -1002,9 +1047,13 @@ struct VPBottomTabBar: View {
     }
 }
 
+#if os(visionOS)
 // MARK: - Environments Tab
 
-#if os(visionOS)
+enum EnvironmentsTabPresentationPolicy {
+    static let contentMaxWidth: CGFloat = EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: 4)
+}
+
 struct EnvironmentsTabView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -1028,41 +1077,44 @@ struct EnvironmentsTabView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                environmentHeader
+        ZStack(alignment: .topLeading) {
+            VPEnvironmentBackdrop()
+                .ignoresSafeArea()
 
-                if isLoading {
-                    LoadingOverlay(
-                        title: "Loading Environments",
-                        message: "Fetching available environments\u{2026}"
-                    )
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 60)
-                } else {
-                    environmentGrid
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    environmentHeader
 
-                    if environments.isEmpty {
-                        importPrompt
-                    }
+                    if isLoading {
+                        LoadingOverlay(
+                            title: "Loading Environments",
+                            message: "Fetching available environments\u{2026}"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
+                    } else {
+                        environmentGrid
 
-                    environmentStatusPanel
-                    onlinePresetsSection
+                        if environments.isEmpty {
+                            importPrompt
+                        }
 
-                    if let environmentError {
-                        environmentErrorBanner(environmentError)
+                        environmentStatusPanel
+                        onlinePresetsSection
+
+                        if let environmentError {
+                            environmentErrorBanner(environmentError)
+                        }
                     }
                 }
+                .frame(maxWidth: EnvironmentsTabPresentationPolicy.contentMaxWidth, alignment: .leading)
+                .padding(.horizontal, 28)
+                .padding(.top, 22)
+                .padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)
             }
-            .frame(maxWidth: 1040, alignment: .leading)
-            .padding(.horizontal, 28)
-            .padding(.top, 22)
-            .padding(.bottom, EnvironmentPreviewLayoutPolicy.bottomContentPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .background {
-            VPBackground()
-                .ignoresSafeArea()
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("Environments")
         .task {
             guard !disablesAutomaticTasks else { return }
@@ -1079,32 +1131,28 @@ struct EnvironmentsTabView: View {
     }
 
     private var environmentHeader: some View {
-        HStack(alignment: .center, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Playback Room")
-                    .font(.title2.weight(.semibold))
-                Text("Pick the room before playback, or leave it on the standard windowed room.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 16)
-
-            VPBadge(
-                text: environmentStatusBadgeText,
-                systemImage: environmentStatusIconName,
-                tint: appState.isImmersiveSpaceOpen ? .green : VPColor.textSecondary
-            )
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Playback Environment")
+                .font(.title2.weight(.semibold))
+            Text(EnvironmentPreviewRowPolicy.appleEnvironmentPickerSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(VPColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var environmentGrid: some View {
-        let columns = [GridItem(.adaptive(minimum: 286, maximum: 340), spacing: 18)]
-        return LazyVGrid(columns: columns, spacing: 18) {
+        let itemCount = 2 + environments.count
+        let selectedAssetID = effectiveSelectedEnvironmentAssetID
+        return LazyVGrid(
+            columns: EnvironmentPreviewLayoutPolicy.gridColumns(),
+            spacing: EnvironmentPreviewLayoutPolicy.gridSpacing
+        ) {
             NoEnvironmentPreviewCard(
                 status: EnvironmentPreviewRowPolicy.standardRoomStatus(
-                    selectedAssetID: appState.selectedEnvironmentAsset?.id,
+                    selectedAssetID: selectedAssetID,
+                    activeEnvironment: appState.activeEnvironment,
                     isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
                 ),
                 onSelect: { Task { await clearEnvironmentSelection() } }
@@ -1123,7 +1171,7 @@ struct EnvironmentsTabView: View {
                     asset: asset,
                     status: EnvironmentPreviewRowPolicy.assetStatus(
                         assetID: asset.id,
-                        selectedAssetID: appState.selectedEnvironmentAsset?.id,
+                        selectedAssetID: selectedAssetID,
                         activeEnvironment: appState.activeEnvironment,
                         isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
                     ),
@@ -1132,42 +1180,55 @@ struct EnvironmentsTabView: View {
                 )
             }
         }
+        .frame(maxWidth: EnvironmentPreviewLayoutPolicy.gridContentMaxWidth(itemCount: itemCount), alignment: .leading)
     }
 
     private var environmentStatusPanel: some View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: environmentStatusIconName)
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(appState.isImmersiveSpaceOpen ? .green : VPColor.textSecondary)
+                .foregroundStyle(appState.isImmersiveSpaceOpen ? VPColor.success : VPColor.info)
                 .frame(width: 42, height: 42)
-                .background(.white.opacity(0.06), in: Circle())
+                .background(VPColor.contentPlane.opacity(0.56), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(environmentStatusTitle)
-                    .font(.headline)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(VPColor.textPrimary)
                 Text(environmentStatusDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(VPColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .layoutPriority(1)
 
             Spacer(minLength: 12)
 
-            if appState.isImmersiveSpaceOpen || appState.selectedEnvironmentAsset != nil {
+            if appState.isImmersiveSpaceOpen || effectiveSelectedEnvironmentAssetID != nil {
                 Button(role: appState.isImmersiveSpaceOpen ? .destructive : nil) {
                     Task { await clearEnvironmentSelection() }
                 } label: {
                     Label(
-                        appState.isImmersiveSpaceOpen ? "Exit Environment" : "Use Standard Room",
-                        systemImage: appState.isImmersiveSpaceOpen ? "xmark.circle" : "rectangle.dashed"
+                        appState.isImmersiveSpaceOpen ? "Exit Environment" : "Use Apple Environment",
+                        systemImage: appState.isImmersiveSpaceOpen ? "xmark.circle" : "visionpro"
                     )
                 }
                 .buttonStyle(VPButtonStyle(kind: appState.isImmersiveSpaceOpen ? .destructive : .secondary))
             }
         }
         .padding(16)
-        .glassSurface(.raised, cornerRadius: 18)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityPanelOpacity))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -1176,52 +1237,67 @@ struct EnvironmentsTabView: View {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("More Environments")
-                        .font(.headline)
-                    Text("Add curated HDRI rooms, then select the card above before playback.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(VPColor.textPrimary)
+                    Text("Add curated HDRI environments, then activate one from this list or the cards above.")
+                        .font(.subheadline)
+                        .foregroundStyle(VPColor.textSecondary)
                 }
 
                 ForEach(onlinePresets) { preset in
                     onlinePresetRow(preset)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View {
+        let installedAsset = installedPresetAsset(preset)
         let isInstalled = isPresetInstalled(preset)
         let isInstalling = installingPresetIDs.contains(preset.id)
 
         return HStack(alignment: .center, spacing: 14) {
             Image(systemName: EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider))
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(VPColor.textSecondary)
                 .frame(width: 38, height: 38)
-                .background(.white.opacity(0.06), in: Circle())
+                .background(VPColor.contentPlane.opacity(0.56), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(preset.name)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(VPColor.textPrimary)
                 Text(preset.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(VPColor.textSecondary)
                     .lineLimit(2)
                 Text("\(preset.provider.displayName) • \(preset.licenseName)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+                    .foregroundStyle(VPColor.textSecondary)
             }
             .layoutPriority(1)
 
             Spacer(minLength: 12)
 
-            if isInstalled {
-                Label("Added", systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(VPColor.success)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(VPColor.success.opacity(0.12), in: Capsule())
+            if isInstalled, let installedAsset {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Label("Added", systemImage: "checkmark.circle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(VPColor.success)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(VPColor.success.opacity(0.12), in: Capsule())
+
+                    Button {
+                        Task { await selectEnvironment(installedAsset) }
+                    } label: {
+                        Label("Activate", systemImage: "play.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .frame(minWidth: 104)
+                }
             } else {
                 Button {
                     Task { await installPreset(preset) }
@@ -1237,29 +1313,50 @@ struct EnvironmentsTabView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(minWidth: 82)
+                .controlSize(.regular)
+                .frame(minWidth: 92)
                 .disabled(isInstalling)
             }
         }
-        .padding(14)
-        .glassSurface(.raised, cornerRadius: 14)
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func environmentErrorBanner(_ message: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.yellow)
+                .foregroundStyle(VPColor.warning)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(VPColor.textSecondary)
                 .lineLimit(3)
             Spacer(minLength: 12)
             Button("Dismiss") { environmentError = nil }
                 .font(.caption)
         }
         .padding(12)
-        .glassSurface(.raised, cornerRadius: 12)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.thinMaterial)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityRowOpacity))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var environmentStatusTitle: String {
@@ -1267,66 +1364,69 @@ struct EnvironmentsTabView: View {
             if appState.activeEnvironment == .cinemaEnvironment {
                 return "Cinema Environment is active"
             }
-            if let selected = appState.selectedEnvironmentAsset {
+            if let selected = effectiveSelectedEnvironmentAsset {
                 return "\(selected.name) is active"
             }
             return "Environment is active"
         }
 
-        if let selected = appState.selectedEnvironmentAsset {
+        if let selected = effectiveSelectedEnvironmentAsset {
             return "\(selected.name) is selected"
         }
 
-        return "No immersive room selected"
+        return EnvironmentPreviewRowPolicy.appleEnvironmentSelectedTitle
     }
 
     private var environmentStatusDescription: String {
         if appState.isImmersiveSpaceOpen {
-            return "This room is currently open. Exit it before switching back to the standard room."
+            return "This environment is currently open. Exit it before switching back to Apple Environment."
         }
 
-        if appState.selectedEnvironmentAsset != nil {
-            return "The selected room will open when playback starts."
+        if effectiveSelectedEnvironmentAssetID != nil {
+            return "The selected environment will open when playback starts."
         }
 
-        return "Playback will stay in the standard windowed room."
-    }
-
-    private var environmentStatusBadgeText: String {
-        if appState.isImmersiveSpaceOpen {
-            return "Active"
-        }
-
-        if appState.selectedEnvironmentAsset != nil {
-            return "Selected"
-        }
-
-        return "Windowed"
+        return EnvironmentPreviewRowPolicy.appleEnvironmentSelectedBody
     }
 
     private var environmentStatusIconName: String {
         if appState.activeEnvironment == .cinemaEnvironment {
             return "theatermasks"
         }
-        if appState.selectedEnvironmentAsset != nil {
+        if effectiveSelectedEnvironmentAssetID != nil {
             return "mountain.2"
         }
-        return "rectangle.dashed"
+        return "visionpro"
+    }
+
+    private var effectiveSelectedEnvironmentAssetID: String? {
+        EnvironmentPreviewRowPolicy.effectiveSelectedAssetID(
+            appStateSelectedID: appState.selectedEnvironmentAsset?.id,
+            assets: environments
+        )
+    }
+
+    private var effectiveSelectedEnvironmentAsset: EnvironmentAsset? {
+        EnvironmentPreviewRowPolicy.effectiveSelectedAsset(
+            appStateSelectedAsset: appState.selectedEnvironmentAsset,
+            assets: environments
+        )
     }
 
     private var importPrompt: some View {
         HStack(spacing: 16) {
             Image(systemName: "mountain.2")
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(VPColor.textSecondary)
                 .frame(width: 44, height: 44)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("No imported environments")
                     .font(.headline)
-                Text("Add a curated room below, or import your own files from Settings.")
+                    .foregroundStyle(VPColor.textPrimary)
+                Text("Add a curated environment below, or import your own files from Settings.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VPColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1341,7 +1441,17 @@ struct EnvironmentsTabView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(18)
-        .glassSurface(.raised, cornerRadius: 18)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.thinMaterial)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(VPColor.contentPlane.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityPanelOpacity))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(EnvironmentPreviewLayoutPolicy.roomLegibilityStrokeOpacity), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     @MainActor
@@ -1359,14 +1469,32 @@ struct EnvironmentsTabView: View {
     @MainActor
     private func loadEnvironments() async {
         isLoading = true
-        let latestEnvironments = (try? await appState.environmentCatalogManager.fetchAssets()) ?? []
-        guard !Task.isCancelled else { return }
-        environments = latestEnvironments
-        isLoading = false
+        do {
+            let latestEnvironments = try await appState.environmentCatalogManager.fetchAssets()
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
+            environments = latestEnvironments
+            appState.reconcileEnvironmentSelection(withLoadedAssets: latestEnvironments)
+            environmentError = nil
+            isLoading = false
+        } catch {
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
+            environmentError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)
+            isLoading = false
+        }
     }
 
     private func isPresetInstalled(_ preset: CuratedEnvironmentPreset) -> Bool {
-        environments.contains { environment in
+        installedPresetAsset(preset) != nil
+    }
+
+    private func installedPresetAsset(_ preset: CuratedEnvironmentPreset) -> EnvironmentAsset? {
+        environments.first { environment in
             environment.sourceType == .imported
                 && environment.name == preset.name
                 && environment.sourceAttributionURL == preset.sourceAttributionURL
@@ -1385,22 +1513,30 @@ struct EnvironmentsTabView: View {
         defer { installingPresetIDs.remove(preset.id) }
 
         do {
-            _ = try await appState.environmentCatalogManager.importCuratedPreset(preset)
+            let importedAsset = try await appState.environmentCatalogManager.importCuratedPreset(preset)
             await coalescedLoadEnvironments()
+            if installedPresetAsset(preset) == nil {
+                environments.append(importedAsset)
+            }
         } catch {
-            environmentError = error.localizedDescription
+            environmentError = EnvironmentErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
     private func selectEnvironment(_ asset: EnvironmentAsset) async {
-        if asset.id == appState.selectedEnvironmentAsset?.id, appState.isImmersiveSpaceOpen {
+        if EnvironmentPreviewRowPolicy.assetStatus(
+            assetID: asset.id,
+            selectedAssetID: effectiveSelectedEnvironmentAssetID,
+            activeEnvironment: appState.activeEnvironment,
+            isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
+        ) == .active {
             guard await exitEnvironment() else {
                 environmentError = PlayerImmersiveTransitionPolicy.transitionBusyMessage
                 return
             }
             return
         }
-        guard await ensureImportedEnvironmentAssetExists(asset) else {
+        guard await ensureEnvironmentAssetExists(asset) else {
             environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
             await coalescedLoadEnvironments()
             return
@@ -1442,14 +1578,15 @@ struct EnvironmentsTabView: View {
         }
     }
 
-    private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
-        guard asset.sourceType == .imported else { return true }
+    private func ensureEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
         if await appState.environmentCatalogManager.resolvedAssetURL(for: asset) != nil {
             return true
         }
 
-        try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
-        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        if asset.sourceType == .imported {
+            try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        }
         return false
     }
 

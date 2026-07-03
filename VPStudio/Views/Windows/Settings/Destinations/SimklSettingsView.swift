@@ -88,7 +88,7 @@ struct SimklSettingsView: View {
         } catch {
             hasSavedAuthorization = false
             statusMessage = nil
-            errorMessage = error.localizedDescription
+            errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -102,7 +102,7 @@ struct SimklSettingsView: View {
                 await loadSavedAuthorizationState()
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
+                    errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
             }
         }

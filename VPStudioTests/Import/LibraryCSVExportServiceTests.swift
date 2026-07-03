@@ -210,7 +210,7 @@ struct CSVExportIntegrationTests {
         try await db.addToLibrary(
             UserLibraryEntry(
                 id: "dune-watchlist",
-                mediaId: "movie-imdb-tt1160419",
+                mediaId: "movie-omdb-tt1160419",
                 folderId: LibraryFolder.systemFolderID(for: .watchlist),
                 listType: .watchlist,
                 addedAt: Date(timeIntervalSince1970: 1_700_000_000)
@@ -234,6 +234,94 @@ struct CSVExportIntegrationTests {
         #expect(csv.contains("Dune"))
         #expect(csv.contains("\"Adventure, Sci-Fi\""))
         #expect(csv.contains(",8,"))
+    }
+
+    @Test func exportResolvesTMDbLibraryAliasThroughOMDbCachedItemAndRating() async throws {
+        let db = try await makeTempDatabase()
+
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                genres: ["Adventure", "Sci-Fi"],
+                imdbRating: 8.0,
+                runtime: 155,
+                tmdbId: 438631
+            )
+        )
+        try await db.addToLibrary(
+            UserLibraryEntry(
+                id: "dune-legacy-tmdb-watchlist",
+                mediaId: "movie-tmdb-438631",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+        )
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "movie-omdb-tt1160419",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9
+            )
+        )
+
+        let service = LibraryCSVExportService(database: db)
+        let (csv, itemCount) = try await service.exportFolder(listType: .watchlist, folderId: nil)
+
+        #expect(itemCount == 1)
+        #expect(csv.contains("Your Rating"))
+        #expect(csv.contains("tt1160419"))
+        #expect(csv.contains("https://www.imdb.com/title/tt1160419/"))
+        #expect(csv.contains("Dune"))
+        #expect(csv.contains(",9,"))
+    }
+
+    @Test func exportResolvesLegacyTMDbRatingThroughOMDbCachedItem() async throws {
+        let db = try await makeTempDatabase()
+
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                genres: ["Adventure", "Sci-Fi"],
+                imdbRating: 8.0,
+                runtime: 155,
+                tmdbId: 438631
+            )
+        )
+        try await db.addToLibrary(
+            UserLibraryEntry(
+                id: "dune-omdb-watchlist",
+                mediaId: "movie-omdb-tt1160419",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+        )
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "tmdb-438631",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 7
+            )
+        )
+
+        let service = LibraryCSVExportService(database: db)
+        let (csv, itemCount) = try await service.exportFolder(listType: .watchlist, folderId: nil)
+
+        #expect(itemCount == 1)
+        #expect(csv.contains("Your Rating"))
+        #expect(csv.contains("tt1160419"))
+        #expect(csv.contains("https://www.imdb.com/title/tt1160419/"))
+        #expect(csv.contains("Dune"))
+        #expect(csv.contains(",7,"))
     }
 
     @Test func exportCustomFolderCreatesNamedFile() async throws {

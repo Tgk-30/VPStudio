@@ -352,6 +352,65 @@ struct IndexerConnectivityTests {
         #expect(request.value(forHTTPHeaderField: "X-Api-Key") == "key")
     }
 
+    @Test func lanHttpBaseURLsRejectAPIKeyTransportBeforeNetworkCall() {
+        let config = IndexerConfig(
+            id: "prowlarr-lan-http",
+            name: "LAN Prowlarr",
+            indexerType: .prowlarr,
+            baseURL: "http://192.168.50.10:9696",
+            apiKey: "key",
+            isActive: true,
+            priority: 0,
+            providerSubtype: .prowlarr,
+            endpointPath: "/api/v1/search"
+        )
+
+        do {
+            _ = try IndexerConnectivityTester.makeRequest(for: config)
+            Issue.record("Expected IndexerConnectivityError.invalidBaseURL")
+        } catch let error as IndexerConnectivityError {
+            if case .invalidBaseURL = error {
+                return
+            }
+            Issue.record("Unexpected IndexerConnectivityError: \(error)")
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func credentialedIndexerRedirectsCannotDowngradeToLANHTTP() {
+        var request = URLRequest(url: URL(string: "https://indexer.example/api?t=caps")!)
+        request.setValue("key", forHTTPHeaderField: "X-Api-Key")
+        let responseURL = URL(string: "http://192.168.50.10:9696/api?t=caps")!
+
+        #expect(!IndexerRedirectPolicy.permitsFinalResponse(for: request, responseURL: responseURL))
+    }
+
+    @Test func singleLabelHttpBaseURLsAreRejectedBeforeAPIKeyTransport() {
+        let config = IndexerConfig(
+            id: "prowlarr-single-label-http",
+            name: "Single Label Prowlarr",
+            indexerType: .prowlarr,
+            baseURL: "http://nas:9696",
+            apiKey: "key",
+            isActive: true,
+            priority: 0,
+            endpointPath: "/api/v1/search"
+        )
+
+        do {
+            _ = try IndexerConnectivityTester.makeRequest(for: config)
+            Issue.record("Expected IndexerConnectivityError.invalidBaseURL")
+        } catch let error as IndexerConnectivityError {
+            if case .invalidBaseURL = error {
+                return
+            }
+            Issue.record("Unexpected IndexerConnectivityError: \(error)")
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
     @Test func prowlarrConnectionUsesDefaultEndpointWhenPathMissing() throws {
         let config = IndexerConfig(
             id: "prowlarr-default-endpoint",

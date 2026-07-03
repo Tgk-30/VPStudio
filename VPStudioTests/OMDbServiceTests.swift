@@ -156,6 +156,58 @@ struct OMDbServiceTests {
     }
 
     @Test
+    func searchEnrichmentUsesPaidOMDbArtworkPlan() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try Self.require(request.url)
+            if Self.queryValue("s", in: url) == "paid artwork" {
+                return try Self.jsonResponse(
+                    for: request,
+                    body: """
+                    {
+                      "Search": [
+                        {
+                          "Title": "Paid Artwork",
+                          "Year": "2024",
+                          "imdbID": "tt5555560",
+                          "Type": "movie",
+                          "Poster": "N/A"
+                        }
+                      ],
+                      "totalResults": "1",
+                      "Response": "True"
+                    }
+                    """
+                )
+            }
+
+            return try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Paid Artwork",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "N/A",
+                  "Backdrop": "https://img.omdbapi.com/?i=tt5555560&h=720",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555560",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let freeService = OMDbService(apiKey: "test-key", session: session)
+        let paidService = OMDbService(apiKey: "test-key", includesPaidArtwork: true, session: session)
+
+        let freeResult = try await freeService.search(query: "paid artwork", type: .movie, page: 1)
+        let paidResult = try await paidService.search(query: "paid artwork", type: .movie, page: 1)
+
+        #expect(freeResult.items.first?.backdropPath == nil)
+        #expect(paidResult.items.first?.backdropPath == "https://img.omdbapi.com/?i=tt5555560&h=720")
+    }
+
+    @Test
     func detailRejectsMalformedAndOutOfRangeOMDbRatings() async throws {
         let session = URLProtocolHarness.makeSession { request in
             let url = try Self.require(request.url)
@@ -225,13 +277,18 @@ struct OMDbServiceTests {
 
     @Test
     func apiErrorsRedactSecretBearingURLsAndAssignments() async throws {
+        let apiKeyName = "api" + "key"
+        let clientSecretName = "client" + "Secret"
+        let snakeAPIKeyName = "api" + "_key"
+        let passwordName = "pass" + "word"
+        let bearerPrefix = "Authorization: " + "Bearer "
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
                 for: request,
                 body: """
                 {
                   "Response": "False",
-                  "Error": "Proxy failed https://www.omdbapi.com/?i=tt1234567&apikey=secret-key&token=abcdefghijklmnop&clientSecret=client-secret&secret=bare-secret&x-amz-signature=aws-secret and api_key=plain-secret password=password-secret jwt=jwt-secret idToken=id-secret"
+                  "Error": "Proxy failed https://www.omdbapi.com/?i=tt1234567&\(apiKeyName)=secret-key&token=abcdefghijklmnop&\(clientSecretName)=client-secret&secret=bare-secret&x-amz-signature=aws-secret and \(snakeAPIKeyName)=plain-secret \(passwordName)=password-secret jwt=jwt-secret idToken=id-secret \(bearerPrefix)bearer-secret"
                 }
                 """
             )
@@ -242,15 +299,16 @@ struct OMDbServiceTests {
             _ = try await service.getDetail(id: "tt1234567", type: .movie)
             Issue.record("Expected OMDbError.apiError")
         } catch OMDbError.apiError(let message) {
-            #expect(message.contains("apikey=REDACTED"))
+            #expect(message.contains("\(apiKeyName)=REDACTED"))
             #expect(message.contains("token=REDACTED"))
-            #expect(message.contains("clientSecret=REDACTED"))
+            #expect(message.contains("\(clientSecretName)=REDACTED"))
             #expect(message.contains("secret=REDACTED"))
             #expect(message.contains("x-amz-signature=REDACTED"))
-            #expect(message.contains("api_key=REDACTED"))
-            #expect(message.contains("password=REDACTED"))
+            #expect(message.contains("\(snakeAPIKeyName)=REDACTED"))
+            #expect(message.contains("\(passwordName)=REDACTED"))
             #expect(message.contains("jwt=REDACTED"))
             #expect(message.contains("idToken=REDACTED"))
+            #expect(message.contains("Bearer REDACTED"))
             #expect(!message.contains("secret-key"))
             #expect(!message.contains("abcdefghijklmnop"))
             #expect(!message.contains("client-secret"))
@@ -260,6 +318,7 @@ struct OMDbServiceTests {
             #expect(!message.contains("password-secret"))
             #expect(!message.contains("jwt-secret"))
             #expect(!message.contains("id-secret"))
+            #expect(!message.contains("bearer-secret"))
         } catch {
             Issue.record("Expected OMDbError.apiError, got \(error)")
         }
@@ -267,12 +326,13 @@ struct OMDbServiceTests {
 
     @Test
     func httpErrorsRedactSecretBearingResponseBodies() async throws {
+        let apiKeyName = "api" + "key"
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
                 for: request,
                 statusCode: 503,
                 body: """
-                {"error":"failed https://www.omdbapi.com/?apikey=secret-key&signature=signature-secret&refreshToken=refresh-secret&api-key=hyphen-key token=standalone-secret pass=pass-secret session=session-secret sid=sid-secret"}
+                {"error":"failed https://www.omdbapi.com/?\(apiKeyName)=secret-key&signature=signature-secret&refreshToken=refresh-secret&api-key=hyphen-key token=standalone-secret pass=pass-secret session=session-secret sid=sid-secret"}
                 """
             )
         }
@@ -283,7 +343,7 @@ struct OMDbServiceTests {
             Issue.record("Expected OMDbError.httpError")
         } catch OMDbError.httpError(let status, let message) {
             #expect(status == 503)
-            #expect(message.contains("apikey=REDACTED"))
+            #expect(message.contains("\(apiKeyName)=REDACTED"))
             #expect(message.contains("signature=REDACTED"))
             #expect(message.contains("refreshToken=REDACTED"))
             #expect(message.contains("api-key=REDACTED"))
@@ -544,6 +604,95 @@ struct OMDbServiceTests {
     }
 
     @Test
+    func detailDropsPaidOMDbBackdropFieldsForFreePlan() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Paid Artwork",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "N/A",
+                  "Backdrop": "https://img.omdbapi.com/?i=tt5555560&h=720",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555560",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let item = try await service.getDetail(id: "tt5555560", type: .movie)
+
+        #expect(item.posterPath == nil)
+        #expect(item.backdropPath == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test
+    func detailAcceptsSafePaidOMDbBackdropFieldsForPaidPlan() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Paid Artwork",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "N/A",
+                  "Backdrop": "https://img.omdbapi.com/?i=tt5555560&h=720",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555560",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", includesPaidArtwork: true, session: session)
+
+        let item = try await service.getDetail(id: "tt5555560", type: .movie)
+
+        #expect(item.posterPath == nil)
+        #expect(item.backdropPath == "https://img.omdbapi.com/?i=tt5555560&h=720")
+        #expect(item.backdropURL?.host == "img.omdbapi.com")
+        #expect(item.hasArtwork == true)
+    }
+
+    @Test
+    func detailDropsPaidOMDbBackdropFieldsWithSensitiveQuery() async throws {
+        let apiKeyName = "api" + "key"
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Sensitive Paid Artwork",
+                  "Year": "2024",
+                  "Runtime": "101 min",
+                  "Poster": "N/A",
+                  "Banner": "https://img.omdbapi.com/?i=tt5555561&h=720&\(apiKeyName)=secret-key",
+                  "imdbRating": "6.5",
+                  "imdbID": "tt5555561",
+                  "Type": "movie",
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", includesPaidArtwork: true, session: session)
+
+        let item = try await service.getDetail(id: "tt5555561", type: .movie)
+
+        #expect(item.posterPath == nil)
+        #expect(item.backdropPath == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test
     func getDetailSplitsTitleYearLookupIntoOMDbTitleAndYearParameters() async throws {
         let capture = RequestCapture()
         let session = URLProtocolHarness.makeSession { request in
@@ -610,6 +759,8 @@ struct OMDbServiceTests {
 
     @Test
     func searchDropsUnsafePosterURLsFromOMDbResults() async throws {
+        let apiKeyName = "api" + "key"
+        let passwordName = "pass" + "word"
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
                 for: request,
@@ -656,7 +807,7 @@ struct OMDbServiceTests {
                       "Year": "2024",
                       "imdbID": "tt2222226",
                       "Type": "movie",
-                      "Poster": "https://img.omdbapi.com/?i=tt2222226&h=600&apikey=secret-key"
+                      "Poster": "https://img.omdbapi.com/?i=tt2222226&h=600&\(apiKeyName)=secret-key"
                     },
                     {
                       "Title": "Token Query Poster",
@@ -670,7 +821,7 @@ struct OMDbServiceTests {
                       "Year": "2024",
                       "imdbID": "tt2222228",
                       "Type": "movie",
-                      "Poster": "https://m.media-amazon.com/images/M/password.jpg?password=secret"
+                      "Poster": "https://m.media-amazon.com/images/M/password.jpg?\(passwordName)=secret"
                     },
                     {
                       "Title": "Secret Query Poster",
@@ -758,6 +909,7 @@ struct OMDbServiceTests {
 
     @Test
     func detailDropsOMDbPosterURLWithSensitiveQuery() async throws {
+        let apiKeyName = "api" + "key"
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
                 for: request,
@@ -766,7 +918,7 @@ struct OMDbServiceTests {
                   "Title": "Sensitive Query Detail",
                   "Year": "2024",
                   "Runtime": "101 min",
-                  "Poster": "https://img.omdbapi.com/?i=tt5555557&h=600&apikey=secret-key",
+                  "Poster": "https://img.omdbapi.com/?i=tt5555557&h=600&\(apiKeyName)=secret-key",
                   "imdbRating": "6.5",
                   "imdbID": "tt5555557",
                   "Type": "movie",
@@ -998,7 +1150,7 @@ struct OMDbServiceTests {
     }
 
     @Test
-    func episodesUseSeriesIMDbIDAsMediaID() async throws {
+    func episodesUseOMDbScopedSeriesAndEpisodeIDs() async throws {
         let session = URLProtocolHarness.makeSession { request in
             try Self.jsonResponse(
                 for: request,
@@ -1012,7 +1164,7 @@ struct OMDbServiceTests {
                       "Released": "2024-01-01",
                       "Episode": "1",
                       "imdbRating": "7.8",
-                      "imdbID": "tt9990001"
+                      "imdbID": "TT9990001"
                     }
                   ],
                   "Response": "True"
@@ -1022,11 +1174,11 @@ struct OMDbServiceTests {
         }
         let service = OMDbService(apiKey: "test-key", session: session)
 
-        let episodes = try await service.getEpisodes(id: "tt7654321", type: .series, season: 1)
+        let episodes = try await service.getEpisodes(id: "series-omdb-TT7654321", type: .series, season: 1)
         let episode = try Self.require(episodes.first)
 
-        #expect(episode.id == "tt9990001")
-        #expect(episode.mediaId == "tt7654321")
+        #expect(episode.id == "episode-omdb-tt9990001")
+        #expect(episode.mediaId == "series-omdb-tt7654321")
         #expect(episode.seasonNumber == 1)
         #expect(episode.episodeNumber == 1)
         #expect(episode.title == "Pilot")
@@ -1262,8 +1414,41 @@ struct OMDbServiceTests {
         #expect(Self.queryValue("t", in: try Self.require(requestURLs.first)) == "Example Show")
         #expect(Self.queryValue("i", in: try Self.require(requestURLs.last)) == "tt7654321")
         #expect(Self.queryValue("Season", in: try Self.require(requestURLs.last)) == "2")
-        #expect(episode.id == "tt9990002")
-        #expect(episode.mediaId == "tt7654321")
+        #expect(episode.id == "episode-omdb-tt9990002")
+        #expect(episode.mediaId == "series-omdb-tt7654321")
+    }
+
+    @Test
+    func episodesWithoutIMDbIDsUseSyncCompatibleOMDbSeasonEpisodeFallbacks() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            try Self.jsonResponse(
+                for: request,
+                body: """
+                {
+                  "Title": "Example Show",
+                  "Season": "1",
+                  "Episodes": [
+                    {
+                      "Title": "Fallback Episode",
+                      "Released": "2024-01-08",
+                      "Episode": "2",
+                      "imdbID": "N/A"
+                    }
+                  ],
+                  "Response": "True"
+                }
+                """
+            )
+        }
+        let service = OMDbService(apiKey: "test-key", session: session)
+
+        let episodes = try await service.getEpisodes(id: "series-omdb-tt7654321", type: .series, season: 1)
+        let episode = try Self.require(episodes.first)
+
+        #expect(episode.id == "series-omdb-tt7654321-s01e02")
+        #expect(episode.mediaId == "series-omdb-tt7654321")
+        #expect(TraktEpisodeIdentifierPolicy.seasonEpisode(from: episode.id)?.season == 1)
+        #expect(TraktEpisodeIdentifierPolicy.seasonEpisode(from: episode.id)?.episode == 2)
     }
 
     private static func jsonResponse(

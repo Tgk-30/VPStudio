@@ -136,11 +136,16 @@ struct StreamInfoComputedPropertiesTests {
                 " Authorization ": " Bearer token ",
                 "Invalid:Name": "value",
                 "X-Line": "bad\rvalue",
-                "X-Empty": "   "
+                "X-Empty": "   ",
+                " Referer ": " https://app.strem.io/ ",
+                " origin ": " https://app.strem.io "
             ]
         )
 
-        #expect(initialized.requestHeaders == ["Authorization": "Bearer token"])
+        #expect(initialized.requestHeaders == [
+            "Origin": "https://app.strem.io",
+            "Referer": "https://app.strem.io/"
+        ])
     }
 }
 
@@ -186,6 +191,9 @@ struct StreamInfoCopyMethodsTests {
             "  User-Agent  ": "  VPStudio  ",
             "Bad:Name": "ignored",
             "Bad\nName": "ignored",
+            "Authorization": "Bearer ignored",
+            "Cookie": "session=ignored",
+            "X-Token": "ignored",
             "X-Bad-Value": "line\nbreak",
             "X-Blank": "   ",
             "   ": "value",
@@ -203,6 +211,53 @@ struct StreamInfoCopyMethodsTests {
         #expect(original.requestHeaders == ["User-Agent": "VPStudio"])
         #expect(nilCopy.requestHeaders == nil)
         #expect(invalidCopy.requestHeaders == nil)
+    }
+
+    @Test func withRequestHeadersKeepsOnlyPublicRefererAndOriginValues() {
+        let copy = baseStream().withRequestHeaders([
+            "Referer": "https://app.strem.io/shell-v4.4/#/detail",
+            "Origin": "https://app.strem.io",
+            "Referrer": "http://127.0.0.1/private",
+            "referer": "file:///private/movie",
+            "origin": "https://nas.local",
+            "User-Agent": "Stremio",
+            "Accept": "video/*",
+        ])
+
+        #expect(copy.requestHeaders == [
+            "Accept": "video/*",
+            "Origin": "https://app.strem.io",
+            "Referer": "https://app.strem.io/shell-v4.4/#/detail",
+            "User-Agent": "Stremio",
+        ])
+    }
+
+    @Test func withRequestHeadersDropsRefererAndOriginCredentialMaterial() {
+        let copy = baseStream().withRequestHeaders([
+            "Referer": "https://user:pass@app.strem.io/shell-v4.4/#/detail",
+            "Referrer": "https://app.strem.io/shell-v4.4/?access_token=secret",
+            "referer": "https://app.strem.io/shell-v4.4/#access_token=secret",
+            "Origin": "https://app.strem.io?apikey=secret",
+            "ORIGIN": "https://app.strem.io#token%3Dsecret",
+            "Accept": "video/*",
+            "User-Agent": "Stremio",
+        ])
+
+        #expect(copy.requestHeaders == [
+            "Accept": "video/*",
+            "User-Agent": "Stremio",
+        ])
+    }
+
+    @Test func withRequestHeadersDropsControlCharactersAndOversizedValues() {
+        let hugeValue = String(repeating: "a", count: 2_049)
+        let copy = baseStream().withRequestHeaders([
+            "User-Agent": hugeValue,
+            "Accept-Language": "en-US\tfr",
+            "Accept": "video/*",
+        ])
+
+        #expect(copy.requestHeaders == ["Accept": "video/*"])
     }
 
     @Test func codableRoundTripPreservesRecoveryContextAndDropsTransientHeaders() throws {

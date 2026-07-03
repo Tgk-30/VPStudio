@@ -114,6 +114,22 @@ enum GenreEnvironmentSuggestionPolicy {
         return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Normalizes a persisted environment tag without applying the neutral fallback
+    /// used for unknown media genres. This keeps asset tags stable and prevents a
+    /// misspelled/custom tag from silently becoming "cinema".
+    static func normalizedEnvironmentTag(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = normalize(raw)
+        guard !normalized.isEmpty else { return nil }
+        if let suggestion = allSuggestions.first(where: { $0.matchKey == normalized }) {
+            return suggestion.matchKey
+        }
+        if let suggestion = nameSuggestions[normalized] {
+            return suggestion.matchKey
+        }
+        return normalized
+    }
+
     // MARK: - Tables
 
     /// TMDB movie genre ids -> mood. Keyed off the ids used in `ExploreGenreCatalog`
@@ -152,9 +168,25 @@ enum GenreEnvironmentSuggestionPolicy {
     /// OMDb genre vocabulary (Biography, Family, Film-Noir, Music, Musical, Sport,
     /// War, Western, …) so OMDb-sourced titles resolve to a tailored environment
     /// instead of always falling back to the neutral cinema default.
+    private static let allSuggestions: [EnvironmentSuggestion] = [
+        scifi,
+        horror,
+        animation,
+        docs,
+        chill,
+        action,
+        drama,
+        comedy,
+        mystery,
+        fantasy,
+        classics,
+        neutralDefault,
+    ]
+
     private static let nameSuggestions: [String: EnvironmentSuggestion] = [
         "horror": horror,
         "science fiction": scifi,
+        "sci fi": scifi,
         "sci-fi": scifi,
         "scifi": scifi,
         "sci-fi & fantasy": scifi,

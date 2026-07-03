@@ -215,16 +215,7 @@ actor EnvironmentCatalogManager {
         // deletion. Without this, the environment list shows orphaned entries
         // that open a blank immersive space.
         existing = try await database.fetchEnvironmentAssets()
-        for asset in existing where asset.sourceType == .imported {
-            guard !asset.assetPath.hasPrefix("bundle://") else { continue }
-            guard let fileURL = managedImportedAssetURL(for: asset) else {
-                try await deleteAsset(id: asset.id)
-                continue
-            }
-            if !fileManager.fileExists(atPath: fileURL.path) {
-                try await deleteAsset(id: asset.id)
-            }
-        }
+        try await pruneUnavailableImportedAssets(from: existing)
 
         existing = try await database.fetchEnvironmentAssets()
         let existingByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
@@ -254,7 +245,12 @@ actor EnvironmentCatalogManager {
         existing = try await database.fetchEnvironmentAssets()
         let preferredEnvironmentID = try await database.getSetting(key: SettingsKeys.preferredEnvironment)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasPreferredEnvironment = preferredEnvironmentID?.isEmpty == false
+        let hasPreferredEnvironment = preferredEnvironmentID.map { preferredID in
+            !preferredID.isEmpty && existing.contains { $0.id == preferredID }
+        } ?? false
+        if preferredEnvironmentID?.isEmpty == false, !hasPreferredEnvironment {
+            try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: nil)
+        }
         if !hasPreferredEnvironment,
            existing.contains(where: { $0.id == Self.bundledSkyDomeID && $0.isActive }) {
             try await database.clearActiveEnvironmentAsset()
@@ -267,7 +263,7 @@ actor EnvironmentCatalogManager {
             let ext = URL(fileURLWithPath: asset.assetPath).pathExtension.lowercased()
             guard Self.hdriExtensions.contains(ext) else { continue }
             guard let fileURL = managedImportedAssetURL(for: asset) else { continue }
-            guard fileManager.fileExists(atPath: fileURL.path) else { continue }
+            guard Self.isImportableRegularFile(fileURL) else { continue }
             let resolvedYawOffset = Self.resolveHdriYawOffset(
                 from: await HDRIOrientationAnalyzer.detectScreenYaw(at: fileURL)
             )
@@ -280,27 +276,41 @@ actor EnvironmentCatalogManager {
     }
 
     func fetchAssets() async throws -> [EnvironmentAsset] {
-        try await database.fetchEnvironmentAssets()
+        try await pruneUnavailableImportedAssets()
+        return try await database.fetchEnvironmentAssets()
     }
 
     func activeAsset() async throws -> EnvironmentAsset? {
-        try await database.fetchActiveEnvironmentAsset()
+        try await pruneUnavailableImportedAssets()
+        return try await database.fetchActiveEnvironmentAsset()
     }
 
     /// Returns the first installed asset whose `environmentTag` matches `tag`
     /// (case-insensitive), or `nil` if none is tagged. Used by genre-based
     /// auto-suggestion to resolve a mood to a concrete environment.
     func asset(matchingTag tag: String) async throws -> EnvironmentAsset? {
-        let normalized = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let normalized = GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag(tag) else {
+            return nil
+        }
         guard !normalized.isEmpty else { return nil }
+        try await pruneUnavailableImportedAssets()
         let assets = try await database.fetchEnvironmentAssets()
         return assets.first {
-            ($0.environmentTag?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) == normalized
+            GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag($0.environmentTag) == normalized
         }
     }
 
     @discardableResult
     func activateAsset(id: String) async throws -> Bool {
+        try await pruneUnavailableImportedAssets()
+        // Never activate an asset whose backing resource cannot be resolved — a
+        // bundled asset with a missing resource or an imported file that has gone
+        // away would otherwise blank the environment. Keeping the current
+        // selection intact is the safe, defensive behavior.
+        guard let asset = try await database.fetchEnvironmentAssets().first(where: { $0.id == id }),
+              resolvedAssetURL(for: asset) != nil else {
+            return false
+        }
         guard try await database.setActiveEnvironmentAsset(id: id) else { return false }
         try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: nil)
         try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: id)
@@ -348,10 +358,13 @@ actor EnvironmentCatalogManager {
     }
 
     func importCuratedPreset(_ preset: CuratedEnvironmentPreset) async throws -> EnvironmentAsset {
+        try await pruneUnavailableImportedAssets()
+
         if let existing = try await database.fetchEnvironmentAssets().first(where: {
             $0.sourceType == .imported
                 && $0.name == preset.name
                 && $0.sourceAttributionURL == preset.sourceAttributionURL
+                && resolvedAssetURL(for: $0) != nil
         }) {
             return existing
         }
@@ -383,6 +396,7 @@ actor EnvironmentCatalogManager {
             throw EnvironmentCatalogError.downloadFailed("Only HTTPS environment downloads are supported.")
         }
         try Self.validateRemoteSourceExtensionIfPresent(validatedSourceURL)
+        try Self.rejectHostResolvingToPrivateAddress(validatedSourceURL)
 
         let data: Data
         let response: URLResponse
@@ -391,7 +405,7 @@ actor EnvironmentCatalogManager {
         } catch let error as EnvironmentCatalogError {
             throw error
         } catch {
-            throw EnvironmentCatalogError.downloadFailed(error.localizedDescription)
+            throw EnvironmentCatalogError.downloadFailed(IndexerLogSanitizer.redactedErrorMessage(error))
         }
 
         if let httpResponse = response as? HTTPURLResponse,
@@ -408,6 +422,10 @@ actor EnvironmentCatalogManager {
             sourceURL: finalResponseURL,
             response: response
         )
+        let sourceNameHint = Self.remoteSourceNameHint(
+            originalURL: validatedSourceURL,
+            finalURL: finalResponseURL
+        )
 
         guard !data.isEmpty else {
             throw EnvironmentCatalogError.downloadFailed("No data returned")
@@ -419,7 +437,7 @@ actor EnvironmentCatalogManager {
 
         try fileManager.createDirectory(at: environmentsDirectory, withIntermediateDirectories: true)
 
-        let sourceName = validatedSourceURL.deletingPathExtension().lastPathComponent
+        let sourceName = sourceNameHint
         let sanitizedSourceName = Self.sanitizedEnvironmentDisplayName(from: sourceName)
         let temporaryFileNameBase = sanitizedSourceName.map {
             "remote-\(UUID().uuidString)-\($0)"
@@ -440,7 +458,7 @@ actor EnvironmentCatalogManager {
         return try await persistImportedAsset(
             sourceURL: temporaryURL,
             extension: resolvedExt,
-            sourceNameHint: validatedSourceURL.deletingPathExtension().lastPathComponent,
+            sourceNameHint: sourceNameHint,
             preferredName: preferredName,
             licenseName: licenseName,
             sourceAttributionURL: sourceAttributionURL,
@@ -509,7 +527,7 @@ actor EnvironmentCatalogManager {
             sourceAttributionURL: Self.sanitizedSourceAttributionURL(sourceAttributionURL),
             previewImagePath: sanitizedPreviewImagePath(previewImagePath),
             hdriYawOffset: resolvedYawOffset,
-            environmentTag: environmentTag,
+            environmentTag: GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag(environmentTag),
             createdAt: Date(),
             isActive: false
         )
@@ -563,7 +581,8 @@ actor EnvironmentCatalogManager {
         }
 
         guard let fileURL = EnvironmentURLPolicy.absoluteFileURL(fromStoredPath: trimmed),
-              EnvironmentURLPolicy.fileURL(fileURL, isInside: environmentsDirectory) else {
+              EnvironmentURLPolicy.fileURL(fileURL, isInside: environmentsDirectory),
+              Self.isImportableRegularFile(fileURL) else {
             return nil
         }
         return fileURL.standardizedFileURL.path
@@ -576,7 +595,7 @@ actor EnvironmentCatalogManager {
 
         if existing.sourceType == .imported,
            let fileURL = managedImportedAssetURL(for: existing) {
-            if fileManager.fileExists(atPath: fileURL.path) {
+            if Self.isImportableRegularFile(fileURL) {
                 try? fileManager.removeItem(at: fileURL)
             }
         }
@@ -614,10 +633,35 @@ actor EnvironmentCatalogManager {
         guard let fileURL = managedImportedAssetURL(for: asset) else {
             return nil
         }
-        if fileManager.fileExists(atPath: fileURL.path) {
+        if Self.isImportableRegularFile(fileURL) {
             return fileURL
         }
         return nil
+    }
+
+    @discardableResult
+    private func pruneUnavailableImportedAssets(from knownAssets: [EnvironmentAsset]? = nil) async throws -> Bool {
+        let assets: [EnvironmentAsset]
+        if let knownAssets {
+            assets = knownAssets
+        } else {
+            assets = try await database.fetchEnvironmentAssets()
+        }
+        var didPrune = false
+
+        for asset in assets where shouldPruneUnavailableImportedAsset(asset) {
+            try await deleteAsset(id: asset.id)
+            didPrune = true
+        }
+
+        return didPrune
+    }
+
+    private func shouldPruneUnavailableImportedAsset(_ asset: EnvironmentAsset) -> Bool {
+        guard asset.sourceType == .imported else { return false }
+        guard !asset.assetPath.hasPrefix("bundle://") else { return false }
+        guard let fileURL = managedImportedAssetURL(for: asset) else { return true }
+        return !Self.isImportableRegularFile(fileURL)
     }
 
     private func managedImportedAssetURL(for asset: EnvironmentAsset) -> URL? {
@@ -645,7 +689,19 @@ actor EnvironmentCatalogManager {
         ) else {
             throw EnvironmentCatalogError.downloadFailed("Only HTTPS environment downloads are supported.")
         }
+        try validateRemoteSourceExtensionIfPresent(validatedURL)
+        try rejectHostResolvingToPrivateAddress(validatedURL)
         return validatedURL
+    }
+
+    private static func remoteSourceNameHint(originalURL: URL, finalURL: URL) -> String? {
+        for url in [finalURL, originalURL] {
+            let candidate = url.deletingPathExtension().lastPathComponent
+            if sanitizedEnvironmentDisplayName(from: candidate) != nil {
+                return candidate
+            }
+        }
+        return nil
     }
 
     nonisolated static func validatedRemoteRedirectRequest(_ request: URLRequest) -> URLRequest? {
@@ -659,9 +715,23 @@ actor EnvironmentCatalogManager {
 
         do {
             try validateRemoteSourceExtensionIfPresent(validatedURL)
+            try rejectHostResolvingToPrivateAddress(validatedURL)
             return request
         } catch {
             return nil
+        }
+    }
+
+    /// Rejects a remote environment URL whose host resolves (via DNS/CNAME) to a
+    /// private or reserved address, closing the gap where `EnvironmentURLPolicy`
+    /// only blocks private *literal* hosts. Mirrors the indexer network policy so
+    /// a public-looking hostname pointing at an internal service can't be fetched.
+    nonisolated static func rejectHostResolvingToPrivateAddress(_ url: URL) throws {
+        guard let host = url.host, !host.isEmpty else {
+            throw EnvironmentCatalogError.downloadFailed("Invalid environment host.")
+        }
+        if PublicNetworkHostResolver.resolvesToPrivateOrReservedAddress(host: host) {
+            throw EnvironmentCatalogError.downloadFailed("Environment host is not permitted.")
         }
     }
 

@@ -1165,7 +1165,15 @@ struct SearchViewModelTests {
         try await Self.waitUntil { viewModel.results.first?.id == "result-key-a-p1" }
         #expect(viewModel.results.first?.id == "result-key-a-p1")
 
+        viewModel.currentPage = 3
+        viewModel.totalPages = 8
+        viewModel.error = .network(.transport("stale provider error"))
         viewModel.configure(apiKey: "key-b")
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.currentPage == 1)
+        #expect(viewModel.totalPages == 1)
+        #expect(viewModel.error == nil)
+
         viewModel.search()
         try await Self.waitUntil { viewModel.results.first?.id == "result-key-b-p1" }
         #expect(viewModel.results.first?.id == "result-key-b-p1")

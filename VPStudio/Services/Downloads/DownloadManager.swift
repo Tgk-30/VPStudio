@@ -47,6 +47,8 @@ final class DownloadCancellationController: @unchecked Sendable {
 
 enum DownloadTransferError: LocalizedError {
     case badHTTPStatus(Int)
+    case blockedRedirect(URL?)
+    case blockedFinalURL(URL?)
     case insufficientDiskSpace(required: Int64, available: Int64)
     case resumeDataProduced(Data)
 
@@ -54,6 +56,10 @@ enum DownloadTransferError: LocalizedError {
         switch self {
         case .badHTTPStatus(let statusCode):
             return "Download failed with HTTP \(statusCode)."
+        case .blockedRedirect:
+            return "Download redirect was blocked because the destination is not a public HTTP(S) URL."
+        case .blockedFinalURL:
+            return "Download response was blocked because the final destination is not a public HTTP(S) URL."
         case .insufficientDiskSpace(let required, let available):
             let formatter = ByteCountFormatter()
             formatter.countStyle = .file
@@ -61,6 +67,18 @@ enum DownloadTransferError: LocalizedError {
         case .resumeDataProduced:
             return "Download paused."
         }
+    }
+}
+
+enum DownloadRedirectPolicy {
+    static func allowsDownloadURL(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return TorrentResult.normalizedDirectStreamURLString(url.absoluteString) != nil
+            && PublicNetworkHostResolver.allowsResolvedDestination(for: url)
+    }
+
+    static func allowsRedirect(to request: URLRequest) -> Bool {
+        allowsDownloadURL(request.url)
     }
 }
 
@@ -526,7 +544,7 @@ actor DownloadManager {
             case .resumeDataProduced(let resumeData):
                 await persistCancelledTransfer(id: id, fallbackTask: task, resumeData: resumeData)
                 return
-            case .badHTTPStatus, .insufficientDiskSpace:
+            case .badHTTPStatus, .blockedRedirect, .blockedFinalURL, .insufficientDiskSpace:
                 break
             }
 
@@ -958,6 +976,9 @@ actor DownloadManager {
 
     private static func validateSuccessfulDownloadResponse(_ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
+        guard DownloadRedirectPolicy.allowsDownloadURL(http.url) else {
+            throw DownloadTransferError.blockedFinalURL(http.url)
+        }
         guard (200...299).contains(http.statusCode) else {
             throw DownloadTransferError.badHTTPStatus(http.statusCode)
         }
@@ -1148,10 +1169,19 @@ actor DownloadManager {
             return try await withCheckedThrowingContinuation { continuation in
                 let task: URLSessionDownloadTask
                 if let resumeData = request.resumeData {
+                    if let url = request.url,
+                       !DownloadRedirectPolicy.allowsDownloadURL(url) {
+                        continuation.resume(throwing: DownloadTransferError.blockedRedirect(url))
+                        return
+                    }
                     task = session.downloadTask(withResumeData: resumeData)
                 } else {
                     guard let url = request.url else {
                         continuation.resume(throwing: URLError(.badURL))
+                        return
+                    }
+                    guard DownloadRedirectPolicy.allowsDownloadURL(url) else {
+                        continuation.resume(throwing: DownloadTransferError.blockedRedirect(url))
                         return
                     }
 
@@ -1415,6 +1445,24 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
         let continuation = continuation
         self.continuation = nil
         return continuation
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard DownloadRedirectPolicy.allowsRedirect(to: request) else {
+            completionHandler(nil)
+            task.cancel()
+            resumeIfNeeded(throwing: DownloadTransferError.blockedRedirect(request.url))
+            session.invalidateAndCancel()
+            return
+        }
+
+        completionHandler(request)
     }
 
     func urlSession(

@@ -84,4 +84,61 @@ struct EpisodeTokenMatcherTests {
         let context = EpisodeTokenMatcher.context(fromQuery: "Movie.1080p.BluRay")
         #expect(context == nil)
     }
+
+    // MARK: - Non-whitespace SxxExx separators
+
+    @Test func matchesWithDotSeparatorBetweenSeasonAndEpisode() {
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01.E05.1080p", season: 1, episode: 5))
+    }
+
+    @Test func matchesWithHyphenSeparatorBetweenSeasonAndEpisode() {
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01-E05", season: 1, episode: 5))
+    }
+
+    @Test func matchesWithUnderscoreSeparatorBetweenSeasonAndEpisode() {
+        #expect(EpisodeTokenMatcher.matches(title: "Show_S01_E05", season: 1, episode: 5))
+    }
+
+    // MARK: - Multi-episode ranges
+
+    @Test func matchesBothEpisodesInGluedMultiEpisodeRelease() {
+        // S01E01E02 covers episodes 1 and 2.
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E01E02.1080p", season: 1, episode: 1))
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E01E02.1080p", season: 1, episode: 2))
+    }
+
+    @Test func matchesHyphenatedMultiEpisodeRange() {
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S02E05-E07", season: 2, episode: 6))
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S02E05-07", season: 2, episode: 7))
+    }
+
+    @Test func doesNotExtendRangeIntoNextEpisode() {
+        #expect(!EpisodeTokenMatcher.matches(title: "Show.S01E01E02", season: 1, episode: 3))
+    }
+
+    @Test func resolutionAfterEpisodeIsNotTreatedAsRange() {
+        // "S01E02-480p": the 480 must not be read as an episode-range end.
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E02-480p", season: 1, episode: 2))
+        #expect(!EpisodeTokenMatcher.matches(title: "Show.S01E02-480p", season: 1, episode: 5))
+        #expect(!EpisodeTokenMatcher.matches(title: "Show.S01E02.1080p", season: 1, episode: 80))
+    }
+
+    @Test func releaseGroupSuffixIsNotTreatedAsRange() {
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E02-GRP", season: 1, episode: 2))
+        #expect(!EpisodeTokenMatcher.matches(title: "Show.S01E02-GRP", season: 1, episode: 3))
+    }
+
+    @Test func bareResolutionAfterHyphenIsNotTreatedAsGiantRange() {
+        // "S01E02-720" (a resolution written without the trailing "p") must not
+        // be read as episodes 2...720.
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E02-720", season: 1, episode: 2))
+        #expect(!EpisodeTokenMatcher.matches(title: "Show.S01E02-720", season: 1, episode: 400))
+        #expect(!EpisodeTokenMatcher.matches(title: "Show.S01E02-480", season: 1, episode: 300))
+    }
+
+    @Test func plausibleMultiEpisodeSpanStillMatches() {
+        // A genuine consecutive-episode file within the sane span is still honored.
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E01-E10", season: 1, episode: 7))
+        #expect(EpisodeTokenMatcher.matches(title: "Show.S01E01-E24", season: 1, episode: 24))
+    }
 }

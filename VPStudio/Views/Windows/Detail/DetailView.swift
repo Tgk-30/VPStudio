@@ -199,7 +199,7 @@ enum DetailPresentationPolicy {
     }
 
     private static func imdbID(from id: String) -> String? {
-        IMDbIdentifierPolicy.firstID(in: id)
+        IMDbIdentifierPolicy.appScopedID(in: id)
     }
 }
 
@@ -425,7 +425,7 @@ struct DetailView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
     @State private var viewModel: DetailViewModel?
-    @State private var metadataApiKey = ""
+    @State private var metadataConfiguration = MetadataProviderConfiguration()
     @State private var isShowingRatingSheet = false
     @State private var draftFeedbackValue: Double = 1
     @State private var metadataReloadTask: Task<Void, Never>?
@@ -469,7 +469,7 @@ struct DetailView: View {
         self.initialAction = initialAction
         self.disablesAutomaticLoading = disablesAutomaticLoading
         _viewModel = State(initialValue: initialViewModel)
-        _metadataApiKey = State(initialValue: initialOMDbApiKey)
+        _metadataConfiguration = State(initialValue: MetadataProviderConfiguration(omdbApiKey: initialOMDbApiKey))
         _isShowingRatingSheet = State(initialValue: initialIsShowingRatingSheet)
         _draftFeedbackValue = State(initialValue: initialDraftFeedbackValue)
         _showActiveSessionToast = State(initialValue: initialShowActiveSessionToast)
@@ -583,8 +583,8 @@ struct DetailView: View {
         torrentAutoSearchTask?.cancel()
         torrentAutoSearchTask = nil
 
-        let key = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
-        metadataApiKey = key
+        let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
+        metadataConfiguration = configuration
 
         let vm: DetailViewModel
         if let existingViewModel = viewModel {
@@ -596,7 +596,7 @@ struct DetailView: View {
         }
 
         vm.setPreviewContext(preview)
-        await vm.loadDetail(preview: preview, apiKey: key)
+        await vm.loadDetail(preview: preview, configuration: configuration)
 
         // Auto-search streams once metadata loads for movies only, but do not
         // keep first content render blocked behind indexer/network work.
@@ -623,7 +623,7 @@ struct DetailView: View {
         SeriesDetailLayout(
             viewModel: vm,
             title: preview.title,
-            metadataApiKey: metadataApiKey,
+            metadataConfiguration: metadataConfiguration,
             mediaType: preview.type,
             streamResultsAnchor: streamResultsAnchor,
             shareItem: detailShareItem(vm),
@@ -681,7 +681,7 @@ struct DetailView: View {
                 set: { vm.error = $0 }
             ),
             onRetry: {
-                Task { await vm.retryLastFailedOperation(apiKey: metadataApiKey) }
+                Task { await vm.retryLastFailedOperation(configuration: metadataConfiguration) }
             }
         )
         .overlay(alignment: .top) {
@@ -908,7 +908,7 @@ private extension DetailView {
             selectedSeason: QARuntimeOptions.selectedSeason,
             currentSeason: vm.selectedSeason
         ) {
-            await vm.loadSeason(season, apiKey: metadataApiKey)
+            await vm.loadSeason(season, configuration: metadataConfiguration)
         }
 
         if let episode = DetailQAActionsPolicy.episodeToSelect(
@@ -1013,6 +1013,12 @@ private extension DetailView {
             preview: preview,
             availableStreams: availableStreams
         )
+        guard PlayerStreamURLPolicy.isLaunchable(request.stream) else {
+            await MainActor.run {
+                playerOpeningError = DetailPlaybackCopyPolicy.streamResolutionFailedMessage(for: .playTorrent)
+            }
+            return
+        }
         let route = DetailPlayerHandoffPolicy.route(
             hasActivePlayerSession: appState.activePlayerSession != nil,
             didLaunchPreferredExternalPlayer: await launchWithPreferredPlayer(for: request.stream.streamURL)
@@ -1027,7 +1033,7 @@ private extension DetailView {
         guard !Task.isCancelled else { return }
 
         await MainActor.run {
-            appState.activePlayerSession = request
+            appState.beginEmbeddedPlayerSession(request)
             openWindow(id: "player", value: request)
         }
     }

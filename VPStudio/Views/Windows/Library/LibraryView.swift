@@ -319,11 +319,26 @@ enum LibraryMetadataHydrationPolicy {
         let requestedID: String
         let detailID: String
         let type: MediaType
+        let knownTMDBID: Int?
+
+        init(
+            requestedID: String,
+            detailID: String,
+            type: MediaType,
+            knownTMDBID: Int? = nil
+        ) {
+            self.requestedID = requestedID
+            self.detailID = detailID
+            self.type = type
+            self.knownTMDBID = knownTMDBID
+        }
     }
 
     static func candidates(
         for ids: [String],
-        mediaItems: [String: MediaItem]
+        mediaItems: [String: MediaItem],
+        allowsTMDbIdentifier: Bool = true,
+        prefersOMDbTitleLookup: Bool = false
     ) -> [Candidate] {
         var seen = Set<String>()
 
@@ -332,33 +347,71 @@ enum LibraryMetadataHydrationPolicy {
             guard let item = mediaItems[requestedID] else { return nil }
             guard !item.hasArtwork else { return nil }
 
-            if let imdbID = IMDbIdentifierPolicy.firstID(in: item.id) {
+            if let imdbID = IMDbIdentifierPolicy.appScopedID(in: item.id) {
                 return Candidate(
                     requestedID: requestedID,
                     detailID: imdbID,
-                    type: item.type
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
                 )
             }
 
-            if let imdbID = IMDbIdentifierPolicy.firstID(in: requestedID) {
+            if let imdbID = IMDbIdentifierPolicy.appScopedID(in: requestedID) {
                 return Candidate(
                     requestedID: requestedID,
                     detailID: imdbID,
-                    type: item.type
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
                 )
             }
 
             let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if prefersOMDbTitleLookup, !title.isEmpty {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: OMDbTitleLookupPolicy.lookupID(title: title, year: item.year),
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
+                )
+            }
+
+            if allowsTMDbIdentifier, let tmdbID = item.tmdbId
+                ?? MetadataProviderIdentifierPolicy.tmdbID(from: item.id)
+                ?? MetadataProviderIdentifierPolicy.tmdbID(from: requestedID) {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: "tmdb-\(tmdbID)",
+                    type: item.type,
+                    knownTMDBID: tmdbID
+                )
+            }
+
             if !title.isEmpty {
                 return Candidate(
                     requestedID: requestedID,
                     detailID: title,
-                    type: item.type
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
                 )
             }
 
             return nil
         }
+    }
+
+    static func shouldPersist(
+        hydratedType: MediaType,
+        hydratedTMDBID: Int?,
+        requestedType: MediaType,
+        knownTMDBID: Int?
+    ) -> Bool {
+        guard hydratedType == requestedType else { return false }
+
+        if let knownTMDBID, let hydratedTMDBID, knownTMDBID != hydratedTMDBID {
+            return false
+        }
+
+        return true
     }
 }
 
@@ -1128,9 +1181,12 @@ struct LibraryView: View {
 
     @MainActor
     private func loadUserRatings() async {
-        let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
+        async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)
+        async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()
+        let events = (try? await eventsLoad) ?? []
+        let aliasItems = (try? await aliasItemsLoad) ?? []
         guard !Task.isCancelled else { return }
-        userRatings = TasteRatingLookupPolicy.lookup(from: events)
+        userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)
     }
 
     private func userRating(for preview: MediaPreview, storedMediaID: String) -> TasteEvent? {
@@ -1183,27 +1239,50 @@ struct LibraryView: View {
     private func scheduleMetadataHydration(for ids: [String]) {
         metadataHydrationTask?.cancel()
 
-        let candidates = Array(metadataHydrationCandidates(for: ids).prefix(24))
-        guard !candidates.isEmpty else {
+        guard !ids.isEmpty else {
             metadataHydrationTask = nil
             return
         }
+        let mediaItemsSnapshot = mediaItems
 
         metadataHydrationTask = Task {
-            let apiKey = (try? await appState.settingsManager.getMetadataApiKey()) ?? ""
-            let normalizedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedAPIKey.isEmpty else {
+            let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
+            guard configuration.isConfigured else {
                 await MainActor.run {
                     metadataHydrationTask = nil
                 }
                 return
             }
 
-            let metadataService = appState.createMetadataService(apiKey: normalizedAPIKey)
+            let candidates = Array(
+                LibraryMetadataHydrationPolicy.candidates(
+                    for: ids,
+                    mediaItems: mediaItemsSnapshot,
+                    allowsTMDbIdentifier: configuration.hasTMDb,
+                    prefersOMDbTitleLookup: configuration.hasOMDb
+                )
+                .prefix(24)
+            )
+            guard !candidates.isEmpty else {
+                await MainActor.run {
+                    metadataHydrationTask = nil
+                }
+                return
+            }
+
+            let metadataService = appState.createMetadataService(configuration: configuration)
 
             for candidate in candidates {
                 guard !Task.isCancelled else { break }
                 guard let hydrated = try? await metadataService.getDetail(id: candidate.detailID, type: candidate.type) else {
+                    continue
+                }
+                guard LibraryMetadataHydrationPolicy.shouldPersist(
+                    hydratedType: hydrated.type,
+                    hydratedTMDBID: hydrated.tmdbId,
+                    requestedType: candidate.type,
+                    knownTMDBID: candidate.knownTMDBID
+                ) else {
                     continue
                 }
 
@@ -1221,8 +1300,17 @@ struct LibraryView: View {
         }
     }
 
-    private func metadataHydrationCandidates(for ids: [String]) -> [MetadataHydrationCandidate] {
-        LibraryMetadataHydrationPolicy.candidates(for: ids, mediaItems: mediaItems)
+    private func metadataHydrationCandidates(
+        for ids: [String],
+        allowsTMDbIdentifier: Bool = true,
+        prefersOMDbTitleLookup: Bool = false
+    ) -> [MetadataHydrationCandidate] {
+        LibraryMetadataHydrationPolicy.candidates(
+            for: ids,
+            mediaItems: mediaItems,
+            allowsTMDbIdentifier: allowsTMDbIdentifier,
+            prefersOMDbTitleLookup: prefersOMDbTitleLookup
+        )
     }
 
     private func createFolder(named name: String, in targetList: UserLibraryEntry.ListType) async -> String? {

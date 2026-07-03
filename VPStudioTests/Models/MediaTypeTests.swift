@@ -194,6 +194,21 @@ struct SourceTypeTestsModelsMediatypetests {
         #expect(SourceType.parse(from: "Unknown Source") == .unknown)
     }
 
+    @Test("A trailing .ts container extension is not misread as a TS/CAM source")
+    func trailingTSExtensionIsNotCam() {
+        // MPEG-TS container files are legitimate — they must not be classified
+        // as camera sources and hidden by the default "No CAM" filter.
+        #expect(SourceType.parse(from: "Great.Movie.2024.1080p.WEB-DL.ts") == .webDL)
+        #expect(SourceType.parse(from: "Great.Movie.2024.mkv") == .unknown)
+        #expect(SourceType.parse(from: "Some.Episode.S01E02.ts") == .unknown)
+        // A genuine TELESYNC token mid-title is still detected as CAM.
+        #expect(SourceType.parse(from: "Great.Movie.2024.TS.XViD-GRP") == .cam)
+        // HD-telesync must stay classified as CAM even once the .ts extension
+        // is stripped (it was previously only caught by that extension).
+        #expect(SourceType.parse(from: "Great.Movie.2024.HDTS.ts") == .cam)
+        #expect(SourceType.parse(from: "Great.Movie.2024.TELECINE.x264.mkv") == .cam)
+    }
+
     @Test("SourceType is CaseIterable")
     func caseIterable() {
         let allCases = SourceType.allCases

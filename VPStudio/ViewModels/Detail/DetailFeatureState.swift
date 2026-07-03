@@ -79,7 +79,12 @@ final class TorrentSearchState {
         let visibleCount = visibleResults.count
         var resultsChanged = false
         for i in rawResults.indices {
-            let hash = rawResults[i].infoHash
+            // `checkCacheAcrossServices` keys its result dictionary by the
+            // canonical normalized info-hash (lowercase 40-hex, base32 decoded),
+            // so look up by the same normalization — a raw uppercase or base32
+            // `infoHash` would otherwise miss and stay stuck at `.unknown`.
+            let hash = DebridHashValidator.normalizedInfoHash(rawResults[i].infoHash)
+                ?? rawResults[i].infoHash
             guard let (status, serviceType) = cacheResults[hash] else { continue }
 
             switch status {

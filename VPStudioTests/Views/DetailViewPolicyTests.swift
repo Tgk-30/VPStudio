@@ -271,6 +271,51 @@ struct DetailPresentationPolicyTests {
     }
 }
 
+// MARK: - SeriesDetailPresentationPolicy Tests
+
+@Suite("SeriesDetailPresentationPolicy Tests")
+struct SeriesDetailLayoutSpacingPolicyTests {
+    @Test("first viewport spacing keeps overview and lower actions from crowding")
+    func firstViewportSpacingKeepsOverviewAndLowerActionsFromCrowding() {
+        #expect(SeriesDetailPresentationPolicy.heroHeight == 244)
+        #expect(SeriesDetailPresentationPolicy.overviewMaxWidth == 760)
+        #expect(SeriesDetailPresentationPolicy.overviewLineLimit == 3)
+        #expect(SeriesDetailPresentationPolicy.bottomContentPadding == 168)
+        #expect(SeriesDetailPresentationPolicy.bottomViewportInset == 128)
+        #expect(SeriesDetailPresentationPolicy.contentSpacing == 18)
+        #expect(SeriesDetailPresentationPolicy.contentTopPadding == 18)
+        #expect(SeriesDetailPresentationPolicy.episodesSectionSpacing == 14)
+        #expect(SeriesDetailPresentationPolicy.episodesSectionTopPadding == 12)
+        #expect(SeriesDetailPresentationPolicy.episodeCardWidth == 220)
+        #expect(SeriesDetailPresentationPolicy.episodeCardHeight == 124)
+        #expect(SeriesDetailPresentationPolicy.postEpisodeExtrasTopPadding == VPSpace.roomy)
+    }
+
+    @Test("hero and metadata contrast protect text over artwork")
+    func heroAndMetadataContrastProtectTextOverArtwork() throws {
+        let source = try String(contentsOf: seriesDetailLayoutURL(), encoding: .utf8)
+
+        #expect(source.contains(".init(color: .black.opacity(0.68), location: 0.58)"))
+        #expect(source.contains(".init(color: .black.opacity(0.88), location: 0.78)"))
+        #expect(source.contains(".foregroundStyle(.white.opacity(0.76))"))
+        #expect(source.contains("VPBottomViewportScrim(height: SeriesDetailPresentationPolicy.bottomViewportInset)"))
+    }
+
+    private func seriesDetailLayoutURL() -> URL {
+        repoRootURL().appendingPathComponent("VPStudio/Views/Windows/Detail/SeriesDetailLayout.swift")
+    }
+
+    private func repoRootURL() -> URL {
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }
+            url = parent
+        }
+        return url
+    }
+}
+
 // MARK: - SeriesRateControlPolicy Tests
 
 @Suite("SeriesRateControlPolicy Tests")

@@ -50,7 +50,7 @@ struct PlayerSessionRequest: Codable, Sendable, Identifiable, Hashable {
         self.availableStreams = availableStreams
         self.mediaTitle = mediaTitle
         self.mediaId = mediaId
-        self.imdbId = IMDbIdentifierPolicy.firstID(in: imdbId) ?? IMDbIdentifierPolicy.firstID(in: mediaId)
+        self.imdbId = IMDbIdentifierPolicy.appScopedID(in: imdbId) ?? IMDbIdentifierPolicy.appScopedID(in: mediaId)
         self.tmdbId = tmdbId
         self.posterPath = posterPath
         self.backdropPath = backdropPath

@@ -202,7 +202,7 @@ final class DownloadsViewModel {
             posterPath: task.posterPath,
             episodeId: task.episodeId
         )
-        appState.activePlayerSession = request
+        appState.beginEmbeddedPlayerSession(request)
         #endif
     }
 

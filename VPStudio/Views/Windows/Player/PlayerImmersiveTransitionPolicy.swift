@@ -1,7 +1,7 @@
 import Foundation
 
 enum PlayerImmersiveTransitionPolicy {
-    static let transitionBusyMessage = "Finish the current environment transition before changing rooms."
+    static let transitionBusyMessage = "Finish the current environment transition before changing environments."
     static let cinemaAlreadyOpenMessage = "Cinema Environment is already open."
 
     static func missingAssetMessage(assetName: String) -> String {

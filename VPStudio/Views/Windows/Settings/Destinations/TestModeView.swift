@@ -133,6 +133,7 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
     case environmentSettings
     case player
     case settings
+    case metadataSettings
     case setupPreferences
 
     var id: String { rawValue }
@@ -151,6 +152,7 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .environmentSettings: return "Environment Settings"
         case .player: return "Player"
         case .settings: return "Settings"
+        case .metadataSettings: return "Metadata Settings"
         case .setupPreferences: return "Setup Preferences"
         }
     }
@@ -169,6 +171,7 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .environmentSettings: return "Presets + playback"
         case .player: return "Controls + overlays"
         case .settings: return "All categories"
+        case .metadataSettings: return "Provider plans"
         case .setupPreferences: return "Wizard source filters"
         }
     }
@@ -187,6 +190,7 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .environmentSettings: return "pano"
         case .player: return "play.circle"
         case .settings: return "gearshape"
+        case .metadataSettings: return "film"
         case .setupPreferences: return "wand.and.stars"
         }
     }
@@ -205,6 +209,7 @@ enum TestScreen: String, CaseIterable, Identifiable, Sendable {
         case .environmentSettings: return .mint
         case .player: return .red
         case .settings: return .gray
+        case .metadataSettings: return .green
         case .setupPreferences: return .indigo
         }
     }
@@ -285,6 +290,15 @@ struct TestScreenSheet: View {
             SeededPlayerPreview()
         case .settings:
             SeededSettingsPreview()
+        case .metadataSettings:
+            MetadataSettingsView(
+                initialOMDbApiKey: "preview-omdb-key",
+                initialTMDbApiKey: "preview-tmdb-token",
+                initialOMDbPlan: .paid,
+                initialTMDbPlan: .paid,
+                initialIsSaved: true,
+                disablesAutomaticTasks: true
+            )
         case .setupPreferences:
             SetupWizardView(
                 initialStep: 3,
@@ -301,7 +315,7 @@ struct TestScreenSheet: View {
 private extension TestScreen {
     var usesNativeNavigationContainer: Bool {
         switch self {
-        case .environmentPicker:
+        case .environmentPicker, .player:
             return true
         default:
             return false
@@ -329,6 +343,18 @@ private enum EnvironmentVisualQASeed {
             environmentTag: "sci-fi"
         ),
     ]
+
+    static var activeAsset: EnvironmentAsset? {
+        assets.first { $0.isActive }
+    }
+
+    static var inactiveAssets: [EnvironmentAsset] {
+        assets.map { asset in
+            var inactiveAsset = asset
+            inactiveAsset.isActive = false
+            return inactiveAsset
+        }
+    }
 }
 
 // MARK: - Discover (real surface, seeded)
@@ -352,8 +378,11 @@ private struct SeededDiscoverPreview: View {
 /// `disablesAutomaticLoading` keeps the seeded view model from being overwritten by metadata refresh.
 private struct SeededDetailPreview: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
     let mediaType: MediaType
     @State private var viewModel: DetailViewModel?
+    @State private var didOpenQASamplePlayer = false
+    @State private var appleEnvironmentClearTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -371,7 +400,45 @@ private struct SeededDetailPreview: View {
             if viewModel == nil {
                 viewModel = DetailPreviewSeed.seededViewModel(appState: appState, type: mediaType)
             }
+            if let viewModel {
+                openQASamplePlayerIfRequested(viewModel)
+            }
         }
+    }
+
+    @MainActor
+    private func openQASamplePlayerIfRequested(_ viewModel: DetailViewModel) {
+        guard QARuntimeOptions.autoPlaySample, !didOpenQASamplePlayer else { return }
+        let preview = DetailPreviewSeed.preview(for: mediaType)
+        guard let sampleStreams = DetailQASamplePolicy.makeSampleStreams(
+            sampleURLs: QARuntimeOptions.sampleURLs,
+            mediaTitle: viewModel.mediaItem?.title ?? preview.title,
+            previewType: preview.type,
+            selectedEpisode: viewModel.selectedEpisode
+        ),
+            let sampleStream = sampleStreams.first
+        else { return }
+
+        let request = viewModel.makePlayerSessionRequest(
+            stream: sampleStream,
+            preview: preview,
+            availableStreams: sampleStreams
+        )
+
+        didOpenQASamplePlayer = true
+        if QARuntimeOptions.playerAppleEnvironmentMode {
+            appleEnvironmentClearTask?.cancel()
+            appleEnvironmentClearTask = Task { @MainActor in
+                await appState.clearEnvironmentSelection()
+                appState.isImmersiveSpaceOpen = false
+                appState.beginEmbeddedPlayerSession(request)
+                openWindow(id: "player", value: request)
+            }
+            return
+        }
+
+        appState.beginEmbeddedPlayerSession(request)
+        openWindow(id: "player", value: request)
     }
 }
 
@@ -451,7 +518,7 @@ private struct SeededDownloadsPreview: View {
 // MARK: - Environments (real surfaces, seeded)
 
 /// Renders the production Environments tab with a small deterministic asset list so the
-/// Standard Room clear state and environment cards can be visually QA'd without imports.
+/// Apple Environment clear state and environment cards can be visually QA'd without imports.
 private struct SeededEnvironmentsTabPreview: View {
     var body: some View {
         #if os(visionOS)
@@ -520,10 +587,12 @@ private struct SeededSettingsPreview: View {
 /// built in `.task` because `VPPlayerEngine` is `@MainActor` and can't initialize a `@State` default
 /// from the view's nonisolated `init`. See `PlayerPreviewSeed`.
 private struct SeededPlayerPreview: View {
+    @Environment(AppState.self) private var appState
     @State private var engine: VPPlayerEngine?
     #if os(visionOS)
     @State private var cinemaSettings = CinemaSettings()
     #endif
+    @State private var appleEnvironmentClearTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -534,8 +603,12 @@ private struct SeededPlayerPreview: View {
                     mediaTitle: PlayerPreviewSeed.mediaTitle,
                     imdbId: sessionRequest.imdbId,
                     sessionRequest: sessionRequest,
+                    fallbackArtworkAssetName: PlayerPreviewSeed.fallbackArtworkAssetName,
                     initialPlaybackState: .playing,
                     initialActiveEngine: PlayerPreviewSeed.activeEngine,
+                    initialEnvironmentAssets: QARuntimeOptions.playerAppleEnvironmentMode
+                        ? EnvironmentVisualQASeed.inactiveAssets
+                        : EnvironmentVisualQASeed.assets,
                     disablesAutomaticTasks: true
                 )
                 .environment(engine)
@@ -547,6 +620,15 @@ private struct SeededPlayerPreview: View {
             }
         }
         .task {
+            if QARuntimeOptions.playerAppleEnvironmentMode {
+                appleEnvironmentClearTask?.cancel()
+                appleEnvironmentClearTask = Task { @MainActor in
+                    await appState.clearEnvironmentSelection()
+                }
+            } else if appState.selectedEnvironmentAsset == nil,
+               let activeAsset = EnvironmentVisualQASeed.activeAsset {
+                appState.selectedEnvironmentAsset = activeAsset
+            }
             if engine == nil {
                 engine = PlayerPreviewSeed.makeSeededEngine()
             }

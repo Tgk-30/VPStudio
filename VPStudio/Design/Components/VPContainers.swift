@@ -7,6 +7,8 @@ import SwiftUI
 struct VPPageShell<Content: View>: View {
     let title: String
     var subtitle: String? = nil
+    var bottomContentPadding: CGFloat = VPSpace.section
+    var bottomViewportInset: CGFloat = 0
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -27,10 +29,36 @@ struct VPPageShell<Content: View>: View {
             }
             .padding(.horizontal, VPSpace.roomy)
             .padding(.top, VPSpace.hero)
-            .padding(.bottom, VPSpace.section)
+            .padding(.bottom, bottomContentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .safeAreaInset(edge: .bottom) {
+            if bottomViewportInset > 0 {
+                VPBottomViewportScrim(height: bottomViewportInset)
+            }
+        }
         .background { VPBackground() }
+    }
+}
+
+struct VPBottomViewportScrim: View {
+    let height: CGFloat
+    var maxOpacity: Double = 0.42
+
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: VPColor.void.opacity(0), location: 0.0),
+                .init(color: VPColor.void.opacity(maxOpacity * 0.19), location: 0.40),
+                .init(color: VPColor.void.opacity(maxOpacity * 0.52), location: 0.76),
+                .init(color: VPColor.void.opacity(maxOpacity), location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: height)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 

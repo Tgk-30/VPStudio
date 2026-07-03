@@ -122,6 +122,15 @@ struct GenreEnvironmentSuggestionPolicyNameTests {
         #expect(GenreEnvironmentSuggestionPolicy.normalize("  Science   Fiction ") == "science fiction")
         #expect(GenreEnvironmentSuggestionPolicy.normalize("HORROR") == "horror")
     }
+
+    @Test func normalizedEnvironmentTagCanonicalizesKnownMoodAliasesWithoutNeutralFallback() {
+        #expect(GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag(nil) == nil)
+        #expect(GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag("  \n ") == nil)
+        #expect(GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag(" Sci   Fi ") == "scifi")
+        #expect(GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag("Science Fiction") == "scifi")
+        #expect(GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag("CINEMA") == "cinema")
+        #expect(GenreEnvironmentSuggestionPolicy.normalizedEnvironmentTag("Custom Mood") == "custom mood")
+    }
 }
 
 // MARK: - ExploreGenreCatalog coverage

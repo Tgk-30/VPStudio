@@ -5,6 +5,7 @@ import os
 struct StremioIndexer: TorrentIndexer {
     private static let logger = Logger(subsystem: "com.vpstudio", category: "stremio-indexer")
     private static let requestLimiter = IndexerRequestLimiter()
+    private static let maximumStreamResults = 500
     private static let defaultSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
@@ -77,13 +78,13 @@ struct StremioIndexer: TorrentIndexer {
             throw CancellationError()
         } catch {
             if Self.isNonSearchableCatalogFallback(error) {
-                Self.logger.debug("Stremio search skipped — addon has no searchable catalogs for query: \(query, privacy: .public)")
+                Self.logger.debug("Stremio search skipped — addon has no searchable catalogs for query: \(query, privacy: .private)")
                 return []
             }
             throw error
         }
         guard !mediaIDs.isEmpty else {
-            Self.logger.debug("Stremio search skipped — no catalog matches for query: \(query, privacy: .public)")
+            Self.logger.debug("Stremio search skipped — no catalog matches for query: \(query, privacy: .private)")
             return []
         }
 
@@ -134,7 +135,7 @@ struct StremioIndexer: TorrentIndexer {
             || normalized.contains("did not include any searchable")
     }
 
-    private static let imdbIDPattern = try! NSRegularExpression(pattern: #"tt\d+"#, options: [.caseInsensitive])
+    private static let imdbIDPattern = SensitiveURLQueryPolicy.regularExpression(pattern: #"tt\d+"#, options: [.caseInsensitive])
     private static let catalogPathValueAllowedCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     private struct ManifestResponse: Decodable {
@@ -449,7 +450,7 @@ struct StremioIndexer: TorrentIndexer {
             )
         }
 
-        return streams.compactMap { stream in
+        return streams.prefix(Self.maximumStreamResults).compactMap { stream in
             let title = (stream["title"] as? String)
                 ?? (stream["name"] as? String)
                 ?? "Stremio Stream"
@@ -659,7 +660,8 @@ struct StremioIndexer: TorrentIndexer {
 
     private func extractIMDbID(from query: String) -> String? {
         let range = NSRange(query.startIndex..<query.endIndex, in: query)
-        guard let match = Self.imdbIDPattern.firstMatch(in: query, options: [], range: range),
+        guard let imdbIDPattern = Self.imdbIDPattern,
+              let match = imdbIDPattern.firstMatch(in: query, options: [], range: range),
               let matchRange = Range(match.range, in: query) else {
             return nil
         }

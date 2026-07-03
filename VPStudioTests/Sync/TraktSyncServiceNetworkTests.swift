@@ -306,6 +306,24 @@ struct TorznabIndexerTests {
         }
     }
 
+    @Test func buildRequestRejectsCleartextSingleLabelHostsBeforeSendingApiKey() async throws {
+        let indexer = TorznabIndexer(
+            name: "Prowlarr",
+            baseURL: "http://prowlarr:9696/api",
+            apiKey: "my-api-key",
+            apiKeyTransport: .query
+        )
+
+        do {
+            _ = try indexer.buildRequest(queryItems: [URLQueryItem(name: "t", value: "search")])
+            Issue.record("Expected URLError.unsupportedURL")
+        } catch let error as URLError {
+            #expect(error.code == .unsupportedURL)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func buildRequestWithCategoryFilterAddsCategoryParam() async throws {
         final class RequestState: @unchecked Sendable {
             var queryItems: [URLQueryItem] = []

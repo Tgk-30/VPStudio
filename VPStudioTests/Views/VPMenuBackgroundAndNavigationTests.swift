@@ -21,6 +21,42 @@ struct VPMenuBackgroundTests {
         SwiftUIViewDiagnosticHost.render(view, width: 800, height: 600)
     }
 
+    @Test("VPMenuBackground avoids discrete orb layers")
+    func avoidsDiscreteOrbLayers() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("VPStudio/Views/VPMenuBackground.swift"),
+            encoding: .utf8
+        )
+
+        #expect(!source.contains("Circle()"))
+        #expect(!source.contains("Color.black.opacity(0.42)"))
+        #expect(source.contains(".regularMaterial"))
+        #expect(source.contains(".blur(radius: 36)"))
+        #expect(source.contains("LinearGradient"))
+    }
+
+    @Test("VPBackground avoids decorative orb layers")
+    func vpBackgroundAvoidsDecorativeOrbLayers() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("VPStudio/Design/Components/GlassSurface.swift"),
+            encoding: .utf8
+        )
+
+        #expect(!source.contains("Circle().fill(VPColor.orb"))
+        #expect(!source.contains("VPColor.orbBlue"))
+        #expect(!source.contains("VPColor.orbRed"))
+        #expect(source.contains("Rectangle().fill(.regularMaterial)"))
+        #expect(source.contains(".blur(radius: 64)"))
+    }
+
     #if os(macOS)
     @Test("VPMenuBackground hosts in NSHostingView")
     func hostsInNSHostingView() {
@@ -194,6 +230,9 @@ struct VPSidebarViewTests {
         #expect(SidebarLayoutPolicy.expandedWidth == 160)
         #expect(SidebarLayoutPolicy.cornerRadius == 26)
         #expect(SidebarLayoutPolicy.iconFrame == VPSpace.minTapTarget)
+        #expect(SidebarLayoutPolicy.railChromeInset == 9)
+        #expect(SidebarLayoutPolicy.environmentButtonSpacing == 5)
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) == VPSpace.minTapTarget + 18)
     }
 
     @Test("SidebarLayoutPolicy sidebarMainTabs contains expected tabs")

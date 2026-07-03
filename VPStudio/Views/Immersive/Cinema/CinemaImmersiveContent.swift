@@ -513,7 +513,8 @@ public struct CinemaImmersiveContent: View {
         do {
             return try factory()
         } catch {
-            logger.error("VideoMaterial creation failed: \(error.localizedDescription, privacy: .public)")
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            logger.error("VideoMaterial creation failed: \(reason, privacy: .public)")
             return nil
         }
     }

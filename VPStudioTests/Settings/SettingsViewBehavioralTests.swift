@@ -93,7 +93,17 @@ struct SettingsViewBehavioralTests {
             draft.baseURL = "http://localhost:9696"
             #expect(draft.validationError == nil)
 
+            // A LAN base URL is permitted for browsing, but an API-key indexer must not send its
+            // credential in cleartext to a non-loopback host — the hardened transport policy
+            // (IndexerURLSecurityPolicy.permitsAPIKeyTransport) rejects HTTP + API key beyond
+            // localhost/loopback. See IndexerSettingsTests.draftValidationCoversUrlApiKeyAndStremioManifestRules.
             draft.baseURL = "http://192.168.1.40:9117"
+            #expect(draft.validationError == IndexerURLSecurityPolicy.apiKeyTransportValidationMessage)
+
+            // Without an API key over the same LAN host, HTTP is allowed.
+            draft.indexerType = .apiBay
+            draft.applyDefaults(for: .apiBay)
+            draft.apiKey = ""
             #expect(draft.validationError == nil)
         }
 

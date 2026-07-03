@@ -55,6 +55,21 @@ struct DebridManagerNormalizedCacheHashesTests {
     }
 }
 
+@Suite("DebridManager security logging")
+struct DebridManagerSecurityLoggingTests {
+    @Test func publicDebridErrorLogsUseSharedSanitizer() throws {
+        let source = try contents(of: "VPStudio/Services/Debrid/DebridManager.swift")
+        let managerSource = try section(from: "actor DebridManager {", to: "internal static func normalizedCacheHashes", in: source)
+
+        #expect(managerSource.contains("private static func sanitizedErrorDescription(_ error: Error) -> String"))
+        #expect(managerSource.contains("IndexerLogSanitizer.redactedErrorMessage(error)"))
+        #expect(managerSource.contains("let sanitizedError = Self.sanitizedErrorDescription(error)"))
+        #expect(managerSource.contains("let sanitizedReason = Self.sanitizedErrorDescription(reason)"))
+        #expect(!managerSource.contains("error.localizedDescription, privacy: .public"))
+        #expect(!managerSource.contains("reason.localizedDescription, privacy: .public"))
+    }
+}
+
 // MARK: - chunked
 
 @Suite("DebridManagerChunked")
@@ -104,4 +119,25 @@ struct DebridManagerChunkedTests {
         #expect(result.count == 1)
         #expect(result[0] == ["solo"])
     }
+}
+
+private func contents(of relativePath: String) throws -> String {
+    let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
+    return try String(contentsOfFile: absolutePath, encoding: .utf8)
+}
+
+private func section(from startToken: String, to endToken: String, in source: String) throws -> String {
+    let start = try #require(source.range(of: startToken))
+    let end = try #require(source.range(of: endToken, range: start.upperBound..<source.endIndex))
+    return String(source[start.lowerBound..<end.lowerBound])
+}
+
+private func repoRootURL() -> URL {
+    var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+        let parent = url.deletingLastPathComponent()
+        if parent.path == url.path { break }
+        url = parent
+    }
+    return url
 }

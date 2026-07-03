@@ -97,6 +97,7 @@ struct ImmersivePlayerControlsCoverageTests {
         }
         // The shared helpers must actually forward their routed notification.
         #expect(source.contains("NotificationCenter.default.post(name: notification"))
+        #expect(source.contains(".animation(.easeInOut(duration: 0.18), value: hasChapters)"))
 
         #expect(source.contains("guard engine.duration > 0 else { return current.formattedDuration }"))
         #expect(source.contains("return \"\\(current.formattedDuration) of \\(engine.durationFormatted)\""))
@@ -111,6 +112,9 @@ struct ImmersivePlayerControlsCoverageTests {
         #expect(source.contains("let thumbIsExpanded = isDraggingScrubber || isScrubberHovered"))
         #expect(source.contains(".onHover { isScrubberHovered = $0 }"))
         #expect(source.contains(".strokeBorder(.white.opacity(thumbIsExpanded ? 0.36 : 0), lineWidth: 2)"))
+        #expect(source.contains("ImmersiveControlsPolicy.bufferingIndicatorTransitionDuration"))
+        #expect(source.contains(".transition(.opacity.combined(with: .scale(scale: 0.92)))"))
+        #expect(source.contains("Playback is loading."))
         #expect(source.contains("private var secondaryGroupDivider"))
         #expect(source.contains(".fill(.white.opacity(0.16))"))
         #expect(source.contains("private var exitImmersiveButton"))

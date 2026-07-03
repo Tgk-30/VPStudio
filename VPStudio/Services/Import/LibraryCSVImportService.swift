@@ -777,7 +777,7 @@ actor LibraryCSVImportService {
     }
 
     private static func parseIMDbID(_ raw: String?) -> String? {
-        IMDbIdentifierPolicy.firstID(in: raw)
+        IMDbIdentifierPolicy.appScopedID(in: raw)
     }
 
     private static func parseMediaType(_ raw: String?) -> MediaType {

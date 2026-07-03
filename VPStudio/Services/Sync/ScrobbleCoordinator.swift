@@ -42,33 +42,59 @@ actor ScrobbleCoordinator {
         progress: Double,
         episodeId: String? = nil
     ) async {
+        let scrobbleSyncID = Self.normalizedScrobbleSyncID(from: mediaId, mediaType: mediaType)
+
         // If a DIFFERENT item is still actively scrobbling (auto-play-next switched the movie or
         // episode), stop the prior scrobble first so Trakt doesn't leave it "started" forever.
         // Series share one show-level mediaId across episodes, so episodeId must be compared too.
         if isScrobbling,
            let priorMediaId = activeMediaId,
-           let priorMediaType = activeMediaType,
-           priorMediaId != mediaId || activeEpisodeId != episodeId,
-           let priorService = await traktServiceIfAvailable() {
-            do {
-                try await priorService.stopScrobble(imdbId: priorMediaId, type: priorMediaType, progress: 0)
-            } catch {
-                recordError(error, operation: "Trakt stop scrobble failed")
+           let priorMediaType = activeMediaType {
+            let sameRemotePlayback = scrobbleSyncID.map { $0 == priorMediaId } == true
+                && priorMediaType == mediaType
+                && activeEpisodeId == episodeId
+            if !sameRemotePlayback {
+                if let priorService = await traktServiceIfAvailable() {
+                    do {
+                        try await priorService.stopScrobble(
+                            imdbId: priorMediaId,
+                            type: priorMediaType,
+                            progress: 0,
+                            episodeId: activeEpisodeId
+                        )
+                    } catch {
+                        recordError(error, operation: "Trakt stop scrobble failed")
+                    }
+                }
+                isScrobbling = false
             }
-            isScrobbling = false
         }
 
-        activeMediaId = mediaId
+        lastErrorMessage = nil
+
+        guard let scrobbleSyncID else {
+            activeMediaId = nil
+            activeMediaType = nil
+            activeEpisodeId = nil
+            isScrobbling = false
+            return
+        }
+
+        activeMediaId = scrobbleSyncID
         activeMediaType = mediaType
         activeEpisodeId = episodeId
-        lastErrorMessage = nil
 
         guard await isTraktScrobbleEnabled() else { return }
         guard let service = await traktServiceIfAvailable() else { return }
         let normalizedProgress = normalizedScrobbleProgress(progress)
 
         do {
-            try await service.startScrobble(imdbId: mediaId, type: mediaType, progress: normalizedProgress)
+            try await service.startScrobble(
+                imdbId: scrobbleSyncID,
+                type: mediaType,
+                progress: normalizedProgress,
+                episodeId: episodeId
+            )
             isScrobbling = true
         } catch {
             recordError(error, operation: "Trakt start scrobble failed")
@@ -82,7 +108,12 @@ actor ScrobbleCoordinator {
         let normalizedProgress = normalizedScrobbleProgress(progress)
 
         do {
-            try await service.pauseScrobble(imdbId: mediaId, type: mediaType, progress: normalizedProgress)
+            try await service.pauseScrobble(
+                imdbId: mediaId,
+                type: mediaType,
+                progress: normalizedProgress,
+                episodeId: activeEpisodeId
+            )
         } catch {
             recordError(error, operation: "Trakt pause scrobble failed")
         }
@@ -95,7 +126,12 @@ actor ScrobbleCoordinator {
         let normalizedProgress = normalizedScrobbleProgress(progress)
 
         do {
-            try await service.startScrobble(imdbId: mediaId, type: mediaType, progress: normalizedProgress)
+            try await service.startScrobble(
+                imdbId: mediaId,
+                type: mediaType,
+                progress: normalizedProgress,
+                episodeId: activeEpisodeId
+            )
         } catch {
             recordError(error, operation: "Trakt resume scrobble failed")
         }
@@ -109,7 +145,12 @@ actor ScrobbleCoordinator {
 
         if isScrobbling, let service {
             do {
-                try await service.stopScrobble(imdbId: mediaId, type: mediaType, progress: normalizedProgress)
+                try await service.stopScrobble(
+                    imdbId: mediaId,
+                    type: mediaType,
+                    progress: normalizedProgress,
+                    episodeId: activeEpisodeId
+                )
             } catch {
                 recordError(error, operation: "Trakt stop scrobble failed")
             }
@@ -160,6 +201,16 @@ actor ScrobbleCoordinator {
             return clamped * 100
         }
         return min(clamped, 100)
+    }
+
+    private static func normalizedScrobbleSyncID(from mediaId: String, mediaType: MediaType) -> String? {
+        if let imdbID = IMDbIdentifierPolicy.appScopedID(in: mediaId) {
+            return imdbID
+        }
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+            return "\(mediaType.rawValue)-tmdb-\(tmdbID)"
+        }
+        return nil
     }
 
     private func traktServiceIfAvailable() async -> TraktSyncService? {
@@ -227,7 +278,11 @@ actor ScrobbleCoordinator {
         }
     }
 
+    static func sanitizedErrorMessage(operation: String, error: Error) -> String {
+        "\(operation): \(IndexerLogSanitizer.redactedErrorMessage(error))"
+    }
+
     private func recordError(_ error: Error, operation: String) {
-        lastErrorMessage = "\(operation): \(error.localizedDescription)"
+        lastErrorMessage = Self.sanitizedErrorMessage(operation: operation, error: error)
     }
 }

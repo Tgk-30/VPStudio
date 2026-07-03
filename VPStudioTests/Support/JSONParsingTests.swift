@@ -124,6 +124,14 @@ struct JSONParsingTests {
             #expect(JSONValueParsing.extractInfoHash(from: "magnet:?xt=urn:btih:abc123def4567890abcdef1234567890") == nil)
         }
 
+        @Test func extractInfoHashHandlesBase32BtihMagnet() {
+            // Some Torznab/indexer feeds emit the btih as 32-char RFC 4648 base32;
+            // it must decode to canonical 40-hex rather than being dropped.
+            let base32AllA = String(repeating: "A", count: 32) // 160 zero bits
+            let hash = JSONValueParsing.extractInfoHash(from: "magnet:?xt=urn:btih:\(base32AllA)&dn=name")
+            #expect(hash == String(repeating: "0", count: 40))
+        }
+
         @Test func extractInfoHashHandlesTorrentURL() {
             let hash40 = "abc123def456abc123def456abc123def456abcd"
             let hash = JSONValueParsing.extractInfoHash(from: "https://torrent.example/download?hash=\(hash40)&name=test")

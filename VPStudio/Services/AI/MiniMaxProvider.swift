@@ -6,7 +6,7 @@ struct MiniMaxProvider: AIProvider, Sendable {
 
     init(
         apiKey: String,
-        model: String = "MiniMax-M2.7",
+        model: String = "MiniMax-M3",
         baseURL: String = "https://api.minimax.io/v1/chat/completions",
         session: URLSession = AIHTTPTransport.defaultSession,
         sleep: @escaping AIHTTPSleep = AIHTTPTransport.defaultSleep

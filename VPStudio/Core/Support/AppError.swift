@@ -14,11 +14,11 @@ enum NetworkError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidURL(let value):
-            return "Invalid URL: \(value)"
+            return "Invalid URL: \(Self.redacted(value))"
         case .unauthorized:
             return "Unauthorized request."
         case .notFound(let resource):
-            return "Not found: \(resource)"
+            return "Not found: \(Self.redacted(resource))"
         case .rateLimited:
             return "Request was rate limited."
         case .timeout:
@@ -28,9 +28,9 @@ enum NetworkError: LocalizedError, Equatable, Sendable {
         case .invalidResponse:
             return "Received an invalid response."
         case .server(let statusCode, let message):
-            return "Server error (\(statusCode)): \(message)"
+            return "Server error (\(statusCode)): \(Self.redacted(message))"
         case .transport(let message):
-            return "Network error: \(message)"
+            return "Network error: \(Self.redacted(message))"
         }
     }
 
@@ -50,6 +50,10 @@ enum NetworkError: LocalizedError, Equatable, Sendable {
             return "Retry in a moment. If this persists, verify provider settings."
         }
     }
+
+    private static func redacted(_ value: String) -> String {
+        IndexerLogSanitizer.redactedMessage(value)
+    }
 }
 
 enum IndexerError: LocalizedError, Equatable, Sendable {
@@ -60,9 +64,9 @@ enum IndexerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .allIndexersFailed(let details):
-            return "All indexers failed: \(details)"
+            return "All indexers failed: \(Self.redacted(details))"
         case .queryFailed(let details):
-            return "Torrent search failed: \(details)"
+            return "Torrent search failed: \(Self.redacted(details))"
         case .notConfigured:
             return "No active indexers are configured."
         }
@@ -76,6 +80,10 @@ enum IndexerError: LocalizedError, Equatable, Sendable {
             return "Try a broader query or run the search again."
         }
     }
+
+    private static func redacted(_ value: String) -> String {
+        IndexerLogSanitizer.redactedMessage(value)
+    }
 }
 
 enum PlayerError: LocalizedError, Equatable, Sendable {
@@ -88,15 +96,15 @@ enum PlayerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidStreamURL(let value):
-            return "Invalid stream URL: \(value)"
+            return "Invalid stream URL: \(Self.redacted(value))"
         case .startupTimeout(let engine):
             return "\(engine.displayName) timed out before playback started."
         case .initializationFailed(let engine, let message):
-            return "\(engine.displayName) failed: \(message)"
+            return "\(engine.displayName) failed: \(Self.redacted(message))"
         case .unsupportedFormat(let message):
-            return "Unsupported media format: \(message)"
+            return "Unsupported media format: \(Self.redacted(message))"
         case .playbackFailed(let message):
-            return "Playback failed: \(message)"
+            return "Playback failed: \(Self.redacted(message))"
         }
     }
 
@@ -112,6 +120,10 @@ enum PlayerError: LocalizedError, Equatable, Sendable {
             return "Retry playback, or switch to another stream."
         }
     }
+
+    private static func redacted(_ value: String) -> String {
+        IndexerLogSanitizer.redactedMessage(value)
+    }
 }
 
 enum AppError: LocalizedError, Equatable, Sendable {
@@ -121,7 +133,7 @@ enum AppError: LocalizedError, Equatable, Sendable {
     case player(PlayerError)
     case unknown(String)
 
-    private static let metadataSetupGuidance = "Open Settings → Movie & TV Metadata (OMDb), add your key, then tap Retry."
+    private static let metadataSetupGuidance = "Open Settings → Movie & TV Metadata, add an OMDb key, then tap Retry."
 
     init(_ error: Error, fallback: AppError? = nil) {
         if let mapped = Self.map(error) {
@@ -138,7 +150,7 @@ enum AppError: LocalizedError, Equatable, Sendable {
     }
 
     static func metadataSetupRequired(feature: String) -> AppError {
-        .unknown("\(feature) needs an OMDb API key. \(metadataSetupGuidance)")
+        .unknown("\(feature) needs an OMDb metadata API key. \(metadataSetupGuidance)")
     }
 
     var requiresMetadataSetupAction: Bool {
@@ -148,18 +160,20 @@ enum AppError: LocalizedError, Equatable, Sendable {
     }
 
     var errorDescription: String? {
+        let message: String?
         switch self {
         case .network(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .debrid(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .indexer(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .player(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .unknown(let message):
-            return message
+            return Self.sanitizedDescription(message)
         }
+        return Self.sanitizedDescription(message)
     }
 
     var recoverySuggestion: String? {
@@ -180,6 +194,9 @@ enum AppError: LocalizedError, Equatable, Sendable {
     private static func map(_ error: Error) -> AppError? {
         if let appError = error as? AppError {
             return appError
+        }
+        if let networkError = error as? NetworkError {
+            return .network(networkError)
         }
         if let debridError = error as? DebridError {
             return .debrid(debridError)
@@ -206,6 +223,11 @@ enum AppError: LocalizedError, Equatable, Sendable {
             return .network(.invalidResponse)
         }
         return nil
+    }
+
+    private static func sanitizedDescription(_ value: String?) -> String? {
+        guard let value else { return nil }
+        return IndexerLogSanitizer.redactedMessage(value)
     }
 
     private static func debridRecoverySuggestion(for error: DebridError) -> String {

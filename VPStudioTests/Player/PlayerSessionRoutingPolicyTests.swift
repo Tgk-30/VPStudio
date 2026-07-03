@@ -86,6 +86,22 @@ struct PlayerSessionRoutingStaticTests {
         #expect(result.count == 3) // primary + dup1 + dup2
     }
 
+    @Test func sessionStreamsDropsMissingLocalFallbacks() {
+        let primary = Fixtures.stream(url: "https://cdn.example.com/primary.mkv", fileName: "primary.mkv")
+        let missingLocal = Fixtures.stream(
+            url: FileManager.default.temporaryDirectory
+                .appendingPathComponent("missing-fallback-\(UUID().uuidString).mkv")
+                .absoluteString,
+            fileName: "missing-fallback.mkv"
+        )
+        let remoteFallback = Fixtures.stream(url: "https://cdn.example.com/fallback.mkv", fileName: "fallback.mkv")
+
+        let result = PlayerSessionRouting.sessionStreams(primary: primary, available: [missingLocal, remoteFallback])
+
+        #expect(result.map(\.id) == [primary.id, remoteFallback.id])
+        #expect(result.contains(where: { $0.id == missingLocal.id }) == false)
+    }
+
     // MARK: - playbackQueue
 
     @Test func playbackQueueSmallQueueReturnsUnchanged() async {
@@ -98,6 +114,22 @@ struct PlayerSessionRoutingStaticTests {
 
         #expect(result.first?.id == primary.id)
         #expect(result.count == 2)
+    }
+
+    @Test func playbackQueueDropsMissingLocalFallbacksBeforeSorting() async {
+        let primary = Fixtures.stream(url: "https://cdn.example.com/primary.mkv", fileName: "primary.mkv")
+        let missingLocal = Fixtures.stream(
+            url: FileManager.default.temporaryDirectory
+                .appendingPathComponent("missing-queue-fallback-\(UUID().uuidString).mkv")
+                .absoluteString,
+            fileName: "missing-queue-fallback.mkv"
+        )
+        let remoteFallback = Fixtures.stream(url: "https://cdn.example.com/fallback.mkv", fileName: "fallback.mkv")
+
+        let result = await PlayerSessionRouting.playbackQueue(primary: primary, available: [missingLocal, remoteFallback])
+
+        #expect(result.map(\.id) == [primary.id, remoteFallback.id])
+        #expect(result.contains(where: { $0.id == missingLocal.id }) == false)
     }
 
     @Test func playbackQueueLargeQueueSortsFallbackByScore() async {

@@ -32,6 +32,21 @@ struct VPSidebarViewTestsViewsVpsidebarviewtests {
             #expect(SidebarLayoutPolicy.iconFrame == VPSpace.minTapTarget)
         }
 
+        @Test("resolved rail width respects the actual icon tap target")
+        func resolvedRailWidthRespectsTapTarget() {
+            let unscaledWidth = VPSpace.minTapTarget + SidebarLayoutPolicy.railChromeInset * 2
+            #expect(SidebarLayoutPolicy.railChromeInset == 9)
+            #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) == unscaledWidth)
+            #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1.25) == unscaledWidth * 1.25)
+            #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) > VPSpace.minTapTarget)
+        }
+
+        @Test("environment spacing keeps the standalone picker visually clustered")
+        func environmentSpacingKeepsPickerClustered() {
+            #expect(SidebarLayoutPolicy.environmentButtonSpacing == 5)
+            #expect(SidebarLayoutPolicy.environmentButtonSpacing < 10)
+        }
+
         @Test("sidebarMainTabs contains expected tabs")
         func sidebarMainTabsContainsExpected() {
             let tabs = SidebarLayoutPolicy.sidebarMainTabs

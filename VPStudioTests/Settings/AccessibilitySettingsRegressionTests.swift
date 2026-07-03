@@ -66,9 +66,12 @@ struct AccessibilitySettingsRegressionTests {
     func setupWizardSourceRequiresOMDbAndSurfacesSaveFailures() throws {
         let setupWizardSource = try contents(of: "VPStudio/Views/Windows/Settings/Onboarding/SetupWizardView.swift")
 
-        #expect(setupWizardSource.contains("SetupWizardValidationPolicy.requiredOMDbMessage"))
+        #expect(setupWizardSource.contains("SetupWizardValidationPolicy.requiredMetadataKeyMessage"))
+        #expect(!setupWizardSource.contains("SetupWizardValidationPolicy.requiredOMDbMessage"))
         #expect(setupWizardSource.contains("guard stepAfterAdvance > stepBeforeAdvance else { break }"))
-        #expect(setupWizardSource.contains("saveError = error.localizedDescription"))
+        #expect(setupWizardSource.contains("SetupWizardErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(!setupWizardSource.contains("saveError = error.localizedDescription"))
+        #expect(!setupWizardSource.contains("saveError = (error as? DebridError)?.localizedDescription"))
     }
 
     @Test

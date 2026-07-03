@@ -135,6 +135,16 @@ struct DownloadTransferErrorTests {
         let error = DownloadTransferError.resumeDataProduced(Data([1, 2, 3]))
         #expect(error.errorDescription == "Download paused.")
     }
+
+    @Test func blockedRedirectErrorDescription() {
+        let error = DownloadTransferError.blockedRedirect(URL(string: "http://127.0.0.1/video.mkv"))
+        #expect(error.errorDescription == "Download redirect was blocked because the destination is not a public HTTP(S) URL.")
+    }
+
+    @Test func blockedFinalURLErrorDescription() {
+        let error = DownloadTransferError.blockedFinalURL(URL(string: "http://127.0.0.1/video.mkv"))
+        #expect(error.errorDescription == "Download response was blocked because the final destination is not a public HTTP(S) URL.")
+    }
 }
 
 @Suite("DownloadStatus")

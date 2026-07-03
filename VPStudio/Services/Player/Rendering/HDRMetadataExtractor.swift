@@ -46,7 +46,8 @@ enum HDRMetadataExtractor {
         do {
             tracks = try await asset.loadTracks(withMediaType: .video)
         } catch {
-            logger.warning("Failed to load video tracks for HDR metadata: \(error.localizedDescription)")
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            logger.warning("Failed to load video tracks for HDR metadata: \(reason)")
             return nil
         }
         guard let videoTrack = tracks.first else {
@@ -58,7 +59,8 @@ enum HDRMetadataExtractor {
         do {
             formatDescriptions = try await videoTrack.load(.formatDescriptions)
         } catch {
-            logger.warning("Failed to load format descriptions: \(error.localizedDescription)")
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            logger.warning("Failed to load format descriptions: \(reason)")
             return nil
         }
         guard let formatDesc = formatDescriptions.first else {

@@ -76,6 +76,18 @@ struct DiscoverViewModelTests {
         func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { ExternalIds(imdbId: nil, tvdbId: nil) }
     }
 
+    private actor FailingDiscoverMetadataStub: MetadataProvider {
+        func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult { throw NetworkError.transport("provider failed") }
+        func getDetail(id: String, type: MediaType) async throws -> MediaItem { throw NetworkError.transport("provider failed") }
+        func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { throw NetworkError.transport("provider failed") }
+        func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { throw NetworkError.transport("provider failed") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { throw NetworkError.transport("provider failed") }
+        func getGenres(type: MediaType) async throws -> [Genre] { throw NetworkError.transport("provider failed") }
+        func getSeasons(tmdbId: Int) async throws -> [Season] { throw NetworkError.transport("provider failed") }
+        func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { throw NetworkError.transport("provider failed") }
+        func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { throw NetworkError.transport("provider failed") }
+    }
+
     @Test(arguments: ExhaustiveMode.choose(fast: Array(0..<10), full: Array(0..<20)))
     @MainActor
     func loadPopulatesAllBuckets(index: Int) async {
@@ -133,6 +145,34 @@ struct DiscoverViewModelTests {
         #expect(viewModel.featuredBackdrops.first?.id == "tm-key-b")
         #expect(viewModel.trendingShows.first?.id == "ts-key-b")
         #expect(viewModel.error == nil)
+    }
+
+    @Test
+    @MainActor
+    func loadWithChangedApiKeyClearsStaleRowsWhenReplacementProviderFails() async {
+        let viewModel = DiscoverViewModel(metadataServiceFactory: { key in
+            if key == "failing-key" {
+                return FailingDiscoverMetadataStub()
+            }
+            return KeyedDiscoverMetadataStub(marker: key)
+        })
+
+        await viewModel.load(apiKey: "key-a")
+        #expect(viewModel.trendingMovies.first?.id == "tm-key-a")
+        #expect(viewModel.trendingShows.first?.id == "ts-key-a")
+        #expect(viewModel.popularMovies.first?.id == "popular-key-a")
+        #expect(viewModel.error == nil)
+
+        await viewModel.load(apiKey: "failing-key")
+
+        #expect(viewModel.trendingMovies.isEmpty)
+        #expect(viewModel.trendingShows.isEmpty)
+        #expect(viewModel.popularMovies.isEmpty)
+        #expect(viewModel.topRatedMovies.isEmpty)
+        #expect(viewModel.nowPlayingMovies.isEmpty)
+        #expect(viewModel.featuredBackdrops.isEmpty)
+        #expect(viewModel.error == .network(.transport("provider failed")))
+        #expect(viewModel.isLoading == false)
     }
 
     @Test

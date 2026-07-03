@@ -107,36 +107,33 @@ enum DebridMagnetInput {
             return bareMagnetURI(for: normalizedHash)
         }
 
-        if let components = URLComponents(string: candidate),
-           components.scheme?.lowercased() == "magnet" {
-            let xtItems = components.queryItems?.filter { $0.name.lowercased() == "xt" } ?? []
-            if !xtItems.isEmpty {
-                for item in xtItems {
-                    guard let value = item.value,
-                          value.lowercased().hasPrefix("urn:btih:") else {
-                        continue
-                    }
-
-                    let rawCandidateHash = String(value.dropFirst("urn:btih:".count))
-                    // Normalize both sides (handles hex/base32 mismatch) so a magnet
-                    // whose btih is base32 still matches and keeps its tracker list.
-                    if DebridHashValidator.normalizedInfoHash(rawCandidateHash) == normalizedHash {
-                        return candidate
-                    }
-                }
-                return bareMagnetURI(for: normalizedHash)
-            }
-
+        // Only forward the supplied value when it is a genuine `magnet:` URI whose
+        // btih matches the requested hash — that is the only case where forwarding
+        // adds value (it preserves the tracker list). Anything else (an http(s)
+        // URL, a bare path, a mismatched hash) is rebuilt as a bare magnet from the
+        // validated hash, so a compromised indexer can never smuggle an arbitrary
+        // URL into a debrid provider's "add magnet" endpoint (server-side SSRF).
+        guard let components = URLComponents(string: candidate),
+              components.scheme?.lowercased() == "magnet" else {
             return bareMagnetURI(for: normalizedHash)
         }
 
-        guard let candidateHash = JSONValueParsing.extractInfoHash(from: candidate) else {
-            return candidate.localizedCaseInsensitiveContains(normalizedHash)
-                ? candidate
-                : bareMagnetURI(for: normalizedHash)
+        let xtItems = components.queryItems?.filter { $0.name.lowercased() == "xt" } ?? []
+        for item in xtItems {
+            guard let value = item.value,
+                  value.lowercased().hasPrefix("urn:btih:") else {
+                continue
+            }
+
+            let rawCandidateHash = String(value.dropFirst("urn:btih:".count))
+            // Normalize both sides (handles hex/base32 mismatch) so a magnet
+            // whose btih is base32 still matches and keeps its tracker list.
+            if DebridHashValidator.normalizedInfoHash(rawCandidateHash) == normalizedHash {
+                return candidate
+            }
         }
 
-        return candidateHash == normalizedHash ? candidate : bareMagnetURI(for: normalizedHash)
+        return bareMagnetURI(for: normalizedHash)
     }
 
     static func bareMagnetURI(for normalizedHash: String) -> String {
@@ -287,10 +284,16 @@ enum DebridHTTPExecutor {
         let response: URLResponse
         do {
             try Task.checkCancellation()
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await BoundedHTTPResponseLoader.data(
+                for: request,
+                session: session,
+                maximumBytes: HTTPResponseBudget.debridProvider
+            )
             try Task.checkCancellation()
         } catch is CancellationError {
             throw CancellationError()
+        } catch is BoundedHTTPResponseError {
+            throw DebridError.networkError("Provider response exceeded the local response-size budget.")
         } catch let urlError as URLError where shouldRetry(urlError: urlError) {
             guard attempt < maxAttempts - 1 else {
                 throw mapTransportError(urlError)

@@ -52,13 +52,19 @@ struct PlayerViewDeepPolicyTests {
     }
 
     @Test
-    func scrobbleIMDbIDPrefersExplicitOMDbIdentity() {
-        #expect(PlayerViewPolicy.scrobbleIMDbID(
+    func scrobbleSyncIDPrefersExplicitOMDbIdentityAndAllowsTMDbFallback() {
+        #expect(PlayerViewPolicy.scrobbleSyncID(
             mediaId: "movie-tmdb-438631",
-            imdbId: "https://www.imdb.com/title/TT1160419/"
+            imdbId: "https://www.imdb.com/title/TT1160419/",
+            tmdbId: nil
         ) == "tt1160419")
-        #expect(PlayerViewPolicy.scrobbleIMDbID(mediaId: "movie-imdb-tt2543164", imdbId: nil) == "tt2543164")
-        #expect(PlayerViewPolicy.scrobbleIMDbID(mediaId: "movie-tmdb-438631", imdbId: nil) == nil)
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "movie-imdb-tt2543164", imdbId: nil, tmdbId: nil) == "tt2543164")
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "movie-omdb-TT1160419", imdbId: nil, tmdbId: nil) == "tt1160419")
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "series-omdb-TT0944947", imdbId: nil, tmdbId: nil) == "tt0944947")
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "movie-tmdb-438631", imdbId: nil, tmdbId: nil) == "movie-tmdb-438631")
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "series-tmdb-438631", imdbId: nil, tmdbId: nil) == "series-tmdb-438631")
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "movie-tmdb-0", imdbId: nil, tmdbId: nil) == nil)
+        #expect(PlayerViewPolicy.scrobbleSyncID(mediaId: "legacy-local-id", imdbId: nil, tmdbId: 438_631) == "tmdb-438631")
     }
 
     @Test
@@ -198,6 +204,11 @@ struct PlayerViewDeepMenuAndSheetContractTests {
             to: "topBarUtilityButton(systemName: \"ellipsis\", accessibilityLabel: \"More Playback Options\")",
             in: source
         )
+        let aspectBody = try section(
+            from: "private var aspectRatioMenuItems: some View {",
+            to: "private var titleMetadataBlock: some View {",
+            in: source
+        )
 
         #expect(body.contains("Section(\"Stream\")"))
         #expect(body.contains("ForEach(streamQueue, id: \\.id) { stream in"))
@@ -216,8 +227,12 @@ struct PlayerViewDeepMenuAndSheetContractTests {
         #expect(keepRange.lowerBound < switchRange.lowerBound)
 
         #expect(body.contains("Section(\"Aspect Ratio\")"))
-        #expect(body.contains("Label(\"Freeflow Resize\", systemImage: \"arrow.up.left.and.arrow.down.right\")"))
-        #expect(body.contains("ForEach(AspectRatioSelection.allCases.filter { $0 != .freeform }, id: \\.id) { selection in"))
+        #expect(body.contains("if usesAppleEnvironmentMode"))
+        #expect(body.contains("Label(\"Expand Window\", systemImage: \"arrow.up.left.and.arrow.down.right\")"))
+        #expect(body.contains("expandAppleEnvironmentWindowIfAvailable(allowPending: true)"))
+        #expect(body.contains("aspectRatioMenuItems"))
+        #expect(aspectBody.contains("Label(\"Free Resize\", systemImage: \"arrow.up.left.and.arrow.down.right\")"))
+        #expect(aspectBody.contains("ForEach(AspectRatioSelection.allCases.filter { $0 != .freeform }, id: \\.id) { selection in"))
     }
 
     @Test
@@ -231,6 +246,7 @@ struct PlayerViewDeepMenuAndSheetContractTests {
 
         #expect(body.contains("PlayerEnvironmentMenuLabel("))
         #expect(body.contains("spec: .standardRoom("))
+        #expect(body.contains("canUseSystemVideoSurface: PlayerCinemaEnvironmentPolicy.canOpen("))
         #expect(body.contains("spec: .cinema("))
         #expect(body.contains("spec: .compactAsset("))
         #expect(body.contains("PlayerCinemaEnvironmentPolicy.canOpen("))
@@ -238,6 +254,30 @@ struct PlayerViewDeepMenuAndSheetContractTests {
         #expect(body.contains("Text(\"No imported environments\")"))
         #expect(body.contains("Label(\"Browse Environments\", systemImage: \"mountain.2\")"))
         #expect(body.contains("Label(\"Exit Environment\", systemImage: \"xmark.circle\")"))
+        #expect(body.contains("Button(role: .destructive)") == false)
+    }
+
+    @Test
+    func transportChapterControlsUseStableSlots() throws {
+        let source = try playerViewSource()
+        let rowBody = try section(
+            from: "private var transportControlsRow: some View {",
+            to: "private var transportControlSpacing: CGFloat {",
+            in: source
+        )
+        let chapterButtonBody = try functionBody(named: "transportChapterIconButton", in: source)
+        let chapterDividerBody = try functionBody(named: "transportChapterControlDivider", in: source)
+
+        #expect(rowBody.contains("let hasChapters = !engine.chapters.isEmpty"))
+        #expect(rowBody.contains("if hasChapters") == false)
+        #expect(rowBody.contains("transportChapterIconButton("))
+        #expect(rowBody.contains("isVisible: hasChapters"))
+        #expect(rowBody.contains("transportChapterControlDivider(isVisible: hasChapters)"))
+        #expect(chapterButtonBody.contains(".disabled(!isVisible)"))
+        #expect(chapterButtonBody.contains(".opacity(isVisible ? 1 : 0)"))
+        #expect(chapterButtonBody.contains(".allowsHitTesting(isVisible)"))
+        #expect(chapterButtonBody.contains(".accessibilityHidden(!isVisible)"))
+        #expect(chapterDividerBody.contains(".opacity(isVisible ? 1 : 0)"))
     }
 
     @Test
@@ -280,14 +320,17 @@ struct PlayerViewDeepTeardownAndThrottlingContractTests {
         #expect(body.contains("stopProgressPersistence()"))
         #expect(body.contains("scrobbleStop()"))
         #expect(body.contains("persistCurrentWatchProgress()"))
-        #expect(body.contains("cleanupPlayback()"))
+        #expect(body.contains("resetSharedEngineState: !didCloseStalePlayerScene"))
         #expect(body.contains("controlsHideTask?.cancel()"))
         #expect(body.contains("FileManager.default.removeItem(at: subtitleFileURL)"))
         #expect(body.contains("downloadedSubtitleFileURL = nil"))
 
         let stopRange = try requiredRange(of: "stopProgressPersistence()", in: body)
         let scrobbleRange = try requiredRange(of: "scrobbleStop()", in: body)
-        let cleanupRange = try requiredRange(of: "cleanupPlayback()", in: body)
+        let cleanupRange = try requiredRange(
+            of: "resetSharedEngineState: !didCloseStalePlayerScene",
+            in: body
+        )
         let controlsRange = try requiredRange(of: "controlsHideTask?.cancel()", in: body)
         #expect(stopRange.lowerBound < scrobbleRange.lowerBound)
         #expect(scrobbleRange.lowerBound < cleanupRange.lowerBound)
@@ -340,30 +383,40 @@ struct PlayerViewDeepTeardownAndThrottlingContractTests {
 
         #expect(body.contains("resetAutoPlayNextStateForStreamTransition()"))
         #expect(body.contains("removeAVTimeObserverIfNeeded()"))
+        #expect(body.contains("cancelAVPlayerStatusObservationIfNeeded()"))
         #expect(observerHelperBody.contains("guard let token = timeObserverToken else { return }"))
         #expect(observerHelperBody.contains("avTimeObserverHooks.removeTimeObserver(player, token)"))
         #expect(observerHelperBody.contains("player.removeTimeObserver(token)"))
         #expect(observerHelperBody.contains("timeObserverToken = nil"))
         #expect(observerHelperBody.contains("timeObserverPlayer = nil"))
+        let statusObservationHelperBody = try functionBody(named: "cancelAVPlayerStatusObservationIfNeeded", in: source)
+        #expect(statusObservationHelperBody.contains("avPlayerStatusObservationTask?.cancel()"))
+        #expect(statusObservationHelperBody.contains("avPlayerStatusObservationTask = nil"))
         #expect(body.contains("appState.releasePlayerResources(clearSession: clearSession, sessionID: sessionID)"))
         #expect(body.contains("engine.resetSessionState()"))
 
         let resetAutoplayRange = try requiredRange(of: "resetAutoPlayNextStateForStreamTransition()", in: body)
         let removeObserverRange = try requiredRange(of: "removeAVTimeObserverIfNeeded()", in: body)
+        let cancelStatusRange = try requiredRange(of: "cancelAVPlayerStatusObservationIfNeeded()", in: body)
         let releaseRange = try requiredRange(of: "appState.releasePlayerResources(clearSession: clearSession, sessionID: sessionID)", in: body)
         #expect(resetAutoplayRange.lowerBound < removeObserverRange.lowerBound)
-        #expect(removeObserverRange.lowerBound < releaseRange.lowerBound)
+        #expect(removeObserverRange.lowerBound < cancelStatusRange.lowerBound)
+        #expect(cancelStatusRange.lowerBound < releaseRange.lowerBound)
     }
 
     @Test
     func avPlayerPeriodicObserverThrottlesObservableWritesToPreventStutter() throws {
         let source = try playerViewSource()
         let body = try functionBody(named: "startObservingAVPlayer", in: source)
+        let observationBody = try functionBody(named: "refreshAVPlayerPlaybackObservation", in: source)
 
         #expect(body.contains("player.addPeriodicTimeObserver"))
         #expect(body.contains("if abs(engine.currentTime - newTime) >= Self.avPlayerPeriodicObserverIntervalSeconds {"))
         #expect(body.contains("PlayerViewPolicy.subtitleTextRefreshShouldRun("))
-        #expect(body.contains("if abs(engine.bufferedPercent - newBuffered) > 0.01 {"))
+        #expect(body.contains("refreshAVPlayerPlaybackObservation(player)"))
+        #expect(observationBody.contains("PlayerViewPolicy.observedBufferedPercent("))
+        #expect(observationBody.contains("PlayerViewPolicy.observedBufferedSecondsAhead("))
+        #expect(observationBody.contains("PlayerViewPolicy.shouldUpdateBufferedPercent("))
         #expect(body.contains("handlePlaybackProgressForAutoplay(currentTime: newTime, duration: engine.duration)"))
         #expect(body.contains("scheduleAVVideoRatioDetection(from: asset, player: player)"))
         #expect(body.contains("scheduleAVHDRMetadataExtraction(from: asset, player: player)"))
@@ -374,9 +427,39 @@ struct PlayerViewDeepTeardownAndThrottlingContractTests {
             in: body
         )
         let subtitleGateRange = try requiredRange(of: "PlayerViewPolicy.subtitleTextRefreshShouldRun(", in: body)
-        let bufferedGateRange = try requiredRange(of: "if abs(engine.bufferedPercent - newBuffered) > 0.01 {", in: body)
+        let progressRange = try requiredRange(
+            of: "handlePlaybackProgressForAutoplay(currentTime: newTime, duration: engine.duration)",
+            in: body
+        )
+        let refreshObservationRange = try requiredRange(of: "refreshAVPlayerPlaybackObservation(player)", in: body)
+        let observedBufferRange = try requiredRange(of: "PlayerViewPolicy.observedBufferedPercent(", in: observationBody)
+        let bufferedGateRange = try requiredRange(of: "PlayerViewPolicy.shouldUpdateBufferedPercent(", in: observationBody)
         #expect(timeThrottleRange.lowerBound < subtitleGateRange.lowerBound)
-        #expect(subtitleGateRange.lowerBound < bufferedGateRange.lowerBound)
+        #expect(subtitleGateRange.lowerBound < progressRange.lowerBound)
+        #expect(progressRange.lowerBound < refreshObservationRange.lowerBound)
+        #expect(observedBufferRange.lowerBound < bufferedGateRange.lowerBound)
+    }
+
+    @Test
+    func avPlayerStatusObserverPollsBufferingStateBetweenPeriodicTicks() throws {
+        let source = try playerViewSource()
+        let startBody = try functionBody(named: "startObservingAVPlayer", in: source)
+        let statusBody = try functionBody(named: "startAVPlayerStatusObservation", in: source)
+        let observationBody = try functionBody(named: "refreshAVPlayerPlaybackObservation", in: source)
+
+        #expect(source.contains("@State private var avPlayerStatusObservationTask: Task<Void, Never>?"))
+        #expect(source.contains("static let avPlayerStatusObserverIntervalMilliseconds"))
+        #expect(startBody.contains("cancelAVPlayerStatusObservationIfNeeded()"))
+        #expect(startBody.contains("startAVPlayerStatusObservation(player)"))
+        #expect(statusBody.contains("avPlayerStatusObservationTask = Task { @MainActor in"))
+        #expect(statusBody.contains("acceptsPlayerLifecycleCallbacks"))
+        #expect(statusBody.contains("isCurrentAVPlayer(player)"))
+        #expect(statusBody.contains("refreshAVPlayerPlaybackObservation(player)"))
+        #expect(statusBody.contains("Task.sleep(for: .milliseconds(Self.avPlayerStatusObserverIntervalMilliseconds))"))
+        #expect(observationBody.contains("player.timeControlStatus == .waitingToPlayAtSpecifiedRate"))
+        #expect(observationBody.contains("player.currentItem?.isPlaybackBufferEmpty"))
+        #expect(observationBody.contains("player.currentItem?.isPlaybackLikelyToKeepUp"))
+        #expect(observationBody.contains("PlayerViewStatePolicy.avPlayerObservedPlaybackState("))
     }
 
     @Test

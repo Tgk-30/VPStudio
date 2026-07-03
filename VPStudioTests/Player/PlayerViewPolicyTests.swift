@@ -31,6 +31,29 @@ struct PlayerViewTransportControlsPolicyTests {
     }
 }
 
+private struct SecretBearingPlayerRuntimeError: LocalizedError {
+    var errorDescription: String? {
+        let authorizationHeader = "Authorization: " + "Bearer"
+        let clientSecretParameterName = "client" + "Secret"
+        return "Playback failed for https://cdn.example.com/movie.mkv?token=player-token-secret \(authorizationHeader) playerBearerSecret123456 \(clientSecretParameterName)=player-client-secret-1234567890"
+    }
+}
+
+@Suite("Player Error Presentation Policy")
+struct PlayerErrorPresentationPolicyTests {
+    @Test
+    func displayMessageRedactsSensitivePlaybackAndSubtitleProviderFailures() {
+        let redacted = PlayerViewErrorPresentationPolicy.displayMessage(
+            for: SecretBearingPlayerRuntimeError()
+        )
+
+        #expect(redacted.contains("[redacted URL]") || redacted.contains("REDACTED"))
+        #expect(!redacted.contains("player-token-secret"))
+        #expect(!redacted.contains("player-client-secret-1234567890"))
+        #expect(!redacted.contains("playerBearerSecret123456"))
+    }
+}
+
 // MARK: - Playback State Titles
 
 @Suite("Player View Policy — Playback State Title")
@@ -242,6 +265,133 @@ struct PlayerBufferedPercentPolicyTests {
             ) == 0
         )
     }
+
+    @Test
+    func observedBufferedPercentFallsBackToZeroForMissingOrInvalidSamples() {
+        #expect(
+            PlayerViewPolicy.observedBufferedPercent(
+                loadedRangeStart: nil,
+                loadedRangeDuration: 5,
+                itemDuration: 10
+            ) == 0
+        )
+        #expect(
+            PlayerViewPolicy.observedBufferedPercent(
+                loadedRangeStart: 0,
+                loadedRangeDuration: nil,
+                itemDuration: 10
+            ) == 0
+        )
+        #expect(
+            PlayerViewPolicy.observedBufferedPercent(
+                loadedRangeStart: 0,
+                loadedRangeDuration: 5,
+                itemDuration: .nan
+            ) == 0
+        )
+    }
+
+    @Test
+    func observedBufferedPercentUsesClampedRangeValueForValidSamples() {
+        #expect(
+            PlayerViewPolicy.observedBufferedPercent(
+                loadedRangeStart: 40,
+                loadedRangeDuration: 90,
+                itemDuration: 100
+            ) == 1
+        )
+        #expect(
+            PlayerViewPolicy.observedBufferedPercent(
+                loadedRangeStart: 0,
+                loadedRangeDuration: 35,
+                itemDuration: 100
+            ) == 0.35
+        )
+    }
+
+    @Test
+    func bufferedSecondsAheadMeasuresPlayableRangeAtCurrentTime() {
+        #expect(
+            PlayerViewPolicy.bufferedSecondsAhead(
+                loadedRangeStart: 10,
+                loadedRangeDuration: 15,
+                currentTime: 12
+            ) == 13
+        )
+        #expect(
+            PlayerViewPolicy.bufferedSecondsAhead(
+                loadedRangeStart: 10,
+                loadedRangeDuration: 15,
+                currentTime: 9
+            ) == 0
+        )
+        #expect(
+            PlayerViewPolicy.bufferedSecondsAhead(
+                loadedRangeStart: 10,
+                loadedRangeDuration: 15,
+                currentTime: 26
+            ) == 0
+        )
+    }
+
+    @Test
+    func observedBufferedSecondsAheadFallsBackToZeroForMissingOrInvalidSamples() {
+        #expect(
+            PlayerViewPolicy.observedBufferedSecondsAhead(
+                loadedRangeStart: nil,
+                loadedRangeDuration: 15,
+                currentTime: 12
+            ) == 0
+        )
+        #expect(
+            PlayerViewPolicy.observedBufferedSecondsAhead(
+                loadedRangeStart: 10,
+                loadedRangeDuration: .nan,
+                currentTime: 12
+            ) == 0
+        )
+    }
+
+    @Test
+    func observedBufferedPercentUsesFurthestLoadedRangeEnd() {
+        #expect(
+            PlayerViewPolicy.observedBufferedPercent(
+                loadedRanges: [
+                    (start: 0, duration: 5),
+                    (start: 40, duration: 20),
+                    (start: 10, duration: 15),
+                ],
+                itemDuration: 100
+            ) == 0.6
+        )
+    }
+
+    @Test
+    func observedBufferedSecondsAheadUsesRangeContainingCurrentTime() {
+        #expect(
+            PlayerViewPolicy.observedBufferedSecondsAhead(
+                loadedRangeStart: 0,
+                loadedRangeDuration: 5,
+                currentTime: 42
+            ) == 0
+        )
+        #expect(
+            PlayerViewPolicy.observedBufferedSecondsAhead(
+                loadedRanges: [
+                    (start: 0, duration: 5),
+                    (start: 40, duration: 12),
+                ],
+                currentTime: 42
+            ) == 10
+        )
+    }
+
+    @Test
+    func shouldUpdateBufferedPercentRejectsTinyChurnButRepairsInvalidCurrentValue() {
+        #expect(!PlayerViewPolicy.shouldUpdateBufferedPercent(current: 0.50, observed: 0.505))
+        #expect(PlayerViewPolicy.shouldUpdateBufferedPercent(current: 0.50, observed: 0.52))
+        #expect(PlayerViewPolicy.shouldUpdateBufferedPercent(current: .nan, observed: 0.5))
+    }
 }
 
 @Suite("Player View Policy — Subtitle Font Size")
@@ -385,6 +535,8 @@ struct PlayerSubtitleServicePolicyTests {
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "tt0133093") == "tt0133093")
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "movie-imdb-tt0133093") == "tt0133093")
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "movie-imdb-TT0133093") == "tt0133093")
+        #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "movie-omdb-TT0133093") == "tt0133093")
+        #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "series-omdb-TT0944947") == "tt0944947")
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "ttnotanumber") == nil)
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: "12345") == nil)
         #expect(PlayerSubtitleServicePolicy.imdbSearchID(from: nil) == nil)
@@ -403,6 +555,12 @@ struct PlayerSubtitleServicePolicyTests {
                 mediaID: "movie-tmdb-603",
                 tmdbId: 603
             ) == PlayerSubtitleServicePolicy.LookupIDs(imdbId: nil, tmdbId: 603)
+        )
+        #expect(
+            PlayerSubtitleServicePolicy.lookupIDs(
+                mediaID: "movie-omdb-TT1160419",
+                tmdbId: 438631
+            ) == PlayerSubtitleServicePolicy.LookupIDs(imdbId: "tt1160419", tmdbId: nil)
         )
         #expect(
             PlayerSubtitleServicePolicy.lookupIDs(
@@ -1494,6 +1652,125 @@ struct PlayerOverlayAndPickerPolicyTests {
                 isShowingEnvironmentPicker: false,
                 isShowingCinemaSettings: true
             )
+        )
+    }
+
+    @Test
+    func controlModalPresentationFlagsAreMutuallyExclusive() {
+        let subtitleFlags = PlayerViewPolicy.controlModalPresentationFlags(for: .subtitles)
+        #expect(subtitleFlags == PlayerViewPolicy.ControlModalPresentationFlags(
+            isShowingSubtitlePicker: true,
+            isShowingAudioPicker: false,
+            isShowingEnvironmentPicker: false,
+            isShowingCinemaSettings: false
+        ))
+
+        let audioFlags = PlayerViewPolicy.controlModalPresentationFlags(for: .audio)
+        #expect(audioFlags == PlayerViewPolicy.ControlModalPresentationFlags(
+            isShowingSubtitlePicker: false,
+            isShowingAudioPicker: true,
+            isShowingEnvironmentPicker: false,
+            isShowingCinemaSettings: false
+        ))
+
+        let environmentFlags = PlayerViewPolicy.controlModalPresentationFlags(for: .environmentPicker)
+        #expect(environmentFlags == PlayerViewPolicy.ControlModalPresentationFlags(
+            isShowingSubtitlePicker: false,
+            isShowingAudioPicker: false,
+            isShowingEnvironmentPicker: true,
+            isShowingCinemaSettings: false
+        ))
+
+        let cinemaFlags = PlayerViewPolicy.controlModalPresentationFlags(for: .cinemaSettings)
+        #expect(cinemaFlags == PlayerViewPolicy.ControlModalPresentationFlags(
+            isShowingSubtitlePicker: false,
+            isShowingAudioPicker: false,
+            isShowingEnvironmentPicker: false,
+            isShowingCinemaSettings: true
+        ))
+    }
+
+    @Test
+    func closeRequestDismissesOpenControlModalBeforeClosingPlayer() {
+        #expect(
+            PlayerViewPolicy.closeRequestAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .closePlayer
+        )
+        #expect(
+            PlayerViewPolicy.closeRequestAction(
+                isShowingSubtitlePicker: true,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .dismissControlModal
+        )
+        #expect(
+            PlayerViewPolicy.closeRequestAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: true,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false
+            ) == .dismissControlModal
+        )
+        #expect(
+            PlayerViewPolicy.closeRequestAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: true,
+                isShowingCinemaSettings: false
+            ) == .dismissControlModal
+        )
+        #expect(
+            PlayerViewPolicy.closeRequestAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: true
+            ) == .dismissControlModal
+        )
+    }
+
+    @Test
+    func closeControlMenuActionDismissesModalsHidesUnlockedControlsAndKeepsLockedControlsVisible() {
+        #expect(
+            PlayerViewPolicy.closeControlMenuAction(
+                isShowingSubtitlePicker: true,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false,
+                isControlsLocked: false
+            ) == .dismissControlModal
+        )
+        #expect(
+            PlayerViewPolicy.closeControlMenuAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: true,
+                isShowingCinemaSettings: false,
+                isControlsLocked: false
+            ) == .dismissControlModal
+        )
+        #expect(
+            PlayerViewPolicy.closeControlMenuAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false,
+                isControlsLocked: false
+            ) == .hideControls
+        )
+        #expect(
+            PlayerViewPolicy.closeControlMenuAction(
+                isShowingSubtitlePicker: false,
+                isShowingAudioPicker: false,
+                isShowingEnvironmentPicker: false,
+                isShowingCinemaSettings: false,
+                isControlsLocked: true
+            ) == .keepLockedControlsVisible
         )
     }
 }

@@ -27,8 +27,8 @@ final class DiscoverViewModel {
 
     private var metadataService: (any MetadataProvider)?
     private var database: DatabaseManager?
-    private let metadataServiceFactory: @Sendable (String) -> any MetadataProvider
-    private var configuredApiKey: String?
+    private let metadataServiceFactory: @Sendable (MetadataProviderConfiguration) -> any MetadataProvider
+    private var configuredMetadataConfiguration: MetadataProviderConfiguration?
     private var loadGeneration = 0
 
     private static let minimumUniqueRegeneratedRecommendations = 4
@@ -37,11 +37,20 @@ final class DiscoverViewModel {
     init(
         metadataService: (any MetadataProvider)? = nil,
         database: DatabaseManager? = nil,
-        metadataServiceFactory: @escaping @Sendable (String) -> any MetadataProvider = { OMDbService(apiKey: $0) }
+        metadataServiceFactory: @escaping @Sendable (String) -> any MetadataProvider = { OMDbService(apiKey: $0) },
+        metadataConfigurationServiceFactory: (@Sendable (MetadataProviderConfiguration) -> any MetadataProvider)? = nil
     ) {
         self.metadataService = metadataService
         self.database = database
-        self.metadataServiceFactory = metadataServiceFactory
+        self.metadataServiceFactory = metadataConfigurationServiceFactory ?? { configuration in
+            if configuration.hasTMDb || configuration.omdbPlan.usesPaidResources {
+                return CachingMetadataProvider(
+                    wrapping: MetadataProviderFactory.make(configuration: configuration),
+                    configuration: configuration
+                )
+            }
+            return metadataServiceFactory(configuration.omdbApiKey ?? "")
+        }
     }
 
     func configure(database: DatabaseManager) {
@@ -57,14 +66,17 @@ final class DiscoverViewModel {
     }
 
     func load(apiKey: String) async {
+        await load(configuration: MetadataProviderConfiguration(omdbApiKey: apiKey))
+    }
+
+    func load(configuration: MetadataProviderConfiguration) async {
         loadGeneration &+= 1
         let generation = loadGeneration
-        let normalizedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if normalizedKey.isEmpty {
-            if Self.shouldResetRemoteServiceForMissingKey(configuredApiKey: configuredApiKey) {
+        if !configuration.isConfigured {
+            if Self.shouldResetRemoteServiceForMissingConfiguration(configuredMetadataConfiguration) {
                 metadataService = nil
-                configuredApiKey = nil
+                configuredMetadataConfiguration = nil
                 clearRemoteDiscoverRows()
                 await refreshAIHeroPreview()
 
@@ -103,15 +115,16 @@ final class DiscoverViewModel {
                 return
             }
         } else if metadataService == nil {
-            metadataService = metadataServiceFactory(normalizedKey)
-            configuredApiKey = normalizedKey
-        } else if let configuredApiKey, configuredApiKey != normalizedKey {
-            metadataService = metadataServiceFactory(normalizedKey)
-            self.configuredApiKey = normalizedKey
-        } else if configuredApiKey == nil {
+            metadataService = metadataServiceFactory(configuration)
+            configuredMetadataConfiguration = configuration
+        } else if let configuredMetadataConfiguration, configuredMetadataConfiguration != configuration {
+            metadataService = metadataServiceFactory(configuration)
+            self.configuredMetadataConfiguration = configuration
+            clearProviderOwnedDiscoverState()
+        } else if configuredMetadataConfiguration == nil {
             // Preserve explicitly injected metadata services (tests/previews),
-            // but still remember the current key for later refreshes.
-            configuredApiKey = normalizedKey
+            // but still remember the current configuration for later refreshes.
+            configuredMetadataConfiguration = configuration
         }
 
         guard let service = metadataService else {
@@ -173,7 +186,7 @@ final class DiscoverViewModel {
     }
 
     func refresh() async {
-        await load(apiKey: configuredApiKey ?? "")
+        await load(configuration: configuredMetadataConfiguration ?? MetadataProviderConfiguration())
     }
 
     func loadContinueWatching() async {
@@ -181,18 +194,19 @@ final class DiscoverViewModel {
         guard let database else { return }
         do {
             let recentHistory = try await database.fetchWatchHistory(limit: 20)
-            let inProgress = Array(recentHistory.filter {
+            let inProgress = recentHistory.filter {
                 // Upper bound kept in sync with the auto-watched / resume threshold so a title
                 // that has crossed "watched" drops out of Continue Watching.
                 !$0.isCompleted && $0.progressPercent > 0.02 && $0.progressPercent < PlayerWatchProgressPolicy.completionThreshold
-            }.prefix(10))
+            }
 
             let cachedByID = try await database.fetchMediaItemsResolvingAliases(ids: inProgress.map(\.mediaId))
             guard generation == loadGeneration else { return }
 
-            continueWatching = inProgress.compactMap { entry in
+            var seenRows = Set<String>()
+            let rows = inProgress.compactMap { entry -> (history: WatchHistory, preview: MediaPreview)? in
                 guard let cached = cachedByID[entry.mediaId] else { return nil }
-                return (entry, MediaPreview(
+                let preview = MediaPreview(
                     id: cached.id,
                     type: cached.type,
                     title: cached.title,
@@ -202,8 +216,11 @@ final class DiscoverViewModel {
                     imdbRating: cached.imdbRating,
                     tmdbId: cached.tmdbId,
                     episodeId: entry.episodeId
-                ))
+                )
+                guard seenRows.insert(preview.continueWatchingRowID).inserted else { return nil }
+                return (entry, preview)
             }
+            continueWatching = Array(rows.prefix(10))
         } catch {
             // Continue watching is non-critical — don't surface errors.
         }
@@ -237,9 +254,20 @@ final class DiscoverViewModel {
         featuredBackdrops = []
     }
 
+    private func clearProviderOwnedDiscoverState() {
+        clearRemoteDiscoverRows()
+        aiHeroPreview = nil
+        error = nil
+    }
+
     nonisolated static func shouldResetRemoteServiceForMissingKey(configuredApiKey: String?) -> Bool {
-        guard let configuredApiKey else { return false }
-        return !configuredApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        shouldResetRemoteServiceForMissingConfiguration(MetadataProviderConfiguration(omdbApiKey: configuredApiKey))
+    }
+
+    nonisolated static func shouldResetRemoteServiceForMissingConfiguration(
+        _ configuration: MetadataProviderConfiguration?
+    ) -> Bool {
+        configuration?.isConfigured == true
     }
 
     nonisolated static func shouldKeepRecommendation(
@@ -262,7 +290,7 @@ final class DiscoverViewModel {
         if watchedMediaIds.contains(recommendationMediaID) { return false }
 
         if let imdbId {
-            let normalizedIMDbID = IMDbIdentifierPolicy.firstID(in: imdbId) ?? imdbId.lowercased()
+            let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: imdbId) ?? imdbId.lowercased()
             let imdbCandidates: Set<String> = [
                 imdbId,
                 normalizedIMDbID,
@@ -293,8 +321,8 @@ final class DiscoverViewModel {
     }
 
     nonisolated static func imdbIDsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
-        guard let left = IMDbIdentifierPolicy.firstID(in: lhs),
-              let right = IMDbIdentifierPolicy.firstID(in: rhs) else {
+        guard let left = IMDbIdentifierPolicy.appScopedID(in: lhs),
+              let right = IMDbIdentifierPolicy.appScopedID(in: rhs) else {
             return false
         }
         return left == right
@@ -303,7 +331,7 @@ final class DiscoverViewModel {
     private nonisolated static func mediaIDAliases(for item: MediaItem) -> Set<String> {
         var aliases: Set<String> = [item.id]
 
-        if let imdbID = IMDbIdentifierPolicy.firstID(in: item.id) {
+        if let imdbID = IMDbIdentifierPolicy.appScopedID(in: item.id) {
             aliases.formUnion([
                 imdbID,
                 "imdb-\(imdbID)",
@@ -704,7 +732,8 @@ final class DiscoverViewModel {
                candidateTitle: detail.title,
                candidateYear: detail.year
             ) {
-            let resolvedID = IMDbIdentifierPolicy.firstID(in: detail.id) ?? imdbId
+            let resolvedID = Self.canonicalOMDbMediaID(from: detail.id, fallbackID: imdbId, type: recommendation.type)
+                ?? imdbId
             return MediaPreview(
                 id: resolvedID,
                 type: recommendation.type,
@@ -717,41 +746,38 @@ final class DiscoverViewModel {
             )
         }
 
-        let searchResult = try? await metadataService.search(
-            query: recommendation.title,
-            type: recommendation.type,
-            page: 1,
-            year: recommendation.year,
-            language: "en-US"
+        let declaredMatch = await bestSearchMatch(
+            for: recommendation,
+            as: recommendation.type,
+            using: metadataService
         )
-        let searchMatch = searchResult?.items
-            .filter { $0.type == recommendation.type }
-            .map { ($0, Self.matchScore(for: recommendation, candidate: $0)) }
-            .filter { $0.1 > 0 }
-            .sorted { lhs, rhs in
-                if lhs.1 == rhs.1 {
-                    return (lhs.0.year ?? Int.max) < (rhs.0.year ?? Int.max)
-                }
-                return lhs.1 > rhs.1
-            }
-            .first?
-            .0
+        if let declaredMatch, declaredMatch.score >= Self.exactTitleAndYearMatchScore {
+            return Self.canonicalizedOMDbPreview(declaredMatch.preview)
+        }
 
-        if let searchMatch {
-            return searchMatch
+        let alternateType: MediaType = recommendation.type == .movie ? .series : .movie
+        let alternateMatch = await bestSearchMatch(
+            for: recommendation,
+            as: alternateType,
+            using: metadataService
+        )
+
+        if let searchMatch = Self.strongerCandidate(declaredMatch, alternateMatch) {
+            return Self.canonicalizedOMDbPreview(searchMatch.preview)
         }
 
         if let tmdbId = recommendation.tmdbId,
            !(metadataService is OMDbService),
            let detail = try? await metadataService.getDetail(id: String(tmdbId), type: recommendation.type),
-           Self.isMatchingMetadata(
+            Self.isMatchingMetadata(
                recommendationTitle: recommendation.title,
                recommendationYear: recommendation.year,
                candidateTitle: detail.title,
                candidateYear: detail.year
             ) {
-            let resolvedID = IMDbIdentifierPolicy.firstID(in: detail.id) ?? "\(recommendation.type.rawValue)-tmdb-\(tmdbId)"
-            return MediaPreview(
+            let resolvedID = Self.canonicalOMDbMediaID(from: detail.id, fallbackID: nil, type: recommendation.type)
+                ?? "\(recommendation.type.rawValue)-tmdb-\(tmdbId)"
+            let preview = MediaPreview(
                 id: resolvedID,
                 type: recommendation.type,
                 title: detail.title,
@@ -761,9 +787,96 @@ final class DiscoverViewModel {
                 imdbRating: detail.imdbRating,
                 tmdbId: detail.tmdbId ?? tmdbId
             )
+            return Self.canonicalizedOMDbPreview(preview)
         }
 
         return nil
+    }
+
+    private static let exactTitleAndYearMatchScore = 7
+
+    private typealias AIPreviewMatch = (preview: MediaPreview, score: Int)
+
+    private func bestSearchMatch(
+        for recommendation: AIMovieRecommendation,
+        as type: MediaType,
+        using metadataService: any MetadataProvider
+    ) async -> AIPreviewMatch? {
+        let searchResult = try? await metadataService.search(
+            query: recommendation.title,
+            type: type,
+            page: 1,
+            year: recommendation.year,
+            language: "en-US"
+        )
+
+        return searchResult?.items
+            .filter { $0.type == type }
+            .map { ($0, Self.matchScore(for: recommendation, candidate: $0)) }
+            .filter { $0.1 > 0 }
+            .sorted { lhs, rhs in
+                if lhs.1 == rhs.1 {
+                    return (lhs.0.year ?? Int.max) < (rhs.0.year ?? Int.max)
+                }
+                return lhs.1 > rhs.1
+            }
+            .first
+            .map { (preview: $0.0, score: $0.1) }
+    }
+
+    private static func strongerCandidate(
+        _ declared: AIPreviewMatch?,
+        _ alternate: AIPreviewMatch?
+    ) -> AIPreviewMatch? {
+        guard let declared else { return alternate }
+        guard let alternate else { return declared }
+
+        if declared.score != alternate.score {
+            return declared.score > alternate.score ? declared : alternate
+        }
+
+        let declaredRating = declared.preview.imdbRating ?? 0
+        let alternateRating = alternate.preview.imdbRating ?? 0
+        if declaredRating != alternateRating {
+            return declaredRating > alternateRating ? declared : alternate
+        }
+
+        let declaredYear = declared.preview.year ?? Int.min
+        let alternateYear = alternate.preview.year ?? Int.min
+        if declaredYear != alternateYear {
+            return declaredYear > alternateYear ? declared : alternate
+        }
+
+        return declared
+    }
+
+    private nonisolated static func canonicalizedOMDbPreview(
+        _ preview: MediaPreview,
+        fallbackIMDbID: String? = nil
+    ) -> MediaPreview {
+        guard let canonicalID = canonicalOMDbMediaID(
+            from: preview.id,
+            fallbackID: fallbackIMDbID,
+            type: preview.type
+        ) else {
+            return preview
+        }
+
+        var canonicalPreview = preview
+        canonicalPreview.id = canonicalID
+        return canonicalPreview
+    }
+
+    private nonisolated static func canonicalOMDbMediaID(
+        from id: String?,
+        fallbackID: String?,
+        type: MediaType
+    ) -> String? {
+        guard let imdbID = IMDbIdentifierPolicy.appScopedID(in: id)
+            ?? IMDbIdentifierPolicy.appScopedID(in: fallbackID) else {
+            return nil
+        }
+        return "\(type.rawValue)-omdb-\(imdbID)"
     }
 
     private static func sanitizedRecommendation(
@@ -772,7 +885,7 @@ final class DiscoverViewModel {
     ) -> AIMovieRecommendation {
         guard let resolvedPreview else {
             var sanitizedRecommendation = recommendation
-            sanitizedRecommendation.imdbId = IMDbIdentifierPolicy.firstID(in: recommendation.imdbId)
+            sanitizedRecommendation.imdbId = IMDbIdentifierPolicy.appScopedID(in: recommendation.imdbId)
             sanitizedRecommendation.tmdbId = nil
             return sanitizedRecommendation
         }
@@ -780,9 +893,10 @@ final class DiscoverViewModel {
         var sanitizedRecommendation = recommendation
         sanitizedRecommendation.title = resolvedPreview.title
         sanitizedRecommendation.year = resolvedPreview.year ?? recommendation.year
-        sanitizedRecommendation.imdbId = IMDbIdentifierPolicy.firstID(in: resolvedPreview.id)
-            ?? IMDbIdentifierPolicy.firstID(in: recommendation.imdbId)
+        sanitizedRecommendation.imdbId = IMDbIdentifierPolicy.appScopedID(in: resolvedPreview.id)
+            ?? IMDbIdentifierPolicy.appScopedID(in: recommendation.imdbId)
         sanitizedRecommendation.tmdbId = resolvedPreview.tmdbId
+        sanitizedRecommendation.type = resolvedPreview.type
         return sanitizedRecommendation
     }
 

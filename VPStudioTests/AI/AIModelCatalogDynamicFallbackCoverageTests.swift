@@ -39,6 +39,7 @@ struct AIModelCatalogDynamicFallbackCoverageTests {
             let data = try JSONSerialization.data(withJSONObject: [
                 "data": [
                     ["id": "voice_minimax-model_v3"],
+                    ["id": "MiniMax-M3"],
                     ["id": "MiniMax-M2.7"],
                     ["id": ""],
                     ["display_name": "Missing ID"],
@@ -49,9 +50,11 @@ struct AIModelCatalogDynamicFallbackCoverageTests {
 
         let models = await AIModelFetcher.fetchMiniMaxModels(apiKey: "\nminimax-key\t", session: session)
 
-        #expect(models.map(\.id) == ["MiniMax-M2.7", "voice_minimax-model_v3"])
-        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.displayName == "MiniMax M2.7")
-        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.isDefault == true)
+        #expect(models.map(\.id) == ["MiniMax-M2.7", "MiniMax-M3", "voice_minimax-model_v3"])
+        #expect(models.first(where: { $0.id == "MiniMax-M3" })?.displayName == "MiniMax M3")
+        #expect(models.first(where: { $0.id == "MiniMax-M3" })?.isDefault == true)
+        #expect(models.first(where: { $0.id == "MiniMax-M3" })?.maxContextTokens == 1_000_000)
+        #expect(models.first(where: { $0.id == "MiniMax-M2.7" })?.isDefault == false)
         #expect(models.first(where: { $0.id == "voice_minimax-model_v3" })?.displayName == "Voice Minimax Model V3")
         #expect(models.first(where: { $0.id == "voice_minimax-model_v3" })?.maxContextTokens == 204_800)
         #expect(models.first(where: { $0.id == "voice_minimax-model_v3" })?.outputCostPer1MTokens == 0)

@@ -4,7 +4,39 @@ import UniformTypeIdentifiers
 // MARK: - Environment Settings
 
 enum EnvironmentSettingsLayoutPolicy {
-    static let bottomContentPadding: CGFloat = 44
+    static let contentMaxWidth: CGFloat = 1120
+    static let bottomContentPadding: CGFloat = 96
+    static let bottomViewportInset: CGFloat = 64
+    static let minimumRowHeight: CGFloat = 64
+    static let sectionSpacing: CGFloat = 10
+    static let rowInsets = EdgeInsets(top: 6, leading: 22, bottom: 6, trailing: 22)
+    static let importedActionSpacing: CGFloat = 16
+    static let rowIconWidth: CGFloat = 32
+    static let standardActionColumnMinWidth: CGFloat = 148
+    static let importedActionColumnMinWidth: CGFloat = 184
+    static let primaryActionMinWidth: CGFloat = 108
+    static let deleteActionButtonSize: CGFloat = VPSpace.minTapTarget
+}
+
+enum EnvironmentSettingsCopyPolicy {
+    static let autoOpenHelp = "When enabled, the selected immersive environment opens automatically when video starts. Apple Environment stays in the system window."
+    static let genreSuggestionHelp = "When enabled, playback chooses an installed environment whose saved tag matches the media genre. If nothing matches, playback stays in Apple Environment."
+}
+
+enum EnvironmentErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+
+    static func deleteFailureMessage(for error: Error) -> String {
+        "Failed to delete: \(displayMessage(for: error))"
+    }
+}
+
+enum EnvironmentSettingsErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        EnvironmentErrorPresentationPolicy.displayMessage(for: error)
+    }
 }
 
 struct EnvironmentSettingsView: View {
@@ -16,15 +48,12 @@ struct EnvironmentSettingsView: View {
     @State private var isImporting = false
     @State private var isImportingEnvironment = false
     @State private var environmentError: String?
-    @State private var installingPresetIDs: Set<String> = []
     @State private var deletingAssetIDs: Set<String> = []
     @State private var autoOpenEnvironment = true
     @State private var autoSuggestEnvironmentByGenre = true
     @State private var assetLoadTask: Task<Void, Never>?
     @State private var pendingDeletion: PendingDeletion?
     private let disablesAutomaticTasks: Bool
-
-    private let onlinePresets = EnvironmentCatalogManager.onlinePresets
 
     private struct PendingDeletion: Identifiable {
         let id: String
@@ -52,73 +81,49 @@ struct EnvironmentSettingsView: View {
                 let bundled = assets.filter { $0.sourceType == .bundled }
                 if bundled.isEmpty {
                     Text("Import \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList) files to add custom environments.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(VPColor.textSecondary)
                 } else {
                     ForEach(bundled) { asset in
                         environmentRow(asset)
                     }
                 }
             }
-
-            Section("Online Presets (Poly Haven HDRI)") {
-                ForEach(onlinePresets) { preset in
-                    onlinePresetRow(preset)
-                }
-            }
-
-            Section("Imported Environments") {
-                if assets.filter({ $0.sourceType == .imported }).isEmpty {
-                    Text("No imported environments yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(assets.filter { $0.sourceType == .imported }) { asset in
-                        environmentRow(asset)
-                    }
-                }
-
-                Button {
-                    isImporting = true
-                } label: {
-                    if isImportingEnvironment {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Importing")
-                        }
-                    } else {
-                        Label("Import Environment", systemImage: "square.and.arrow.down")
-                    }
-                }
-                .disabled(isImportingEnvironment)
-
-                Text("Supports \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList). HDR/EXR provide high-dynamic-range skyboxes, PNG/JPG/JPEG import as standard panoramas, and USDZ/Reality files import as scenes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            .listRowBackground(VPEnvironmentListRowBackground())
+            .listRowSeparator(.hidden)
+            .listRowInsets(EnvironmentSettingsLayoutPolicy.rowInsets)
 
             Section("Playback") {
-                Toggle("Auto-open environment on playback", isOn: $autoOpenEnvironment)
-                Text("When enabled, the selected environment opens automatically when you start a video.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Suggest environment by genre", isOn: $autoSuggestEnvironmentByGenre)
-                Text("When enabled, playback switches to an installed environment tagged for the title's genre or mood (when one exists).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                playbackControlsRow
             }
+            .listRowBackground(VPEnvironmentListRowBackground())
+            .listRowSeparator(.hidden)
+            .listRowInsets(EnvironmentSettingsLayoutPolicy.rowInsets)
 
-            Section {
-                Text("Selected environments open when immersive playback starts; Active means the room is currently open.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Imported Environments") {
+                importEnvironmentRow
+
+                ForEach(assets.filter { $0.sourceType == .imported }) { asset in
+                    environmentRow(asset)
+                }
             }
+            .listRowBackground(VPEnvironmentListRowBackground())
+            .listRowSeparator(.hidden)
+            .listRowInsets(EnvironmentSettingsLayoutPolicy.rowInsets)
         }
+        .listStyle(.plain)
+        .environmentSettingsListSectionSpacing()
         .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, EnvironmentSettingsLayoutPolicy.minimumRowHeight)
         .contentMargins(.bottom, EnvironmentSettingsLayoutPolicy.bottomContentPadding, for: .scrollContent)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear
+                .frame(height: EnvironmentSettingsLayoutPolicy.bottomViewportInset)
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: EnvironmentSettingsLayoutPolicy.contentMaxWidth)
+        .frame(maxWidth: .infinity, alignment: .center)
         .background {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            VPEnvironmentBackdrop()
         }
         .navigationTitle("Environments")
         .task {
@@ -193,17 +198,22 @@ struct EnvironmentSettingsView: View {
     @ViewBuilder
     private var standardRoomRow: some View {
         HStack(spacing: 12) {
-            Image(systemName: "rectangle.dashed")
-                .font(.title3)
-                .frame(width: 24)
+            Image(systemName: EnvironmentPreviewFallbackArtworkKind.standardRoom.iconName)
+                .font(.title2)
+                .foregroundStyle(VPColor.textSecondary)
+                .frame(width: EnvironmentSettingsLayoutPolicy.rowIconWidth)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Standard Room")
-                    .font(.headline)
-                Text("No immersive environment")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                environmentMetadataText("Use the default windowed playback space.")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(EnvironmentPreviewRowPolicy.appleEnvironmentTitle)
+                    .font(.title3.weight(.semibold))
+                Text(EnvironmentPreviewRowPolicy.appleEnvironmentTypeLabel)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(VPColor.textSecondary)
+                environmentMetadataText(EnvironmentPreviewRowPolicy.appleEnvironmentDetailText)
+                EnvironmentSettingsValueBadge(
+                    title: EnvironmentPreviewRowPolicy.appleEnvironmentBenefitLabel,
+                    systemImage: "sparkles.tv"
+                )
             }
 
             Spacer()
@@ -212,10 +222,12 @@ struct EnvironmentSettingsView: View {
             if status.isHighlighted {
                 EnvironmentSettingsStatusLabel(status: status)
             } else {
-                Button("Use") {
+                Button("Activate") {
                     Task { await clearActiveEnvironment() }
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .frame(minWidth: EnvironmentSettingsLayoutPolicy.primaryActionMinWidth, alignment: .trailing)
             }
         }
         .padding(.vertical, 4)
@@ -225,16 +237,17 @@ struct EnvironmentSettingsView: View {
     private var builtInCinemaRow: some View {
         HStack(spacing: 12) {
             Image(systemName: "theatermasks")
-                .font(.title3)
-                .frame(width: 24)
+                .font(.title2)
+                .foregroundStyle(VPColor.textSecondary)
+                .frame(width: EnvironmentSettingsLayoutPolicy.rowIconWidth)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Cinema Environment")
-                    .font(.headline)
-                Text("Built-In")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                environmentMetadataText("Available from the player and Environments tab.")
+                    .font(.title3.weight(.semibold))
+                Text("Built-in")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(VPColor.textSecondary)
+                environmentMetadataText("Available from the player during AVPlayer playback.")
             }
 
             Spacer()
@@ -242,59 +255,11 @@ struct EnvironmentSettingsView: View {
             let status = cinemaEnvironmentStatus
             if status.isHighlighted {
                 EnvironmentSettingsStatusLabel(status: status)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func onlinePresetRow(_ preset: CuratedEnvironmentPreset) -> some View {
-        let isInstalled = isPresetInstalled(preset)
-        let isInstalling = installingPresetIDs.contains(preset.id)
-
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: EnvironmentPreviewRowPolicy.providerIconName(for: preset.provider))
-                    .font(.title3)
-                    .frame(width: 24)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(preset.name)
-                        .font(.headline)
-                    Text(preset.description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    environmentMetadataText("\(preset.provider.displayName) • \(preset.licenseName)")
-
-                    if let sourceURL = EnvironmentURLPolicy.webURL(from: preset.sourceAttributionURL) {
-                        environmentSourceLink(sourceURL)
-                    }
-                }
-
-                Spacer()
-
-                if isInstalled {
-                    Label("Installed", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(VPColor.success)
-                } else {
-                    Button {
-                        Task { await installPreset(preset) }
-                    } label: {
-                        if isInstalling {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("Adding")
-                            }
-                        } else {
-                            Label("Add", systemImage: "arrow.down.circle")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .frame(minWidth: 92)
-                    .disabled(isInstalling)
-                }
+            } else {
+                EnvironmentSettingsPassiveActionLabel(
+                    title: "Player only",
+                    systemImage: "play.rectangle"
+                )
             }
         }
         .padding(.vertical, 4)
@@ -305,99 +270,157 @@ struct EnvironmentSettingsView: View {
         let status = environmentStatus(for: asset)
         let isDeleting = isDeletingAsset(asset)
 
-        HStack(alignment: .top, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: asset.sourceType == .bundled ? "sparkles" : "square.and.arrow.down")
-                    .font(.title3)
-                    .frame(width: 24)
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: asset.sourceType == .bundled ? "sparkles" : "square.and.arrow.down")
+                .font(.title2)
+                .foregroundStyle(VPColor.textSecondary)
+                .frame(width: EnvironmentSettingsLayoutPolicy.rowIconWidth)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(asset.name)
-                        .font(.headline)
-                    Text(asset.sourceType == .bundled ? "Built-In" : "Imported")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if asset.sourceType == .imported {
-                        environmentMetadataText(EnvironmentPreviewRowPolicy.assetDetailLabel(for: asset))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } else if let license = asset.licenseName, !license.isEmpty {
-                        environmentMetadataText(license)
-                    }
-
+            VStack(alignment: .leading, spacing: 4) {
+                Text(asset.name)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(asset.sourceType == .bundled ? "Built-in" : "Imported")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(VPColor.textSecondary)
+                if asset.sourceType == .imported {
+                    importedEnvironmentDetailLine(for: asset)
+                } else if let metadata = bundledEnvironmentMetadataText(for: asset) {
+                    environmentMetadataText(metadata)
                     if let sourceURL = EnvironmentURLPolicy.webURL(from: asset.sourceAttributionURL) {
                         environmentSourceLink(sourceURL)
                     }
                 }
-
-                Spacer(minLength: 12)
             }
             .layoutPriority(1)
+
+            Spacer(minLength: 12)
 
             VStack(alignment: .trailing, spacing: 8) {
                 if isDeleting {
                     Label("Deleting", systemImage: "hourglass")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(VPColor.textSecondary)
 
-                    ProgressView()
-                        .controlSize(.small)
+                        ProgressView()
+                            .controlSize(.small)
                 } else if status.isHighlighted {
                     EnvironmentSettingsStatusLabel(status: status)
 
-                    Button {
-                        Task { await clearActiveEnvironment() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: status == .active ? "xmark.circle" : "rectangle.dashed")
-                            Text(environmentActionTitle(for: status))
-                        }
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .frame(minWidth: 104, alignment: .trailing)
-                } else {
-                    Button("Activate") {
-                        Task {
-                            guard await ensureImportedEnvironmentAssetExists(asset) else {
-                                environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
-                                await coalescedLoadAssets()
-                                return
+                    if shouldShowEnvironmentExitAction(for: status) || asset.sourceType == .imported {
+                        HStack(spacing: EnvironmentSettingsLayoutPolicy.importedActionSpacing) {
+                            if shouldShowEnvironmentExitAction(for: status) {
+                                Button {
+                                    Task { await clearActiveEnvironment() }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "xmark.circle")
+                                        Text(environmentExitActionTitle(for: status))
+                                    }
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
+                                .frame(minWidth: EnvironmentSettingsLayoutPolicy.primaryActionMinWidth, alignment: .trailing)
                             }
-                            guard await appState.activateEnvironmentAsset(asset) else {
-                                environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
-                                await coalescedLoadAssets()
-                                return
-                            }
-                            await coalescedLoadAssets()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(isDeleting)
-                }
 
-                if asset.sourceType == .imported {
-                    Button(role: .destructive) {
-                        pendingDeletion = PendingDeletion(id: asset.id, name: asset.name)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
+                            if asset.sourceType == .imported {
+                                deleteEnvironmentButton(for: asset, isDeleting: isDeleting)
+                            }
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isDeleting)
+                } else {
+                    HStack(spacing: EnvironmentSettingsLayoutPolicy.importedActionSpacing) {
+                        Button("Activate") {
+                            Task {
+                                guard await ensureEnvironmentAssetExists(asset) else {
+                                    environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+                                    await coalescedLoadAssets()
+                                    return
+                                }
+                                guard await appState.activateEnvironmentAsset(asset) else {
+                                    environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+                                    await coalescedLoadAssets()
+                                    return
+                                }
+                                await coalescedLoadAssets()
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .frame(minWidth: EnvironmentSettingsLayoutPolicy.primaryActionMinWidth, alignment: .trailing)
+                        .disabled(isDeleting)
+
+                        if asset.sourceType == .imported {
+                            deleteEnvironmentButton(for: asset, isDeleting: isDeleting)
+                        }
+                    }
                 }
             }
-            .frame(minWidth: 120, alignment: .trailing)
+            .frame(
+                minWidth: asset.sourceType == .imported
+                    ? EnvironmentSettingsLayoutPolicy.importedActionColumnMinWidth
+                    : EnvironmentSettingsLayoutPolicy.standardActionColumnMinWidth,
+                alignment: .trailing
+            )
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var importEnvironmentRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                importEnvironmentButton
+
+                if assets.filter({ $0.sourceType == .imported }).isEmpty {
+                    Text("No imported environments yet.")
+                        .font(.callout)
+                        .foregroundStyle(VPColor.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                importEnvironmentButton
+
+                if assets.filter({ $0.sourceType == .imported }).isEmpty {
+                    Text("No imported environments yet.")
+                        .font(.callout)
+                        .foregroundStyle(VPColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var importEnvironmentButton: some View {
+        Button {
+            isImporting = true
+        } label: {
+            if isImportingEnvironment {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Importing")
+                }
+            } else {
+                Label("Import Environment", systemImage: "square.and.arrow.down")
+            }
+        }
+        .disabled(isImportingEnvironment)
+        .help("Supports \(EnvironmentImportValidationPolicy.supportedExtensionDisplayList). HDR/EXR load as skyboxes; USDZ/Reality load as scenes.")
     }
 
     private var standardRoomStatus: EnvironmentPreviewCardStatus {
         EnvironmentPreviewRowPolicy.standardRoomStatus(
             selectedAssetID: effectiveSelectedAssetID,
+            activeEnvironment: appState.activeEnvironment,
             isImmersiveSpaceOpen: appState.isImmersiveSpaceOpen
         )
     }
@@ -425,25 +448,97 @@ struct EnvironmentSettingsView: View {
         )
     }
 
-    private func ensureImportedEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
-        guard asset.sourceType == .imported else { return true }
+    private func ensureEnvironmentAssetExists(_ asset: EnvironmentAsset) async -> Bool {
         if await appState.environmentCatalogManager.resolvedAssetURL(for: asset) != nil {
             return true
         }
 
-        try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
-        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        if asset.sourceType == .imported {
+            try? await appState.environmentCatalogManager.deleteAsset(id: asset.id)
+            await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+        }
         return false
     }
 
-    private func environmentActionTitle(for status: EnvironmentPreviewCardStatus) -> String {
-        status == .active ? "Exit" : "Clear"
+    private func shouldShowEnvironmentExitAction(for status: EnvironmentPreviewCardStatus) -> Bool {
+        status == .active
+    }
+
+    private func environmentExitActionTitle(for status: EnvironmentPreviewCardStatus) -> String {
+        status == .active ? "Exit" : ""
+    }
+
+    private func bundledEnvironmentMetadataText(for asset: EnvironmentAsset) -> String? {
+        guard asset.sourceType == .bundled,
+              let licenseName = asset.licenseName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !licenseName.isEmpty,
+              licenseName.localizedCaseInsensitiveCompare("Built-in") != .orderedSame
+        else {
+            return nil
+        }
+        return licenseName
     }
 
     private func environmentMetadataText(_ value: String) -> some View {
         Text(value)
-            .font(.caption)
+            .font(.subheadline)
             .foregroundStyle(VPColor.textSecondary)
+            .lineSpacing(1)
+    }
+
+    @ViewBuilder
+    private func importedEnvironmentDetailLine(for asset: EnvironmentAsset) -> some View {
+        let detail = EnvironmentPreviewRowPolicy.assetDetailLabel(for: asset)
+        if let sourceURL = EnvironmentURLPolicy.webURL(from: asset.sourceAttributionURL) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    environmentMetadataText(detail)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    environmentSourceLink(sourceURL)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    environmentMetadataText(detail)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    environmentSourceLink(sourceURL)
+                }
+            }
+        } else {
+            environmentMetadataText(detail)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func deleteEnvironmentButton(for asset: EnvironmentAsset, isDeleting: Bool) -> some View {
+        Menu {
+            Button(role: .destructive) {
+                pendingDeletion = PendingDeletion(id: asset.id, name: asset.name)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(VPColor.textPrimary)
+                .frame(
+                    width: EnvironmentSettingsLayoutPolicy.deleteActionButtonSize,
+                    height: EnvironmentSettingsLayoutPolicy.deleteActionButtonSize
+                )
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75)
+                }
+        }
+        .buttonStyle(.plain)
+        .controlSize(.regular)
+        .help("More actions for \(asset.name).")
+        .accessibilityLabel("More actions for \(asset.name)")
+        .accessibilityHint("Includes deleting this imported environment after confirmation.")
+        .disabled(isDeleting)
     }
 
     private func environmentSourceLink(_ sourceURL: URL) -> some View {
@@ -454,20 +549,55 @@ struct EnvironmentSettingsView: View {
         .foregroundStyle(VPColor.info)
     }
 
+    private var playbackControlsRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 20) {
+                playbackToggleBlock(
+                    "Auto-open environment on playback",
+                    help: EnvironmentSettingsCopyPolicy.autoOpenHelp,
+                    isOn: $autoOpenEnvironment
+                )
+                playbackToggleBlock(
+                    "Suggest environment by genre",
+                    help: EnvironmentSettingsCopyPolicy.genreSuggestionHelp,
+                    isOn: $autoSuggestEnvironmentByGenre
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                playbackToggleBlock(
+                    "Auto-open environment on playback",
+                    help: EnvironmentSettingsCopyPolicy.autoOpenHelp,
+                    isOn: $autoOpenEnvironment
+                )
+                playbackToggleBlock(
+                    "Suggest environment by genre",
+                    help: EnvironmentSettingsCopyPolicy.genreSuggestionHelp,
+                    isOn: $autoSuggestEnvironmentByGenre
+                )
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func playbackToggleBlock(_ title: String, help: String, isOn: Binding<Bool>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(title, isOn: isOn)
+                .font(.body.weight(.semibold))
+            Text(help)
+                .font(.subheadline)
+                .foregroundStyle(VPColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func isDeletingAsset(_ asset: EnvironmentAsset) -> Bool {
         deletingAssetIDs.contains(normalizedAssetID(asset.id))
     }
 
     private func normalizedAssetID(_ id: String) -> String {
         id.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func isPresetInstalled(_ preset: CuratedEnvironmentPreset) -> Bool {
-        assets.contains { asset in
-            asset.sourceType == .imported
-                && asset.name == preset.name
-                && asset.sourceAttributionURL == preset.sourceAttributionURL
-        }
     }
 
     private var supportedEnvironmentTypes: [UTType] {
@@ -498,31 +628,27 @@ struct EnvironmentSettingsView: View {
                 _ = try await appState.environmentCatalogManager.importEnvironment(from: url)
                 await coalescedLoadAssets()
             } catch {
-                environmentError = error.localizedDescription
+                environmentError = EnvironmentSettingsErrorPresentationPolicy.displayMessage(for: error)
             }
 
         case .failure(let error):
-            environmentError = error.localizedDescription
+            environmentError = EnvironmentSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
     @MainActor
-    private func installPreset(_ preset: CuratedEnvironmentPreset) async {
-        guard !isPresetInstalled(preset),
-              !installingPresetIDs.contains(preset.id) else {
+    private func activateEnvironmentAsset(_ asset: EnvironmentAsset) async {
+        guard await ensureEnvironmentAssetExists(asset) else {
+            environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
+            await coalescedLoadAssets()
             return
         }
-
-        environmentError = nil
-        installingPresetIDs.insert(preset.id)
-        defer { installingPresetIDs.remove(preset.id) }
-
-        do {
-            _ = try await appState.environmentCatalogManager.importCuratedPreset(preset)
+        guard await appState.activateEnvironmentAsset(asset) else {
+            environmentError = PlayerImmersiveTransitionPolicy.missingAssetMessage(assetName: asset.name)
             await coalescedLoadAssets()
-        } catch {
-            environmentError = error.localizedDescription
+            return
         }
+        await coalescedLoadAssets()
     }
 
     @discardableResult
@@ -569,7 +695,7 @@ struct EnvironmentSettingsView: View {
             try await appState.environmentCatalogManager.deleteAsset(id: normalizedID)
             await coalescedLoadAssets()
         } catch {
-            environmentError = error.localizedDescription
+            environmentError = EnvironmentSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -591,10 +717,11 @@ struct EnvironmentSettingsView: View {
             let latestAssets = try await appState.environmentCatalogManager.fetchAssets()
             guard !Task.isCancelled else { return }
             assets = latestAssets
+            appState.reconcileEnvironmentSelection(withLoadedAssets: latestAssets)
             environmentError = nil
         } catch {
             guard !Task.isCancelled else { return }
-            environmentError = error.localizedDescription
+            environmentError = EnvironmentSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -607,7 +734,7 @@ struct EnvironmentSettingsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    environmentError = error.localizedDescription
+                    environmentError = EnvironmentSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
             }
         }
@@ -622,10 +749,21 @@ struct EnvironmentSettingsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    environmentError = error.localizedDescription
+                    environmentError = EnvironmentSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
             }
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func environmentSettingsListSectionSpacing() -> some View {
+        #if os(macOS)
+        self
+        #else
+        self.listSectionSpacing(EnvironmentSettingsLayoutPolicy.sectionSpacing)
+        #endif
     }
 }
 
@@ -638,10 +776,55 @@ private struct EnvironmentSettingsStatusLabel: View {
                 Image(systemName: chip.systemImage)
                 Text(chip.title)
             }
-                .font(.caption)
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(chip.tint)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
+                .accessibilityLabel("\(chip.title) environment status")
         }
+    }
+}
+
+private struct EnvironmentSettingsPassiveActionLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(VPColor.textSecondary)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 126, alignment: .trailing)
+            .accessibilityLabel("\(title) status")
+    }
+}
+
+private struct EnvironmentSettingsValueBadge: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(VPColor.info)
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background {
+                Capsule()
+                    .fill(VPColor.info.opacity(0.16))
+            }
+            .overlay {
+                Capsule()
+                    .strokeBorder(VPColor.info.opacity(0.34), lineWidth: 0.75)
+            }
     }
 }

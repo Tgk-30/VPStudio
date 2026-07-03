@@ -324,33 +324,36 @@ struct DebridMagnetInputTestsDebridserviceprotocolextensiontests {
         )
     }
 
-    @Test("preferredMagnetURI accepts non-magnet URL with embedded matching hash")
-    func preferredMagnetURIAcceptsNonMagnetURLWithEmbeddedMatchingHash() throws {
+    @Test("preferredMagnetURI rejects non-magnet URL even with embedded matching hash")
+    func preferredMagnetURIRejectsNonMagnetURLWithEmbeddedMatchingHash() throws {
+        // Security: a non-magnet URL must never be forwarded to a debrid provider's
+        // add-magnet endpoint (server-side SSRF). It carries no tracker list, so it
+        // is always rebuilt as a safe bare magnet from the validated hash.
         let normalized = "0123456789abcdef0123456789abcdef01234567"
         let supplied = "https://tracker.example/t/\(normalized.uppercased())/download"
         #expect(
             try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied)
-            == supplied
+            == "magnet:?xt=urn:btih:\(normalized)"
         )
     }
 
-    @Test("preferredMagnetURI accepts non-magnet URL with matching hash in query string")
-    func preferredMagnetURIAcceptsNonMagnetURLWithMatchingHashInQuery() throws {
+    @Test("preferredMagnetURI rejects non-magnet URL with matching hash in query string")
+    func preferredMagnetURIRejectsNonMagnetURLWithMatchingHashInQuery() throws {
         let normalized = "0123456789abcdef0123456789abcdef01234567"
         let supplied = "https://tracker.example/resolve?hash=\(normalized.uppercased())&source=debrid"
         #expect(
             try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied)
-            == supplied
+            == "magnet:?xt=urn:btih:\(normalized)"
         )
     }
 
-    @Test("preferredMagnetURI accepts non-magnet URL with matching 64-char hash")
-    func preferredMagnetURIAccepts64BitHashInNonMagnetURL() throws {
+    @Test("preferredMagnetURI rejects non-magnet URL with matching 64-char hash")
+    func preferredMagnetURIRejects64BitHashInNonMagnetURL() throws {
         let normalized = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         let supplied = "https://tracker.example/resolve/\(normalized)/download"
         #expect(
             try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied)
-            == supplied
+            == "magnet:?xt=urn:btih:\(normalized)"
         )
     }
 
@@ -436,14 +439,14 @@ struct DebridMagnetInputTestsDebridserviceprotocolextensiontests {
         )
     }
 
-    @Test("preferredMagnetURI accepts non-magnet text containing matching hash")
-    func preferredMagnetURIAcceptsPlainTextContainingMatchingHash() throws {
+    @Test("preferredMagnetURI rejects non-magnet text containing matching hash")
+    func preferredMagnetURIRejectsPlainTextContainingMatchingHash() throws {
         let normalized = "0123456789abcdef0123456789abcdef01234567"
         let supplied = "mirror hash \(normalized.uppercased()) from provider notes"
 
         #expect(
             try DebridMagnetInput.preferredMagnetURI(hash: normalized, suppliedMagnetURI: supplied)
-            == supplied
+            == "magnet:?xt=urn:btih:\(normalized)"
         )
     }
 

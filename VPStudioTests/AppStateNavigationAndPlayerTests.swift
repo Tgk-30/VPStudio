@@ -9,6 +9,20 @@ private func makeAppStatePlayerTestDatabase(named name: String) async throws -> 
     return database
 }
 
+private func makeAppStateManagedEnvironmentFile(
+    directoryName: String,
+    fileName: String,
+    contents: Data = Data("hdr".utf8)
+) throws -> (rootDir: URL, envDir: URL, fileURL: URL) {
+    let rootDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(directoryName)-\(UUID().uuidString)", isDirectory: true)
+    let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+    try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+    let fileURL = envDir.appendingPathComponent(fileName)
+    try contents.write(to: fileURL)
+    return (rootDir, envDir, fileURL)
+}
+
 private actor AppStateResumeDebridService: DebridServiceProtocol {
     let serviceType: DebridServiceType = .realDebrid
 
@@ -233,8 +247,12 @@ struct AppStatePlayerSessionStateTests {
         let viewModel = DetailViewModel(appState: appState)
         let activeSession = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
         let staleSessionID = UUID()
+        let activePlayer = AVPlayer()
+        let activeRenderer = AVSampleBufferVideoRenderer()
 
         appState.activePlayerSession = activeSession
+        appState.activeAVPlayer = activePlayer
+        appState.activeVideoRenderer = activeRenderer
         appState.fullscreenBySessionID[activeSession.id] = true
         appState.fullscreenBySessionID[staleSessionID] = true
         appState.isMainWindowSuppressedForPlayer = true
@@ -242,13 +260,93 @@ struct AppStatePlayerSessionStateTests {
         appState.releasePlayerResources(clearSession: true, sessionID: staleSessionID)
 
         #expect(appState.activePlayerSession?.id == activeSession.id)
+        #expect(appState.activeAVPlayer === activePlayer)
+        #expect(appState.activeVideoRenderer === activeRenderer)
         #expect(appState.fullscreenBySessionID[activeSession.id] == true)
         #expect(appState.fullscreenBySessionID[staleSessionID] == nil)
         #expect(appState.isMainWindowSuppressedForPlayer)
     }
 
     @Test @MainActor
-    func metadataEpisodeLookupIDPrefersOMDbIMDbIdentifiersBeforeLegacyTMDBFallback() {
+    func beginEmbeddedPlayerSessionClearsStaleBridgeAndSuppressionBeforeOpening() {
+        let appState = AppState()
+        let stream = Fixtures.stream(fileName: "movie.mkv")
+        let preview = Fixtures.mediaPreview()
+        let viewModel = DetailViewModel(appState: appState)
+        let request = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
+        let stalePlayer = AVPlayer()
+        let staleRenderer = AVSampleBufferVideoRenderer()
+
+        appState.activeAVPlayer = stalePlayer
+        appState.activeVideoRenderer = staleRenderer
+        appState.isImmersiveTransitionInFlight = true
+        appState.shouldRestoreImmersiveAfterSuspension = true
+        appState.isMainWindowSuppressedForPlayer = true
+        appState.didMainWindowDisappearForPlayer = true
+        appState.didMainWindowReappearForPlayer = true
+
+        appState.beginEmbeddedPlayerSession(request)
+
+        #expect(appState.activePlayerSession?.id == request.id)
+        #expect(appState.activeAVPlayer == nil)
+        #expect(appState.activeVideoRenderer == nil)
+        #expect(!appState.isImmersiveTransitionInFlight)
+        #expect(!appState.shouldRestoreImmersiveAfterSuspension)
+        #expect(!appState.isMainWindowSuppressedForPlayer)
+        #expect(!appState.didMainWindowDisappearForPlayer)
+        #expect(!appState.didMainWindowReappearForPlayer)
+    }
+
+    @Test @MainActor
+    func mainWindowSuppressionOnlyTerminatesAfterMainWindowActuallyReappears() {
+        let appState = AppState()
+        let sessionID = UUID()
+
+        appState.beginMainWindowSuppressionForPlayer(sessionID: sessionID)
+
+        #expect(appState.isMainWindowSuppressedForPlayer)
+        #expect(appState.mainWindowSuppressedPlayerSessionID == sessionID)
+        #expect(!appState.didMainWindowDisappearForPlayer)
+        #expect(!appState.didMainWindowReappearForPlayer)
+        #expect(!appState.shouldTerminatePlayerForMainWindowActivation())
+
+        appState.markMainWindowDidDisappearForPlayer()
+
+        #expect(appState.didMainWindowDisappearForPlayer)
+        #expect(!appState.didMainWindowReappearForPlayer)
+        #expect(!appState.shouldTerminatePlayerForMainWindowActivation())
+
+        appState.markMainWindowDidReappearForPlayer()
+
+        #expect(appState.didMainWindowReappearForPlayer)
+        #expect(appState.shouldTerminatePlayerForMainWindowActivation())
+    }
+
+    @Test @MainActor
+    func mainWindowSuppressionClearIsScopedToOwningPlayerSession() {
+        let appState = AppState()
+        let ownerSessionID = UUID()
+
+        appState.beginMainWindowSuppressionForPlayer(sessionID: ownerSessionID)
+        appState.markMainWindowDidDisappearForPlayer()
+        appState.markMainWindowDidReappearForPlayer()
+        appState.clearMainWindowSuppressionForPlayer(sessionID: UUID())
+
+        #expect(appState.isMainWindowSuppressedForPlayer)
+        #expect(appState.didMainWindowDisappearForPlayer)
+        #expect(appState.didMainWindowReappearForPlayer)
+        #expect(appState.mainWindowSuppressedPlayerSessionID == ownerSessionID)
+
+        appState.clearMainWindowSuppressionForPlayer(sessionID: ownerSessionID)
+
+        #expect(!appState.isMainWindowSuppressedForPlayer)
+        #expect(!appState.didMainWindowDisappearForPlayer)
+        #expect(!appState.didMainWindowReappearForPlayer)
+        #expect(appState.mainWindowSuppressedPlayerSessionID == nil)
+    }
+
+    @Test @MainActor
+    func metadataEpisodeLookupIDPrefersStableProviderIdentifiersBeforeTitleFallback() {
         #expect(
             AppState.metadataEpisodeLookupID(
                 mediaId: "series-imdb-tt0944947",
@@ -270,7 +368,7 @@ struct AppStatePlayerSessionStateTests {
                 mediaTitle: " Legacy Show ",
                 mediaYear: 2024,
                 tmdbId: 1399
-            ) == "Legacy Show (2024)"
+            ) == "tmdb-1399"
         )
         #expect(
             AppState.metadataEpisodeLookupID(
@@ -279,7 +377,7 @@ struct AppStatePlayerSessionStateTests {
                 mediaTitle: " Legacy Show (2024) ",
                 mediaYear: 2024,
                 tmdbId: 1399
-            ) == "Legacy Show (2024)"
+            ) == "tmdb-1399"
         )
         #expect(
             AppState.metadataEpisodeLookupID(
@@ -288,7 +386,7 @@ struct AppStatePlayerSessionStateTests {
                 mediaTitle: " Doctor Who (2005) ",
                 mediaYear: 1963,
                 tmdbId: 1399
-            ) == "Doctor Who (2005)"
+            ) == "tmdb-1399"
         )
         #expect(
             AppState.metadataEpisodeLookupID(
@@ -297,7 +395,7 @@ struct AppStatePlayerSessionStateTests {
                 mediaTitle: " Legacy Show ",
                 mediaYear: 999,
                 tmdbId: 1399
-            ) == "Legacy Show"
+            ) == "tmdb-1399"
         )
         #expect(
             AppState.metadataEpisodeLookupID(
@@ -306,7 +404,7 @@ struct AppStatePlayerSessionStateTests {
                 mediaTitle: " Legacy Show ",
                 mediaYear: nil,
                 tmdbId: 1399
-            ) == "Legacy Show"
+            ) == "tmdb-1399"
         )
         #expect(
             AppState.metadataEpisodeLookupID(
@@ -319,8 +417,60 @@ struct AppStatePlayerSessionStateTests {
             AppState.metadataEpisodeLookupID(
                 mediaId: "legacy-local-id",
                 previewId: nil,
+                mediaTitle: " Legacy Show ",
+                tmdbId: nil
+            ) == "Legacy Show"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
                 tmdbId: nil
             ) == "legacy-local-id"
+        )
+    }
+
+    @Test @MainActor
+    func metadataEpisodeLookupIDUsesOMDbCompatibleFallbackWhenTMDbIsUnavailable() {
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "series-imdb-tt0944947",
+                previewId: "series-tmdb-1399",
+                mediaTitle: "Game of Thrones",
+                mediaYear: 2011,
+                tmdbId: 1399,
+                allowsTMDbIdentifier: false
+            ) == "tt0944947"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "legacy-local-id",
+                previewId: nil,
+                mediaTitle: " Legacy Show ",
+                mediaYear: 2024,
+                tmdbId: 1399,
+                allowsTMDbIdentifier: false
+            ) == "Legacy Show (2024)"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "tmdb-1399",
+                previewId: "legacy-local-id",
+                mediaTitle: nil,
+                mediaYear: nil,
+                tmdbId: 1399,
+                allowsTMDbIdentifier: false
+            ) == "legacy-local-id"
+        )
+        #expect(
+            AppState.metadataEpisodeLookupID(
+                mediaId: "tmdb-1399",
+                previewId: nil,
+                mediaTitle: nil,
+                mediaYear: nil,
+                tmdbId: 1399,
+                allowsTMDbIdentifier: false
+            ) == nil
         )
     }
 
@@ -400,10 +550,80 @@ struct AppStatePlayerSessionStateTests {
             preview: preview
         ))
 
-        #expect(request.mediaId == "tt1160419")
+        #expect(request.mediaId == "movie-omdb-tt1160419")
         #expect(request.imdbId == "tt1160419")
         #expect(request.tmdbId == 438_631)
         #expect(request.stream.streamURL.absoluteString == "https://cdn.example.com/dune.mkv")
+    }
+
+    @Test @MainActor
+    func resolveContinueWatchingSessionRejectsMissingLocalResolvedStream() async throws {
+        let database = try await makeAppStatePlayerTestDatabase(named: "continue-watch-missing-local")
+        let secretStore = TestSecretStore()
+        let secretKey = SecretKey.debridToken(service: .realDebrid, configId: "rd-missing-local")
+        try await secretStore.setSecret("token", for: secretKey)
+        try await database.saveDebridConfig(DebridConfig(
+            id: "rd-missing-local",
+            serviceType: .realDebrid,
+            apiTokenRef: SecretReference.encode(key: secretKey),
+            isActive: true,
+            priority: 0,
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("continue-watch-missing-local-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let missingFile = tempDir.appendingPathComponent("missing.mp4")
+        let stream = Fixtures.stream(
+            url: missingFile.absoluteString,
+            fileName: "missing.mp4"
+        )
+        let debridManager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { _, _ in AppStateResumeDebridService(stream: stream) }
+        )
+        let appState = AppState(
+            database: database,
+            secretStore: secretStore,
+            debridManager: debridManager
+        )
+        let context = try #require(StreamRecoveryContext(
+            infoHash: "1234567890abcdef1234567890abcdef12345678",
+            preferredService: .realDebrid,
+            resolvedDebridService: DebridServiceType.realDebrid.rawValue
+        ))
+        let history = WatchHistory(
+            id: "missing-local-history",
+            mediaId: "tt7654321",
+            title: "Missing Local",
+            progress: 120,
+            duration: 7_200,
+            recoveryContextJSON: String(data: try JSONEncoder().encode(context), encoding: .utf8),
+            watchedAt: Date(),
+            isCompleted: false
+        )
+        let preview = MediaPreview(
+            id: "tt7654321",
+            type: .movie,
+            title: "Missing Local",
+            year: 2026,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: nil
+        )
+
+        let request = await appState.resolveContinueWatchingSession(
+            history: history,
+            preview: preview
+        )
+
+        #expect(request == nil)
     }
 }
 
@@ -485,12 +705,17 @@ struct AppStateActivateEnvironmentAssetTests {
         let database = try DatabaseManager(inMemoryNamed: "activate-environment-\(UUID().uuidString)")
         try await database.migrate()
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
-        let manager = EnvironmentCatalogManager(database: database)
+        let environmentFile = try makeAppStateManagedEnvironmentFile(
+            directoryName: "activate-environment",
+            fileName: "test.hdr"
+        )
+        defer { try? FileManager.default.removeItem(at: environmentFile.rootDir) }
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: environmentFile.envDir)
         let asset = EnvironmentAsset(
             id: "env-test",
             name: "Test Environment",
             sourceType: .imported,
-            assetPath: "test.hdr",
+            assetPath: environmentFile.fileURL.path,
             isActive: false
         )
         try await database.saveEnvironmentAsset(asset)
@@ -515,19 +740,24 @@ struct AppStateActivateEnvironmentAssetTests {
         let database = try DatabaseManager(inMemoryNamed: "activate-stale-environment-\(UUID().uuidString)")
         try await database.migrate()
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
-        let manager = EnvironmentCatalogManager(database: database)
+        let environmentFile = try makeAppStateManagedEnvironmentFile(
+            directoryName: "activate-stale-environment",
+            fileName: "active.hdr"
+        )
+        defer { try? FileManager.default.removeItem(at: environmentFile.rootDir) }
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: environmentFile.envDir)
         let active = EnvironmentAsset(
             id: "active-env",
             name: "Active Environment",
             sourceType: .imported,
-            assetPath: "active.hdr",
+            assetPath: environmentFile.fileURL.path,
             isActive: false
         )
         let stale = EnvironmentAsset(
             id: "stale-env",
             name: "Deleted Environment",
             sourceType: .imported,
-            assetPath: "stale.hdr",
+            assetPath: environmentFile.envDir.appendingPathComponent("stale.hdr").path,
             isActive: false
         )
         try await database.saveEnvironmentAsset(active)
@@ -552,30 +782,42 @@ struct AppStateActivateEnvironmentAssetTests {
         let database = try DatabaseManager(inMemoryNamed: "suggested-environment-\(UUID().uuidString)")
         try await database.migrate()
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
-        let manager = EnvironmentCatalogManager(database: database)
+        let environmentFiles = try makeAppStateManagedEnvironmentFile(
+            directoryName: "suggested-environment",
+            fileName: "active.hdr"
+        )
+        defer { try? FileManager.default.removeItem(at: environmentFiles.rootDir) }
+        let suggestionFileURL = environmentFiles.envDir.appendingPathComponent("suggested.hdr")
+        try Data("hdr".utf8).write(to: suggestionFileURL)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: environmentFiles.envDir
+        )
         try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: "manual-env")
         try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: "1")
 
         let active = EnvironmentAsset(
             id: "active-env",
             name: "Active Environment",
-            sourceType: .bundled,
-            assetPath: "bundle://active.usdz",
+            sourceType: .imported,
+            assetPath: environmentFiles.fileURL.path,
             isActive: false
         )
         let suggestion = EnvironmentAsset(
             id: "suggested-env",
             name: "Suggested Environment",
-            sourceType: .bundled,
-            assetPath: "bundle://suggested.usdz",
+            sourceType: .imported,
+            assetPath: suggestionFileURL.path,
             environmentTag: "horror",
             isActive: false
         )
+        // Never persisted to the catalog: a suggestion the user has since removed
+        // must not activate, leaving the current selection intact.
         let staleSuggestion = EnvironmentAsset(
             id: "missing-suggested-env",
             name: "Missing Suggested Environment",
-            sourceType: .bundled,
-            assetPath: "bundle://missing.usdz",
+            sourceType: .imported,
+            assetPath: environmentFiles.envDir.appendingPathComponent("missing.hdr").path,
             environmentTag: "scifi",
             isActive: false
         )
@@ -598,6 +840,58 @@ struct AppStateActivateEnvironmentAssetTests {
         #expect(try await manager.activeAsset()?.id == "suggested-env")
         #expect(try await database.getSetting(key: SettingsKeys.preferredEnvironment) == "suggested-env")
         #expect(try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared) == nil)
+    }
+
+    @Test @MainActor
+    func reconcileEnvironmentSelectionRefreshesSelectedAssetFromLoadedCatalog() {
+        let appState = AppState()
+        appState.selectedEnvironmentAsset = EnvironmentAsset(
+            id: "env-test",
+            name: "Stale Name",
+            sourceType: .imported,
+            assetPath: "stale.hdr",
+            isActive: true
+        )
+
+        appState.reconcileEnvironmentSelection(withLoadedAssets: [
+            EnvironmentAsset(
+                id: "env-test",
+                name: "Loaded Name",
+                sourceType: .imported,
+                assetPath: "loaded.hdr",
+                isActive: true
+            ),
+        ])
+
+        #expect(appState.selectedEnvironmentAsset?.id == "env-test")
+        #expect(appState.selectedEnvironmentAsset?.name == "Loaded Name")
+        #expect(appState.selectedEnvironmentAsset?.assetPath == "loaded.hdr")
+    }
+
+    @Test @MainActor
+    func reconcileEnvironmentSelectionDropsDeletedSelectionWithoutClearingActiveEnvironment() {
+        let appState = AppState()
+        appState.activeEnvironment = .customEnvironment
+        appState.selectedEnvironmentAsset = EnvironmentAsset(
+            id: "deleted-env",
+            name: "Deleted Environment",
+            sourceType: .imported,
+            assetPath: "deleted.hdr",
+            isActive: true
+        )
+
+        appState.reconcileEnvironmentSelection(withLoadedAssets: [
+            EnvironmentAsset(
+                id: "active-env",
+                name: "Active Environment",
+                sourceType: .imported,
+                assetPath: "active.hdr",
+                isActive: true
+            ),
+        ])
+
+        #expect(appState.activeEnvironment == .customEnvironment)
+        #expect(appState.selectedEnvironmentAsset?.id == "active-env")
     }
 
     @Test @MainActor
@@ -634,6 +928,43 @@ struct AppStateActivateEnvironmentAssetTests {
 
         #expect(appState.activeEnvironment == .customEnvironment)
         #expect(appState.selectedEnvironmentAsset?.id == "newer-env")
+    }
+
+    @Test @MainActor
+    func clearEnvironmentSelectionIfCurrentFallsBackToCatalogActiveAsset() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "clear-catalog-active-environment-\(UUID().uuidString)")
+        try await database.migrate()
+        let settings = SettingsManager(database: database, secretStore: TestSecretStore())
+        let environmentFile = try makeAppStateManagedEnvironmentFile(
+            directoryName: "clear-catalog-active-environment",
+            fileName: "active.hdr"
+        )
+        defer { try? FileManager.default.removeItem(at: environmentFile.rootDir) }
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: environmentFile.envDir)
+        let asset = EnvironmentAsset(
+            id: "catalog-active-env",
+            name: "Catalog Active Environment",
+            sourceType: .imported,
+            assetPath: environmentFile.fileURL.path,
+            isActive: false
+        )
+        try await database.saveEnvironmentAsset(asset)
+        try await manager.activateAsset(id: asset.id)
+
+        let appState = AppState(
+            database: database,
+            settingsManager: settings,
+            environmentCatalogManager: manager
+        )
+        appState.activeEnvironment = .customEnvironment
+        appState.selectedEnvironmentAsset = nil
+
+        await appState.clearEnvironmentSelectionIfCurrent(assetID: asset.id)
+
+        #expect(appState.activeEnvironment == nil)
+        #expect(appState.selectedEnvironmentAsset == nil)
+        #expect(try await manager.activeAsset() == nil)
+        #expect(try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared) == "1")
     }
 }
 

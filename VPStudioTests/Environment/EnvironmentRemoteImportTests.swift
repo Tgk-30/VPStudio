@@ -67,6 +67,30 @@ struct EnvironmentRemoteImportTests {
     }
 
     @Test
+    func importEnvironmentFromRemoteUsesFinalResponseURLNameAfterRedirect() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-final-url-name.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { _ in
+                let finalURL = URL(string: "https://cdn.example.com/redirected-cinema-hall.hdr")!
+                let response = HTTPURLResponse(url: finalURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR DATA".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/download")!
+        )
+
+        #expect(result.name == "redirected-cinema-hall")
+        #expect(result.assetPath.hasSuffix(".hdr"))
+    }
+
+    @Test
     func importEnvironmentFromRemoteRejectsUnsupportedContentTypeBeforeValidation() async throws {
         let (database, rootDir) = try await makeDatabase(named: "remote-import-spoofed-content-type.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -248,6 +272,33 @@ struct EnvironmentRemoteImportTests {
     }
 
     @Test
+    func importEnvironmentFromRemoteDropsDirectoryPreviewImagePath() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-import-directory-preview.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let previewDirectory = envDir.appendingPathComponent("preview.jpg", isDirectory: true)
+        try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: envDir,
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        let result = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/env.hdr")!,
+            previewImagePath: previewDirectory.path
+        )
+
+        #expect(result.previewImagePath == nil)
+    }
+
+    @Test
     func importEnvironmentFromRemoteDropsInsecureAttributionURL() async throws {
         let (database, rootDir) = try await makeDatabase(named: "remote-import-http-attribution.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -326,7 +377,11 @@ struct EnvironmentRemoteImportTests {
         let (database, rootDir) = try await makeDatabase(named: "remote-network-error.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        struct NetworkError: Error {}
+        struct NetworkError: LocalizedError {
+            var errorDescription: String? {
+                "Request failed for https://example.com/error.hdr?api-key=environment-fixture-token"
+            }
+        }
         let manager = EnvironmentCatalogManager(
             database: database,
             environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
@@ -338,8 +393,9 @@ struct EnvironmentRemoteImportTests {
                 fromRemote: URL(string: "https://example.com/error.hdr")!
             )
             Issue.record("Expected download failed error")
-        } catch EnvironmentCatalogError.downloadFailed {
-            #expect(Bool(true))
+        } catch EnvironmentCatalogError.downloadFailed(let reason) {
+            #expect(reason.contains("REDACTED"))
+            #expect(!reason.contains("environment-fixture-token"))
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
@@ -640,6 +696,48 @@ struct EnvironmentRemoteImportTests {
             )
             Issue.record("Expected sensitive final URL rejection")
         } catch EnvironmentCatalogError.downloadFailed {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(fetchCount.withLock { $0 } == 1)
+        #expect(validatorCallCount.withLock { $0 } == 0)
+    }
+
+    @Test
+    func importEnvironmentFromRemoteRejectsUnsupportedFinalResponseExtensionBeforeValidation() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "remote-reject-unsupported-final-extension.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let fetchCount = Mutex(0)
+        let validatorCallCount = Mutex(0)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in
+                validatorCallCount.withLock { $0 += 1 }
+                return true
+            },
+            remoteDataFetcher: { _ in
+                fetchCount.withLock { $0 += 1 }
+                let finalURL = URL(string: "https://example.com/redirected.txt")!
+                let response = HTTPURLResponse(
+                    url: finalURL,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "image/vnd.radiance"]
+                )!
+                return (Data("HDR".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/start")!
+            )
+            Issue.record("Expected unsupported final response extension rejection")
+        } catch EnvironmentCatalogError.unsupportedFileType {
             #expect(Bool(true))
         } catch {
             Issue.record("Unexpected error: \(error)")

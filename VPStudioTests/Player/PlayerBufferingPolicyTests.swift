@@ -8,18 +8,24 @@ struct PlayerBufferingPolicyBufferingTextTests {
     @Test
     func rebufferTextWithZeroPercentReturnsEllipsis() {
         #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0) == "Rebuffering\u{2026}")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.004) == "Rebuffering\u{2026}")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.01) == "Buffering... 1%")
     }
 
     @Test
-    func rebufferTextWithFullPercentReturnsEllipsis() {
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1) == "Rebuffering\u{2026}")
+    func rebufferTextWithFullPercentReturnsReadyMessage() {
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1) == "Buffer ready")
     }
 
     @Test
-    func rebufferTextWithOutOfRangeOrNonFinitePercentReturnsEllipsis() {
+    func rebufferTextWithNegativeOrNonFinitePercentReturnsEllipsis() {
         #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: -0.1) == "Rebuffering\u{2026}")
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1.1) == "Rebuffering\u{2026}")
         #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: .nan) == "Rebuffering\u{2026}")
+    }
+
+    @Test
+    func rebufferTextWithOverflowReadyPercentReturnsReadyMessage() {
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 1.1) == "Buffer ready")
     }
 
     @Test
@@ -33,13 +39,13 @@ struct PlayerBufferingPolicyBufferingTextTests {
     }
 
     @Test
-    func rebufferTextWithNinetyNinePercentReturnsFormattedString() {
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.99) == "Buffering... 99%")
+    func rebufferTextWithNinetyNinePercentReturnsReadyMessage() {
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.99) == "Buffer ready")
     }
 
     @Test
     func rebufferTextTruncatesFractionalPercentTowardZero() {
-        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.999) == "Buffering... 99%")
+        #expect(PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.979) == "Buffering... 97%")
     }
 
     @Test
@@ -72,6 +78,29 @@ struct PlayerBufferingPolicyBufferingTextTests {
                 bufferedPercent: 0.42
             ) == nil
         )
+        #expect(
+            PlayerBufferingPolicy.surfaceFeedbackText(
+                playbackState: .buffering,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.99
+            ) == nil
+        )
+        #expect(
+            PlayerBufferingPolicy.surfaceFeedbackText(
+                playbackState: .buffering,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.02,
+                bufferedSecondsAhead: 2.1
+            ) == nil
+        )
+    }
+
+    @Test
+    func bufferReadyAcceptsPlayableSecondsAheadForLongStreams() {
+        #expect(PlayerBufferingPolicy.isBufferReady(bufferedPercent: 0.99))
+        #expect(!PlayerBufferingPolicy.isBufferReady(bufferedPercent: 0.02, bufferedSecondsAhead: 1.9))
+        #expect(PlayerBufferingPolicy.isBufferReady(bufferedPercent: 0.02, bufferedSecondsAhead: 2.0))
+        #expect(!PlayerBufferingPolicy.isBufferReady(bufferedPercent: 0.02, bufferedSecondsAhead: .nan))
     }
 }
 

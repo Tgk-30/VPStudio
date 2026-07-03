@@ -29,6 +29,10 @@ enum EnvironmentURLPolicy {
             .lowercased()
 
         guard !normalizedHost.isEmpty else { return true }
+        if PrivateNetworkHostPolicy.isPrivateOrReserved(host: host) {
+            return true
+        }
+
         if normalizedHost == "localhost"
             || normalizedHost.hasSuffix(".localhost")
             || normalizedHost == "local"

@@ -29,7 +29,7 @@ struct DetailViewNormalUseContractTests {
     func openPlayerAssignsActiveSessionBeforeOpeningWindow() throws {
         let source = try contents(of: "VPStudio/Views/Windows/Detail/DetailView.swift")
 
-        let assignRange = try requiredRange(of: "appState.activePlayerSession = request", in: source)
+        let assignRange = try requiredRange(of: "appState.beginEmbeddedPlayerSession(request)", in: source)
         let openRange = try requiredRange(of: "openWindow(id: \"player\", value: request)", in: source)
 
         #expect(assignRange.lowerBound < openRange.lowerBound)
@@ -144,6 +144,9 @@ struct DetailViewNormalUseContractTests {
         let database = try DatabaseManager(inMemoryNamed: "detail-view-movie-\(UUID().uuidString)")
         try await database.migrate()
         let appState = AppState(database: database, testHooks: .init())
+        // Configure an OMDb key so DetailView's metadata load is permitted
+        // (loadDetail requires a configured provider for a remote lookup).
+        try await appState.settingsManager.setString(key: "omdb_api_key", value: "test-omdb-key")
         appState.activePlayerSession = PlayerSessionRequest(
             stream: Fixtures.stream(),
             mediaTitle: "Already Playing",
@@ -213,6 +216,9 @@ struct DetailViewNormalUseContractTests {
         let database = try DatabaseManager(inMemoryNamed: "detail-view-series-\(UUID().uuidString)")
         try await database.migrate()
         let appState = AppState(database: database, testHooks: .init())
+        // Configure an OMDb key so DetailView's metadata load is permitted
+        // (loadDetail requires a configured provider for a remote lookup).
+        try await appState.settingsManager.setString(key: "omdb_api_key", value: "test-omdb-key")
 
         let metadataProvider = StubMetadataProvider()
         await metadataProvider.setDetailResult(MediaItem(
@@ -561,7 +567,7 @@ struct DetailViewNormalUseContractTests {
             previewType: .movie,
             selectedEpisode: nil
         )
-        #expect(aliasedArguments?.mediaId == "tt1160419")
+        #expect(aliasedArguments?.mediaId == "movie-omdb-tt1160419")
     }
 }
 

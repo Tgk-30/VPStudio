@@ -24,6 +24,21 @@ struct LibraryTaskLifecycleTests {
         #expect(body.contains("await loadFolders(loadToken: loadToken)"))
     }
 
+    @Test
+    func metadataHydrationBuildsProviderAwareCandidatesInsideTask() throws {
+        let source = try contents(of: "VPStudio/Views/Windows/Library/LibraryView.swift")
+        let body = try functionBody(named: "scheduleMetadataHydration", in: source)
+
+        #expect(body.contains("let mediaItemsSnapshot = mediaItems"))
+        #expect(body.contains("allowsTMDbIdentifier: configuration.hasTMDb"))
+        #expect(body.contains("appState.createMetadataService(configuration: configuration)"))
+        #expect(containsOrderedSnippets(in: body, [
+            "getMetadataProviderConfiguration()",
+            "LibraryMetadataHydrationPolicy.candidates(",
+            "appState.createMetadataService(configuration: configuration)",
+        ]))
+    }
+
     private func contents(of relativePath: String) throws -> String {
         let absolutePath = repoRootURL().appendingPathComponent(relativePath).path
         return try String(contentsOfFile: absolutePath, encoding: .utf8)
@@ -57,6 +72,20 @@ struct LibraryTaskLifecycleTests {
 
         Issue.record("Could not parse function \(name)")
         return ""
+    }
+
+    private func containsOrderedSnippets(in source: String, _ snippets: [String]) -> Bool {
+        var searchStart = source.startIndex
+
+        for snippet in snippets {
+            guard let range = source.range(of: snippet, range: searchStart..<source.endIndex) else {
+                Issue.record("Missing source snippet: \(snippet)")
+                return false
+            }
+            searchStart = range.upperBound
+        }
+
+        return true
     }
 
     private func repoRootURL() -> URL {

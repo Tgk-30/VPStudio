@@ -187,11 +187,17 @@ struct EnvironmentURLPolicyTests {
             "127.1",
             "0300.0250.01.02",
             "0xc0a80102",
+            "intranet",
+            "media.internal",
+            "router.home.arpa",
             "[::1]",
             "[0:0:0:0:0:0:0:0]",
             "[0:0:0:0:0:0:0:1]",
             "[fd00::1]",
             "[fe80::1]",
+            "[100::1]",
+            "[64:ff9b::192.0.2.33]",
+            "[2001:db8::1]",
             "[::ffff:127.0.0.1]",
             "[::ffff:7f00:1]",
             "[0:0:0:0:0:ffff:127.0.0.1]",
@@ -934,7 +940,7 @@ struct EnvironmentCatalogManagerBehaviorTests {
         #expect(stored?.hdriYawOffset == -45.0)
     }
 
-    @Test func curatedPresetEnvironmentTagPersistsThroughImportAndIsMatchable() async throws {
+    @Test func curatedPresetEnvironmentTagPersistsCanonicallyThroughImportAndIsMatchable() async throws {
         let (database, rootDir) = try await makeDatabase(named: "manager-tag-curated.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -956,14 +962,15 @@ struct EnvironmentCatalogManagerBehaviorTests {
             downloadURL: URL(string: "https://example.com/curated-tagged.hdr")!,
             sourceAttributionURL: "https://example.com",
             licenseName: "CC0",
-            defaultEnvironmentTag: "cinema"
+            defaultEnvironmentTag: " Sci   Fi "
         )
 
         let imported = try await manager.importCuratedPreset(preset)
         let stored = try await manager.fetchAssets().first { $0.id == imported.id }
-        #expect(stored?.environmentTag == "cinema")
-        // Genre auto-match must now resolve this installed preset (case-insensitive).
-        #expect(try await manager.asset(matchingTag: "CINEMA")?.id == imported.id)
+        #expect(stored?.environmentTag == "scifi")
+        // Genre auto-match must resolve the installed preset from either stored
+        // canonical tags or human genre-name aliases.
+        #expect(try await manager.asset(matchingTag: "Science Fiction")?.id == imported.id)
     }
 
     @Test func curatedRemotePresetsCarryCinemaTag() {
@@ -1118,6 +1125,57 @@ struct EnvironmentCatalogManagerBehaviorTests {
         #expect(cleared == "1")
     }
 
+    @Test func fetchAssetsPrunesOrphanedImportedAssetsWithoutBootstrap() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-fetch-orphan.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let orphan = EnvironmentAsset(
+            id: "fetch-orphan",
+            name: "Deleted Panorama",
+            sourceType: .imported,
+            assetPath: envDir.appendingPathComponent("deleted.hdr").path,
+            isActive: false
+        )
+        try await database.saveEnvironmentAsset(orphan)
+
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        let assets = try await manager.fetchAssets()
+        let stored = try await database.fetchEnvironmentAssets()
+
+        #expect(!assets.contains(where: { $0.id == orphan.id }))
+        #expect(!stored.contains(where: { $0.id == orphan.id }))
+    }
+
+    @Test func activeAssetPrunesActiveOrphanAndClearsPreferredEnvironmentWithoutBootstrap() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "manager-active-orphan.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let orphan = EnvironmentAsset(
+            id: "active-fetch-orphan",
+            name: "Deleted Active Panorama",
+            sourceType: .imported,
+            assetPath: envDir.appendingPathComponent("missing.hdr").path,
+            isActive: true
+        )
+        try await database.saveEnvironmentAsset(orphan)
+        try await database.setSetting(key: SettingsKeys.preferredEnvironment, value: orphan.id)
+        try await database.setSetting(key: SettingsKeys.activeEnvironmentSelectionCleared, value: nil)
+
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+
+        let active = try await manager.activeAsset()
+        let assets = try await manager.fetchAssets()
+        let preferred = try await database.getSetting(key: SettingsKeys.preferredEnvironment)
+        let cleared = try await database.getSetting(key: SettingsKeys.activeEnvironmentSelectionCleared)
+
+        #expect(active == nil)
+        #expect(!assets.contains(where: { $0.id == orphan.id }))
+        #expect(preferred == nil)
+        #expect(cleared == "1")
+    }
+
     @Test func missingResolvedAssetURLDoesNotCrash() async throws {
         let (database, rootDir) = try await makeDatabase(named: "manager-missing-url.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -1240,12 +1298,30 @@ struct EnvironmentCatalogManagerBehaviorTests {
         let (database, rootDir) = try await makeDatabase(named: "manager-tag-match.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let manager = EnvironmentCatalogManager(database: database)
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let horrorURL = envDir.appendingPathComponent("h.hdr")
+        let untaggedURL = envDir.appendingPathComponent("u.hdr")
+        try Data("h".utf8).write(to: horrorURL)
+        try Data("u".utf8).write(to: untaggedURL)
+
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
         try await database.saveEnvironmentAsset(
-            EnvironmentAsset(id: "t1", name: "Horror Env", sourceType: .imported, assetPath: "/tmp/h.hdr", environmentTag: "horror")
+            EnvironmentAsset(
+                id: "t1",
+                name: "Horror Env",
+                sourceType: .imported,
+                assetPath: horrorURL.path,
+                environmentTag: "horror"
+            )
         )
         try await database.saveEnvironmentAsset(
-            EnvironmentAsset(id: "t2", name: "Untagged", sourceType: .imported, assetPath: "/tmp/u.hdr")
+            EnvironmentAsset(
+                id: "t2",
+                name: "Untagged",
+                sourceType: .imported,
+                assetPath: untaggedURL.path
+            )
         )
 
         #expect(try await manager.asset(matchingTag: "HORROR")?.id == "t1")

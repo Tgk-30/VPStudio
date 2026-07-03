@@ -4,6 +4,30 @@ import Testing
 
 @Suite(.serialized)
 struct SettingsManagerSecretMigrationTests {
+    enum FailingSecretDeletionError: Error, Equatable {
+        case deleteFailed
+    }
+
+    private actor FailingDeleteSecretStore: SecretStore {
+        private var values: [String: String] = [:]
+
+        func setSecret(_ secret: String, for key: String) async throws {
+            values[key] = secret
+        }
+
+        func getSecret(for key: String) async throws -> String? {
+            values[key]
+        }
+
+        func deleteSecret(for key: String) async throws {
+            throw FailingSecretDeletionError.deleteFailed
+        }
+
+        func deleteAllSecrets() async throws {
+            values.removeAll()
+        }
+    }
+
     struct CaseData: Sendable {
         let key: String
         let value: String
@@ -24,6 +48,7 @@ struct SettingsManagerSecretMigrationTests {
         SettingsKeys.traktClientSecret,
         SettingsKeys.traktAccessToken,
         SettingsKeys.traktRefreshToken,
+        SettingsKeys.simklClientId,
         SettingsKeys.simklAccessToken,
         SettingsKeys.simklRefreshToken,
     ]
@@ -167,6 +192,56 @@ struct SettingsManagerSecretMigrationTests {
             #expect(raw == nil)
             #expect(storedSecret == nil)
         }
+    }
+
+    @Test
+    func clearingSecretDoesNotDeleteKeychainValueWhenDatabaseClearFails() async throws {
+        let secretStore = TestSecretStore()
+        let manager = SettingsManager(
+            database: DatabaseManager.unavailable(message: "settings database unavailable"),
+            secretStore: secretStore
+        )
+        let secretKey = SecretKey.setting(SettingsKeys.omdbApiKey)
+
+        try await secretStore.setSecret("token", for: secretKey)
+
+        do {
+            try await manager.setString(key: SettingsKeys.omdbApiKey, value: nil)
+            Issue.record("Expected clearing a secret to fail while the settings database is unavailable")
+        } catch {
+            #expect(error.localizedDescription.contains("settings database unavailable"))
+        }
+
+        let storedSecret = try await secretStore.getSecret(for: secretKey)
+        #expect(storedSecret == "token")
+    }
+
+    @Test
+    func clearingSecretRestoresDatabaseReferenceWhenSecretDeleteFails() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "settings-delete-rollback.sqlite-\(UUID().uuidString)")
+        try await database.migrate()
+        let secretStore = FailingDeleteSecretStore()
+        let manager = SettingsManager(database: database, secretStore: secretStore)
+        let secretKey = SecretKey.setting(SettingsKeys.omdbApiKey)
+        let encodedReference = SecretReference.encode(key: secretKey)
+
+        try await secretStore.setSecret("token", for: secretKey)
+        try await database.setSetting(key: SettingsKeys.omdbApiKey, value: encodedReference)
+
+        do {
+            try await manager.setString(key: SettingsKeys.omdbApiKey, value: nil)
+            Issue.record("Expected clearing a secret to fail when the keychain delete fails")
+        } catch {
+            guard error is FailingSecretDeletionError else {
+                Issue.record("Expected keychain delete failure, got \(error)")
+                return
+            }
+        }
+
+        let raw = try await database.getSetting(key: SettingsKeys.omdbApiKey)
+        let storedSecret = try await secretStore.getSecret(for: secretKey)
+        #expect(raw == encodedReference)
+        #expect(storedSecret == "token")
     }
 
     @Test

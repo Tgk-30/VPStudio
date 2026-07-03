@@ -9,6 +9,12 @@ enum PlayerViewStatePolicy {
         case openMainAndMarkRestored
     }
 
+    enum ActiveSessionChangeAction: Equatable {
+        case keepOpen
+        case closeCurrentSession
+        case closeStaleScene
+    }
+
     struct AutoplayPromptFields: Equatable {
         var didRequestAutoplayNext: Bool
         var didCancelAutoPlayNextPrompt: Bool
@@ -26,6 +32,11 @@ enum PlayerViewStatePolicy {
         case avPlayer
         case ksPlayer
         case none
+    }
+
+    enum AVPlayerStartupAction: Equatable {
+        case playImmediately
+        case playAfterMinimizingStalls
     }
 
     enum ControlsToggleAction: Equatable {
@@ -94,6 +105,21 @@ enum PlayerViewStatePolicy {
 
     static func mainWindowRestoreAction(isSuppressed: Bool) -> MainWindowAction {
         isSuppressed ? .openMainAndMarkRestored : .none
+    }
+
+    static func activeSessionChangeAction(
+        activeSessionID: UUID?,
+        playerSessionID: UUID?
+    ) -> ActiveSessionChangeAction {
+        if activeSessionID == playerSessionID {
+            return .keepOpen
+        }
+
+        if activeSessionID == nil {
+            return .closeCurrentSession
+        }
+
+        return .closeStaleScene
     }
 
     static func autoplayPromptState(
@@ -187,8 +213,11 @@ enum PlayerViewStatePolicy {
         return canHideControls ? .hideAndCancelScheduledHide : .keepVisibleAndCancelScheduledHide
     }
 
-    static func controlModalVisibilityAction(isPresented: Bool) -> ControlModalVisibilityAction {
-        isPresented ? .prepareForPresentation : .scheduleHide
+    static func controlModalVisibilityAction(
+        isPresented: Bool,
+        hasPresentedControlModal: Bool = false
+    ) -> ControlModalVisibilityAction {
+        isPresented || hasPresentedControlModal ? .prepareForPresentation : .scheduleHide
     }
 
     static func shouldShowControlsForModalPresentation(isShowingControls: Bool) -> Bool {
@@ -199,8 +228,13 @@ enum PlayerViewStatePolicy {
         playbackState: PlayerPlaybackState,
         hasPlayedOnce: Bool,
         hasDetectedVideoFrame: Bool = true,
-        hasExhaustedVideoFrameDetection: Bool = false
+        hasExhaustedVideoFrameDetection: Bool = false,
+        hasRenderablePlayerSurface: Bool = true
     ) -> Bool {
+        if !hasRenderablePlayerSurface {
+            return true
+        }
+
         if playbackState == .failed || !hasPlayedOnce {
             return true
         }
@@ -210,6 +244,10 @@ enum PlayerViewStatePolicy {
         }
 
         if hasExhaustedVideoFrameDetection && playbackState == .playing {
+            return true
+        }
+
+        if playbackState == .playing {
             return false
         }
 
@@ -226,34 +264,65 @@ enum PlayerViewStatePolicy {
     static func subtitleBottomPadding(
         isShowingControls: Bool,
         showsTransportDock: Bool,
-        subtitleFontSize: CGFloat = 24
+        subtitleFontSize: CGFloat = 24,
+        containerSize: CGSize = .zero,
+        usesAppleEnvironmentMode: Bool = false,
+        videoAspectRatio: CGFloat? = nil,
+        videoUsesAspectFit: Bool = false
     ) -> CGFloat {
         let dynamicExtra = PlayerCinematicChromePolicy.subtitleDynamicBottomPaddingExtra(
             fontSize: subtitleFontSize
         )
-        guard isShowingControls && showsTransportDock else {
-            return PlayerCinematicChromePolicy.subtitleHiddenControlsBottomPadding + dynamicExtra
+        let basePadding: CGFloat
+        if isShowingControls && showsTransportDock {
+            basePadding = PlayerCinematicChromePolicy.resolvedOverlayBottomPaddingAboveTransportDock(
+                containerSize: containerSize,
+                usesAppleEnvironmentMode: usesAppleEnvironmentMode
+            )
+        } else {
+            basePadding = PlayerCinematicChromePolicy.resolvedSubtitleHiddenControlsBottomPadding(
+                containerSize: containerSize
+            )
         }
-        return PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock + dynamicExtra
+        // Letterboxed aspect-fit video: subtitles stay pinned inside the
+        // picture, never in the bottom bar. Zero (no-op) for aspect-fill,
+        // unmeasured containers, or an unknown video ratio.
+        let letterboxBar = videoUsesAspectFit
+            ? PlayerCinematicChromePolicy.letterboxBarHeight(
+                containerSize: containerSize,
+                videoAspectRatio: videoAspectRatio
+            )
+            : 0
+        let letterboxFloor = letterboxBar > 0
+            ? letterboxBar + PlayerCinematicChromePolicy.subtitleLetterboxClearance
+            : 0
+        return max(basePadding, letterboxFloor) + dynamicExtra
     }
 
     static func autoPlayNextBottomPadding(
         isShowingControls: Bool,
         showsTransportDock: Bool,
         hasVisibleSubtitles: Bool = false,
-        subtitleFontSize: CGFloat = 24
+        subtitleFontSize: CGFloat = 24,
+        containerSize: CGSize = .zero,
+        usesAppleEnvironmentMode: Bool = false
     ) -> CGFloat {
         let subtitleExtra = hasVisibleSubtitles
             ? PlayerCinematicChromePolicy.subtitleDynamicBottomPaddingExtra(fontSize: subtitleFontSize)
             : 0
 
         guard isShowingControls && showsTransportDock else {
-            return hasVisibleSubtitles
-                ? PlayerCinematicChromePolicy.autoPlayHiddenControlsWithSubtitlesBottomPadding + subtitleExtra
-                : PlayerCinematicChromePolicy.autoPlayHiddenControlsBottomPadding
+            let hiddenBase = PlayerCinematicChromePolicy.resolvedAutoPlayHiddenControlsBottomPadding(
+                containerSize: containerSize,
+                hasVisibleSubtitles: hasVisibleSubtitles
+            )
+            return hasVisibleSubtitles ? hiddenBase + subtitleExtra : hiddenBase
         }
 
-        let basePadding = PlayerCinematicChromePolicy.overlayBottomPaddingAboveTransportDock
+        let basePadding = PlayerCinematicChromePolicy.resolvedOverlayBottomPaddingAboveTransportDock(
+            containerSize: containerSize,
+            usesAppleEnvironmentMode: usesAppleEnvironmentMode
+        )
         return hasVisibleSubtitles
             ? basePadding + PlayerCinematicChromePolicy.autoPlaySubtitleSeparation + subtitleExtra
             : basePadding
@@ -263,9 +332,19 @@ enum PlayerViewStatePolicy {
         currentState: PlayerPlaybackState,
         isPlaying: Bool,
         isBuffering: Bool,
-        hasPlayedOnce: Bool
+        hasPlayedOnce: Bool,
+        bufferedPercent: Double = 0,
+        bufferedSecondsAhead: TimeInterval = 0
     ) -> PlayerPlaybackState {
         if isPlaying {
+            return .playing
+        }
+
+        if isBuffering,
+           PlayerBufferingPolicy.isBufferReady(
+               bufferedPercent: bufferedPercent,
+               bufferedSecondsAhead: bufferedSecondsAhead
+           ) {
             return .playing
         }
 
@@ -278,6 +357,103 @@ enum PlayerViewStatePolicy {
         }
 
         return currentState
+    }
+
+    static func avPlayerObservedBuffering(
+        isWaitingToPlayAtSpecifiedRate: Bool,
+        isPlaybackBufferEmpty: Bool,
+        isPlaybackLikelyToKeepUp: Bool,
+        hasPlayedOnce: Bool,
+        isPlaybackPaused: Bool = false,
+        bufferedPercent: Double = 0,
+        bufferedSecondsAhead: TimeInterval = 0
+    ) -> Bool {
+        if isPlaybackPaused { return false }
+        if PlayerBufferingPolicy.isBufferReady(
+            bufferedPercent: bufferedPercent,
+            bufferedSecondsAhead: bufferedSecondsAhead
+        ) { return false }
+        if isPlaybackBufferEmpty {
+            return hasPlayedOnce || !isPlaybackLikelyToKeepUp
+        }
+        if isPlaybackLikelyToKeepUp { return false }
+        return isWaitingToPlayAtSpecifiedRate
+    }
+
+    static func ksPlayerObservedPlaybackState(
+        currentState: PlayerPlaybackState,
+        observedState: KSPlayerState,
+        hasPlayedOnce: Bool,
+        bufferedPercent: Double = 0
+    ) -> PlayerPlaybackState {
+        switch observedState {
+        case .initialized, .preparing:
+            return .preparing
+        case .readyToPlay:
+            return PlayerBufferingPolicy.isBufferReady(bufferedPercent: bufferedPercent) || hasPlayedOnce
+                ? .playing
+                : .buffering
+        case .buffering:
+            return hasPlayedOnce && PlayerBufferingPolicy.isBufferReady(bufferedPercent: bufferedPercent)
+                ? .playing
+                : .buffering
+        case .bufferFinished:
+            return .playing
+        case .paused, .playedToTheEnd:
+            return currentState == .buffering && hasPlayedOnce ? .playing : currentState
+        case .error:
+            return .failed
+        }
+    }
+
+    static func ksPlayerPlaybackStateAfterProgressTick(
+        currentState: PlayerPlaybackState,
+        observedState: KSPlayerState,
+        currentTime: TimeInterval,
+        duration: TimeInterval
+    ) -> PlayerPlaybackState {
+        guard currentState == .preparing || currentState == .buffering else {
+            return currentState
+        }
+        guard observedState == .readyToPlay || observedState == .buffering || observedState == .bufferFinished else {
+            return currentState
+        }
+        guard shouldRecordKSPlaybackProgress(currentTime: currentTime, duration: duration) else {
+            return currentState
+        }
+        guard currentTime.isFinite, currentTime > 0 else {
+            return currentState
+        }
+        return .playing
+    }
+
+    /// Whether a KSPlayer time-tick reflects genuine decode progress. KSPlayer's
+    /// played-to-the-end path emits one final synthetic tick with
+    /// `currentTime == duration`, even when a dead/truncated stream ended after a
+    /// few seconds, so ticks at (or past) the reported duration are not treated
+    /// as real progress.
+    static func shouldRecordKSPlaybackProgress(
+        currentTime: TimeInterval,
+        duration: TimeInterval
+    ) -> Bool {
+        guard currentTime.isFinite, currentTime >= 0 else { return false }
+        guard duration.isFinite, duration > 0 else { return true }
+        return currentTime < duration
+    }
+
+    /// Classifies a nil-error KSPlayer finish. FFmpeg reports a dead/truncated
+    /// stream ("File ended prematurely") as a plain end-of-file, which KSPlayer
+    /// surfaces as `.playedToTheEnd` with no error. Treat the finish as a
+    /// failure when genuine playback never got close to the container's
+    /// declared runtime.
+    static func isPrematureKSPlayerFinish(
+        lastObservedPlaybackTime: TimeInterval,
+        duration: TimeInterval,
+        tolerance: TimeInterval = 30
+    ) -> Bool {
+        guard duration.isFinite, duration > tolerance else { return false }
+        guard lastObservedPlaybackTime.isFinite, lastObservedPlaybackTime >= 0 else { return true }
+        return lastObservedPlaybackTime + tolerance < duration
     }
 
     static func playbackMessageAfterObservedState(
@@ -456,6 +632,12 @@ enum PlayerViewStatePolicy {
     static func playbackStartRate(_ playbackRate: Float) -> Float {
         guard playbackRate.isFinite else { return 0.1 }
         return max(0.1, playbackRate)
+    }
+
+    static func avPlayerStartupAction(
+        automaticallyWaitsToMinimizeStalling: Bool
+    ) -> AVPlayerStartupAction {
+        automaticallyWaitsToMinimizeStalling ? .playAfterMinimizingStalls : .playImmediately
     }
 
     static func preparationFailureLine(kind: PlayerEngineKind, errorDescription: String) -> String {

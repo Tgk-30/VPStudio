@@ -12,6 +12,9 @@ struct SetupWizardView: View {
     @State private var debridApiKey = ""
     @State private var selectedService: DebridServiceType = .realDebrid
     @State private var omdbApiKey = ""
+    @State private var tmdbApiKey = ""
+    @State private var omdbPlan: MetadataProviderPlan = .free
+    @State private var tmdbPlan: MetadataProviderPlan = .free
     @State private var selectedAIProvider: AIProviderOption = .none
     @State private var aiApiKey = ""
     @State private var selectedQuality: VideoQuality = .hd1080p
@@ -32,6 +35,9 @@ struct SetupWizardView: View {
         initialDebridApiKey: String = "",
         initialSelectedService: DebridServiceType = .realDebrid,
         initialOMDbApiKey: String = "",
+        initialTMDbApiKey: String = "",
+        initialOMDbPlan: MetadataProviderPlan = .free,
+        initialTMDbPlan: MetadataProviderPlan = .free,
         initialSelectedAIProvider: AIProviderOption = .none,
         initialAIAPIKey: String = "",
         initialSelectedQuality: VideoQuality = .hd1080p,
@@ -46,6 +52,9 @@ struct SetupWizardView: View {
         _debridApiKey = State(initialValue: initialDebridApiKey)
         _selectedService = State(initialValue: initialSelectedService)
         _omdbApiKey = State(initialValue: initialOMDbApiKey)
+        _tmdbApiKey = State(initialValue: initialTMDbApiKey)
+        _omdbPlan = State(initialValue: initialOMDbPlan)
+        _tmdbPlan = State(initialValue: initialTMDbPlan)
         _selectedAIProvider = State(initialValue: initialSelectedAIProvider)
         _aiApiKey = State(initialValue: initialAIAPIKey)
         _selectedQuality = State(initialValue: initialSelectedQuality)
@@ -139,13 +148,16 @@ struct SetupWizardView: View {
 
             let defaults = SetupWizardQAAutoAdvancePolicy.appliedDefaults(
                 omdbApiKey: omdbApiKey,
+                tmdbApiKey: tmdbApiKey,
                 selectedQuality: selectedQuality,
                 selectedSubtitleLanguage: selectedSubtitleLanguage,
                 overrideOMDbApiKey: QARuntimeOptions.setupOMDbApiKey,
+                overrideTMDbApiKey: QARuntimeOptions.setupTMDbApiKey,
                 overridePreferredQuality: QARuntimeOptions.setupPreferredQuality,
                 overrideSubtitleLanguage: QARuntimeOptions.setupSubtitleLanguage
             )
             omdbApiKey = defaults.omdbApiKey
+            tmdbApiKey = defaults.tmdbApiKey
             selectedQuality = defaults.selectedQuality
             selectedSubtitleLanguage = defaults.selectedSubtitleLanguage
 
@@ -363,17 +375,17 @@ struct SetupWizardView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            // ── OMDb API Key Section ─────────────────────────────────────
+            // ── Metadata API Key Section ────────────────────────────────
             VStack(spacing: 10) {
                 Image(systemName: "film")
                     .font(.system(size: 40))
                     .foregroundStyle(LinearGradient.vpAccent)
 
-                Text("OMDb API Key")
+                Text("Metadata API Keys")
                     .font(.title2)
                     .fontWeight(.bold)
 
-                Text("Required for movie and TV show metadata, artwork, and recommendations. Get a free key at omdbapi.com.")
+                Text("Enter an OMDb key for metadata, IMDb ratings, poster URLs, and sync identity. TMDb is optional legacy fallback only for older saved items and artwork gaps.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -396,22 +408,89 @@ struct SetupWizardView: View {
                         .strokeBorder(
                             LinearGradient(
                                 colors: [.white.opacity(0.28), .white.opacity(0.06)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("OMDb Plan")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Picker("OMDb Plan", selection: $omdbPlan) {
+                        Text("Free").tag(MetadataProviderPlan.free)
+                        Text("Paid").tag(MetadataProviderPlan.paid)
                     }
+                    .pickerStyle(.segmented)
+                    Text(MetadataSettingsPolicy.omdbPlanDescription(for: omdbPlan))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 420, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    SecureField("TMDb API Key or Read Token", text: $tmdbApiKey)
+                        .textFieldStyle(.plain)
+                    PasteFieldButton { tmdbApiKey = $0 }
+                        .accessibilityLabel("Paste TMDb API key from clipboard")
+                        .accessibilityHint("Pastes the TMDb API key into the setup field.")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TMDb Plan")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Picker("TMDb Plan", selection: $tmdbPlan) {
+                        Text("Standard").tag(MetadataProviderPlan.free)
+                        Text("Expanded").tag(MetadataProviderPlan.paid)
+                    }
+                    .pickerStyle(.segmented)
+                    Text(MetadataSettingsPolicy.tmdbPlanDescription(for: tmdbPlan))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 420, alignment: .leading)
 
                 Button {
-                    if let url = URL(string: "https://www.omdbapi.com/apikey.aspx") {
-                        openURL(url)
-                    }
+                    openURL(MetadataSettingsPolicy.omdbAPIKeyURL)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.up.right.square")
                             .font(.caption.weight(.semibold))
-                        Text("Get Free Key")
+                        Text("Get OMDb API Key")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundStyle(LinearGradient.vpAccent)
+                }
+                .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
+
+                Button {
+                    openURL(MetadataSettingsPolicy.tmdbAPIKeyURL)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption.weight(.semibold))
+                        Text("Open TMDb API Settings")
                             .font(.caption)
                             .fontWeight(.medium)
                     }
@@ -619,6 +698,9 @@ struct SetupWizardView: View {
             selectedService: selectedService,
             debridApiKey: debridApiKey,
             omdbApiKey: omdbApiKey,
+            tmdbApiKey: tmdbApiKey,
+            omdbPlan: omdbPlan,
+            tmdbPlan: tmdbPlan,
             selectedAIProvider: selectedAIProvider,
             selectedQuality: selectedQuality,
             selectedSubtitleLanguage: selectedSubtitleLanguage,
@@ -745,7 +827,7 @@ struct SetupWizardView: View {
                         return
                     }
                 } catch {
-                    saveError = (error as? DebridError)?.localizedDescription ?? error.localizedDescription
+                    saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
                     return
                 }
 
@@ -767,7 +849,7 @@ struct SetupWizardView: View {
                     try await appState.database.saveDebridConfig(config)
                     try await appState.debridManager.initialize()
                 } catch {
-                    saveError = error.localizedDescription
+                    saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
                     return
                 }
             }
@@ -776,6 +858,9 @@ struct SetupWizardView: View {
         if currentStep == 2 {
             let plan = SetupWizardPersistencePolicy.metadataSavePlan(
                 omdbApiKey: omdbApiKey,
+                tmdbApiKey: tmdbApiKey,
+                omdbPlan: omdbPlan,
+                tmdbPlan: tmdbPlan,
                 selectedAIProvider: selectedAIProvider,
                 aiApiKey: aiApiKey
             )
@@ -790,6 +875,18 @@ struct SetupWizardView: View {
                 try await appState.settingsManager.setValue(
                     metadata.omdbApiKey,
                     forKey: SettingsKeys.omdbApiKey
+                )
+                try await appState.settingsManager.setValue(
+                    metadata.tmdbApiKey,
+                    forKey: SettingsKeys.tmdbApiKey
+                )
+                try await appState.settingsManager.setValue(
+                    metadata.omdbPlanRawValue,
+                    forKey: SettingsKeys.omdbProviderPlan
+                )
+                try await appState.settingsManager.setValue(
+                    metadata.tmdbPlanRawValue,
+                    forKey: SettingsKeys.tmdbProviderPlan
                 )
                 NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)
 
@@ -809,7 +906,7 @@ struct SetupWizardView: View {
                 NotificationCenter.default.post(name: .settingsDidChange, object: nil)
                 NotificationCenter.default.post(name: .discoverAISettingsDidChange, object: nil)
             } catch {
-                saveError = error.localizedDescription
+                saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
                 return
             }
         }
@@ -845,7 +942,7 @@ struct SetupWizardView: View {
                 }
                 await seedIndexerDefaultsIfNeeded()
             } catch {
-                saveError = error.localizedDescription
+                saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
                 return
             }
         }
@@ -1246,6 +1343,9 @@ private struct WizardCompletionContent: View {
     let selectedService: DebridServiceType
     let debridApiKey: String
     let omdbApiKey: String
+    let tmdbApiKey: String
+    let omdbPlan: MetadataProviderPlan
+    let tmdbPlan: MetadataProviderPlan
     let selectedAIProvider: AIProviderOption
     let selectedQuality: VideoQuality
     let selectedSubtitleLanguage: SubtitleLanguageOption
@@ -1308,6 +1408,9 @@ private struct WizardCompletionContent: View {
                         selectedService: selectedService,
                         debridApiKey: debridApiKey,
                         omdbApiKey: omdbApiKey,
+                        tmdbApiKey: tmdbApiKey,
+                        omdbPlan: omdbPlan,
+                        tmdbPlan: tmdbPlan,
                         selectedAIProvider: selectedAIProvider,
                         selectedQuality: selectedQuality,
                         selectedSubtitleLanguage: selectedSubtitleLanguage,
@@ -1460,15 +1563,21 @@ enum SubtitleLanguageOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum SetupWizardErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+}
+
 enum SetupWizardValidationPolicy {
     struct SummaryRow: Equatable, Sendable {
         let icon: String
         let text: String
     }
 
-    static let requiredOMDbMessage = "OMDb API key is required to continue."
+    static let requiredMetadataKeyMessage = "Enter an OMDb API key to continue."
 
-    static func canContinueFromMetadataStep(omdbApiKey: String) -> Bool {
+    static func canContinueFromMetadataStep(omdbApiKey: String, tmdbApiKey: String) -> Bool {
         !omdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -1506,6 +1615,9 @@ enum SetupWizardValidationPolicy {
         selectedService: DebridServiceType,
         debridApiKey: String,
         omdbApiKey: String,
+        tmdbApiKey: String = "",
+        omdbPlan: MetadataProviderPlan = .free,
+        tmdbPlan: MetadataProviderPlan = .free,
         selectedAIProvider: AIProviderOption,
         selectedQuality: VideoQuality,
         selectedSubtitleLanguage: SubtitleLanguageOption,
@@ -1516,8 +1628,24 @@ enum SetupWizardValidationPolicy {
         if !trimmedValue(debridApiKey).isEmpty {
             rows.append(SummaryRow(icon: "link", text: "\(selectedService.displayName) connected"))
         }
-        if !trimmedValue(omdbApiKey).isEmpty {
-            rows.append(SummaryRow(icon: "film", text: "OMDb metadata configured"))
+        let hasOMDb = !trimmedValue(omdbApiKey).isEmpty
+        let hasTMDb = !trimmedValue(tmdbApiKey).isEmpty
+        if hasOMDb {
+            let providerText: String
+            switch (hasOMDb, hasTMDb) {
+            case (true, true): providerText = "OMDb + legacy TMDb fallback"
+            case (true, false): providerText = "OMDb"
+            case (false, true), (false, false): providerText = "Metadata"
+            }
+            rows.append(SummaryRow(icon: "film", text: "\(providerText) metadata configured"))
+            if hasOMDb && omdbPlan.usesPaidResources {
+                rows.append(SummaryRow(icon: "photo.on.rectangle.angled", text: "OMDb paid artwork enabled"))
+            }
+            if hasTMDb && tmdbPlan.usesPaidResources {
+                rows.append(SummaryRow(icon: "photo.stack", text: "TMDb expanded artwork enabled"))
+            }
+        } else if hasTMDb {
+            rows.append(SummaryRow(icon: "film", text: "Legacy TMDb fallback saved; OMDb still required"))
         }
         if selectedAIProvider != .none {
             rows.append(SummaryRow(icon: "brain", text: "\(selectedAIProvider.displayName) AI enabled"))
@@ -1598,6 +1726,7 @@ enum SetupWizardTransitionPolicy {
 enum SetupWizardQAAutoAdvancePolicy {
     struct Defaults: Equatable, Sendable {
         let omdbApiKey: String
+        let tmdbApiKey: String
         let selectedQuality: VideoQuality
         let selectedSubtitleLanguage: SubtitleLanguageOption
     }
@@ -1616,14 +1745,17 @@ enum SetupWizardQAAutoAdvancePolicy {
 
     static func appliedDefaults(
         omdbApiKey: String,
+        tmdbApiKey: String,
         selectedQuality: VideoQuality,
         selectedSubtitleLanguage: SubtitleLanguageOption,
         overrideOMDbApiKey: String?,
+        overrideTMDbApiKey: String?,
         overridePreferredQuality: VideoQuality?,
         overrideSubtitleLanguage: SubtitleLanguageOption?
     ) -> Defaults {
         Defaults(
             omdbApiKey: overrideOMDbApiKey ?? omdbApiKey,
+            tmdbApiKey: overrideTMDbApiKey ?? tmdbApiKey,
             selectedQuality: overridePreferredQuality ?? selectedQuality,
             selectedSubtitleLanguage: overrideSubtitleLanguage ?? selectedSubtitleLanguage
         )
@@ -1638,6 +1770,9 @@ enum SetupWizardPersistencePolicy {
 
     struct MetadataSavePlan: Equatable, Sendable {
         let omdbApiKey: String
+        let tmdbApiKey: String
+        let omdbPlanRawValue: String
+        let tmdbPlanRawValue: String
         let defaultAIProviderRawValue: String?
         let aiKeyWrite: AIKeyWrite?
     }
@@ -1656,12 +1791,19 @@ enum SetupWizardPersistencePolicy {
 
     static func metadataSavePlan(
         omdbApiKey: String,
+        tmdbApiKey: String = "",
+        omdbPlan: MetadataProviderPlan = .free,
+        tmdbPlan: MetadataProviderPlan = .free,
         selectedAIProvider: AIProviderOption,
         aiApiKey: String
     ) -> MetadataDecision {
         let normalizedOMDbKey = SetupWizardValidationPolicy.trimmedValue(omdbApiKey)
-        guard SetupWizardValidationPolicy.canContinueFromMetadataStep(omdbApiKey: normalizedOMDbKey) else {
-            return .invalid(message: SetupWizardValidationPolicy.requiredOMDbMessage)
+        let normalizedTMDbKey = SetupWizardValidationPolicy.trimmedValue(tmdbApiKey)
+        guard SetupWizardValidationPolicy.canContinueFromMetadataStep(
+            omdbApiKey: normalizedOMDbKey,
+            tmdbApiKey: normalizedTMDbKey
+        ) else {
+            return .invalid(message: SetupWizardValidationPolicy.requiredMetadataKeyMessage)
         }
 
         let normalizedAIKey = SetupWizardValidationPolicy.trimmedValue(aiApiKey)
@@ -1676,6 +1818,9 @@ enum SetupWizardPersistencePolicy {
         return .save(
             MetadataSavePlan(
                 omdbApiKey: normalizedOMDbKey,
+                tmdbApiKey: normalizedTMDbKey,
+                omdbPlanRawValue: omdbPlan.rawValue,
+                tmdbPlanRawValue: tmdbPlan.rawValue,
                 defaultAIProviderRawValue: selectedAIProvider == .none ? nil : selectedAIProvider.rawValue,
                 aiKeyWrite: aiKeyWrite
             )

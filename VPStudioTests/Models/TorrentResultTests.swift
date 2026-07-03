@@ -376,6 +376,17 @@ struct TorrentResultComputedPropertiesTests {
         #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "::1"))
         #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "fd12:3456::1"))
         #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "fe80::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "fec0::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "ff02::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "100::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "64:ff9b::192.0.2.33"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "64:ff9b:1::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2001:db8::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2001:2::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2001:10::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2001:20::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2002::1"))
+        #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "3fff::1"))
         #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "::ffff:127.0.0.1"))
         #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "localhost"))
         #expect(PrivateNetworkHostPolicy.isPrivateOrReserved(host: "intranet"))
@@ -384,6 +395,7 @@ struct TorrentResultComputedPropertiesTests {
         #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "8.8.8.8"))
         #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "172.32.0.1"))
         #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "100.128.0.1"))
+        #expect(!PrivateNetworkHostPolicy.isPrivateOrReserved(host: "2606:4700:4700::1111"))
     }
 
     @Test func privateNetworkHostPolicyBlocksNonCanonicalLiteralBypasses() {

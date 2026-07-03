@@ -168,6 +168,31 @@ struct DatabaseMediaCacheTests {
 
         #expect(resolved["tt1234567"] == nil)
     }
+
+    @Test func fetchMediaItemsResolvingAliasesRespectsLegacyTMDBMediaTypeNamespaces() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "media-cache-alias-namespace.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt1792811",
+            type: .movie,
+            title: "Teach You a Lesson",
+            year: 2000,
+            posterPath: "/movie-poster.jpg",
+            tmdbId: 276161,
+            lastFetched: Date()
+        ))
+
+        let resolved = try await db.fetchMediaItemsResolvingAliases(ids: [
+            "series-tmdb-276161",
+            "movie-tmdb-276161",
+            "tmdb-276161",
+        ])
+
+        #expect(resolved["series-tmdb-276161"] == nil)
+        #expect(resolved["movie-tmdb-276161"]?.id == "tt1792811")
+        #expect(resolved["tmdb-276161"]?.id == "tt1792811")
+    }
 }
 
 // MARK: - Database Watch History Tests
@@ -283,6 +308,90 @@ struct DatabaseWatchHistoryTests {
         #expect(checkpointEntries.first?.progress == 1800)
         #expect(checkpointEntries.first?.streamURL == nil)
         #expect(completedEntries.allSatisfy { $0.id != "\(mediaId)-watched" })
+    }
+
+    @Test func saveWatchHistoryReplacesAliasEquivalentResumeCheckpoint() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "watch-history-alias-resume.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+
+        try await db.saveWatchHistory(WatchHistory(
+            id: "movie-tmdb-438631-progress",
+            mediaId: "movie-tmdb-438631",
+            title: "Dune",
+            progress: 600,
+            duration: 7200,
+            watchedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            isCompleted: false
+        ))
+
+        try await db.saveWatchHistory(WatchHistory(
+            id: "movie-omdb-tt1160419-progress",
+            mediaId: "movie-omdb-tt1160419",
+            title: "Dune",
+            progress: 900,
+            duration: 7200,
+            watchedAt: Date(timeIntervalSince1970: 1_700_000_100),
+            isCompleted: false
+        ))
+
+        let entries = try await db.fetchWatchHistory(limit: 10)
+        let checkpoints = entries.filter { !$0.isCompleted }
+        let resolved = try #require(try await db.fetchWatchHistory(mediaId: "movie-tmdb-438631"))
+
+        #expect(checkpoints.count == 1)
+        #expect(checkpoints.first?.id == "resume::movie-omdb-tt1160419::movie")
+        #expect(checkpoints.first?.mediaId == "movie-omdb-tt1160419")
+        #expect(resolved.mediaId == "movie-omdb-tt1160419")
+        #expect(resolved.progress == 900)
+    }
+
+    @Test func completedOMDbWatchClearsLegacyTMDbResumeCheckpoint() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "watch-history-alias-complete.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+
+        try await db.saveWatchHistory(WatchHistory(
+            id: "movie-tmdb-438631-progress",
+            mediaId: "movie-tmdb-438631",
+            title: "Dune",
+            progress: 600,
+            duration: 7200,
+            watchedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            isCompleted: false
+        ))
+
+        try await db.saveWatchHistory(WatchHistory(
+            id: "movie-omdb-tt1160419-progress",
+            mediaId: "movie-omdb-tt1160419",
+            title: "Dune",
+            progress: 7200,
+            duration: 7200,
+            watchedAt: Date(timeIntervalSince1970: 1_700_000_100),
+            isCompleted: true
+        ))
+
+        let entries = try await db.fetchWatchHistory(limit: 10)
+        let completedEntries = entries.filter { $0.isCompleted }
+
+        #expect(entries.filter { !$0.isCompleted }.isEmpty)
+        #expect(completedEntries.count == 1)
+        #expect(completedEntries.first?.mediaId == "movie-omdb-tt1160419")
+        #expect(completedEntries.first?.id.hasPrefix("watch::movie-omdb-tt1160419::movie::") == true)
     }
 
     @Test func saveWatchHistoryNormalizesUnsafePersistedState() async throws {
@@ -520,6 +629,44 @@ struct DatabaseEpisodesTests {
 
         let s2Episodes = try await db.fetchEpisodes(mediaId: "show-1", season: 2)
         #expect(s2Episodes.count == 1)
+    }
+
+    @Test func fetchEpisodesResolvesOMDbAndIMDbAliasesWithoutDuplicates() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "episodes-omdb-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let episodes = [
+            Episode(id: "legacy-episode-1", mediaId: "tt1160419", seasonNumber: 1, episodeNumber: 1, title: "Legacy Pilot"),
+            Episode(id: "omdb-episode-1", mediaId: "series-omdb-tt1160419", seasonNumber: 1, episodeNumber: 1, title: "OMDb Pilot"),
+            Episode(id: "imdb-episode-2", mediaId: "series-imdb-tt1160419", seasonNumber: 1, episodeNumber: 2, title: "IMDb Second"),
+        ]
+        try await db.saveEpisodes(episodes)
+
+        let fetched = try await db.fetchEpisodes(mediaId: "series-omdb-tt1160419", season: 1)
+
+        #expect(fetched.map(\.id) == ["omdb-episode-1", "imdb-episode-2"])
+        #expect(fetched.map(\.episodeNumber) == [1, 2])
+    }
+
+    @Test func fetchEpisodesResolvesTMDbAliasesThroughCachedMedia() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "episodes-tmdb-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "series-omdb-tt1160419",
+            type: .series,
+            title: "Dune: The Sisterhood",
+            year: 2024,
+            tmdbId: 90001
+        ))
+        try await db.saveEpisodes([
+            Episode(id: "omdb-episode-1", mediaId: "series-omdb-tt1160419", seasonNumber: 1, episodeNumber: 1, title: "Pilot")
+        ])
+
+        let fetched = try await db.fetchEpisodes(mediaId: "series-tmdb-90001", season: 1)
+
+        #expect(fetched.count == 1)
+        #expect(fetched.first?.id == "omdb-episode-1")
     }
 
     @Test func fetchEpisodesReturnsEmptyForMissingSeason() async throws {
@@ -1089,6 +1236,41 @@ struct DatabaseTasteProfileTests {
         #expect(try await db.fetchLatestTasteRating(mediaId: "movie-tmdb-438631") == nil)
     }
 
+    @Test func latestRatingAndDeletionRespectTypedTMDBNamespaces() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "taste-event-typed-tmdb-namespace.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt1792811",
+            type: .movie,
+            title: "Teach You a Lesson",
+            year: 2000,
+            tmdbId: 276_161
+        ))
+        try await db.saveMediaItem(MediaItem(
+            id: "tt34809853",
+            type: .series,
+            title: "Teach You a Lesson",
+            year: 2026,
+            tmdbId: 276_161
+        ))
+        try await db.saveTasteEvent(TasteEvent(
+            id: "rating-movie-tmdb",
+            mediaId: "movie-tmdb-276161",
+            eventType: .rated,
+            feedbackScale: .oneToTen,
+            feedbackValue: 8,
+            source: .manual,
+            createdAt: Date()
+        ))
+
+        #expect(try await db.fetchLatestTasteRating(mediaId: "series-tmdb-276161") == nil)
+
+        try await db.deleteLatestTasteRating(mediaId: "series-tmdb-276161")
+
+        #expect(try await db.fetchLatestTasteRating(mediaId: "movie-tmdb-276161")?.id == "rating-movie-tmdb")
+    }
+
     @Test func latestRatingAndDeletionResolveOMDbCompositeAliases() async throws {
         let (db, tempDir) = try await makeTemporaryDatabase(named: "taste-event-omdb-identity-alias.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -1418,6 +1600,64 @@ struct DatabaseLibraryFolderTests {
 
         #expect(movedEntries.count == 1)
         #expect(movedEntries.first?.folderId == destinationFolder.id)
+    }
+
+    @Test func moveLibraryEntryResolvesCachedIMDbTMDBAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "library-move-tmdb-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+
+        let sourceFolder = try await db.createLibraryFolder(name: "Source", listType: .watchlist)
+        let destinationFolder = try await db.createLibraryFolder(name: "Destination", listType: .watchlist)
+
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "wl-tmdb",
+            mediaId: "movie-tmdb-438631",
+            folderId: sourceFolder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        try await db.moveLibraryEntry(mediaId: "movie-imdb-tt1160419", listType: .watchlist, toFolderId: destinationFolder.id)
+        let movedEntries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: destinationFolder.id)
+
+        #expect(movedEntries.map(\.mediaId) == ["movie-tmdb-438631"])
+    }
+
+    @Test func moveLibraryEntryResolvesOMDbAliases() async throws {
+        let (db, tempDir) = try await makeTemporaryDatabase(named: "library-move-omdb-alias.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: nil
+        ))
+
+        let sourceFolder = try await db.createLibraryFolder(name: "Source", listType: .watchlist)
+        let destinationFolder = try await db.createLibraryFolder(name: "Destination", listType: .watchlist)
+
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "wl-omdb",
+            mediaId: "movie-omdb-tt1160419",
+            folderId: sourceFolder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        try await db.moveLibraryEntry(mediaId: "tt1160419", listType: .watchlist, toFolderId: destinationFolder.id)
+        let movedEntries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: destinationFolder.id)
+
+        #expect(movedEntries.map(\.mediaId) == ["movie-omdb-tt1160419"])
     }
 
     @Test func deleteLibraryFolderMovesEntriesToRootFolder() async throws {

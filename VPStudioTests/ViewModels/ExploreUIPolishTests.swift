@@ -215,6 +215,7 @@ struct ExploreUIPolishTests {
     @Test func genreTilePolicyUsesRawArtworkNamesWhenAvailable() {
         for card in ExploreGenreCatalog.cards {
             #expect(ExploreGenreTilePolicy.imageName(for: card) == card.artImageName)
+            #expect(!ExploreGenreTilePolicy.imageName(for: card).hasPrefix("genre-ref-"))
             #expect(ExploreGenreTilePolicy.accessibilityLabel(for: card) == "\(card.title), \(card.subtitle)")
         }
         #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.0) < 0.0001)

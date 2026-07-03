@@ -120,8 +120,34 @@ struct CSVImportServiceParsingTests {
         #expect(parseIMDbID("tt1234567") == "tt1234567")
         #expect(parseIMDbID("TT1234567") == "tt1234567")
         #expect(parseIMDbID("https://www.imdb.com/title/tt1234567/") == "tt1234567")
-        #expect(parseIMDbID("Title (tt1234567)") == "tt1234567")
-        #expect(parseIMDbID("tt1234567?ref_=tt_st") == "tt1234567")
+        #expect(parseIMDbID("https://www.imdb.com/title/tt1234567/?ref_=tt_st") == "tt1234567")
+        #expect(parseIMDbID("Title (tt1234567)") == nil)
+        #expect(parseIMDbID("tt1234567?ref_=tt_st") == nil)
+        #expect(parseIMDbID("movie-imdb-tt1234567") == "tt1234567")
+        #expect(parseIMDbID("series-omdb-TT7654321") == "tt7654321")
+        #expect(parseIMDbID("omdb-TT7654321") == "tt7654321")
+        #expect(parseIMDbID("https://example.com/title/tt1234567") == nil)
+    }
+
+    @Test func appScopedIMDbIDAcceptsOnlyKnownCompositePrefixes() {
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "https://www.imdb.com/title/TT1160419/") == "tt1160419")
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "imdb-TT1160419") == "tt1160419")
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "omdb-TT1160419") == "tt1160419")
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "movie-imdb-tt1234567") == "tt1234567")
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "series-omdb-TT7654321") == "tt7654321")
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "episode-imdb-TT1234567") == nil)
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "episode-omdb-TT7654321") == nil)
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "polluted-prefix-tt1234567") == nil)
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "omdb-tt1234567-extra") == nil)
+        #expect(IMDbIdentifierPolicy.appScopedID(in: "movie-imdb-tt1234567-extra") == nil)
+    }
+
+    @Test func episodeScopedIMDbIDAcceptsOnlyEpisodeCompositePrefixes() {
+        #expect(IMDbIdentifierPolicy.episodeScopedID(in: "https://www.imdb.com/title/TT1234567/") == "tt1234567")
+        #expect(IMDbIdentifierPolicy.episodeScopedID(in: "episode-imdb-TT1234567") == "tt1234567")
+        #expect(IMDbIdentifierPolicy.episodeScopedID(in: "episode-omdb-TT7654321") == "tt7654321")
+        #expect(IMDbIdentifierPolicy.episodeScopedID(in: "movie-imdb-tt1234567") == nil)
+        #expect(IMDbIdentifierPolicy.episodeScopedID(in: "series-omdb-TT7654321") == nil)
     }
 
     @Test func parseIMDbIDReturnsNilForInvalid() {
@@ -532,7 +558,7 @@ struct CSVImportServiceParsingTests {
     }
 
     private func parseIMDbID(_ raw: String?) -> String? {
-        IMDbIdentifierPolicy.firstID(in: raw)
+        IMDbIdentifierPolicy.appScopedID(in: raw)
     }
 
     private func parseMediaType(_ raw: String?) -> MediaType {

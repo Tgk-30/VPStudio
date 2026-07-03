@@ -102,8 +102,8 @@ struct AISettingsDeepContractTests {
         snapshot.hasOllamaEndpoint = false
 
         let missingMistral = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
-        #expect(missingMistral.kind == .warning)
-        #expect(missingMistral.message == "Mistral needs credentials")
+        #expect(missingMistral.kind == .neutral)
+        #expect(missingMistral.message == "Mistral not set")
 
         snapshot.hasMistralKey = true
         let configuredMistral = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
@@ -115,8 +115,8 @@ struct AISettingsDeepContractTests {
         snapshot.hasOllamaEndpoint = false
 
         let missingMiniMax = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)
-        #expect(missingMiniMax.kind == .warning)
-        #expect(missingMiniMax.message == "MiniMax needs credentials")
+        #expect(missingMiniMax.kind == .neutral)
+        #expect(missingMiniMax.message == "MiniMax not set")
 
         snapshot.hasMiniMaxKey = true
         let configuredMiniMax = SettingsStatusFormatter.status(for: .ai, snapshot: snapshot)

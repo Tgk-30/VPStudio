@@ -1,5 +1,11 @@
 import Foundation
 
+private enum OMDbResponseLimits {
+    static let searchItems = 50
+    static let enrichedSearchItems = 50
+    static let seasonEpisodes = 256
+}
+
 actor OMDbService: MetadataProvider {
     private static let defaultSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -15,10 +21,12 @@ actor OMDbService: MetadataProvider {
 
     private let apiKey: String
     private let baseURL = "https://www.omdbapi.com/"
+    private let includesPaidArtwork: Bool
     private let session: URLSession
 
-    init(apiKey: String, session: URLSession? = nil) {
+    init(apiKey: String, includesPaidArtwork: Bool = false, session: URLSession? = nil) {
         self.apiKey = apiKey
+        self.includesPaidArtwork = includesPaidArtwork
         self.session = session ?? Self.defaultSession
     }
 
@@ -54,7 +62,7 @@ actor OMDbService: MetadataProvider {
             let totalResults = Int(response.totalResults ?? "") ?? response.search.count
             let totalPages = max(1, Int(ceil(Double(totalResults) / 10.0)))
             let items = await enrichedSearchPreviews(
-                from: response.search.compactMap(\.mediaPreview),
+                from: response.search.prefix(OMDbResponseLimits.enrichedSearchItems).compactMap(\.mediaPreview),
                 fallbackType: type
             )
             return MetadataSearchResult(
@@ -80,7 +88,7 @@ actor OMDbService: MetadataProvider {
             }
             response = try await request(params: params)
         }
-        return response.mediaItem(fallbackType: type)
+        return response.mediaItem(fallbackType: type, includesPaidArtwork: includesPaidArtwork)
     }
 
     func getTrending(type: MediaType, timeWindow: TrendingWindow = .week, page: Int = 1) async throws -> MetadataSearchResult {
@@ -140,18 +148,6 @@ actor OMDbService: MetadataProvider {
         return Int(trimmed.prefix(4))
     }
 
-    func getSeasons(tmdbId: Int) async throws -> [Season] {
-        throw OMDbError.unsupported("OMDb season lookup requires an IMDb ID.")
-    }
-
-    func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] {
-        throw OMDbError.unsupported("OMDb episode lookup requires an IMDb ID.")
-    }
-
-    func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds {
-        throw OMDbError.unsupported("OMDb external-ID lookup is already keyed by IMDb ID.")
-    }
-
     func getSeasons(id: String, type: MediaType) async throws -> [Season] {
         guard let detail = try await seriesDetail(for: id, type: type) else { return [] }
         let totalSeasons = Int(detail.totalSeasons ?? "") ?? 0
@@ -180,7 +176,7 @@ actor OMDbService: MetadataProvider {
     private func seasonEpisodeCounts(
         seriesIMDbID: String?,
         totalSeasons: Int,
-        maxConcurrentRequests: Int = 3
+        maxConcurrentRequests: Int = 6
     ) async -> [Int: Int] {
         guard let seriesIMDbID, totalSeasons > 0 else { return [:] }
         let batchSize = max(1, min(maxConcurrentRequests, totalSeasons))
@@ -234,10 +230,13 @@ actor OMDbService: MetadataProvider {
         ])
         return response.episodes.compactMap { episode in
             guard let episodeNumber = Int(episode.episode ?? "") else { return nil }
-            let episodeID = episode.imdbID.validIMDbID ?? "\(imdbID)-s\(season)e\(episodeNumber)"
+            let mediaID = Self.omdbMediaID(imdbID: imdbID, type: .series)
+            let episodeID = episode.imdbID.validIMDbID
+                .map { Self.omdbEpisodeID(imdbID: $0) }
+                ?? Self.omdbSeasonEpisodeID(seriesIMDbID: imdbID, season: season, episode: episodeNumber)
             return Episode(
                 id: episodeID,
-                mediaId: imdbID,
+                mediaId: mediaID,
                 seasonNumber: season,
                 episodeNumber: episodeNumber,
                 title: episode.title.nilIfPlaceholder,
@@ -280,13 +279,35 @@ actor OMDbService: MetadataProvider {
             return MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: ids.count)
         }
 
-        var items: [MediaPreview] = []
-        for id in ids {
+        let maxConcurrentDetailLookups = 4
+        var indexed: [(Int, MediaPreview)] = []
+        indexed.reserveCapacity(ids.count)
+        var startIndex = 0
+
+        while startIndex < ids.count {
             guard !Task.isCancelled else { break }
-            if let detail = try? await getDetail(id: id, type: type) {
-                items.append(detail.mediaPreview)
+            let endIndex = min(startIndex + maxConcurrentDetailLookups, ids.count)
+            let batchResults = await withTaskGroup(of: (Int, MediaPreview?).self) { group in
+                for index in startIndex..<endIndex {
+                    let id = ids[index]
+                    group.addTask { [self] in
+                        (index, (try? await getDetail(id: id, type: type))?.mediaPreview)
+                    }
+                }
+
+                var results: [(Int, MediaPreview)] = []
+                for await (index, preview) in group {
+                    if let preview {
+                        results.append((index, preview))
+                    }
+                }
+                return results
             }
+            indexed.append(contentsOf: batchResults)
+            startIndex = endIndex
         }
+
+        let items = indexed.sorted { $0.0 < $1.0 }.map(\.1)
         return MetadataSearchResult(items: items, page: 1, totalPages: 1, totalResults: items.count)
     }
 
@@ -296,7 +317,7 @@ actor OMDbService: MetadataProvider {
     ) async -> [MediaPreview] {
         guard !previews.isEmpty else { return [] }
 
-        let maxConcurrentEnrichments = 3
+        let maxConcurrentEnrichments = 6
         var indexed: [(Int, MediaPreview)] = []
         indexed.reserveCapacity(previews.count)
         var startIndex = previews.startIndex
@@ -333,7 +354,10 @@ actor OMDbService: MetadataProvider {
         do {
             let response: OMDbTitleResponse = try await request(params: ["i": preview.id, "plot": "short"])
             guard response.normalizedIMDbID == preview.id else { return preview }
-            var enriched = response.mediaItem(fallbackType: fallbackType ?? preview.type).mediaPreview
+            var enriched = response.mediaItem(
+                fallbackType: fallbackType ?? preview.type,
+                includesPaidArtwork: includesPaidArtwork
+            ).mediaPreview
             if enriched.posterPath == nil {
                 enriched.posterPath = preview.posterPath
             }
@@ -346,7 +370,59 @@ actor OMDbService: MetadataProvider {
         }
     }
 
+    /// Session-scoped response memo + in-flight coalescing. OMDb has no batch endpoint
+    /// and free keys are rate-limited, so identical lookups (e.g. the Popular row reusing
+    /// Trending ids, pull-to-refresh, getSeasons re-reading a just-fetched detail) must not
+    /// pay a second network round trip. Only successful, validated payloads are cached;
+    /// errors and "Response": "False" bodies are never cached, so retries stay live.
+    private static let responseCacheTTL: TimeInterval = 10 * 60
+    private static let responseCacheEntryLimit = 256
+    private var cachedResponsesByRequestKey: [String: (data: Data, fetchedAt: Date)] = [:]
+    private var inFlightRequestsByKey: [String: Task<Data, Error>] = [:]
+
     private func request<T: Decodable & OMDbResponseChecking>(params: [String: String]) async throws -> T {
+        let cacheKey = Self.requestCacheKey(for: params)
+
+        if let cached = cachedResponsesByRequestKey[cacheKey],
+           Date().timeIntervalSince(cached.fetchedAt) < Self.responseCacheTTL {
+            return try validatedResponse(from: cached.data, cacheKey: nil)
+        }
+
+        if let inFlight = inFlightRequestsByKey[cacheKey] {
+            return try validatedResponse(from: try await inFlight.value, cacheKey: cacheKey)
+        }
+
+        let fetch = Task { try await self.fetchResponseData(params: params) }
+        inFlightRequestsByKey[cacheKey] = fetch
+        defer { inFlightRequestsByKey[cacheKey] = nil }
+        return try validatedResponse(from: try await fetch.value, cacheKey: cacheKey)
+    }
+
+    private func validatedResponse<T: Decodable & OMDbResponseChecking>(
+        from data: Data,
+        cacheKey: String?
+    ) throws -> T {
+        let decoded = try JSONDecoder().decode(T.self, from: data)
+        if decoded.isFalseResponse {
+            let message = OMDbErrorRedactionPolicy.sanitized(decoded.errorMessage ?? "OMDb request failed.")
+            if message.localizedCaseInsensitiveContains("not found") {
+                throw OMDbError.notFound
+            }
+            if message.localizedCaseInsensitiveContains("invalid api key") {
+                throw OMDbError.unauthorized
+            }
+            throw OMDbError.apiError(message)
+        }
+        if let cacheKey {
+            if cachedResponsesByRequestKey.count >= Self.responseCacheEntryLimit {
+                cachedResponsesByRequestKey.removeAll(keepingCapacity: true)
+            }
+            cachedResponsesByRequestKey[cacheKey] = (data, Date())
+        }
+        return decoded
+    }
+
+    private func fetchResponseData(params: [String: String]) async throws -> Data {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { throw OMDbError.unauthorized }
         guard var components = URLComponents(string: baseURL) else { throw OMDbError.invalidURL }
@@ -363,7 +439,11 @@ actor OMDbService: MetadataProvider {
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue("no-cache", forHTTPHeaderField: "Pragma")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.metadataProvider
+        )
         guard let http = response as? HTTPURLResponse else { throw OMDbError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
             throw OMDbError.httpError(
@@ -371,25 +451,32 @@ actor OMDbService: MetadataProvider {
                 OMDbErrorRedactionPolicy.sanitized(String(data: data, encoding: .utf8) ?? "")
             )
         }
+        return data
+    }
 
-        let decoded = try JSONDecoder().decode(T.self, from: data)
-        if decoded.isFalseResponse {
-            let message = OMDbErrorRedactionPolicy.sanitized(decoded.errorMessage ?? "OMDb request failed.")
-            if message.localizedCaseInsensitiveContains("not found") {
-                throw OMDbError.notFound
-            }
-            if message.localizedCaseInsensitiveContains("invalid api key") {
-                throw OMDbError.unauthorized
-            }
-            throw OMDbError.apiError(message)
-        }
-        return decoded
+    private static func requestCacheKey(for params: [String: String]) -> String {
+        params.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
     }
 
     private static func imdbID(from id: String) -> String? {
-        IMDbIdentifierPolicy.firstID(in: id)
+        IMDbIdentifierPolicy.appScopedID(in: id)
     }
 
+    private static func omdbMediaID(imdbID: String, type: MediaType) -> String {
+        "\(type.rawValue)-omdb-\(normalizedIMDbID(imdbID))"
+    }
+
+    private static func omdbEpisodeID(imdbID: String) -> String {
+        "episode-omdb-\(normalizedIMDbID(imdbID))"
+    }
+
+    private static func omdbSeasonEpisodeID(seriesIMDbID: String, season: Int, episode: Int) -> String {
+        "\(omdbMediaID(imdbID: seriesIMDbID, type: .series))-\(String(format: "s%02de%02d", season, episode))"
+    }
+
+    private static func normalizedIMDbID(_ imdbID: String) -> String {
+        IMDbIdentifierPolicy.normalizedID(from: imdbID) ?? imdbID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
 }
 
 enum OMDbTitleLookupPolicy {
@@ -433,22 +520,24 @@ private extension OMDbResponseChecking {
 }
 
 private enum OMDbErrorRedactionPolicy {
-    private static let urlPattern = try! NSRegularExpression(
+    private static let urlPattern = SensitiveURLQueryPolicy.regularExpression(
         pattern: #"(https?):\/\/[^\s"']+"#,
         options: [.caseInsensitive]
     )
 
-    private static let sensitiveAssignmentPattern = try! NSRegularExpression(
+    private static let sensitiveAssignmentPattern = SensitiveURLQueryPolicy.regularExpression(
         pattern: #"(?i)(?<![A-Za-z0-9_-])(?:"# + SensitiveURLQueryPolicy.assignmentNameAlternationPattern + #")=([^\s&]+)"#,
         options: []
     )
 
     static func sanitized(_ message: String) -> String {
         let urlRedacted = redactURLs(in: message)
-        return redactSensitiveAssignments(in: urlRedacted)
+        let assignmentRedacted = redactSensitiveAssignments(in: urlRedacted)
+        return SensitiveURLQueryPolicy.redactedBearerTokens(in: assignmentRedacted)
     }
 
     private static func redactURLs(in message: String) -> String {
+        guard let urlPattern else { return message }
         let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
         let matches = urlPattern.matches(in: message, options: [], range: nsRange)
         guard !matches.isEmpty else { return message }
@@ -481,6 +570,7 @@ private enum OMDbErrorRedactionPolicy {
     }
 
     private static func redactSensitiveAssignments(in message: String) -> String {
+        guard let sensitiveAssignmentPattern else { return message }
         let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
         let matches = sensitiveAssignmentPattern.matches(in: message, options: [], range: nsRange)
         guard !matches.isEmpty else { return message }
@@ -570,7 +660,8 @@ private struct OMDbSearchResponse: Decodable, OMDbResponseChecking {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        search = try container.decodeIfPresent([OMDbSearchItem].self, forKey: .search) ?? []
+        search = Array((try container.decodeIfPresent([OMDbSearchItem].self, forKey: .search) ?? [])
+            .prefix(OMDbResponseLimits.searchItems))
         totalResults = try container.decodeIfPresent(String.self, forKey: .totalResults)
         response = try container.decodeIfPresent(String.self, forKey: .response)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
@@ -616,6 +707,12 @@ private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
     let genre: String?
     let plot: String?
     let poster: String?
+    let backdrop: String?
+    let backdropURL: String?
+    let banner: String?
+    let bannerURL: String?
+    let fanart: String?
+    let background: String?
     let imdbRating: String?
     let imdbID: String?
     let type: String?
@@ -632,6 +729,12 @@ private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
         case genre = "Genre"
         case plot = "Plot"
         case poster = "Poster"
+        case backdrop = "Backdrop"
+        case backdropURL = "BackdropURL"
+        case banner = "Banner"
+        case bannerURL = "BannerURL"
+        case fanart = "Fanart"
+        case background = "Background"
         case imdbRating
         case imdbID
         case type = "Type"
@@ -640,7 +743,7 @@ private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
         case errorMessage = "Error"
     }
 
-    func mediaItem(fallbackType: MediaType) -> MediaItem {
+    func mediaItem(fallbackType: MediaType, includesPaidArtwork: Bool = false) -> MediaItem {
         let mediaType = MediaType(omdbType: type) ?? fallbackType
         let normalizedTitle = title.nilIfPlaceholder
         let displayTitle = normalizedTitle ?? "Unknown"
@@ -659,7 +762,7 @@ private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
             title: displayTitle,
             year: parsedYear,
             posterPath: poster.validOMDbArtworkPath,
-            backdropPath: nil,
+            backdropPath: includesPaidArtwork ? paidArtworkBackdropPath : nil,
             overview: plot.nilIfPlaceholder,
             genres: genre.omdbGenres,
             imdbRating: MediaRatingPolicy.normalizedOMDbIMDbRating(imdbRating),
@@ -672,6 +775,19 @@ private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
 
     var normalizedIMDbID: String? {
         imdbID?.validIMDbID
+    }
+
+    private var paidArtworkBackdropPath: String? {
+        [
+            backdrop,
+            backdropURL,
+            banner,
+            bannerURL,
+            fanart,
+            background,
+        ]
+        .compactMap(\.validOMDbArtworkPath)
+        .first
     }
 }
 
@@ -694,7 +810,8 @@ private struct OMDbSeasonResponse: Decodable, OMDbResponseChecking {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         season = try container.decodeIfPresent(String.self, forKey: .season)
-        episodes = try container.decodeIfPresent([OMDbEpisodeItem].self, forKey: .episodes) ?? []
+        episodes = Array((try container.decodeIfPresent([OMDbEpisodeItem].self, forKey: .episodes) ?? [])
+            .prefix(OMDbResponseLimits.seasonEpisodes))
         response = try container.decodeIfPresent(String.self, forKey: .response)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
     }

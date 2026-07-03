@@ -88,8 +88,10 @@ enum DiscoverErrorActionPolicy {
 }
 
 enum DiscoverLayoutPolicy {
-    static let standardBottomContentPadding: CGFloat = 132
-    static let bottomTabBarContentPadding: CGFloat = 240
+    static let heroHeight: CGFloat = 504
+    static let standardBottomContentPadding: CGFloat = 180
+    static let bottomTabBarContentPadding: CGFloat = 288
+    static let bottomViewportInset: CGFloat = 132
 
     static func bottomContentPadding(for layout: NavigationLayout) -> CGFloat {
         switch layout {

@@ -253,7 +253,7 @@ struct KSPlayerEngineTuningProfileTests {
 @MainActor
 struct KSPlayerEnginePrepareTests {
     @Test func prepareReturnsKSPlayerSessionWithDefaultOptions() async throws {
-        let engine = KSPlayerEngine()
+        let engine = KSPlayerEngine(resolveStream: { $0 })
         let stream = Fixtures.stream(
             url: "https://cdn.example.com/movie.mp4",
             quality: .hd1080p,
@@ -273,8 +273,53 @@ struct KSPlayerEnginePrepareTests {
         #expect(prepared.ksOptions?.formatContextOptions["rw_timeout"] as? Int == 30_000_000)
     }
 
+    @Test func prepareRejectsResolvedMissingLocalFile() async {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ksplayer-resolved-missing-\(UUID().uuidString).mkv")
+        let engine = KSPlayerEngine(resolveStream: { stream in
+            Fixtures.stream(
+                url: missingURL.absoluteString,
+                quality: stream.quality,
+                codec: stream.codec,
+                audio: stream.audio,
+                source: stream.source,
+                hdr: stream.hdr,
+                fileName: "missing.mkv"
+            )
+        })
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mkv",
+            fileName: "movie.mkv"
+        )
+
+        await #expect(throws: PlayerEngineError.invalidStreamURL(missingURL.absoluteString)) {
+            try await engine.prepare(stream: stream)
+        }
+    }
+
+    @Test func canHandleUsesSharedLaunchableURLPolicy() throws {
+        let engine = KSPlayerEngine(resolveStream: { $0 })
+        let publicRemote = Fixtures.stream(url: "https://cdn.example.com/movie.mkv")
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ksplayer-existing-download-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let fileURL = tempDir.appendingPathComponent("movie.mkv")
+        try Data([0]).write(to: fileURL)
+        let downloadedFile = Fixtures.stream(url: fileURL.absoluteString)
+        let missingDownloadedFile = Fixtures.stream(
+            url: tempDir.appendingPathComponent("missing.mkv").absoluteString
+        )
+        let privateRemote = Fixtures.stream(url: "http://192.168.1.10/movie.mkv")
+
+        #expect(engine.canHandle(stream: publicRemote))
+        #expect(engine.canHandle(stream: downloadedFile))
+        #expect(engine.canHandle(stream: missingDownloadedFile) == false)
+        #expect(engine.canHandle(stream: privateRemote) == false)
+    }
+
     @Test func prepareAppliesHighDemandTuningOptions() async throws {
-        let engine = KSPlayerEngine()
+        let engine = KSPlayerEngine(resolveStream: { $0 })
         let stream = Fixtures.stream(
             url: "https://cdn.example.com/movie.mkv",
             quality: .uhd4k,
@@ -295,7 +340,7 @@ struct KSPlayerEnginePrepareTests {
     }
 
     @Test func prepareAppliesDirectStreamRequestHeadersToFFmpeg() async throws {
-        let engine = KSPlayerEngine()
+        let engine = KSPlayerEngine(resolveStream: { $0 })
         let stream = Fixtures.stream(
             url: "https://cdn.example.com/movie.mkv",
             fileName: "Movie.1080p.WEBDL.mkv"
@@ -314,14 +359,14 @@ struct KSPlayerEnginePrepareTests {
         #expect(prepared.ksOptions?.formatContextOptions["user_agent"] as? String == "Stremio")
     }
 
-    @Test func ffmpegHeaderStringSortsHeadersAndTerminatesEachLine() {
+    @Test func ffmpegHeaderStringSortsAllowedHeadersAndTerminatesEachLine() {
         let headerString = KSPlayerEngine.ffmpegHeaderString(for: [
-            "z-header": "last",
-            "A-Header": "first",
-            "User-Agent": "Stremio",
+            "user-agent": "Stremio",
+            "Accept": "video/*",
+            "referrer": "https://app.strem.io/",
         ])
 
-        #expect(headerString == "A-Header: first\r\nUser-Agent: Stremio\r\nz-header: last\r\n")
+        #expect(headerString == "Accept: video/*\r\nReferer: https://app.strem.io/\r\nUser-Agent: Stremio\r\n")
     }
 
     @Test func ffmpegHeaderStringReturnsNilWhenNoValidHeadersRemain() {

@@ -110,6 +110,33 @@ struct AIAssistantManagerRecommendationParsingTests {
         #expect(recommendations[0].type == .series)
     }
 
+    @Test(arguments: [
+        ("series", MediaType.series),
+        ("tv", MediaType.series),
+        ("show", MediaType.series),
+        ("TV Series", MediaType.series),
+        ("tv show", MediaType.series),
+        ("miniseries", MediaType.series),
+        ("mini-series", MediaType.series),
+        ("K-Drama", MediaType.series),
+        ("kdrama", MediaType.series),
+        ("anime", MediaType.series),
+        ("movie", MediaType.movie),
+        ("film", MediaType.movie),
+        ("tv movie", MediaType.movie),
+        ("anime film", MediaType.movie),
+        ("documentary", MediaType.movie),
+        ("", MediaType.movie),
+    ])
+    func normalizesFreeFormTypeStrings(rawType: String, expected: MediaType) {
+        #expect(AIAssistantManager.recommendationMediaType(fromRawType: rawType) == expected)
+    }
+
+    @Test
+    func missingTypeDefaultsToMovie() {
+        #expect(AIAssistantManager.recommendationMediaType(fromRawType: nil) == .movie)
+    }
+
     @Test
     func parsesWrappedRecommendationsObject() async throws {
         let manager = try await makeManager()
@@ -189,7 +216,7 @@ struct AIAssistantManagerRecommendationParsingTests {
         #expect(recommendations.count == 1)
         #expect(recommendations[0].imdbId == "tt1160419")
         #expect(recommendations[0].tmdbId == nil)
-        #expect(recommendations[0].id == "movie-imdb-tt1160419")
+        #expect(recommendations[0].id == "movie-omdb-tt1160419")
         #expect(recommendations[0].toMediaPreview().id == "tt1160419")
     }
 
@@ -598,7 +625,7 @@ struct AIAssistantManagerRecommendationParsingTests {
         #expect(recommendations[0].reason == "Legacy")
         #expect(recommendations[0].imdbId == "tt1160419")
         #expect(recommendations[0].tmdbId == nil)
-        #expect(recommendations[0].id == "movie-imdb-tt1160419")
+        #expect(recommendations[0].id == "movie-omdb-tt1160419")
     }
 
     @Test

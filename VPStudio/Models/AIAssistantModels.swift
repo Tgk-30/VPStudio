@@ -27,11 +27,15 @@ enum AIProviderKind: String, Codable, CaseIterable, Sendable, Identifiable, Hash
 
 struct AIMovieRecommendation: Codable, Sendable, Equatable, Identifiable {
     var canonicalIMDbID: String? {
-        IMDbIdentifierPolicy.normalizedID(from: imdbId)
+        IMDbIdentifierPolicy.appScopedID(in: imdbId)
+    }
+
+    var canonicalOMDbMediaID: String? {
+        canonicalIMDbID.map { "\(type.rawValue)-omdb-\($0)" }
     }
 
     var id: String {
-        if let imdbId = canonicalIMDbID { return "\(type.rawValue)-imdb-\(imdbId)" }
+        if let omdbMediaID = canonicalOMDbMediaID { return omdbMediaID }
         if let tmdbId { return "\(type.rawValue)-tmdb-\(tmdbId)" }
         return "\(title.lowercased())-\(year ?? 0)-\(type.rawValue)"
     }

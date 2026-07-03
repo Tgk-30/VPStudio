@@ -4,6 +4,11 @@ enum PlayerAutoPlayNextPromptStylePolicy {
     static let promptMaxWidth: CGFloat = 440
     static let titleColumnMaxWidth: CGFloat = 312
     static let titleLineLimit = 3
+    static let cancelButtonSize: CGFloat = VPSpace.minTapTarget
+    static let primaryButtonMinWidth: CGFloat = 96
+    static let primaryButtonIconSlotSize: CGFloat = 14
+    static let titleMinimumScaleFactor: CGFloat = 0.85
+    static let resolvingStateAnimationDuration: TimeInterval = 0.18
 
     static func primaryButtonOpacity(isResolving: Bool) -> Double {
         isResolving ? 0.52 : 1.0
@@ -16,9 +21,15 @@ enum PlayerAutoPlayNextPromptStylePolicy {
     static func secondaryButtonOpacity(isResolving: Bool) -> Double {
         isResolving ? 0.42 : 1.0
     }
+
+    static func resolvingStateAnimation(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .easeInOut(duration: resolvingStateAnimationDuration)
+    }
 }
 
 struct PlayerAutoPlayNextPromptView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let nextEpisode: PlayerSessionRequest.NextEpisodeCandidate
     let remainingSeconds: Int
     let isResolving: Bool
@@ -45,7 +56,7 @@ struct PlayerAutoPlayNextPromptView: View {
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(PlayerAutoPlayNextPromptStylePolicy.titleLineLimit)
-                    .minimumScaleFactor(0.78)
+                    .minimumScaleFactor(PlayerAutoPlayNextPromptStylePolicy.titleMinimumScaleFactor)
                     .allowsTightening(true)
                     .fixedSize(horizontal: false, vertical: true)
                     .truncationMode(.tail)
@@ -53,20 +64,31 @@ struct PlayerAutoPlayNextPromptView: View {
                 HStack(spacing: 8) {
                     Button(action: onPlayNow) {
                         HStack(spacing: 6) {
-                            if isResolving {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                    .tint(.black)
-                            } else {
-                                Image(systemName: "play.fill")
-                                    .font(.caption.weight(.semibold))
+                            ZStack {
+                                if isResolving {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .tint(.black)
+                                        .transition(.opacity)
+                                } else {
+                                    Image(systemName: "play.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .transition(.opacity)
+                                }
                             }
+                            .frame(
+                                width: PlayerAutoPlayNextPromptStylePolicy.primaryButtonIconSlotSize,
+                                height: PlayerAutoPlayNextPromptStylePolicy.primaryButtonIconSlotSize
+                            )
+
                             Text(isResolving ? "Loading" : "Play Now")
                                 .font(.caption.weight(.semibold))
+                                .contentTransition(.opacity)
                         }
                         .foregroundStyle(.black)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
+                        .frame(minWidth: PlayerAutoPlayNextPromptStylePolicy.primaryButtonMinWidth)
                         .background(
                             .white.opacity(
                                 PlayerAutoPlayNextPromptStylePolicy.primaryButtonBackgroundOpacity(
@@ -88,7 +110,10 @@ struct PlayerAutoPlayNextPromptView: View {
                         Image(systemName: "xmark")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(.white)
-                            .frame(width: 32, height: 32)
+                            .frame(
+                                width: PlayerAutoPlayNextPromptStylePolicy.cancelButtonSize,
+                                height: PlayerAutoPlayNextPromptStylePolicy.cancelButtonSize
+                            )
                             .background(.white.opacity(0.12), in: Circle())
                             .overlay {
                                 Circle()
@@ -104,6 +129,10 @@ struct PlayerAutoPlayNextPromptView: View {
                     .accessibilityLabel("Cancel auto-play")
                 }
                 .padding(.top, 3)
+                .animation(
+                    PlayerAutoPlayNextPromptStylePolicy.resolvingStateAnimation(reduceMotion: reduceMotion),
+                    value: isResolving
+                )
             }
             .frame(maxWidth: PlayerAutoPlayNextPromptStylePolicy.titleColumnMaxWidth, alignment: .leading)
             .layoutPriority(1)
@@ -140,6 +169,8 @@ struct PlayerAutoPlayNextPromptView: View {
 }
 
 struct PlayerAutoPlayCountdownRing: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let progress: Double
     let remainingSeconds: Int
     let isResolving: Bool
@@ -161,14 +192,20 @@ struct PlayerAutoPlayCountdownRing: View {
                 ProgressView()
                     .controlSize(.small)
                     .tint(.white)
+                    .transition(.opacity)
             } else {
                 Text("\(remainingSeconds)")
                     .font(.system(size: 18, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(.white)
                     .contentTransition(.numericText())
+                    .transition(.opacity)
             }
         }
         .frame(width: 64, height: 64)
+        .animation(
+            PlayerAutoPlayNextPromptStylePolicy.resolvingStateAnimation(reduceMotion: reduceMotion),
+            value: isResolving
+        )
         .accessibilityHidden(true)
     }
 }

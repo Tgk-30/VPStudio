@@ -211,6 +211,12 @@ struct PlayerViewStatePolicyTests {
     func controlModalVisibilityActionMapsSheetLifecycleToPresentationOrAutoHide() {
         #expect(PlayerViewStatePolicy.controlModalVisibilityAction(isPresented: true) == .prepareForPresentation)
         #expect(PlayerViewStatePolicy.controlModalVisibilityAction(isPresented: false) == .scheduleHide)
+        #expect(
+            PlayerViewStatePolicy.controlModalVisibilityAction(
+                isPresented: false,
+                hasPresentedControlModal: true
+            ) == .prepareForPresentation
+        )
         #expect(PlayerViewStatePolicy.shouldShowControlsForModalPresentation(isShowingControls: false))
         #expect(!PlayerViewStatePolicy.shouldShowControlsForModalPresentation(isShowingControls: true))
     }
@@ -249,10 +255,18 @@ struct PlayerViewStatePolicyTests {
             )
         )
         #expect(
-            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+            !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
                 playbackState: .playing,
                 hasPlayedOnce: true,
                 hasDetectedVideoFrame: false
+            )
+        )
+        #expect(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+                playbackState: .playing,
+                hasPlayedOnce: true,
+                hasDetectedVideoFrame: false,
+                hasRenderablePlayerSurface: false
             )
         )
         #expect(
@@ -270,7 +284,7 @@ struct PlayerViewStatePolicyTests {
             )
         )
         #expect(
-            !PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
+            PlayerViewStatePolicy.shouldElevatePlayerStageFallback(
                 playbackState: .playing,
                 hasPlayedOnce: true,
                 hasDetectedVideoFrame: false,
@@ -400,6 +414,34 @@ struct PlayerViewStatePolicyTests {
         )
         #expect(
             PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .playing,
+                isPlaying: false,
+                isBuffering: true,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.99
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .buffering,
+                isPlaying: false,
+                isBuffering: true,
+                hasPlayedOnce: false,
+                bufferedPercent: 0.99
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
+                currentState: .buffering,
+                isPlaying: false,
+                isBuffering: true,
+                hasPlayedOnce: false,
+                bufferedPercent: 0.02,
+                bufferedSecondsAhead: 2.2
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerObservedPlaybackState(
                 currentState: .buffering,
                 isPlaying: false,
                 isBuffering: false,
@@ -420,6 +462,192 @@ struct PlayerViewStatePolicyTests {
                 isPlaying: false,
                 isBuffering: false,
                 hasPlayedOnce: true
+            ) == .failed
+        )
+    }
+
+    @Test
+    func avPlayerObservedBufferingUsesItemBufferFlagsAfterPlaybackStarts() {
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: true,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: true,
+            hasPlayedOnce: false
+        ))
+        #expect(PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: true,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: false
+        ))
+        #expect(PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: true,
+            isPlaybackLikelyToKeepUp: true,
+            hasPlayedOnce: false
+        ) == false)
+        #expect(PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: true,
+            isPlaybackLikelyToKeepUp: true,
+            hasPlayedOnce: true
+        ))
+        #expect(PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: true,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: false
+        ))
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: true
+        ))
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: false
+        ))
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: true,
+            hasPlayedOnce: true
+        ))
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: true,
+            isPlaybackBufferEmpty: true,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: true,
+            bufferedPercent: 0.99
+        ))
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: true,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: true,
+            bufferedPercent: 0.02,
+            bufferedSecondsAhead: 2.2
+        ))
+    }
+
+    @Test
+    func avPlayerObservedBufferingClearsWhenPlayerIsPaused() {
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: true,
+            isPlaybackPaused: true
+        ))
+        #expect(!PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: false,
+            isPlaybackBufferEmpty: true,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: true,
+            isPlaybackPaused: true
+        ))
+        #expect(PlayerViewStatePolicy.avPlayerObservedBuffering(
+            isWaitingToPlayAtSpecifiedRate: true,
+            isPlaybackBufferEmpty: false,
+            isPlaybackLikelyToKeepUp: false,
+            hasPlayedOnce: true,
+            isPlaybackPaused: false
+        ))
+    }
+
+    @Test
+    func ksPlayerObservationClearsReadyAndBufferedRebufferStates() {
+        #expect(
+            PlayerViewStatePolicy.ksPlayerObservedPlaybackState(
+                currentState: .buffering,
+                observedState: .readyToPlay,
+                hasPlayedOnce: false,
+                bufferedPercent: 0.99
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerObservedPlaybackState(
+                currentState: .buffering,
+                observedState: .buffering,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.99
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerObservedPlaybackState(
+                currentState: .playing,
+                observedState: .buffering,
+                hasPlayedOnce: true,
+                bufferedPercent: 0.4
+            ) == .buffering
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerObservedPlaybackState(
+                currentState: .buffering,
+                observedState: .paused,
+                hasPlayedOnce: true
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerObservedPlaybackState(
+                currentState: .playing,
+                observedState: .error,
+                hasPlayedOnce: true
+            ) == .failed
+        )
+    }
+
+    @Test
+    func ksPlayerProgressTickClearsStaleBufferingOnlyForRealPlaybackProgress() {
+        #expect(
+            PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                currentState: .buffering,
+                observedState: .buffering,
+                currentTime: 3.0,
+                duration: 3_600
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                currentState: .preparing,
+                observedState: .readyToPlay,
+                currentTime: 0.25,
+                duration: 0
+            ) == .playing
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                currentState: .buffering,
+                observedState: .buffering,
+                currentTime: 0,
+                duration: 3_600
+            ) == .buffering
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                currentState: .buffering,
+                observedState: .buffering,
+                currentTime: 3_600,
+                duration: 3_600
+            ) == .buffering
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                currentState: .buffering,
+                observedState: .paused,
+                currentTime: 3.0,
+                duration: 3_600
+            ) == .buffering
+        )
+        #expect(
+            PlayerViewStatePolicy.ksPlayerPlaybackStateAfterProgressTick(
+                currentState: .failed,
+                observedState: .buffering,
+                currentTime: 3.0,
+                duration: 3_600
             ) == .failed
         )
     }
@@ -553,6 +781,33 @@ struct PlayerViewStatePolicyTests {
         #expect(PlayerViewStatePolicy.mainWindowSuppressionAction(isSuppressed: true) == .none)
         #expect(PlayerViewStatePolicy.mainWindowRestoreAction(isSuppressed: true) == .openMainAndMarkRestored)
         #expect(PlayerViewStatePolicy.mainWindowRestoreAction(isSuppressed: false) == .none)
+    }
+
+    @Test
+    func activeSessionChangeActionDistinguishesOwnerCloseFromStaleSceneClose() {
+        let owner = UUID()
+        let replacement = UUID()
+
+        #expect(PlayerViewStatePolicy.activeSessionChangeAction(
+            activeSessionID: owner,
+            playerSessionID: owner
+        ) == .keepOpen)
+        #expect(PlayerViewStatePolicy.activeSessionChangeAction(
+            activeSessionID: nil,
+            playerSessionID: nil
+        ) == .keepOpen)
+        #expect(PlayerViewStatePolicy.activeSessionChangeAction(
+            activeSessionID: nil,
+            playerSessionID: owner
+        ) == .closeCurrentSession)
+        #expect(PlayerViewStatePolicy.activeSessionChangeAction(
+            activeSessionID: replacement,
+            playerSessionID: owner
+        ) == .closeStaleScene)
+        #expect(PlayerViewStatePolicy.activeSessionChangeAction(
+            activeSessionID: replacement,
+            playerSessionID: nil
+        ) == .closeStaleScene)
     }
 
     @Test
@@ -747,7 +1002,7 @@ struct PlayerViewStatePolicyTests {
         )
         #expect(
             PlayerViewStatePolicy.userVisibleErrorDescription(
-                "Request failed: token=abc123 access_token=def456 Bearer sk_test_secret"
+                "Request failed: token=abc123 access_token=def456 Bearer redactionfixture"
             ) == "Request failed: token=[redacted] access_token=[redacted] Bearer [redacted]"
         )
         #expect(
@@ -777,6 +1032,16 @@ struct PlayerViewStatePolicyTests {
         #expect(PlayerViewStatePolicy.playbackStartRate(1.5) == 1.5)
         #expect(PlayerViewStatePolicy.playbackStartRate(.infinity) == 0.1)
         #expect(PlayerViewStatePolicy.playbackStartRate(.nan) == 0.1)
+        #expect(
+            PlayerViewStatePolicy.avPlayerStartupAction(
+                automaticallyWaitsToMinimizeStalling: false
+            ) == .playImmediately
+        )
+        #expect(
+            PlayerViewStatePolicy.avPlayerStartupAction(
+                automaticallyWaitsToMinimizeStalling: true
+            ) == .playAfterMinimizingStalls
+        )
         #expect(
             PlayerViewStatePolicy.preparationFailureLine(
                 kind: .ksPlayer,

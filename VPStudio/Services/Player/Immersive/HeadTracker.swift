@@ -116,7 +116,8 @@ final class HeadTracker {
             do {
                 try await session.run([provider])
             } catch {
-                logger.error("ARKit session failed to start: \(error.localizedDescription)")
+                let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+                logger.error("ARKit session failed to start: \(reason)")
                 await MainActor.run { self.isRunning = false }
                 return
             }

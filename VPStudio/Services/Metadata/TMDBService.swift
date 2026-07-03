@@ -1,8 +1,18 @@
 import Foundation
+import os
+
+private enum TMDBResponseLimits {
+    static let pageResults = 50
+    static let imageAssets = 80
+    static let expandedImagePreviewEnrichmentItems = 8
+    static let personCredits = 160
+    static let seasonEpisodes = 256
+}
 
 actor TMDBService: MetadataProvider {
     nonisolated var supportsPersonCreditSearch: Bool { true }
 
+    private static let qaLogger = Logger(subsystem: "com.tgk30.VPStudio", category: "qa.tmdb")
     private static let maximumRateLimitAttempts = 3
     private static let initialBackoffNanoseconds: UInt64 = 500_000_000
     private static let maximumBackoffNanoseconds: UInt64 = 4_000_000_000
@@ -21,6 +31,7 @@ actor TMDBService: MetadataProvider {
 
     private let apiKey: String
     private let baseURL = "https://api.themoviedb.org/3"
+    private let plan: MetadataProviderPlan
     private let session: URLSession
     private let sleeper: @Sendable (UInt64) async throws -> Void
 
@@ -31,12 +42,14 @@ actor TMDBService: MetadataProvider {
 
     init(
         apiKey: String,
+        plan: MetadataProviderPlan = .free,
         session: URLSession? = nil,
         sleeper: @escaping @Sendable (UInt64) async throws -> Void = { nanoseconds in
             try await Task.sleep(nanoseconds: nanoseconds)
         }
     ) {
         self.apiKey = apiKey
+        self.plan = plan
         self.session = session ?? Self.defaultSession
         self.sleeper = sleeper
     }
@@ -52,10 +65,7 @@ actor TMDBService: MetadataProvider {
             params[type.tmdbSearchYearParameterName] = String(year)
         }
         let response: TMDBPagedResponse<TMDBSearchResult> = try await request(path: path, params: params)
-        return MetadataSearchResult(
-            items: response.results.compactMap { $0.toMediaPreview() },
-            page: response.page, totalPages: response.totalPages, totalResults: response.totalResults
-        )
+        return await metadataSearchResult(from: response)
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem {
@@ -67,9 +77,12 @@ actor TMDBService: MetadataProvider {
 
         let response: TMDBDetailResponse = try await request(
             path: "/\(type.tmdbPath)/\(tmdbId)",
-            params: ["append_to_response": "external_ids,credits", "language": "en-US"]
+            params: [
+                "append_to_response": plan.usesPaidResources ? "external_ids,credits,images" : "external_ids,credits",
+                "language": "en-US",
+            ]
         )
-        return response.toMediaItem(type: type)
+        return response.toMediaItem(type: type, prefersExpandedImages: plan.usesPaidResources)
     }
 
     func getTrending(type: MediaType, timeWindow: TrendingWindow = .week, page: Int = 1) async throws -> MetadataSearchResult {
@@ -77,10 +90,7 @@ actor TMDBService: MetadataProvider {
             path: "/trending/\(type.tmdbPath)/\(timeWindow.rawValue)",
             params: ["page": String(page), "language": "en-US"]
         )
-        return MetadataSearchResult(
-            items: response.results.compactMap { $0.toMediaPreview() },
-            page: response.page, totalPages: response.totalPages, totalResults: response.totalResults
-        )
+        return await metadataSearchResult(from: response)
     }
 
     func getCategory(_ category: MediaCategory, type: MediaType, page: Int = 1) async throws -> MetadataSearchResult {
@@ -88,10 +98,7 @@ actor TMDBService: MetadataProvider {
             path: "/\(type.tmdbPath)/\(category.rawValue)",
             params: ["page": String(page), "language": "en-US"]
         )
-        return MetadataSearchResult(
-            items: response.results.compactMap { $0.toMediaPreview() },
-            page: response.page, totalPages: response.totalPages, totalResults: response.totalResults
-        )
+        return await metadataSearchResult(from: response)
     }
 
     func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
@@ -113,10 +120,7 @@ actor TMDBService: MetadataProvider {
         if let lang = filters.originalLanguage { params["with_original_language"] = lang }
 
         let response: TMDBPagedResponse<TMDBSearchResult> = try await request(path: "/discover/\(type.tmdbPath)", params: params)
-        return MetadataSearchResult(
-            items: response.results.compactMap { $0.toMediaPreview() },
-            page: response.page, totalPages: response.totalPages, totalResults: response.totalResults
-        )
+        return await metadataSearchResult(from: response)
     }
 
     func searchPersonCredits(query: String, type: MediaType?, page: Int = 1) async throws -> MetadataSearchResult {
@@ -231,14 +235,24 @@ actor TMDBService: MetadataProvider {
         }
 
         let responseData = try await responseData(for: request, path: path)
+        Self.logQAResponse(path: path, byteCount: responseData.count)
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: responseData)
     }
 
+    private static func logQAResponse(path: String, byteCount: Int) {
+        guard QARuntimeOptions.isEnabled else { return }
+        qaLogger.info("QA-TMDB path=\(path, privacy: .public) bytes=\(byteCount, privacy: .public)")
+    }
+
     private func responseData(for request: URLRequest, path: String, attempt: Int = 0) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.metadataProvider
+        )
         guard let http = response as? HTTPURLResponse else { throw TMDBError.invalidResponse }
 
         switch http.statusCode {
@@ -260,7 +274,8 @@ actor TMDBService: MetadataProvider {
             try await sleeper(delay)
             return try await responseData(for: request, path: path, attempt: attempt + 1)
         default:
-            throw TMDBError.httpError(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw TMDBError.httpError(http.statusCode, TMDBErrorRedactionPolicy.sanitized(body))
         }
     }
 
@@ -340,30 +355,90 @@ actor TMDBService: MetadataProvider {
     }
 
     private func extractTMDBID(from id: String) -> String? {
-        if id.hasPrefix("tmdb-") {
-            let suffix = String(id.dropFirst(5))
-            if suffix.allSatisfy(\.isNumber) {
-                return suffix
+        MetadataProviderIdentifierPolicy.tmdbID(from: id).map(String.init)
+    }
+
+    private func metadataSearchResult(from response: TMDBPagedResponse<TMDBSearchResult>) async -> MetadataSearchResult {
+        let previews = response.results.compactMap { $0.toMediaPreview() }
+        let items = await expandedImagePreviewsIfNeeded(previews)
+        return MetadataSearchResult(
+            items: items,
+            page: response.page,
+            totalPages: response.totalPages,
+            totalResults: response.totalResults
+        )
+    }
+
+    private func expandedImagePreviewsIfNeeded(_ previews: [MediaPreview]) async -> [MediaPreview] {
+        guard plan.usesPaidResources, !previews.isEmpty else { return previews }
+
+        let enrichmentLimit = min(previews.count, TMDBResponseLimits.expandedImagePreviewEnrichmentItems)
+        let maxConcurrentEnrichments = 3
+        var enriched = previews
+        var startIndex = 0
+
+        while startIndex < enrichmentLimit {
+            let endIndex = min(startIndex + maxConcurrentEnrichments, enrichmentLimit)
+            let batchResults = await withTaskGroup(of: (Int, MediaPreview).self) { group in
+                for index in startIndex..<endIndex {
+                    let preview = previews[index]
+                    group.addTask { [self] in
+                        let enrichedPreview = await expandedImagePreview(preview)
+                        return (index, enrichedPreview)
+                    }
+                }
+
+                var results: [(Int, MediaPreview)] = []
+                results.reserveCapacity(endIndex - startIndex)
+                for await item in group {
+                    results.append(item)
+                }
+                return results
             }
+
+            for (index, preview) in batchResults {
+                enriched[index] = preview
+            }
+            startIndex = endIndex
         }
 
-        // Supports typed identifiers like "movie-tmdb-123" and "series-tmdb-456".
-        if id.contains("tmdb-"),
-           let suffix = id.split(separator: "-").last,
-           suffix.allSatisfy(\.isNumber) {
-            return String(suffix)
+        return enriched
+    }
+
+    private func expandedImagePreview(_ preview: MediaPreview) async -> MediaPreview {
+        guard let tmdbId = preview.tmdbId,
+              let detail = try? await getDetail(id: "tmdb-\(tmdbId)", type: preview.type) else {
+            return preview
         }
 
-        return nil
+        var enriched = preview
+        enriched.posterPath = detail.posterPath ?? preview.posterPath
+        enriched.backdropPath = detail.backdropPath ?? preview.backdropPath
+        return enriched
     }
 }
 
 // MARK: - TMDB Response Models
 
-struct TMDBPagedResponse<T: Decodable & Sendable>: Sendable {
+struct TMDBPagedResponse<T: Decodable & Sendable>: Sendable, Decodable {
     let page: Int; let results: [T]; let totalPages: Int; let totalResults: Int
+
+    enum CodingKeys: String, CodingKey {
+        case page
+        case results
+        case totalPages
+        case totalResults
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        page = try container.decodeIfPresent(Int.self, forKey: .page) ?? 1
+        results = Array((try container.decodeIfPresent([T].self, forKey: .results) ?? [])
+            .prefix(TMDBResponseLimits.pageResults))
+        totalPages = try container.decodeIfPresent(Int.self, forKey: .totalPages) ?? 1
+        totalResults = try container.decodeIfPresent(Int.self, forKey: .totalResults) ?? results.count
+    }
 }
-extension TMDBPagedResponse: Decodable {}
 
 struct TMDBSearchResult: Sendable {
     let id: Int; let title: String?; let name: String?; let mediaType: String?
@@ -397,19 +472,66 @@ struct TMDBDetailResponse: Sendable {
     let posterPath: String?; let backdropPath: String?; let releaseDate: String?
     let firstAirDate: String?; let voteAverage: Double?; let runtime: Int?
     let episodeRunTime: [Int]?; let status: String?; let genres: [TMDBGenre]?
-    let externalIds: ExternalIds?
+    let externalIds: ExternalIds?; var images: TMDBImagesResponse? = nil
 
-    nonisolated func toMediaItem(type: MediaType) -> MediaItem {
+    nonisolated func toMediaItem(type: MediaType, prefersExpandedImages: Bool = false) -> MediaItem {
         let displayTitle = title ?? name ?? "Unknown"
         let year = (releaseDate ?? firstAirDate).flatMap { $0.count >= 4 ? Int($0.prefix(4)) : nil }
         let itemId = externalIds?.imdbId.flatMap { $0.isEmpty ? nil : $0 } ?? "tmdb-\(id)"
         let rt = (runtime ?? 0) > 0 ? runtime : episodeRunTime?.first
-        return MediaItem(id: itemId, type: type, title: displayTitle, year: year, posterPath: posterPath,
-                         backdropPath: backdropPath, overview: overview, genres: genres?.map(\.name) ?? [],
+        let expandedPosterPath = prefersExpandedImages ? (images?.preferredPosterPath ?? posterPath) : posterPath
+        let expandedBackdropPath = prefersExpandedImages ? (images?.preferredBackdropPath ?? backdropPath) : backdropPath
+        return MediaItem(id: itemId, type: type, title: displayTitle, year: year, posterPath: expandedPosterPath,
+                         backdropPath: expandedBackdropPath, overview: overview, genres: genres?.map(\.name) ?? [],
                          imdbRating: voteAverage, runtime: rt, status: status, tmdbId: id, lastFetched: Date())
     }
 }
 extension TMDBDetailResponse: Decodable {}
+
+struct TMDBImagesResponse: Sendable, Decodable {
+    let backdrops: [TMDBImageAsset]?
+    let posters: [TMDBImageAsset]?
+
+    enum CodingKeys: String, CodingKey {
+        case backdrops
+        case posters
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        backdrops = Array((try container.decodeIfPresent([TMDBImageAsset].self, forKey: .backdrops) ?? [])
+            .prefix(TMDBResponseLimits.imageAssets))
+        posters = Array((try container.decodeIfPresent([TMDBImageAsset].self, forKey: .posters) ?? [])
+            .prefix(TMDBResponseLimits.imageAssets))
+    }
+
+    var preferredBackdropPath: String? {
+        Self.preferredPath(from: backdrops)
+    }
+
+    var preferredPosterPath: String? {
+        Self.preferredPath(from: posters)
+    }
+
+    private static func preferredPath(from assets: [TMDBImageAsset]?) -> String? {
+        assets?
+            .filter { $0.filePath?.isEmpty == false }
+            .sorted {
+                if $0.voteAverage != $1.voteAverage {
+                    return ($0.voteAverage ?? 0) > ($1.voteAverage ?? 0)
+                }
+                return ($0.voteCount ?? 0) > ($1.voteCount ?? 0)
+            }
+            .first?
+            .filePath
+    }
+}
+
+struct TMDBImageAsset: Sendable, Decodable {
+    let filePath: String?
+    let voteAverage: Double?
+    let voteCount: Int?
+}
 
 struct TMDBGenre: Sendable { let id: Int; let name: String }
 extension TMDBGenre: Decodable {}
@@ -423,8 +545,19 @@ extension TMDBTVDetailResponse: Decodable {}
 struct TMDBSeason: Sendable { let id: Int; let seasonNumber: Int; let name: String; let overview: String?; let posterPath: String?; let episodeCount: Int; let airDate: String? }
 extension TMDBSeason: Decodable {}
 
-struct TMDBSeasonResponse: Sendable { let episodes: [TMDBEpisode] }
-extension TMDBSeasonResponse: Decodable {}
+struct TMDBSeasonResponse: Sendable, Decodable {
+    let episodes: [TMDBEpisode]
+
+    enum CodingKeys: String, CodingKey {
+        case episodes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        episodes = Array((try container.decodeIfPresent([TMDBEpisode].self, forKey: .episodes) ?? [])
+            .prefix(TMDBResponseLimits.seasonEpisodes))
+    }
+}
 
 struct TMDBEpisode: Sendable { let id: Int; let episodeNumber: Int; let name: String?; let overview: String?; let airDate: String?; let stillPath: String?; let runtime: Int? }
 extension TMDBEpisode: Decodable {}
@@ -439,11 +572,23 @@ struct TMDBPersonSearchResult: Sendable {
 }
 extension TMDBPersonSearchResult: Decodable {}
 
-struct TMDBPersonCombinedCreditsResponse: Sendable {
+struct TMDBPersonCombinedCreditsResponse: Sendable, Decodable {
     let cast: [TMDBPersonCredit]
     let crew: [TMDBPersonCredit]
+
+    enum CodingKeys: String, CodingKey {
+        case cast
+        case crew
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        cast = Array((try container.decodeIfPresent([TMDBPersonCredit].self, forKey: .cast) ?? [])
+            .prefix(TMDBResponseLimits.personCredits))
+        crew = Array((try container.decodeIfPresent([TMDBPersonCredit].self, forKey: .crew) ?? [])
+            .prefix(TMDBResponseLimits.personCredits))
+    }
 }
-extension TMDBPersonCombinedCreditsResponse: Decodable {}
 
 struct TMDBPersonCredit: Sendable {
     let id: Int
@@ -499,13 +644,81 @@ struct TMDBPersonCredit: Sendable {
 }
 extension TMDBPersonCredit: Decodable {}
 
+private enum TMDBErrorRedactionPolicy {
+    private static let urlPattern = SensitiveURLQueryPolicy.regularExpression(
+        pattern: #"(https?):\/\/[^\s"']+"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let sensitiveAssignmentPattern = SensitiveURLQueryPolicy.regularExpression(
+        pattern: #"(?i)(?<![A-Za-z0-9_-])(?:"# + SensitiveURLQueryPolicy.assignmentNameAlternationPattern + #")=([^\s&]+)"#,
+        options: []
+    )
+
+    static func sanitized(_ message: String) -> String {
+        let urlRedacted = redactURLs(in: message)
+        let assignmentRedacted = redactSensitiveAssignments(in: urlRedacted)
+        return SensitiveURLQueryPolicy.redactedBearerTokens(in: assignmentRedacted)
+    }
+
+    private static func redactURLs(in message: String) -> String {
+        guard let urlPattern else { return message }
+        let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
+        let matches = urlPattern.matches(in: message, options: [], range: nsRange)
+        guard !matches.isEmpty else { return message }
+
+        var redacted = message
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: redacted) else { continue }
+            let candidate = String(redacted[range])
+            redacted.replaceSubrange(range, with: redactedURLString(candidate))
+        }
+        return redacted
+    }
+
+    private static func redactedURLString(_ value: String) -> String {
+        guard var components = URLComponents(string: value) else { return "<redacted-url>" }
+        if components.user?.isEmpty == false {
+            components.user = "REDACTED"
+        }
+        if components.password?.isEmpty == false {
+            components.password = "REDACTED"
+        }
+        components.queryItems = components.queryItems?.map { item in
+            URLQueryItem(
+                name: item.name,
+                value: SensitiveURLQueryPolicy.isSensitiveName(item.name) ? "REDACTED" : item.value
+            )
+        }
+        components.fragment = nil
+        return components.string ?? "<redacted-url>"
+    }
+
+    private static func redactSensitiveAssignments(in message: String) -> String {
+        guard let sensitiveAssignmentPattern else { return message }
+        let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
+        let matches = sensitiveAssignmentPattern.matches(in: message, options: [], range: nsRange)
+        guard !matches.isEmpty else { return message }
+
+        var redacted = message
+        for match in matches.reversed() {
+            guard match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: redacted) else {
+                continue
+            }
+            redacted.replaceSubrange(valueRange, with: "REDACTED")
+        }
+        return redacted
+    }
+}
+
 enum TMDBError: LocalizedError, Equatable {
     case invalidURL(String), invalidResponse, unauthorized, notFound(String), rateLimited, httpError(Int, String)
     var errorDescription: String? {
         switch self {
         case .invalidURL(let p): return "Invalid TMDB URL: \(p)"
         case .invalidResponse: return "Invalid response"
-        case .unauthorized: return "Invalid metadata API key"
+        case .unauthorized: return "Invalid TMDb API key or read token"
         case .notFound(let id): return "Not found: \(id)"
         case .rateLimited: return "Rate limited"
         case .httpError(let c, let m): return "HTTP \(c): \(m)"

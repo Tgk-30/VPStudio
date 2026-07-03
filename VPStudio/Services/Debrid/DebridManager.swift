@@ -115,6 +115,10 @@ actor DebridManager {
     private var servicePriority: [DebridServiceType: Int] = [:]
     private var hasInitialized = false
 
+    private static func sanitizedErrorDescription(_ error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+
     init(
         database: DatabaseManager,
         secretStore: any SecretStore,
@@ -144,7 +148,8 @@ actor DebridManager {
                 newServices[config.serviceType] = service
                 newPriority[config.serviceType] = config.priority
             } catch {
-                Self.logger.error("Failed to initialize \(config.serviceType.rawValue, privacy: .public) debrid service: \(error.localizedDescription, privacy: .public)")
+                let sanitizedError = Self.sanitizedErrorDescription(error)
+                Self.logger.error("Failed to initialize \(config.serviceType.rawValue, privacy: .public) debrid service: \(sanitizedError, privacy: .public)")
             }
         }
 
@@ -204,7 +209,8 @@ actor DebridManager {
                     }
                 } catch {
                     firstFailure = firstFailure ?? error
-                    Self.logger.error("Cache check failed for \(serviceType.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    let sanitizedError = Self.sanitizedErrorDescription(error)
+                    Self.logger.error("Cache check failed for \(serviceType.rawValue, privacy: .public): \(sanitizedError, privacy: .public)")
                 }
             }
         }
@@ -363,7 +369,8 @@ actor DebridManager {
                 }
 
                 firstFailure = firstFailure ?? error
-                Self.logger.error("Stream resolve failed for \(serviceType.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                let sanitizedError = Self.sanitizedErrorDescription(error)
+                Self.logger.error("Stream resolve failed for \(serviceType.rawValue, privacy: .public): \(sanitizedError, privacy: .public)")
             }
         }
 
@@ -550,10 +557,12 @@ actor DebridManager {
         do {
             try await service.cleanupRemoteTransfer(torrentId: torrentId)
         } catch {
+            let sanitizedError = Self.sanitizedErrorDescription(error)
             if let reason {
-                Self.logger.error("Remote cleanup failed for \(serviceType.rawValue, privacy: .public) after \(reason.localizedDescription, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                let sanitizedReason = Self.sanitizedErrorDescription(reason)
+                Self.logger.error("Remote cleanup failed for \(serviceType.rawValue, privacy: .public) after \(sanitizedReason, privacy: .public): \(sanitizedError, privacy: .public)")
             } else {
-                Self.logger.error("Remote cleanup failed for \(serviceType.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Remote cleanup failed for \(serviceType.rawValue, privacy: .public): \(sanitizedError, privacy: .public)")
             }
         }
     }

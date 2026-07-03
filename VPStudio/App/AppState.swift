@@ -3,6 +3,12 @@ import Foundation
 import Observation
 import os
 
+enum AppStateErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+}
+
 @Observable
 @MainActor
 final class AppState {
@@ -103,7 +109,7 @@ final class AppState {
     }
 
     // MARK: - Navigation
-    var selectedTab: SidebarTab = .discover
+    var selectedTab: SidebarTab = QARuntimeOptions.initialTab ?? .discover
     var navigationLayout: NavigationLayout = .bottomTabBar
     var isShowingSetup: Bool = false
     var setupRecommendationNeeded: Bool = false
@@ -142,6 +148,9 @@ final class AppState {
     var activePlayerSession: PlayerSessionRequest?
     var fullscreenBySessionID: [UUID: Bool] = [:]
     var isMainWindowSuppressedForPlayer = false
+    var mainWindowSuppressedPlayerSessionID: UUID?
+    var didMainWindowDisappearForPlayer = false
+    var didMainWindowReappearForPlayer = false
 
     // Cross-scene bridge: PlayerView sets these; immersive space reads them.
     // Weak because PlayerView owns the strong references via @State.
@@ -207,7 +216,8 @@ final class AppState {
                 _database = database
                 return database
             } catch {
-                Self.logger.error("Injected database factory failed: \(error.localizedDescription, privacy: .public)")
+                let message = AppStateErrorPresentationPolicy.displayMessage(for: error)
+                Self.logger.error("Injected database factory failed: \(message, privacy: .public)")
             }
         }
 
@@ -232,7 +242,7 @@ final class AppState {
 
             return try DatabaseManager(path: nil)
         } catch {
-            let message = "Primary database initialization failed: \(error.localizedDescription)"
+            let message = "Primary database initialization failed: \(AppStateErrorPresentationPolicy.displayMessage(for: error))"
             failureMessages.append(message)
             Self.logger.fault("\(message, privacy: .public). Attempting in-memory fallback.")
             // In constrained environments (for example read-only home directories),
@@ -242,7 +252,7 @@ final class AppState {
             do {
                 return try DatabaseManager(inMemoryNamed: inMemoryIdentifier)
             } catch {
-                let inMemoryMessage = "In-memory database fallback failed: \(error.localizedDescription)"
+                let inMemoryMessage = "In-memory database fallback failed: \(AppStateErrorPresentationPolicy.displayMessage(for: error))"
                 failureMessages.append(inMemoryMessage)
                 Self.logger.fault("Failed to initialize in-memory fallback: \(inMemoryMessage, privacy: .public)")
             }
@@ -338,7 +348,7 @@ final class AppState {
             do {
                 try fileManager.removeItem(at: url)
             } catch {
-                failures.append("\(label): \(error.localizedDescription)")
+                failures.append("\(label): \(AppStateErrorPresentationPolicy.displayMessage(for: error))")
             }
         }
 
@@ -467,7 +477,8 @@ final class AppState {
                         try await settingsManager.setString(key: SettingsKeys.traktRefreshToken, value: refresh)
                     }
                 } catch {
-                    Self.logger.error("Failed to persist refreshed Trakt tokens: \(error.localizedDescription, privacy: .public)")
+                    let message = AppStateErrorPresentationPolicy.displayMessage(for: error)
+                    Self.logger.error("Failed to persist refreshed Trakt tokens: \(message, privacy: .public)")
                 }
             }
         )
@@ -533,6 +544,13 @@ final class AppState {
         OMDbService(apiKey: apiKey)
     }
 
+    func createMetadataService(configuration: MetadataProviderConfiguration) -> any MetadataProvider {
+        CachingMetadataProvider(
+            wrapping: MetadataProviderFactory.make(configuration: configuration),
+            configuration: configuration
+        )
+    }
+
     // MARK: - Initialization
 
     func bootstrap() async {
@@ -576,7 +594,7 @@ final class AppState {
                     selectedEnvironmentAsset = try await environmentCatalogManager.activeAsset()
                 }
             } catch {
-                environmentBootstrapWarning = error.localizedDescription
+                environmentBootstrapWarning = AppStateErrorPresentationPolicy.displayMessage(for: error)
             }
 
             let hasDebridConfig: Bool
@@ -598,8 +616,7 @@ final class AppState {
                 let metadataApiKey = try await fetchMetadataApiKey() ?? ""
                 hasMetadataApiKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             } else {
-                let metadataApiKey = (try? await settingsManager.getMetadataApiKey()) ?? ""
-                hasMetadataApiKey = !metadataApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                hasMetadataApiKey = ((try? await settingsManager.hasMetadataProviderConfiguration()) ?? false)
             }
 
             setupRecommendationNeeded = !hasDebridConfig || !hasReadyDebridService || !hasMetadataApiKey
@@ -621,7 +638,8 @@ final class AppState {
                 _ = await self.performTraktSyncAndRefreshLocalState(expectedGeneration: generation)
             }
         } catch {
-            Self.logger.error("Bootstrap error: \(error.localizedDescription, privacy: .public)")
+            let message = AppStateErrorPresentationPolicy.displayMessage(for: error)
+            Self.logger.error("Bootstrap error: \(message, privacy: .public)")
             isShowingSetup = true
         }
 
@@ -713,6 +731,9 @@ final class AppState {
             if persisted.changed {
                 try await database.saveDebridConfig(persisted.config)
             }
+            if persisted.config.shouldDeleteStoredSecretAfterPersisting {
+                try? await persisted.config.deleteStoredSecret(using: secretStore)
+            }
         }
 
         let indexerConfigs = try await database.fetchAllIndexerConfigs()
@@ -720,6 +741,9 @@ final class AppState {
             let persisted = try await config.persistedCopy(using: secretStore)
             if persisted.changed {
                 try await database.saveIndexerConfig(persisted.config)
+            }
+            if persisted.config.shouldDeleteStoredSecretAfterPersisting {
+                try? await persisted.config.deleteStoredSecret(using: secretStore)
             }
         }
     }
@@ -777,7 +801,8 @@ final class AppState {
             applyTraktSyncLocalRefresh(for: .init(localRefreshTargets: [.library]))
             Self.logger.notice("Applied QA Trakt refresh fixture from \(fixturePath, privacy: .public)")
         } catch {
-            Self.logger.error("Failed to apply QA Trakt refresh fixture \(fixturePath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            let message = AppStateErrorPresentationPolicy.displayMessage(for: error)
+            Self.logger.error("Failed to apply QA Trakt refresh fixture \(fixturePath, privacy: .public): \(message, privacy: .public)")
         }
     }
 
@@ -927,6 +952,24 @@ final class AppState {
         await activateEnvironmentAsset(asset)
     }
 
+    func reconcileEnvironmentSelection(withLoadedAssets assets: [EnvironmentAsset]) {
+        let activeAsset = assets.first { $0.isActive }
+        guard let selectedAssetID = selectedEnvironmentAsset?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+              !selectedAssetID.isEmpty else {
+            selectedEnvironmentAsset = activeAsset
+            return
+        }
+
+        if let reloadedSelection = assets.first(where: {
+            $0.id.trimmingCharacters(in: .whitespacesAndNewlines) == selectedAssetID
+        }) {
+            selectedEnvironmentAsset = reloadedSelection
+            return
+        }
+
+        selectedEnvironmentAsset = activeAsset
+    }
+
     func clearEnvironmentSelection() async {
         selectedEnvironmentAsset = nil
         activeEnvironment = nil
@@ -934,7 +977,14 @@ final class AppState {
     }
 
     func clearEnvironmentSelectionIfCurrent(assetID: String) async {
-        guard selectedEnvironmentAsset?.id == assetID else { return }
+        let normalizedAssetID = assetID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedAssetID.isEmpty else { return }
+        if selectedEnvironmentAsset?.id != normalizedAssetID {
+            guard let activeAsset = try? await environmentCatalogManager.activeAsset(),
+                  activeAsset.id == normalizedAssetID else {
+                return
+            }
+        }
         await clearEnvironmentSelection()
     }
 
@@ -1061,6 +1111,9 @@ final class AppState {
             shouldRestoreImmersiveAfterSuspension = false
             spatialAudioManager.exitImmersiveMode()
             isMainWindowSuppressedForPlayer = false
+            mainWindowSuppressedPlayerSessionID = nil
+            didMainWindowDisappearForPlayer = false
+            didMainWindowReappearForPlayer = false
             environmentBootstrapWarning = nil
             indexerReloadWarning = nil
 
@@ -1084,7 +1137,8 @@ final class AppState {
                 do {
                     try await activeSecretStore.deleteAllSecrets()
                 } catch {
-                    Self.logger.error("Secret cleanup after namespace rotation failed: \(error.localizedDescription, privacy: .public)")
+                    let message = AppStateErrorPresentationPolicy.displayMessage(for: error)
+                    Self.logger.error("Secret cleanup after namespace rotation failed: \(message, privacy: .public)")
                 }
             }
 
@@ -1114,7 +1168,7 @@ final class AppState {
             indexerReloadWarning = nil
             NotificationCenter.default.post(name: .indexersDidChange, object: nil)
         } catch {
-            let message = error.localizedDescription
+            let message = AppStateErrorPresentationPolicy.displayMessage(for: error)
             indexerReloadWarning = message
             Self.logger.error("Indexer reload error: \(message, privacy: .public)")
         }
@@ -1126,12 +1180,73 @@ final class AppState {
         releasePlayerResources(clearSession: true)
     }
 
-    func releasePlayerResources(clearSession: Bool = true, sessionID: UUID? = nil) {
+    func beginEmbeddedPlayerSession(_ request: PlayerSessionRequest) {
         activeAVPlayer = nil
         activeVideoRenderer = nil
+        isImmersiveTransitionInFlight = false
+        shouldRestoreImmersiveAfterSuspension = false
+        isMainWindowSuppressedForPlayer = false
+        mainWindowSuppressedPlayerSessionID = nil
+        didMainWindowDisappearForPlayer = false
+        didMainWindowReappearForPlayer = false
+        activePlayerSession = request
+    }
+
+    func beginMainWindowSuppressionForPlayer(sessionID: UUID) {
+        if mainWindowSuppressedPlayerSessionID != sessionID {
+            didMainWindowDisappearForPlayer = false
+            didMainWindowReappearForPlayer = false
+        }
+        mainWindowSuppressedPlayerSessionID = sessionID
+        isMainWindowSuppressedForPlayer = true
+    }
+
+    func markMainWindowDidDisappearForPlayer() {
+        guard isMainWindowSuppressedForPlayer else { return }
+        didMainWindowDisappearForPlayer = true
+        didMainWindowReappearForPlayer = false
+    }
+
+    func markMainWindowDidReappearForPlayer() {
+        guard isMainWindowSuppressedForPlayer else { return }
+        // Active suppression means the main window was already hidden behind the
+        // dedicated player. If the main window becomes visible again before we
+        // ever observed an explicit `onDisappear` (e.g. it is reconstructed fresh
+        // while suppression is still in flight), treat suppression itself as the
+        // disappearance so the reappearance still terminates the orphaned player.
+        if !didMainWindowDisappearForPlayer {
+            didMainWindowDisappearForPlayer = true
+        }
+        didMainWindowReappearForPlayer = true
+    }
+
+    func shouldTerminatePlayerForMainWindowActivation() -> Bool {
+        isMainWindowSuppressedForPlayer
+            && didMainWindowDisappearForPlayer
+            && didMainWindowReappearForPlayer
+    }
+
+    func clearMainWindowSuppressionForPlayer(sessionID: UUID? = nil) {
+        if let sessionID,
+           let suppressedSessionID = mainWindowSuppressedPlayerSessionID,
+           suppressedSessionID != sessionID {
+            return
+        }
+        isMainWindowSuppressedForPlayer = false
+        mainWindowSuppressedPlayerSessionID = nil
+        didMainWindowDisappearForPlayer = false
+        didMainWindowReappearForPlayer = false
+    }
+
+    func releasePlayerResources(clearSession: Bool = true, sessionID: UUID? = nil) {
         let currentSessionID = activePlayerSession?.id
         let targetSessionID = sessionID ?? currentSessionID
         let shouldClearSessionState = sessionID == nil || currentSessionID == nil || currentSessionID == targetSessionID
+
+        if shouldClearSessionState {
+            activeAVPlayer = nil
+            activeVideoRenderer = nil
+        }
 
         if clearSession,
            shouldClearSessionState {
@@ -1140,7 +1255,7 @@ final class AppState {
             shouldRestoreImmersiveAfterSuspension = false
             pendingImmersiveDismissReason = .userInitiated
             if sessionID == nil {
-                isMainWindowSuppressedForPlayer = false
+                clearMainWindowSuppressionForPlayer()
             }
         }
 
@@ -1188,6 +1303,9 @@ final class AppState {
                 episodeNumber: context.episodeNumber
             )
             let stream = try await streamResult
+            guard PlayerStreamURLPolicy.isLaunchable(stream) else {
+                return nil
+            }
             let nextEpisode = await nextEpisodeResult
             return PlayerSessionRequest(
                 stream: stream,
@@ -1217,7 +1335,12 @@ final class AppState {
         preview: MediaPreview
     ) async -> PlayerSessionIdentity {
         let fallback = PlayerSessionIdentity(
-            mediaId: mediaId,
+            mediaId: Self.playerSessionMediaID(
+                mediaId: mediaId,
+                mediaType: preview.type,
+                previewId: preview.id,
+                tmdbId: preview.tmdbId
+            ),
             imdbId: Self.playerSessionIMDbID(mediaId: mediaId, previewId: preview.id),
             tmdbId: preview.tmdbId
         )
@@ -1230,7 +1353,12 @@ final class AppState {
         for lookupID in lookupIDs {
             guard let item = resolved[lookupID] else { continue }
             return PlayerSessionIdentity(
-                mediaId: item.id,
+                mediaId: Self.playerSessionMediaID(
+                    mediaId: item.id,
+                    mediaType: item.type,
+                    previewId: preview.id,
+                    tmdbId: item.tmdbId ?? preview.tmdbId
+                ),
                 imdbId: Self.playerSessionIMDbID(mediaId: item.id, previewId: preview.id)
                     ?? fallback.imdbId,
                 tmdbId: item.tmdbId ?? preview.tmdbId
@@ -1264,16 +1392,17 @@ final class AppState {
         episodeNumber: Int?
     ) async -> PlayerSessionRequest.NextEpisodeCandidate? {
         guard isSeries, let season, let episodeNumber else { return nil }
-        let apiKey = (try? await settingsManager.getMetadataApiKey()) ?? ""
-        guard !apiKey.isEmpty else { return nil }
-        let service = createMetadataService(apiKey: apiKey)
-        let lookupID = Self.metadataEpisodeLookupID(
+        let configuration = (try? await settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
+        guard configuration.isConfigured else { return nil }
+        let service = createMetadataService(configuration: configuration)
+        guard let lookupID = Self.metadataEpisodeLookupID(
             mediaId: mediaId,
             previewId: previewId,
             mediaTitle: mediaTitle,
             mediaYear: mediaYear,
-            tmdbId: tmdbId
-        )
+            tmdbId: tmdbId,
+            allowsTMDbIdentifier: configuration.hasTMDb
+        ) else { return nil }
         guard let episodes = try? await service.getEpisodes(id: lookupID, type: .series, season: season) else { return nil }
         let sorted = episodes.sorted { $0.episodeNumber < $1.episodeNumber }
         guard let index = sorted.firstIndex(where: { $0.episodeNumber == episodeNumber }),
@@ -1292,18 +1421,29 @@ final class AppState {
         previewId: String?,
         mediaTitle: String? = nil,
         mediaYear: Int? = nil,
-        tmdbId: Int?
-    ) -> String {
-        if let imdbID = IMDbIdentifierPolicy.firstID(in: mediaId)
-            ?? IMDbIdentifierPolicy.firstID(in: previewId) {
+        tmdbId: Int?,
+        allowsTMDbIdentifier: Bool = true
+    ) -> String? {
+        if let imdbID = IMDbIdentifierPolicy.appScopedID(in: mediaId)
+            ?? IMDbIdentifierPolicy.appScopedID(in: previewId) {
             return imdbID
+        }
+        if allowsTMDbIdentifier, let tmdbId {
+            return "tmdb-\(tmdbId)"
         }
         if let title = mediaTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
            !title.isEmpty {
             return metadataTitleLookupID(title: title, year: mediaYear)
         }
-        if let tmdbId {
-            return "tmdb-\(tmdbId)"
+        if !allowsTMDbIdentifier,
+           let providerCompatibleID = orderedNonEmptyIDs([mediaId, previewId]).first(where: {
+               MetadataProviderIdentifierPolicy.tmdbID(from: $0) == nil
+           }) {
+            return providerCompatibleID
+        }
+        if !allowsTMDbIdentifier,
+           MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) != nil {
+            return nil
         }
         return mediaId
     }
@@ -1313,7 +1453,24 @@ final class AppState {
     }
 
     private static func playerSessionIMDbID(mediaId: String, previewId: String?) -> String? {
-        IMDbIdentifierPolicy.firstID(in: mediaId) ?? IMDbIdentifierPolicy.firstID(in: previewId)
+        IMDbIdentifierPolicy.appScopedID(in: mediaId) ?? IMDbIdentifierPolicy.appScopedID(in: previewId)
+    }
+
+    private static func playerSessionMediaID(
+        mediaId: String,
+        mediaType: MediaType,
+        previewId: String?,
+        tmdbId: Int?
+    ) -> String {
+        if let imdbID = playerSessionIMDbID(mediaId: mediaId, previewId: previewId) {
+            return "\(mediaType.rawValue)-omdb-\(imdbID)"
+        }
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId)
+            ?? previewId.flatMap(MetadataProviderIdentifierPolicy.tmdbID(from:))
+            ?? tmdbId {
+            return "\(mediaType.rawValue)-tmdb-\(tmdbID)"
+        }
+        return mediaId
     }
 }
 

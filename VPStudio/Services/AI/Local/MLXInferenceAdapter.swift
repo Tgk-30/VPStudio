@@ -279,6 +279,7 @@ struct CoreMLInferenceAdapter: LocalInferenceAdapting {
 enum LocalModelDownloader {
     struct SnapshotRequest: Equatable {
         let repoID: String
+        let revision: String
         let matchingPatterns: [String]
     }
 
@@ -286,21 +287,28 @@ enum LocalModelDownloader {
 
     static func snapshotRequest(
         repoID: String,
+        revision: String,
         matchingPatterns: [String] = snapshotMatchingPatterns
     ) -> SnapshotRequest {
-        SnapshotRequest(repoID: repoID, matchingPatterns: matchingPatterns)
+        SnapshotRequest(repoID: repoID, revision: revision, matchingPatterns: matchingPatterns)
     }
 
     /// Downloads a HuggingFace model repo snapshot to local storage.
     static func download(
         repoID: String,
+        revision: String,
         to directory: URL,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> URL {
-        let request = snapshotRequest(repoID: repoID)
+        guard let immutableRevision = LocalModelRevisionPolicy.normalizedImmutableRevision(revision) else {
+            throw LocalModelDownloadPreflightError.mutableRevision(revision)
+        }
+
+        let request = snapshotRequest(repoID: repoID, revision: immutableRevision)
         let repo = Hub.Repo(id: request.repoID)
         return try await HubApi.shared.snapshot(
             from: repo,
+            revision: request.revision,
             matching: request.matchingPatterns,
             progressHandler: progressHandler
         )

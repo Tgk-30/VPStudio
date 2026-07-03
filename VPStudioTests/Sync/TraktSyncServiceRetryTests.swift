@@ -503,9 +503,12 @@ struct TraktSyncServiceEpisodeContextTests {
         #expect(episodes?[0]["number"] as? Int == 1)
     }
 
-    @Test func episodeSyncPreflightAcceptsStandaloneIMDbIDOnly() {
+    @Test func episodeSyncPreflightAcceptsIMDbAndScopedEpisodeIDs() {
         #expect(TraktEpisodeIdentifierPolicy.canSyncEpisodeID("TT0959621"))
-        #expect(!TraktEpisodeIdentifierPolicy.canSyncEpisodeID("https://www.imdb.com/title/TT0959621/"))
+        #expect(TraktEpisodeIdentifierPolicy.canSyncEpisodeID("episode-imdb-TT0959621"))
+        #expect(TraktEpisodeIdentifierPolicy.canSyncEpisodeID("episode-omdb-TT0959621"))
+        #expect(TraktEpisodeIdentifierPolicy.canonicalID(from: "episode-imdb-TT0959621") == "tt0959621")
+        #expect(TraktEpisodeIdentifierPolicy.canonicalID(from: "episode-omdb-TT0959621") == "tt0959621")
     }
 
     @Test func compositeOMDbFallbackEpisodeIDUsesShowSeasonEpisodePayload() async throws {

@@ -127,6 +127,18 @@ struct QARuntimeOptionsTests {
         #expect(QARuntimeOptions.absoluteURL(from: "not a url") == nil)
         #expect(QARuntimeOptions.absoluteURL(from: "/local/file.mp4") == nil)
         #expect(QARuntimeOptions.absoluteURL(from: "file:///tmp/movie.mp4") == nil)
+        #expect(QARuntimeOptions.absoluteURL(from: "file://localhost/tmp/movie.mp4") == nil)
+        #expect(QARuntimeOptions.absoluteURL(from: "ftp://cdn.example.com/movie.mp4") == nil)
+        #expect(QARuntimeOptions.absoluteURL(from: "http://127.0.0.1/movie.mp4") == nil)
+    }
+
+    @Test
+    func publicMediaURLUsesProductionDirectStreamBoundary() {
+        #expect(QARuntimeOptions.publicMediaURL(from: "https://cdn.example.com/movie.mp4")?.absoluteString == "https://cdn.example.com/movie.mp4")
+        #expect(QARuntimeOptions.publicMediaURL(from: "file://localhost/tmp/movie.mp4") == nil)
+        #expect(QARuntimeOptions.publicMediaURL(from: "ftp://cdn.example.com/movie.mp4") == nil)
+        #expect(QARuntimeOptions.publicMediaURL(from: "http://127.0.0.1/movie.mp4") == nil)
+        #expect(QARuntimeOptions.publicMediaURL(from: "http://169.254.169.254/latest/meta-data") == nil)
     }
 
     @Test
@@ -178,6 +190,18 @@ struct QARuntimeOptionsTests {
     }
 
     @Test
+    func sampleURLsRejectPrivateAndNonHTTPURLsBeforeFallback() {
+        let snapshot = QARuntimeOptions.EnvironmentSnapshot([
+            "VPSTUDIO_QA_SAMPLE_URLS": "file://localhost/tmp/movie.mp4, http://10.0.0.5/movie.mp4",
+            "VPSTUDIO_QA_SAMPLE_URL": "https://cdn.example.com/fallback.mp4"
+        ])
+
+        #expect(QARuntimeOptions.sampleURLs(from: snapshot).map(\.absoluteString) == [
+            "https://cdn.example.com/fallback.mp4"
+        ])
+    }
+
+    @Test
     func debridFixtureEquatableIncludesServiceURLsAndFileName() throws {
         let url = try #require(URL(string: "https://cdn.example.com/movie.mp4"))
         let fixture = QADebridFixture(
@@ -209,6 +233,10 @@ struct QARuntimeOptionsTests {
         #expect(QARuntimeOptions.debridFixture(from: .init([
             "VPSTUDIO_QA_DEBRID_FIXTURE_HASH": "ABCDEF",
             "VPSTUDIO_QA_DEBRID_FIXTURE_URLS": "not a url"
+        ])) == nil)
+        #expect(QARuntimeOptions.debridFixture(from: .init([
+            "VPSTUDIO_QA_DEBRID_FIXTURE_HASH": "ABCDEF",
+            "VPSTUDIO_QA_DEBRID_FIXTURE_URLS": "file://localhost/tmp/movie.mp4, http://192.168.1.4/movie.mp4"
         ])) == nil)
     }
 
@@ -347,6 +375,7 @@ struct QARuntimeOptionsTests {
         _ = QARuntimeOptions.playerAutoCloseAfterSeconds
         _ = QARuntimeOptions.playerAspectRatioSelection
         _ = QARuntimeOptions.showAspectRatioBadge
+        _ = QARuntimeOptions.playerAppleEnvironmentMode
         _ = QARuntimeOptions.autoOpenResetSheet
         _ = QARuntimeOptions.autoExecuteReset
         _ = QARuntimeOptions.traktRefreshFixturePath
@@ -356,6 +385,7 @@ struct QARuntimeOptionsTests {
         _ = QARuntimeOptions.suppressQuickStartPrompt
         _ = QARuntimeOptions.setupAutoAdvance
         _ = QARuntimeOptions.setupOMDbApiKey
+        _ = QARuntimeOptions.setupTMDbApiKey
         _ = QARuntimeOptions.setupPreferredQuality
         _ = QARuntimeOptions.setupSubtitleLanguage
     }

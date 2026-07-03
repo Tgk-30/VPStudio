@@ -66,7 +66,7 @@ struct AIMovieRecommendationTests {
             imdbId: " TT1160419 ",
             tmdbId: 438631
         )
-        #expect(rec.id == "movie-imdb-tt1160419")
+        #expect(rec.id == "movie-omdb-tt1160419")
         #expect(rec.toMediaPreview().id == "tt1160419")
         #expect(rec.toMediaPreview().tmdbId == nil)
     }

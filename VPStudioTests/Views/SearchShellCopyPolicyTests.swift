@@ -90,6 +90,15 @@ struct SearchShellCopyPolicyTests {
                 submittedQuery: ""
             ) == "Search a title, actor, or keyword — or let AI pick for you."
         )
+
+        #expect(
+            SearchShellCopyPolicy.subtitle(
+                activeMoodCardTitle: nil,
+                selectedGenreName: nil,
+                submittedQuery: "",
+                supportsPersonCreditSearch: false
+            ) == "Search a title or keyword — or let AI pick for you."
+        )
     }
 }
 
@@ -97,8 +106,9 @@ struct SearchShellCopyPolicyTests {
 struct SearchResultsPresentationPolicyTests {
     @Test
     func bottomPaddingKeepsLastGridRowClearOfVisionWindowChrome() {
-        #expect(SearchResultsPresentationPolicy.standardBottomContentPadding == 132)
-        #expect(SearchResultsPresentationPolicy.bottomTabBarContentPadding == 240)
+        #expect(SearchResultsPresentationPolicy.standardBottomContentPadding == 180)
+        #expect(SearchResultsPresentationPolicy.bottomTabBarContentPadding == 288)
+        #expect(SearchResultsPresentationPolicy.bottomViewportInset == 132)
         #expect(SearchResultsPresentationPolicy.bottomContentPadding(for: .leftSidebar) == SearchResultsPresentationPolicy.standardBottomContentPadding)
         #expect(SearchResultsPresentationPolicy.bottomContentPadding(for: .bottomTabBar) == SearchResultsPresentationPolicy.bottomTabBarContentPadding)
         #expect(SearchResultsPresentationPolicy.bottomTabBarContentPadding > SearchResultsPresentationPolicy.standardBottomContentPadding)

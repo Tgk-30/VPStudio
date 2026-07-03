@@ -372,10 +372,11 @@ struct IndexerSettingsView: View {
     private func delete(configID: String) async {
         do {
             try await appState.database.setSetting(key: IndexerManager.bootstrapSettingKey, value: "true")
-            if let config = configs.first(where: { $0.id == configID }) {
-                try await config.deleteStoredSecret(using: appState.secretStore)
-            }
+            let config = configs.first(where: { $0.id == configID })
             try await appState.database.deleteIndexerConfig(id: configID)
+            if let config {
+                try? await config.deleteStoredSecret(using: appState.secretStore)
+            }
             let fetched = try await appState.database.fetchAllIndexerConfigs()
             configs = try await hydrateConfigsForDisplay(fetched)
             try await appState.indexerManager.initialize()
@@ -477,6 +478,7 @@ struct IndexerSettingsView: View {
         let normalized = reindexed(input)
         let persisted = try await persistIndexerConfigs(normalized)
         try await appState.database.saveIndexerConfigs(persisted)
+        await cleanupClearedIndexerSecrets(in: persisted)
     }
 
     nonisolated static func normalizePrioritiesPreservingOrder(_ input: [IndexerConfig]) -> [IndexerConfig] {
@@ -509,6 +511,7 @@ struct IndexerSettingsView: View {
         if persisted != fetched {
             try await appState.database.saveIndexerConfigs(persisted)
         }
+        await cleanupClearedIndexerSecrets(in: persisted)
 
         var display: [IndexerConfig] = []
         display.reserveCapacity(persisted.count)
@@ -525,6 +528,12 @@ struct IndexerSettingsView: View {
             persisted.append(try await config.persistedCopy(using: appState.secretStore).config)
         }
         return persisted
+    }
+
+    private func cleanupClearedIndexerSecrets(in configs: [IndexerConfig]) async {
+        for config in configs where config.shouldDeleteStoredSecretAfterPersisting {
+            try? await config.deleteStoredSecret(using: appState.secretStore)
+        }
     }
 
     struct IndexerDraft {
@@ -662,8 +671,16 @@ struct IndexerSettingsView: View {
                 return IndexerURLSecurityPolicy.validationMessage
             }
 
-            if showsAPIKeyField, (normalizedAPIKey?.isEmpty ?? true) {
-                return "API key is required for \(indexerType.displayName)."
+            if showsAPIKeyField {
+                guard let normalizedAPIKey, !normalizedAPIKey.isEmpty else {
+                    return "API key is required for \(indexerType.displayName)."
+                }
+                guard IndexerURLSecurityPolicy.permitsAPIKeyTransport(
+                    baseURL: urlString,
+                    apiKey: normalizedAPIKey
+                ) else {
+                    return IndexerURLSecurityPolicy.apiKeyTransportValidationMessage
+                }
             }
 
             if indexerType == .stremio {

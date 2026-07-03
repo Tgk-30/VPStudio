@@ -443,8 +443,39 @@ enum PrivateNetworkHostPolicy {
         }
         // Unique-local fc00::/7
         if (b[0] & 0xfe) == 0xfc { return true }
-        // Link-local fe80::/10
+        // Link-local fe80::/10 and deprecated site-local fec0::/10
         if b[0] == 0xfe, (b[1] & 0xc0) == 0x80 { return true }
+        if b[0] == 0xfe, (b[1] & 0xc0) == 0xc0 { return true }
+        // Multicast ff00::/8
+        if b[0] == 0xff { return true }
+        // Discard-only 100::/64
+        if b[0] == 0x01,
+           b[1] == 0x00,
+           b[2..<8].allSatisfy({ $0 == 0 }) {
+            return true
+        }
+        // IPv4/IPv6 translation prefixes with non-global semantics.
+        if b[0] == 0x00, b[1] == 0x64, b[2] == 0xff, b[3] == 0x9b {
+            // 64:ff9b::/96 and 64:ff9b:1::/48
+            if b[4..<12].allSatisfy({ $0 == 0 }) { return true }
+            if b[4] == 0, b[5] == 0x01 { return true }
+        }
+        // IETF/documentation/transition special-use ranges.
+        if b[0] == 0x20, b[1] == 0x01 {
+            // 2001::/32 Teredo and related IETF protocol assignments.
+            if b[2] == 0x00, b[3] == 0x00 { return true }
+            // 2001:2::/48 benchmarking.
+            if b[2] == 0x00, b[3] == 0x02, b[4] == 0, b[5] == 0 { return true }
+            // 2001:10::/28 ORCHID and 2001:20::/28 ORCHIDv2.
+            if b[2] == 0x00, (b[3] & 0xf0) == 0x10 { return true }
+            if b[2] == 0x00, (b[3] & 0xf0) == 0x20 { return true }
+            // 2001:db8::/32 documentation.
+            if b[2] == 0x0d, b[3] == 0xb8 { return true }
+        }
+        // 2002::/16 6to4 transition addresses.
+        if b[0] == 0x20, b[1] == 0x02 { return true }
+        // 3fff::/20 documentation prefix.
+        if b[0] == 0x3f, (b[1] & 0xf0) == 0xf0 { return true }
         return false
     }
 }
