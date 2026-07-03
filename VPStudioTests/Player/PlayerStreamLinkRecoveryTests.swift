@@ -85,6 +85,63 @@ struct PlayerStreamLinkRecoveryTests {
         )
     }
 
+    @Test func logicalAttemptKeyUsesResolvedDebridServiceWhenContextHasNoPreference() {
+        let context = StreamRecoveryContext(
+            infoHash: "hash-no-preference",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+        let stream = Fixtures.stream(
+            debridService: DebridServiceType.offcloud.rawValue,
+            recoveryContext: context
+        )
+
+        #expect(
+            PlayerStreamLinkRecovery.attemptTrackingKey(for: stream) ==
+            "offcloud|hash-no-preference|s-|e-"
+        )
+    }
+
+    @Test func logicalAttemptKeyPrefersRecoveryContextServiceOverResolvedStreamService() {
+        let context = StreamRecoveryContext(
+            infoHash: "hash-with-preference",
+            preferredService: .premiumize,
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+        let stream = Fixtures.stream(
+            debridService: DebridServiceType.realDebrid.rawValue,
+            recoveryContext: context
+        )
+
+        #expect(
+            PlayerStreamLinkRecovery.attemptTrackingKey(for: stream) ==
+            "premiumize|hash-with-preference|s-|e-"
+        )
+    }
+
+    @Test func attemptTrackingKeyPreservesPartialRecoveryContext() {
+        let seasonOnly = Fixtures.stream(
+            recoveryContext: StreamRecoveryContext(
+                infoHash: "hash-season",
+                preferredService: .realDebrid,
+                seasonNumber: 3,
+                episodeNumber: nil
+            )
+        )
+        let episodeOnly = Fixtures.stream(
+            recoveryContext: StreamRecoveryContext(
+                infoHash: "hash-episode",
+                preferredService: .realDebrid,
+                seasonNumber: nil,
+                episodeNumber: 9
+            )
+        )
+
+        #expect(PlayerStreamLinkRecovery.attemptTrackingKey(for: seasonOnly) == "real_debrid|hash-season|s3|e-")
+        #expect(PlayerStreamLinkRecovery.attemptTrackingKey(for: episodeOnly) == "real_debrid|hash-episode|s-|e9")
+    }
+
     @Test func logicalAttemptKeyFallsBackToResolvedStreamIdentityWithoutRecoveryContext() {
         let original = Fixtures.stream(url: "https://cdn.example.com/direct/original.mkv?token=expired")
         let refreshed = Fixtures.stream(url: "https://cdn.example.com/direct/refreshed.mkv?token=fresh")
@@ -99,6 +156,12 @@ struct PlayerStreamLinkRecoveryTests {
             PlayerStreamLinkRecovery.attemptTrackingKey(for: original) !=
             PlayerStreamLinkRecovery.attemptTrackingKey(for: refreshed)
         )
+    }
+
+    @Test func defaultRefreshPlanWrapperUsesRuntimeQAConfigurationAndReturnsNilWithoutContext() {
+        let stream = Fixtures.stream()
+
+        #expect(PlayerStreamLinkRecovery.refreshPlan(for: stream, priorAttempts: 0) == nil)
     }
 
     @Test func qaSampleOverrideCanSwapInFreshTokenizedURL() {
@@ -147,6 +210,61 @@ struct PlayerStreamLinkRecoveryTests {
         #expect(replacement.id == stream.id)
     }
 
+    @Test func qaSampleWithoutRefreshURLFallsThroughToRecoveryContext() {
+        let context = StreamRecoveryContext(
+            infoHash: "QA-HASH",
+            preferredService: .realDebrid,
+            seasonNumber: 1,
+            episodeNumber: 2
+        )
+        let stream = Fixtures.stream(
+            debridService: "qa-sample",
+            recoveryContext: context
+        )
+
+        let plan = PlayerStreamLinkRecovery.refreshPlan(
+            for: stream,
+            priorAttempts: 0,
+            qaRefreshURL: nil
+        )
+
+        guard case let .reResolve(refreshedContext)? = plan else {
+            Issue.record("Expected recovery context re-resolution when no QA refresh URL is configured")
+            return
+        }
+
+        #expect(refreshedContext.infoHash == "qa-hash")
+        #expect(refreshedContext.preferredService == .realDebrid)
+        #expect(refreshedContext.seasonNumber == 1)
+        #expect(refreshedContext.episodeNumber == 2)
+    }
+
+    @Test func qaSampleRefreshURLPrefersReplacementOverRecoveryContext() {
+        let refreshedURL = URL(string: "https://qa.example.com/stream.mp4?token=fresh")!
+        let context = StreamRecoveryContext(
+            infoHash: "qa-hash",
+            preferredService: .realDebrid
+        )
+        let stream = Fixtures.stream(
+            debridService: "qa-sample",
+            recoveryContext: context
+        )
+
+        let plan = PlayerStreamLinkRecovery.refreshPlan(
+            for: stream,
+            priorAttempts: 0,
+            qaRefreshURL: refreshedURL
+        )
+
+        guard case let .replace(replacement)? = plan else {
+            Issue.record("Expected QA refresh URL to replace the stream before re-resolution")
+            return
+        }
+
+        #expect(replacement.streamURL == refreshedURL)
+        #expect(replacement.recoveryContext == context)
+    }
+
     @Test func blocksRepeatedRefreshAttemptsForSameLogicalStream() {
         let context = StreamRecoveryContext(infoHash: "hash-1", preferredService: .realDebrid)
         let stream = Fixtures.stream(recoveryContext: context)
@@ -156,6 +274,19 @@ struct PlayerStreamLinkRecoveryTests {
                 for: stream,
                 priorAttempts: 1,
                 qaRefreshURL: nil
+            ) == nil
+        )
+    }
+
+    @Test func repeatedAttemptsBlockQAReplacementBeforeOverrideApplies() {
+        let stream = Fixtures.stream(debridService: "qa-sample")
+        let refreshedURL = URL(string: "https://qa.example.com/stream.mp4?token=fresh")!
+
+        #expect(
+            PlayerStreamLinkRecovery.refreshPlan(
+                for: stream,
+                priorAttempts: 1,
+                qaRefreshURL: refreshedURL
             ) == nil
         )
     }

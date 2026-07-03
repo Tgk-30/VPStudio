@@ -20,6 +20,34 @@ struct AIAssistantManagerPromptConstructionTests {
         func prompt() async -> String? { lastSystemPrompt }
     }
 
+    /// Captures both the system prompt (where DB/Trakt history injects) and the
+    /// user message (where the NL phrase lands) so a single request can be
+    /// asserted on both halves.
+    private actor SystemAndUserCapturingProvider: AIProvider {
+        let providerKind: AIProviderKind
+        private var capturedSystem: String?
+        private var capturedUser: String?
+
+        init(providerKind: AIProviderKind) {
+            self.providerKind = providerKind
+        }
+
+        func complete(system: String, userMessage: String) async throws -> AIProviderResponse {
+            capturedSystem = system
+            capturedUser = userMessage
+            return AIProviderResponse(
+                provider: providerKind,
+                content: #"[{"title":"X","type":"movie"}]"#,
+                model: "capture",
+                inputTokens: 1,
+                outputTokens: 1
+            )
+        }
+
+        func systemPrompt() async -> String? { capturedSystem }
+        func userMessage() async -> String? { capturedUser }
+    }
+
     private struct TestError: LocalizedError, Sendable {
         var errorDescription: String? { "unexpected provider invocation" }
     }
@@ -229,10 +257,86 @@ struct AIAssistantManagerPromptConstructionTests {
         #expect(prompt.contains("You are VPStudio AI"))
     }
 
+    @Test
+    func naturalLanguageRecommendationsEmbedPhraseAndInjectHistory() async throws {
+        let manager = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: manager.tempDir) }
+
+        // Seed watch history so contextualizedContext has something to inject.
+        try await manager.database.saveWatchHistory(
+            WatchHistory(
+                id: "history-nl",
+                mediaId: "history-media-nl",
+                episodeId: nil,
+                title: "Oldboy",
+                progress: 120,
+                duration: 7200,
+                quality: "1080p",
+                debridService: nil,
+                streamURL: nil,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        let provider = SystemAndUserCapturingProvider(providerKind: .openAI)
+        await manager.instance.registerProvider(kind: .openAI, provider: provider)
+
+        let phrase = "gritty korean revenge thrillers from the 2000s"
+        _ = try await manager.instance.getRecommendations(forNaturalLanguageQuery: phrase, provider: .openAI)
+
+        let userMessage = await provider.userMessage() ?? ""
+        let systemPrompt = await provider.systemPrompt() ?? ""
+
+        // The literal phrase rides in the user message via NaturalLanguageSearchPolicy.
+        #expect(userMessage.contains(phrase))
+        #expect(userMessage.contains("Format as JSON array with keys: title, year, type, reason, imdbId."))
+        #expect(!userMessage.contains("tmdbId"))
+
+        // History still injects through the shared ask(...) -> contextualizedContext pipeline.
+        #expect(systemPrompt.contains("You are VPStudio AI"))
+        #expect(systemPrompt.contains("History titles: Oldboy"))
+    }
+
+    @Test
+    func personalizedRecommendationsWeightHistoryAndInjectContext() async throws {
+        let manager = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: manager.tempDir) }
+
+        try await manager.database.saveWatchHistory(
+            WatchHistory(
+                id: "history-foryou",
+                mediaId: "history-media-foryou",
+                episodeId: nil,
+                title: "Parasite",
+                progress: 120,
+                duration: 7200,
+                quality: "1080p",
+                debridService: nil,
+                streamURL: nil,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        let provider = SystemAndUserCapturingProvider(providerKind: .openAI)
+        await manager.instance.registerProvider(kind: .openAI, provider: provider)
+
+        _ = try await manager.instance.getPersonalizedRecommendations(provider: .openAI)
+
+        let userMessage = await provider.userMessage() ?? ""
+        let systemPrompt = await provider.systemPrompt() ?? ""
+
+        #expect(userMessage.lowercased().contains("recently watched"))
+        #expect(userMessage.contains("Format as JSON array with keys: title, year, type, reason, imdbId."))
+        #expect(!userMessage.contains("tmdbId"))
+        #expect(systemPrompt.contains("History titles: Parasite"))
+    }
+
     private func makeManager() async throws -> (instance: AIAssistantManager, database: DatabaseManager, tempDir: URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let db = try DatabaseManager(path: tempDir.appendingPathComponent("ai-prompt.sqlite").path)
+        let db = try DatabaseManager(inMemoryNamed: "ai-prompt-\(UUID().uuidString)")
         try await db.migrate()
         return (AIAssistantManager(database: db), db, tempDir)
     }

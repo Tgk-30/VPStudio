@@ -12,16 +12,36 @@ struct IndexerSettingsView: View {
     @State private var notice: SettingsInlineNotice?
     @State private var testingConfigID: String?
     @State private var pendingDeletion: PendingDeletion?
+    private let disablesAutomaticTasks: Bool
 
     private struct PendingDeletion: Identifiable {
         let id: String
         let name: String
     }
 
+    init(
+        initialConfigs: [IndexerConfig] = [],
+        initialIsShowingEditor: Bool = false,
+        initialDraft: IndexerDraft = .new(),
+        initialSurfaceError: AppError? = nil,
+        initialNotice: SettingsInlineNotice? = nil,
+        initialTestingConfigID: String? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _configs = State(initialValue: initialConfigs)
+        _isShowingEditor = State(initialValue: initialIsShowingEditor)
+        _draft = State(initialValue: initialDraft)
+        _surfaceError = State(initialValue: initialSurfaceError)
+        _notice = State(initialValue: initialNotice)
+        _testingConfigID = State(initialValue: initialTestingConfigID)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
+
     var body: some View {
         indexerList
             .navigationTitle("Indexers")
             .task {
+                guard !disablesAutomaticTasks else { return }
                 await loadConfigs()
             }
             .refreshable {
@@ -352,10 +372,11 @@ struct IndexerSettingsView: View {
     private func delete(configID: String) async {
         do {
             try await appState.database.setSetting(key: IndexerManager.bootstrapSettingKey, value: "true")
-            if let config = configs.first(where: { $0.id == configID }) {
-                try await config.deleteStoredSecret(using: appState.secretStore)
-            }
+            let config = configs.first(where: { $0.id == configID })
             try await appState.database.deleteIndexerConfig(id: configID)
+            if let config {
+                try? await config.deleteStoredSecret(using: appState.secretStore)
+            }
             let fetched = try await appState.database.fetchAllIndexerConfigs()
             configs = try await hydrateConfigsForDisplay(fetched)
             try await appState.indexerManager.initialize()
@@ -406,12 +427,50 @@ struct IndexerSettingsView: View {
         defer { testingConfigID = nil }
 
         do {
-            try await IndexerConnectivityTester.testConnection(for: config)
-            notice = .success("\(config.name): connection succeeded.")
+            let result = try await IndexerConnectivityTester.testConnection(for: config)
             surfaceError = nil
+
+            if config.indexerType == .stremio,
+               let discoveredName = result.discoveredName,
+               discoveredName != config.name {
+                await applyDiscoveredName(discoveredName, to: config)
+            } else {
+                notice = .success("\(config.name): connection succeeded.")
+            }
         } catch {
             notice = nil
             surfaceError = AppError(error)
+        }
+    }
+
+    /// Persists a manifest-derived name onto a Stremio addon config after a
+    /// successful Test Connection so the row reflects the addon's own name.
+    private func applyDiscoveredName(_ discoveredName: String, to config: IndexerConfig) async {
+        // Built-in addons are canonicalized back to their hardcoded name on the next
+        // indexerManager.initialize(), so persisting a manifest-derived rename is futile and a
+        // "Name updated" toast would lie. Just confirm the connection for built-ins.
+        guard !config.id.hasPrefix("builtin-") else {
+            notice = .success("\(config.name): connection succeeded.")
+            return
+        }
+        guard let index = configs.firstIndex(where: { $0.id == config.id }) else {
+            notice = .success("\(config.name): connection succeeded.")
+            return
+        }
+        var updated = configs
+        updated[index].name = discoveredName
+        do {
+            try await saveConfigs(updated)
+            let fetched = try await appState.database.fetchAllIndexerConfigs()
+            configs = try await hydrateConfigsForDisplay(fetched)
+                .sorted { $0.priority < $1.priority }
+            try await appState.indexerManager.initialize()
+            notice = .success("\(discoveredName): connection succeeded. Name updated from addon manifest.")
+            surfaceError = nil
+        } catch {
+            // The connection itself succeeded; surface that even if the rename
+            // could not be persisted.
+            notice = .success("\(config.name): connection succeeded.")
         }
     }
 
@@ -419,6 +478,7 @@ struct IndexerSettingsView: View {
         let normalized = reindexed(input)
         let persisted = try await persistIndexerConfigs(normalized)
         try await appState.database.saveIndexerConfigs(persisted)
+        await cleanupClearedIndexerSecrets(in: persisted)
     }
 
     nonisolated static func normalizePrioritiesPreservingOrder(_ input: [IndexerConfig]) -> [IndexerConfig] {
@@ -451,6 +511,7 @@ struct IndexerSettingsView: View {
         if persisted != fetched {
             try await appState.database.saveIndexerConfigs(persisted)
         }
+        await cleanupClearedIndexerSecrets(in: persisted)
 
         var display: [IndexerConfig] = []
         display.reserveCapacity(persisted.count)
@@ -469,7 +530,13 @@ struct IndexerSettingsView: View {
         return persisted
     }
 
-    private struct IndexerDraft {
+    private func cleanupClearedIndexerSecrets(in configs: [IndexerConfig]) async {
+        for config in configs where config.shouldDeleteStoredSecretAfterPersisting {
+            try? await config.deleteStoredSecret(using: appState.secretStore)
+        }
+    }
+
+    struct IndexerDraft {
         var editingID: String?
         var name: String
         var indexerType: IndexerConfig.IndexerType
@@ -564,7 +631,13 @@ struct IndexerSettingsView: View {
 
         var normalizedURL: String? {
             let value = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty ? nil : value
+            guard !value.isEmpty else {
+                return nil
+            }
+            if indexerType == .stremio {
+                return StremioAddonURLBuilder.normalizedAddonURLString(value)
+            }
+            return value
         }
 
         var normalizedAPIKey: String? {
@@ -594,15 +667,20 @@ struct IndexerSettingsView: View {
             guard let urlString = normalizedURL else {
                 return "Base URL is required."
             }
-            guard let components = URLComponents(string: urlString),
-                  let scheme = components.scheme?.lowercased(),
-                  scheme == "https",
-                  components.host?.isEmpty == false else {
-                return "Enter a valid HTTPS base URL."
+            guard IndexerURLSecurityPolicy.permitsBaseURL(urlString) else {
+                return IndexerURLSecurityPolicy.validationMessage
             }
 
-            if showsAPIKeyField, (normalizedAPIKey?.isEmpty ?? true) {
-                return "API key is required for \(indexerType.displayName)."
+            if showsAPIKeyField {
+                guard let normalizedAPIKey, !normalizedAPIKey.isEmpty else {
+                    return "API key is required for \(indexerType.displayName)."
+                }
+                guard IndexerURLSecurityPolicy.permitsAPIKeyTransport(
+                    baseURL: urlString,
+                    apiKey: normalizedAPIKey
+                ) else {
+                    return IndexerURLSecurityPolicy.apiKeyTransportValidationMessage
+                }
             }
 
             if indexerType == .stremio {

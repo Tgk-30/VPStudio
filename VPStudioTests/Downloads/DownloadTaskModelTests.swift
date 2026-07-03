@@ -80,6 +80,14 @@ import Testing
         #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/abc123.jpg")
     }
 
+    @Test func posterURLPreservesAbsoluteOMDbURL() {
+        let task = DownloadTask(
+            mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv",
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+        #expect(task.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
+    }
+
     @Test func posterURLIsNilWhenPathNil() {
         let task = DownloadTask(
             mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv"
@@ -209,6 +217,97 @@ import Testing
         #expect(task.resumeDataBase64 == nil)
         #expect(task.streamURL.isEmpty)
         #expect(task.persistedStreamURL == nil)
+    }
+
+    @Test func streamURLSetterTrimsAndClearsBlankValues() {
+        var task = DownloadTask(
+            mediaId: "tt100",
+            streamURL: nil,
+            fileName: "video.mkv",
+            status: .downloading
+        )
+
+        task.streamURL = "  https://example.com/stream.mkv?token=secret  "
+        #expect(task.streamURL == "https://example.com/stream.mkv?token=secret")
+        #expect(task.persistedStreamURL == "https://example.com/stream.mkv?token=secret")
+
+        task.streamURL = "   "
+        #expect(task.streamURL == "")
+        #expect(task.persistedStreamURL == nil)
+    }
+
+    @Test func completedStreamURLSetterNeverStoresSensitiveURL() {
+        var task = DownloadTask(
+            mediaId: "tt100",
+            streamURL: nil,
+            fileName: "video.mkv",
+            status: .completed
+        )
+
+        task.streamURL = "https://example.com/private.mkv?token=secret"
+
+        #expect(task.streamURL == "")
+        #expect(task.persistedStreamURL == nil)
+    }
+
+    @Test func recoveryContextSetterEncodesAndClearsContext() throws {
+        var task = DownloadTask(
+            mediaId: "tt100",
+            streamURL: "https://example.com/video.mkv",
+            fileName: "video.mkv"
+        )
+        let context = try #require(
+            StreamRecoveryContext(
+                infoHash: " ABCDEF ",
+                preferredService: .realDebrid,
+                seasonNumber: 1,
+                episodeNumber: 2,
+                torrentId: " torrent-1 ",
+                resolvedDebridService: " Real-Debrid ",
+                resolvedFileName: "Show.S01E02.mkv",
+                resolvedFileSizeBytes: 1234
+            )
+        )
+
+        task.recoveryContext = context
+        #expect(task.recoveryContextJSON != nil)
+        #expect(task.recoveryContext == context)
+
+        task.recoveryContext = nil
+        #expect(task.recoveryContextJSON == nil)
+        #expect(task.recoveryContext == nil)
+    }
+
+    @Test func resumeDataSetterStoresValidDataAndClearsNil() {
+        var task = DownloadTask(
+            mediaId: "tt100",
+            streamURL: "https://example.com/video.mkv",
+            fileName: "video.mkv",
+            status: .failed
+        )
+        let resume = Data("resume-data".utf8)
+
+        task.resumeData = resume
+        #expect(task.resumeData == resume)
+        #expect(task.resumeDataBase64 == resume.base64EncodedString())
+
+        task.resumeData = nil
+        #expect(task.resumeData == nil)
+        #expect(task.resumeDataBase64 == nil)
+    }
+
+    @Test func completedResumeDataSetterNeverStoresResumeData() {
+        var task = DownloadTask(
+            mediaId: "tt100",
+            streamURL: nil,
+            fileName: "video.mkv",
+            status: .completed
+        )
+
+        task.resumeData = Data("resume-data".utf8)
+
+        #expect(task.resumeData == nil)
+        #expect(task.resumeDataBase64 == nil)
     }
 
     @Test func invalidResumeDataIsDroppedDuringNormalization() throws {
@@ -370,7 +469,7 @@ import Testing
         // Verify that sort keys within the same season are contiguous and ordered
         let keys = (1...20).map { ep in
             DownloadTask(
-                mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "e\(ep).mkv",
+                mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "e\(String(ep)).mkv",
                 seasonNumber: 1, episodeNumber: ep
             ).episodeSortKey
         }
@@ -385,8 +484,7 @@ import Testing
             mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv",
             posterPath: "abc123.jpg"
         )
-        // Should still construct a URL (even if path has no leading slash)
-        #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342abc123.jpg")
+        #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/abc123.jpg")
     }
 
     @Test func posterURLWithEmptyPath() {
@@ -395,7 +493,7 @@ import Testing
             mediaId: "tt100", streamURL: "https://example.com/video.mkv", fileName: "video.mkv",
             posterPath: ""
         )
-        #expect(task.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342")
+        #expect(task.posterURL == nil)
     }
 
     // MARK: - destinationURL edge cases

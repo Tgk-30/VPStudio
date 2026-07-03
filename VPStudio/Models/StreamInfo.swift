@@ -3,6 +3,7 @@ import Foundation
 struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
     var infoHash: String
     var preferredService: DebridServiceType?
+    var magnetURI: String?
     var seasonNumber: Int?
     var episodeNumber: Int?
     var torrentId: String?
@@ -13,6 +14,7 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
     init?(
         infoHash: String,
         preferredService: DebridServiceType? = nil,
+        magnetURI: String? = nil,
         seasonNumber: Int? = nil,
         episodeNumber: Int? = nil,
         torrentId: String? = nil,
@@ -27,6 +29,7 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
 
         self.infoHash = normalizedHash
         self.preferredService = preferredService
+        self.magnetURI = Self.normalizedOptionalString(magnetURI)
         self.seasonNumber = seasonNumber
         self.episodeNumber = episodeNumber
         self.torrentId = Self.normalizedOptionalString(torrentId)
@@ -50,6 +53,29 @@ struct StreamRecoveryContext: Codable, Sendable, Equatable, Hashable {
 }
 
 struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
+    private static let maxRequestHeaderValueLength = 2_048
+    private static let allowedRequestHeaderNames: [String: String] = [
+        "accept": "Accept",
+        "accept-language": "Accept-Language",
+        "origin": "Origin",
+        "referer": "Referer",
+        "referrer": "Referer",
+        "user-agent": "User-Agent",
+    ]
+
+    private enum CodingKeys: String, CodingKey {
+        case streamURL
+        case quality
+        case codec
+        case audio
+        case source
+        case hdr
+        case fileName
+        case sizeBytes
+        case debridService
+        case recoveryContext
+    }
+
     var id: String {
         "\(debridService)-\(fileName)-\(quality.rawValue)-\(codec.rawValue)-\(transportIdentity)"
     }
@@ -64,6 +90,7 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
     var sizeBytes: Int64?
     var debridService: String
     var recoveryContext: StreamRecoveryContext?
+    var requestHeaders: [String: String]? = nil
     var remoteTransferID: String? {
         recoveryContext?.torrentId
     }
@@ -78,7 +105,8 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         fileName: String,
         sizeBytes: Int64?,
         debridService: String,
-        recoveryContext: StreamRecoveryContext? = nil
+        recoveryContext: StreamRecoveryContext? = nil,
+        requestHeaders: [String: String]? = nil
     ) {
         self.streamURL = streamURL
         self.quality = quality
@@ -90,6 +118,7 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         self.sizeBytes = sizeBytes
         self.debridService = debridService
         self.recoveryContext = recoveryContext
+        self.requestHeaders = Self.normalizedRequestHeaders(requestHeaders)
     }
 
     func withRecoveryContext(_ recoveryContext: StreamRecoveryContext?) -> StreamInfo {
@@ -102,6 +131,80 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
         var copy = self
         copy.streamURL = streamURL
         return copy
+    }
+
+    func withRequestHeaders(_ requestHeaders: [String: String]?) -> StreamInfo {
+        var copy = self
+        copy.requestHeaders = Self.normalizedRequestHeaders(requestHeaders)
+        return copy
+    }
+
+    static func normalizedRequestHeaders(_ headers: [String: String]?) -> [String: String]? {
+        guard let headers else { return nil }
+
+        let normalized = headers.reduce(into: [String: String]()) { result, pair in
+            let rawName = pair.key
+            let rawValue = pair.value
+            guard rawName.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n:")) == nil else { return }
+            guard rawValue.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n")) == nil else { return }
+
+            let name = pair.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            guard let canonicalName = allowedRequestHeaderNames[name.lowercased()] else { return }
+            guard let value = normalizedRequestHeaderValue(value, canonicalName: canonicalName) else { return }
+            result[canonicalName] = value
+        }
+
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func normalizedRequestHeaderValue(_ value: String, canonicalName: String) -> String? {
+        guard !value.isEmpty,
+              value.utf8.count <= maxRequestHeaderValueLength,
+              value.rangeOfCharacter(from: .controlCharacters) == nil else {
+            return nil
+        }
+
+        if canonicalName == "Origin" || canonicalName == "Referer" {
+            guard isPublicHTTPHeaderURL(value),
+                  !containsCredentialMaterial(inHeaderURLString: value) else { return nil }
+        }
+
+        return value
+    }
+
+    private static func isPublicHTTPHeaderURL(_ value: String) -> Bool {
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host,
+              !host.isEmpty,
+              !PrivateNetworkHostPolicy.isPrivateOrReserved(host: host) else {
+            return false
+        }
+        return true
+    }
+
+    private static func containsCredentialMaterial(inHeaderURLString value: String) -> Bool {
+        guard let url = URL(string: value) else {
+            return true
+        }
+
+        return url.user != nil
+            || url.password != nil
+            || SensitiveURLQueryPolicy.containsSensitiveQueryItem(in: url)
+            || containsSensitiveFragment(in: url)
+    }
+
+    private static func containsSensitiveFragment(in url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let fragment = components.percentEncodedFragment,
+              !fragment.isEmpty else {
+            return false
+        }
+
+        return SensitiveURLQueryPolicy.containsSensitiveAssignment(in: fragment)
     }
 
     private var transportIdentity: String {
@@ -118,6 +221,40 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
 
         let normalizedString = components.string ?? ""
         return normalizedString.isEmpty ? streamURL.absoluteString : normalizedString
+    }
+
+    // `requestHeaders` is a runtime-only field: it is intentionally excluded from
+    // `CodingKeys`, so it never survives a Codable round-trip (always decodes to
+    // `nil`). The synthesized Equatable/Hashable would still include it, which made
+    // equality depend on a field that the encoded form drops — a `StreamInfo`
+    // carrying headers would compare unequal to its own round-tripped copy. That
+    // inconsistency propagated up through `PlayerSessionRequest` and broke
+    // `dismissWindow(id:value:)` window matching. Custom conformance keeps equality
+    // and hashing consistent with the Codable contract by excluding `requestHeaders`.
+    static func == (lhs: StreamInfo, rhs: StreamInfo) -> Bool {
+        lhs.streamURL == rhs.streamURL
+            && lhs.quality == rhs.quality
+            && lhs.codec == rhs.codec
+            && lhs.audio == rhs.audio
+            && lhs.source == rhs.source
+            && lhs.hdr == rhs.hdr
+            && lhs.fileName == rhs.fileName
+            && lhs.sizeBytes == rhs.sizeBytes
+            && lhs.debridService == rhs.debridService
+            && lhs.recoveryContext == rhs.recoveryContext
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(streamURL)
+        hasher.combine(quality)
+        hasher.combine(codec)
+        hasher.combine(audio)
+        hasher.combine(source)
+        hasher.combine(hdr)
+        hasher.combine(fileName)
+        hasher.combine(sizeBytes)
+        hasher.combine(debridService)
+        hasher.combine(recoveryContext)
     }
 
     var sizeString: String {
@@ -140,6 +277,20 @@ struct StreamInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 }
 
+extension StreamInfo {
+    /// Direct-play contract (see `DirectPlayPolicy`): VPStudio always plays the
+    /// stream's bytes directly through a native engine — never transcodes or
+    /// remuxes. Computed, no stored property / schema change.
+    var playbackMode: PlaybackMode {
+        DirectPlayPolicy.playbackMode(for: self)
+    }
+
+    /// Convenience flag, backed by `DirectPlayPolicy`. Always true today.
+    var isDirectPlay: Bool {
+        DirectPlayPolicy.isDirectPlay(self)
+    }
+}
+
 extension StreamRecoveryContext {
     func enrichedForDownloadPersistence(
         fileName: String,
@@ -149,6 +300,7 @@ extension StreamRecoveryContext {
         StreamRecoveryContext(
             infoHash: infoHash,
             preferredService: preferredService,
+            magnetURI: magnetURI,
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             torrentId: torrentId,

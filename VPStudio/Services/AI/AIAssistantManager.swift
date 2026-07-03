@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Network
 
 /// Multi-provider AI assistant for recommendations and conversation
 actor AIAssistantManager {
@@ -15,6 +16,8 @@ actor AIAssistantManager {
         .openAI,
         .gemini,
         .openRouter,
+        .mistral,
+        .minimax,
         .ollama,
         .local,
     ]
@@ -56,7 +59,16 @@ actor AIAssistantManager {
     }
 
     func configure(provider: AIProviderKind, apiKey: String, baseURL: String? = nil, model: String? = nil) {
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let configuredModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if provider != .ollama && trimmedAPIKey.isEmpty {
+            providers.removeValue(forKey: provider)
+            configuredModels.removeValue(forKey: provider)
+            Self.logger.info("Skipped \(provider.rawValue) configuration because the API key was empty.")
+            return
+        }
+
         let catalogDefaultModelID = AIModelCatalog.defaultModel(for: provider)?.id
         let resolvedModel = Self.resolvedModelID(
             provider: provider,
@@ -66,9 +78,9 @@ actor AIAssistantManager {
 
         switch provider {
         case .anthropic:
-            providers[.anthropic] = AnthropicProvider(apiKey: apiKey, model: resolvedModel)
+            providers[.anthropic] = AnthropicProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .openAI:
-            providers[.openAI] = OpenAIProvider(apiKey: apiKey, model: resolvedModel)
+            providers[.openAI] = OpenAIProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .ollama:
             let resolvedBaseURL = (baseURL ?? "http://localhost:11434")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -99,12 +111,16 @@ actor AIAssistantManager {
                 model: resolvedModel
             )
         case .gemini:
-            providers[.gemini] = GeminiProvider(apiKey: apiKey, model: resolvedModel)
+            providers[.gemini] = GeminiProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .openRouter:
             providers[.openRouter] = OpenRouterProvider(
-                apiKey: apiKey,
+                apiKey: trimmedAPIKey,
                 model: resolvedModel
             )
+        case .mistral:
+            providers[.mistral] = MistralProvider(apiKey: trimmedAPIKey, model: resolvedModel)
+        case .minimax:
+            providers[.minimax] = MiniMaxProvider(apiKey: trimmedAPIKey, model: resolvedModel)
         case .local:
             break // Local provider is registered directly via registerProvider in AppState
         }
@@ -166,8 +182,8 @@ actor AIAssistantManager {
             "Based on my viewing history and preferences, recommend 10 movies or TV shows I'd enjoy.",
             "Focus on titles I haven't seen yet.",
             "For each, provide: title, year, type (movie/series), and a brief reason why I'd like it.",
-            "Format as JSON array with keys: title, year, type, reason, tmdbId.",
-            "Only include tmdbId when you are highly confident it is correct. Otherwise use null.",
+            "Format as JSON array with keys: title, year, type, reason, imdbId.",
+            "Include imdbId when you are highly confident it is correct; otherwise use null.",
         ]
         if let mood = context.currentMood {
             promptParts.insert("I'm currently in the mood for: \(mood).", at: 1)
@@ -187,6 +203,57 @@ actor AIAssistantManager {
 
         let response = try await ask(prompt: prompt, provider: provider, context: context)
 
+        return try parseRecommendations(from: response.content)
+    }
+
+    /// Get recommendations for a free-form natural-language query (first-class
+    /// NL search). The user prompt is built by `NaturalLanguageSearchPolicy` so
+    /// the literal phrase is embedded verbatim, then flows through the existing
+    /// `ask(...)` pipeline — so the user's DB taste profile and Trakt-synced
+    /// watch history still inject via `contextualizedContext`, and the JSON
+    /// response is parsed by the shared `parseRecommendations`.
+    func getRecommendations(
+        forNaturalLanguageQuery query: String,
+        provider: AIProviderKind? = nil,
+        excludingTitles: [String] = []
+    ) async throws -> [AIMovieRecommendation] {
+        let prompt = NaturalLanguageSearchPolicy.recommendationPrompt(
+            from: query,
+            excluding: excludingTitles
+        )
+        let response = try await ask(prompt: prompt, provider: provider, context: AssistantContext())
+        return try parseRecommendations(from: response.content)
+    }
+
+    /// Get personalized "For You" recommendations that explicitly weight the
+    /// user's recently-watched Trakt history. Reuses the shared context pipeline
+    /// (`contextualizedContext` autoloads watch history, ratings, watchlist, …)
+    /// and the JSON parser; the prompt just tells the model to lean on the most
+    /// recent history when ranking.
+    func getPersonalizedRecommendations(
+        provider: AIProviderKind? = nil,
+        excludingTitles: [String] = []
+    ) async throws -> [AIMovieRecommendation] {
+        var promptParts = [
+            "Recommend 10 movies or TV shows tailored to me personally.",
+            "Weight my most recently watched titles most heavily — lean into the patterns in my recent viewing history while still respecting my longer-term favorites and ratings.",
+            "Focus on titles I haven't seen yet.",
+            "For each, provide: title, year, type (movie/series), and a brief reason connecting it to what I've recently watched.",
+            "Format as JSON array with keys: title, year, type, reason, imdbId.",
+            "Include imdbId when you are highly confident it is correct; otherwise use null.",
+        ]
+        let exclusions = excludingTitles
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(12)
+            .joined(separator: ", ")
+        if !exclusions.isEmpty {
+            promptParts.append("Do not recommend any of these titles again: \(exclusions).")
+            promptParts.append("Return a meaningfully different list from those excluded titles.")
+        }
+        let prompt = promptParts.joined(separator: " ")
+
+        let response = try await ask(prompt: prompt, provider: provider, context: AssistantContext())
         return try parseRecommendations(from: response.content)
     }
 
@@ -224,11 +291,21 @@ actor AIAssistantManager {
         catalogDefault: String?,
         configuredModel: String?
     ) -> String {
-        if let configuredModel, !configuredModel.isEmpty {
-            return configuredModel
+        let trimmedConfiguredModel = configuredModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedConfiguredModel, !trimmedConfiguredModel.isEmpty {
+            return normalizedModelID(provider: provider, modelID: trimmedConfiguredModel)
         }
 
-        return catalogDefault ?? fallbackModelID(for: provider)
+        let trimmedCatalogDefault = catalogDefault?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedModelID(
+            provider: provider,
+            modelID: trimmedCatalogDefault ?? fallbackModelID(for: provider)
+        )
+    }
+
+    private nonisolated static func normalizedModelID(provider: AIProviderKind, modelID: String) -> String {
+        guard provider == .openRouter else { return modelID }
+        return AIModelCatalog.providerNativeOpenRouterModelID(modelID)
     }
 
     nonisolated static func fallbackModelID(for provider: AIProviderKind) -> String {
@@ -247,6 +324,10 @@ actor AIAssistantManager {
             return AIModelCatalog.llama31.id
         case .openRouter:
             return AIModelCatalog.openRouterGeminiFlashLite.id
+        case .mistral:
+            return AIModelCatalog.mistralSmallLatest.id
+        case .minimax:
+            return AIModelCatalog.minimaxM3.id
         case .local:
             return AIModelCatalog.localSmolLM2.id
         }
@@ -274,11 +355,15 @@ actor AIAssistantManager {
     }
 
     private func parsePersonalizedAnalysis(from content: String) throws -> AIPersonalizedAnalysis {
-        let candidates = [content] + fencedCodeBlockCandidates(from: content)
+        let candidates = [content] + fencedCodeBlockCandidates(from: content) + bracketedJSONArrayCandidates(from: content)
 
         for candidate in candidates {
             guard let data = candidate.data(using: .utf8) else { continue }
-            if let analysis = try? JSONDecoder().decode(AIPersonalizedAnalysis.self, from: data) {
+            if let analysis = try? decodePersonalizedAnalysis(from: data) {
+                return analysis
+            }
+            if let json = try? JSONSerialization.jsonObject(with: data),
+               let analysis = parsePersonalizedContainer(from: json) {
                 return analysis
             }
         }
@@ -288,13 +373,182 @@ actor AIAssistantManager {
            let lastBrace = content.lastIndex(of: "}"),
            firstBrace < lastBrace {
             let slice = String(content[firstBrace...lastBrace])
-            if let data = slice.data(using: .utf8),
-               let analysis = try? JSONDecoder().decode(AIPersonalizedAnalysis.self, from: data) {
-                return analysis
+            if let sliceData = slice.data(using: .utf8) {
+                if let analysis = try? decodePersonalizedAnalysis(from: sliceData) {
+                    return analysis
+                }
+                if let json = try? JSONSerialization.jsonObject(with: sliceData),
+                   let analysis = parsePersonalizedContainer(from: json) {
+                    return analysis
+                }
             }
         }
 
         throw AIError.invalidResponse
+    }
+
+    private func parsePersonalizedContainer(from value: Any) -> AIPersonalizedAnalysis? {
+        func collect(from rawValue: Any) -> AIPersonalizedAnalysis? {
+            if let direct = decodePersonalizedAnalysis(from: rawValue) {
+                return direct
+            }
+
+            if let array = rawValue as? [Any] {
+                for element in array {
+                    if let parsed = collect(from: element) {
+                        return parsed
+                    }
+                }
+                return nil
+            }
+
+            guard let object = rawValue as? [String: Any] else { return nil }
+            for (_, nestedValue) in object {
+                if let parsed = collect(from: nestedValue) {
+                    return parsed
+                }
+            }
+            return nil
+        }
+
+        return collect(from: value)
+    }
+
+    private func decodePersonalizedAnalysis(from value: Any) -> AIPersonalizedAnalysis? {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return nil
+        }
+
+        do {
+            return try decodePersonalizedAnalysis(from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private func decodePersonalizedAnalysis(from data: Data) throws -> AIPersonalizedAnalysis? {
+        struct RawAnalysis: Decodable {
+            let personalizedDescription: String
+            let predictedRating: Double
+            let verdict: String
+            let reasons: [String]
+
+            private enum CodingKeys: String, CodingKey {
+                case personalizedDescription
+                case predictedRating
+                case verdict
+                case reasons
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                personalizedDescription = try container.decode(String.self, forKey: .personalizedDescription)
+
+                if let ratingNumber = try? container.decode(Double.self, forKey: .predictedRating) {
+                    predictedRating = ratingNumber
+                } else if let ratingString = try? container.decode(String.self, forKey: .predictedRating) {
+                    let trimmedRating = ratingString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let parsedRating = Double(trimmedRating) else {
+                        throw DecodingError.dataCorruptedError(
+                            forKey: .predictedRating,
+                            in: container,
+                            debugDescription: "Invalid predictedRating value"
+                        )
+                    }
+                    predictedRating = parsedRating
+                } else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .predictedRating,
+                        in: container,
+                        debugDescription: "Missing or invalid predictedRating value"
+                    )
+                }
+
+                verdict = try container.decode(String.self, forKey: .verdict)
+
+                if let reasonsArray = try? container.decode([String].self, forKey: .reasons) {
+                    reasons = reasonsArray
+                } else if let reasonsString = try? container.decode(String.self, forKey: .reasons) {
+                    reasons = [reasonsString]
+                } else if let reasonsArray = try? container.decode([ReasonValue].self, forKey: .reasons) {
+                    reasons = reasonsArray.compactMap(\.stringValue)
+                } else {
+                    reasons = []
+                }
+            }
+
+            private enum ReasonValue: Decodable {
+                case string(String)
+                case integer(Int)
+                case decimal(Double)
+                case boolean(Bool)
+                case none
+
+                var stringValue: String? {
+                    switch self {
+                    case .string(let value):
+                        return value
+                    case .integer(let value):
+                        return String(value)
+                    case .decimal(let value):
+                        return String(value)
+                    case .boolean(let value):
+                        return String(value)
+                    case .none:
+                        return nil
+                    }
+                }
+
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.singleValueContainer()
+                    if let string = try? container.decode(String.self) {
+                        self = .string(string)
+                    } else if let integer = try? container.decode(Int.self) {
+                        self = .integer(integer)
+                    } else if let decimal = try? container.decode(Double.self) {
+                        if decimal == decimal.rounded() {
+                            self = .integer(Int(decimal))
+                        } else {
+                            self = .decimal(decimal)
+                        }
+                    } else if let bool = try? container.decode(Bool.self) {
+                        self = .boolean(bool)
+                    } else if container.decodeNil() {
+                        self = .none
+                    } else {
+                        self = .none
+                    }
+                }
+            }
+        }
+
+        guard let raw = try? JSONDecoder().decode(RawAnalysis.self, from: data) else { return nil }
+        let normalizedVerdict = raw.verdict
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .compactMap { char in
+                if char == "-" || char == "_" || char.isWhitespace {
+                    return "_"
+                }
+                if char.isLetter || char.isNumber {
+                    return String(char)
+                }
+                return nil
+            }
+            .joined()
+            .split(whereSeparator: { $0 == "_" })
+            .joined(separator: "_")
+        guard let verdict = AIPersonalizedAnalysis.Verdict(rawValue: normalizedVerdict) else {
+            return nil
+        }
+
+        return AIPersonalizedAnalysis(
+            personalizedDescription: raw.personalizedDescription,
+            predictedRating: raw.predictedRating,
+            verdict: verdict,
+            reasons: raw.reasons
+        )
     }
 
     /// Compare recommendations across providers
@@ -407,21 +661,349 @@ actor AIAssistantManager {
             let year: Int?
             let type: String?
             let reason: String?
+            let imdbId: String?
             let tmdbId: Int?
+
+            private enum CodingKeys: String, CodingKey {
+                case title
+                case year
+                case type
+                case reason
+                case imdbId
+                case imdbID
+                case imdbSnake = "imdb_id"
+                case imdb
+                case tmdbId
+                case tmdbID
+                case tmdbSnake = "tmdb_id"
+                case tmdb
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+
+                func firstString(for keys: [CodingKeys]) -> String? {
+                    for key in keys {
+                        if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty {
+                                return trimmed
+                            }
+                        }
+                    }
+                    return nil
+                }
+
+                func integerValue(for key: CodingKeys) -> Int? {
+                    if let intId = try? container.decodeIfPresent(Int.self, forKey: key) {
+                        return intId
+                    }
+                    if let stringId = try? container.decodeIfPresent(String.self, forKey: key) {
+                        let trimmedIdString = stringId.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let parsedId = Int(trimmedIdString) {
+                            return parsedId
+                        }
+                        if let parsedIdDouble = Double(trimmedIdString),
+                           parsedIdDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                            return Int(exactly: parsedIdDouble) // nil (not a trap) if out of Int range
+                        }
+                    }
+                    if let doubleId = try? container.decodeIfPresent(Double.self, forKey: key),
+                       doubleId.truncatingRemainder(dividingBy: 1) == 0 {
+                        return Int(exactly: doubleId) // nil (not a trap) if out of Int range
+                    }
+                    return nil
+                }
+
+                func firstInteger(for keys: [CodingKeys]) -> Int? {
+                    for key in keys {
+                        if let value = integerValue(for: key) {
+                            return value
+                        }
+                    }
+                    return nil
+                }
+
+                title = try container.decode(String.self, forKey: .title)
+                if let yearNumber = try? container.decodeIfPresent(Int.self, forKey: .year) {
+                    year = yearNumber
+                } else if let yearString = try? container.decodeIfPresent(String.self, forKey: .year) {
+                    let trimmedYearString = yearString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let parsedYear = Int(trimmedYearString) {
+                        year = parsedYear
+                    } else if let parsedYearDouble = Double(trimmedYearString),
+                              parsedYearDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                        year = Int(exactly: parsedYearDouble) // nil (not a trap) if out of Int range
+                    } else {
+                        year = nil
+                    }
+                } else if let yearDouble = try? container.decodeIfPresent(Double.self, forKey: .year),
+                          yearDouble.truncatingRemainder(dividingBy: 1) == 0 {
+                    year = Int(exactly: yearDouble) // nil (not a trap) if out of Int range
+                } else {
+                    year = nil
+                }
+                type = try container.decodeIfPresent(String.self, forKey: .type)
+                if let reasonString = try? container.decodeIfPresent(String.self, forKey: .reason) {
+                    reason = reasonString
+                } else if let reasonArray = try? container.decodeIfPresent([String].self, forKey: .reason) {
+                    reason = reasonArray.joined(separator: "; ")
+                } else if let reasonArray = try? container.decodeIfPresent([ReasonValue].self, forKey: .reason) {
+                    reason = reasonArray.compactMap(\.stringValue).joined(separator: "; ")
+                } else if let reasonInt = try? container.decodeIfPresent(Int.self, forKey: .reason) {
+                    reason = String(reasonInt)
+                } else if let reasonDouble = try? container.decodeIfPresent(Double.self, forKey: .reason) {
+                    reason = String(reasonDouble)
+                } else {
+                    reason = nil
+                }
+
+                if let imdbString = firstString(for: [.imdbId, .imdbID, .imdbSnake, .imdb]) {
+                    imdbId = IMDbIdentifierPolicy.appScopedID(in: imdbString)
+                } else {
+                    imdbId = nil
+                }
+
+                tmdbId = firstInteger(for: [.tmdbId, .tmdbID, .tmdbSnake, .tmdb])
+            }
+
+            private enum ReasonValue: Decodable {
+                case string(String)
+                case number(Int)
+                case decimal(Double)
+                case boolean(Bool)
+                case none
+
+                var stringValue: String? {
+                    switch self {
+                    case .string(let value):
+                        return value
+                    case .number(let value):
+                        return String(value)
+                    case .decimal(let value):
+                        return String(value)
+                    case .boolean(let value):
+                        return String(value)
+                    case .none:
+                        return nil
+                    }
+                }
+
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.singleValueContainer()
+                    if let string = try? container.decode(String.self) {
+                        self = .string(string)
+                    } else if let decimal = try? container.decode(Double.self) {
+                        if decimal.rounded() == decimal {
+                            self = .number(Int(decimal))
+                        } else {
+                            self = .decimal(decimal)
+                        }
+                    } else if let boolean = try? container.decode(Bool.self) {
+                        self = .boolean(boolean)
+                    } else if container.decodeNil() {
+                        self = .none
+                    } else {
+                        throw DecodingError.dataCorruptedError(
+                            in: container,
+                            debugDescription: "Reason value is not supported"
+                        )
+                    }
+                }
+            }
         }
 
-        let raws = try JSONDecoder().decode([RawRec].self, from: data)
+        struct FailableRawRec: Decodable {
+            let value: RawRec?
 
-        return raws.map {
-            let normalizedType = ($0.type ?? "").lowercased()
-            return AIMovieRecommendation(
-                title: $0.title,
-                year: $0.year,
-                type: normalizedType == "series" || normalizedType == "show" || normalizedType == "tv" ? .series : .movie,
-                reason: $0.reason ?? "",
-                tmdbId: $0.tmdbId
-            )
+            init(from decoder: Decoder) throws {
+                let container = try decoder.singleValueContainer()
+                value = try? container.decode(RawRec.self)
+            }
         }
+
+        func mapRecommendations(_ raws: [RawRec]) -> [AIMovieRecommendation] {
+            return raws.compactMap { raw in
+                let normalizedTitle = raw.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedTitle.isEmpty else { return nil }
+
+                return AIMovieRecommendation(
+                    title: normalizedTitle,
+                    year: raw.year,
+                    type: Self.recommendationMediaType(fromRawType: raw.type),
+                    reason: raw.reason ?? "",
+                    imdbId: raw.imdbId,
+                    tmdbId: raw.imdbId == nil ? raw.tmdbId : nil
+                )
+            }
+        }
+
+        func deduplicatedRecommendations(_ recommendations: [AIMovieRecommendation]) -> [AIMovieRecommendation] {
+            var indexesByKey: [String: Int] = [:]
+            var deduplicated: [AIMovieRecommendation] = []
+            for recommendation in recommendations {
+                let normalizedTitle = recommendation.title
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let key = [
+                    normalizedTitle,
+                    "\(recommendation.year ?? 0)",
+                    recommendation.type.rawValue
+                ].joined(separator: "|")
+
+                if let index = indexesByKey[key] {
+                    let existing = deduplicated[index]
+                    if existing.imdbId == nil, recommendation.imdbId != nil {
+                        var merged = existing
+                        merged.imdbId = recommendation.imdbId
+                        merged.tmdbId = nil
+                        if merged.reason.isEmpty {
+                            merged.reason = recommendation.reason
+                        }
+                        if merged.score == nil {
+                            merged.score = recommendation.score
+                        }
+                        deduplicated[index] = merged
+                    }
+                    continue
+                }
+
+                indexesByKey[key] = deduplicated.count
+                deduplicated.append(recommendation)
+            }
+
+            return deduplicated
+        }
+
+        struct RecommendationContainer: Decodable {
+            let recommendations: [FailableRawRec]?
+            let data: [FailableRawRec]?
+            let results: [FailableRawRec]?
+            let recommendation: FailableRawRec?
+            let result: FailableRawRec?
+            let item: FailableRawRec?
+            let items: [FailableRawRec]?
+
+            private enum CodingKeys: String, CodingKey {
+                case recommendations
+                case data
+                case results
+                case recommendation
+                case result
+                case item
+                case items
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                recommendations = try? container.decodeIfPresent([FailableRawRec].self, forKey: .recommendations)
+                data = try? container.decodeIfPresent([FailableRawRec].self, forKey: .data)
+                results = try? container.decodeIfPresent([FailableRawRec].self, forKey: .results)
+                recommendation = try? container.decodeIfPresent(FailableRawRec.self, forKey: .recommendation)
+                result = try? container.decodeIfPresent(FailableRawRec.self, forKey: .result)
+                item = try? container.decodeIfPresent(FailableRawRec.self, forKey: .item)
+                items = try? container.decodeIfPresent([FailableRawRec].self, forKey: .items)
+            }
+        }
+
+        func mapValidatedRecommendations(_ raws: [FailableRawRec]) -> [AIMovieRecommendation]? {
+            let mapped = mapRecommendations(raws.compactMap { $0.value })
+            return mapped.isEmpty ? nil : mapped
+        }
+
+        func decodeRawRecommendation(_ value: Any) -> FailableRawRec? {
+            guard JSONSerialization.isValidJSONObject(value),
+                  let data = try? JSONSerialization.data(withJSONObject: value) else {
+                return nil
+            }
+
+            guard let decoded = try? JSONDecoder().decode(FailableRawRec.self, from: data),
+                  decoded.value != nil else {
+                return nil
+            }
+
+            return decoded
+        }
+
+        func parseRecommendationContainer(from value: Any) -> [FailableRawRec] {
+            var collected: [FailableRawRec] = []
+            let arrayKeys = ["recommendations", "data", "results", "items"]
+            let singleKeys = ["recommendation", "result", "item"]
+
+            func collectArray(_ array: [Any]) {
+                for child in array {
+                    if let parsed = decodeRawRecommendation(child) {
+                        collected.append(parsed)
+                    } else {
+                        collect(from: child)
+                    }
+                }
+            }
+
+            func collect(from rawValue: Any) {
+                if let array = rawValue as? [Any] {
+                    if array.isEmpty {
+                        return
+                    }
+                    collectArray(array)
+                    return
+                }
+
+                guard let object = rawValue as? [String: Any] else { return }
+                if let parsedObject = decodeRawRecommendation(object) {
+                    collected.append(parsedObject)
+                    return
+                }
+
+                for (key, nestedValue) in object {
+                    if arrayKeys.contains(key), let nestedArray = nestedValue as? [Any] {
+                        collectArray(nestedArray)
+                        continue
+                    }
+
+                    if singleKeys.contains(key), let parsedValue = decodeRawRecommendation(nestedValue) {
+                        collected.append(parsedValue)
+                        continue
+                    }
+
+                    collect(from: nestedValue)
+                }
+            }
+
+            collect(from: value)
+            return collected
+        }
+
+        if let topLevel = try? JSONSerialization.jsonObject(with: data),
+           let parsedNested = mapValidatedRecommendations(parseRecommendationContainer(from: topLevel)) {
+            return deduplicatedRecommendations(parsedNested)
+        }
+
+        let raws = try JSONDecoder().decode([FailableRawRec].self, from: data).compactMap(\.value)
+
+        guard !raws.isEmpty else {
+            throw AIError.invalidResponse
+        }
+
+        return mapRecommendations(raws)
+    }
+
+    static func recommendationMediaType(fromRawType rawType: String?) -> MediaType {
+        let normalizedType = (rawType ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedType.isEmpty else { return .movie }
+
+        if normalizedType.contains("movie") || normalizedType.contains("film") {
+            return .movie
+        }
+
+        let seriesMarkers = ["series", "show", "tv", "television", "kdrama", "k-drama", "anime"]
+        if seriesMarkers.contains(where: normalizedType.contains) {
+            return .series
+        }
+
+        return .movie
     }
 
     private func recommendationData(from content: String) -> Data? {
@@ -481,7 +1063,7 @@ actor AIAssistantManager {
             await withTaskGroup(of: (String, String?).self) { group in
                 for mediaID in allMediaIDs {
                     group.addTask {
-                        let title = try? await database.fetchMediaItem(id: mediaID)?.title
+                        let title = try? await database.fetchMediaItemResolvingAliases(id: mediaID)?.title
                         return (mediaID, title)
                     }
                 }
@@ -687,9 +1269,10 @@ actor AIAssistantManager {
             try await database.saveAIUsageRecord(record)
             lastUsagePersistenceErrorMessage = nil
         } catch {
-            lastUsagePersistenceErrorMessage = error.localizedDescription
+            let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+            lastUsagePersistenceErrorMessage = reason
             Self.logger.error(
-                "Failed to persist AI usage record: \(error.localizedDescription, privacy: .public)"
+                "Failed to persist AI usage record: \(reason, privacy: .public)"
             )
         }
     }
@@ -721,7 +1304,17 @@ enum AIHTTPTransport {
         var attempt = 0
 
         while true {
-            let (data, response) = try await session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await BoundedHTTPResponseLoader.data(
+                    for: request,
+                    session: session,
+                    maximumBytes: HTTPResponseBudget.aiProvider
+                )
+            } catch is BoundedHTTPResponseError {
+                throw AIError.invalidResponse
+            }
             guard let http = response as? HTTPURLResponse else {
                 throw AIError.invalidResponse
             }
@@ -737,6 +1330,13 @@ enum AIHTTPTransport {
             attempt += 1
             try await sleep(retryDelay(from: http, attempt: attempt))
         }
+    }
+
+    static func sanitizedHTTPErrorMessage(from data: Data) -> String {
+        guard let message = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return IndexerLogSanitizer.redactedMessage(message)
     }
 
     static func retryDelay(from response: HTTPURLResponse, attempt: Int) -> TimeInterval {
@@ -775,6 +1375,38 @@ enum AIOllamaEndpointPolicy {
         warningMessage(for: baseURL) == nil
     }
 
+    static func appendingPath(to baseURL: String, path: String) -> URL? {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmedBaseURL) else { return nil }
+
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalizedPath.isEmpty else { return components.url }
+
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let baseSegments = basePath.split(separator: "/").map(String.init)
+        let appendedSegments = normalizedPath.split(separator: "/").map(String.init)
+        let fullSegments: [String]
+
+        if baseSegments.count > 0 && appendedSegments.starts(with: baseSegments) {
+            fullSegments = baseSegments + appendedSegments.dropFirst(baseSegments.count)
+        } else {
+            fullSegments = baseSegments + appendedSegments
+        }
+
+        if fullSegments.isEmpty {
+            return components.url
+        }
+
+        if basePath.isEmpty {
+            components.path = "/\(normalizedPath)"
+        } else {
+            components.path = "/\(fullSegments.joined(separator: "/"))"
+        }
+
+        components.fragment = nil
+        return components.url
+    }
+
     static func warningMessage(for baseURL: String) -> String? {
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -783,17 +1415,33 @@ enum AIOllamaEndpointPolicy {
         }
 
         let scheme = url.scheme?.lowercased() ?? ""
-        guard scheme == "http" else { return nil }
-        guard !isLocalHost(host) else { return nil }
+        guard scheme == "http" || scheme == "https" else {
+            return "Enter a valid Ollama server URL."
+        }
 
-        return "Remote Ollama endpoints must use HTTPS. Plain HTTP is only allowed for localhost and loopback addresses."
+        if scheme == "http" {
+            return isLocalHost(host)
+                ? nil
+                : "Remote Ollama endpoints must use HTTPS. Plain HTTP is only allowed for localhost and loopback addresses."
+        }
+
+        return nil
     }
 
     private static func isLocalHost(_ host: String) -> Bool {
-        host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host == "[::1]"
+        if host == "localhost" {
+            return true
+        }
+
+        if let ipv4 = IPv4Address(host), ipv4.rawValue[0] == 127 {
+            return true
+        }
+
+        if let ipv6 = IPv6Address(host), ipv6.isLoopback {
+            return true
+        }
+
+        return false
     }
 }
 

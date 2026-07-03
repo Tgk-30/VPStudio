@@ -3,7 +3,7 @@ import Testing
 @testable import VPStudio
 
 @Suite(.serialized)
-struct StremioIndexerTests {
+struct StremioIndexerTestsStremioindexertests {
     struct URLCase: Sendable {
         let baseURL: String
         let endpointPath: String
@@ -12,6 +12,27 @@ struct StremioIndexerTests {
         let episode: Int?
         let expectedManifestSuffix: String
         let expectedStreamSuffix: String
+    }
+
+    @Test func manifestURLRejectsCredentialOrQueryBearingAddonBaseURLs() throws {
+        #expect(throws: URLError.self) {
+            try StremioAddonURLBuilder.manifestURL(
+                baseURL: "https://user:pass@addon.example",
+                endpointPath: "/manifest.json"
+            )
+        }
+        #expect(throws: URLError.self) {
+            try StremioAddonURLBuilder.manifestURL(
+                baseURL: "https://addon.example?token=secret",
+                endpointPath: "/manifest.json"
+            )
+        }
+        #expect(throws: URLError.self) {
+            try StremioAddonURLBuilder.manifestURL(
+                baseURL: "stremio://addon.example#token",
+                endpointPath: "/manifest.json"
+            )
+        }
     }
 
     struct PayloadCase: Sendable {
@@ -59,11 +80,11 @@ struct StremioIndexerTests {
         for index in 0..<50 {
             switch index % 6 {
             case 0:
-                values.append(PayloadCase(payload: #"{"streams":[{"title":"A","infoHash":"ABCDEF1234567890","behaviorHints":{"videoSize":1234,"seeders":11,"leechers":2}}]}"#, expectedCount: 1))
+                values.append(PayloadCase(payload: #"{"streams":[{"title":"A","infoHash":"ABCDEF1234567890","behaviorHints":{"videoSize":1234,"seeders":11,"leechers":2}}]}"#, expectedCount: 0))
             case 1:
-                values.append(PayloadCase(payload: #"{"streams":[{"name":"A","url":"magnet:?xt=urn:btih:0123456789ABCDEF0123","behaviorHints":{"videoSize":"1234","seeders":"5","leechers":"1"}}]}"#, expectedCount: 1))
+                values.append(PayloadCase(payload: #"{"streams":[{"name":"A","url":"magnet:?xt=urn:btih:0123456789ABCDEF0123","behaviorHints":{"videoSize":"1234","seeders":"5","leechers":"1"}}]}"#, expectedCount: 0))
             case 2:
-                values.append(PayloadCase(payload: #"{"streams":[{"title":"A","externalUrl":"magnet:?xt=urn:btih:FACE1234FACE1234FACE"}]}"#, expectedCount: 1))
+                values.append(PayloadCase(payload: #"{"streams":[{"title":"A","externalUrl":"magnet:?xt=urn:btih:FACE1234FACE1234FACE"}]}"#, expectedCount: 0))
             case 3:
                 values.append(PayloadCase(payload: #"{"streams":[{"title":"No Hash"}]}"#, expectedCount: 0))
             case 4:
@@ -124,6 +145,241 @@ struct StremioIndexerTests {
         #expect(results.count == data.expectedCount, "count for payload: \(data.payload)")
     }
 
+    @Test func payloadPreservesMagnetFieldWhenURLIsDirectLink() async throws {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let fullMagnet = "magnet:?xt=urn:btih:\(hash)&dn=Regional.Release&tr=udp://tracker.example/announce"
+        let directURL = "https://cdn.example.invalid/direct/file.mkv?token=abc123"
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let payload = """
+            {
+              "streams": [
+                {
+                  "title": "Regional Release",
+                  "url": "\(directURL)",
+                  "magnet": "\(fullMagnet)",
+                  "behaviorHints": {"videoSize": 1234, "seeders": 25}
+                }
+              ]
+            }
+            """
+            return (response, Data(payload.utf8))
+        }
+
+        let indexer = StremioIndexer(name: "Stremio", baseURL: "https://addon.example", endpointPath: "/manifest.json", session: session)
+        let results = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        #expect(results.count == 1)
+        #expect(results[0].infoHash == hash)
+        #expect(results[0].magnetURI == fullMagnet)
+        #expect(results[0].directStreamURL == directURL)
+    }
+
+    @Test func payloadBuildsTrackerMagnetFromInfoHashSources() async throws {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let payload = """
+            {
+              "streams": [
+                {
+                  "title": "Regional Release 1080p",
+                  "infoHash": "\(hash.uppercased())",
+                  "sources": [
+                    "tracker:udp://tracker.opentrackr.org:1337/announce",
+                    "tracker:https://tracker.example/announce",
+                    "dht:ignored-node"
+                  ],
+                  "behaviorHints": {"videoSize": 1234, "seeders": 25}
+                }
+              ]
+            }
+            """
+            return (response, Data(payload.utf8))
+        }
+
+        let indexer = StremioIndexer(name: "Stremio", baseURL: "https://addon.example", endpointPath: "/manifest.json", session: session)
+        let results = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        let magnet = try #require(results.first?.magnetURI)
+        let components = try #require(URLComponents(string: magnet))
+        let queryItems = components.queryItems ?? []
+        let trackers = queryItems.filter { $0.name == "tr" }.compactMap(\.value)
+
+        #expect(results.count == 1)
+        #expect(results[0].infoHash == hash)
+        #expect(queryItems.first { $0.name == "xt" }?.value == "urn:btih:\(hash)")
+        #expect(queryItems.first { $0.name == "dn" }?.value == "Regional Release 1080p")
+        #expect(trackers == [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "https://tracker.example/announce",
+        ])
+    }
+
+    @Test func payloadKeepsDirectURLStreamsWithoutInfoHash() async throws {
+        let directURL = "https://cdn.example.invalid/debrid/Regional.File.1080p.mkv?token=abc123"
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let payload = """
+            {
+              "streams": [
+                {
+                  "title": "Regional File 1080p",
+                  "url": "\(directURL)",
+                  "behaviorHints": {"videoSize": 1234, "seeders": 25}
+                }
+              ]
+            }
+            """
+            return (response, Data(payload.utf8))
+        }
+
+        let indexer = StremioIndexer(name: "Stremio", baseURL: "https://addon.example", endpointPath: "/manifest.json", session: session)
+        let results = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        #expect(results.count == 1)
+        #expect(results[0].directStreamURL == directURL)
+        #expect(results[0].magnetURI == nil)
+        #expect(results[0].infoHash.hasPrefix("direct-"))
+        #expect(DebridHashValidator.normalizedInfoHash(results[0].infoHash) == nil)
+    }
+
+    @Test func remoteHTTPBaseURLIsRejectedForStreamRequest() async throws {
+        let session = URLProtocolHarness.makeSession { _ in
+            Issue.record("Network request attempted for blocked URL")
+            let url = try #require(URL(string: "https://fallback.example"))
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data("".utf8))
+        }
+
+        let indexer = StremioIndexer(name: "Stremio", baseURL: "http://stremio.example", endpointPath: "/manifest.json", session: session)
+
+        do {
+            _ = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+            Issue.record("Expected URLError(.unsupportedURL)")
+        } catch let error as URLError {
+            #expect(error.code == .unsupportedURL)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func localHTTPBaseURLIsAllowedForStreamRequest() async throws {
+        final class State: @unchecked Sendable {
+            var requestURL: URL?
+        }
+        let state = State()
+
+        let session = URLProtocolHarness.makeSession { request in
+            state.requestURL = request.url
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"streams":[{"title":"Local Stream","url":"https://cdn.example.invalid/sample.mkv","magnet":"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}]}"#.utf8))
+        }
+
+        let indexer = StremioIndexer(
+            name: "Stremio",
+            baseURL: "http://localhost:9696",
+            endpointPath: "/manifest.json",
+            session: session
+        )
+
+        let results = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        let requestURL = try #require(state.requestURL)
+        #expect(requestURL.scheme == "http")
+        #expect(requestURL.host == "localhost")
+        #expect(requestURL.path.hasSuffix("/stream/movie/tt1234567.json"))
+        #expect(results.count == 1)
+    }
+
+    @Test func payloadCarriesProxyRequestHeadersForDirectStreams() async throws {
+        let directURL = "https://cdn.example.invalid/debrid/Regional.File.1080p.mkv?token=abc123"
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let payload = """
+            {
+              "streams": [
+                {
+                  "title": "Regional File 1080p",
+                  "url": "\(directURL)",
+                  "behaviorHints": {
+                    "videoSize": 1234,
+                    "proxyHeaders": {
+                      "request": {
+                        "User-Agent": "Stremio",
+                        "Referer": "https://app.strem.io/",
+                        "Authorization": "Bearer ignored",
+                        "X-Blank": "   "
+                      },
+                      "response": {
+                        "Set-Cookie": "ignored"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+            """
+            return (response, Data(payload.utf8))
+        }
+
+        let indexer = StremioIndexer(name: "Stremio", baseURL: "https://addon.example", endpointPath: "/manifest.json", session: session)
+        let results = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        let stream = try #require(results.first?.directStreamInfo)
+        #expect(stream.requestHeaders?["User-Agent"] == "Stremio")
+        #expect(stream.requestHeaders?["Referer"] == "https://app.strem.io/")
+        #expect(stream.requestHeaders?["Authorization"] == nil)
+        #expect(stream.requestHeaders?["X-Blank"] == nil)
+        #expect(stream.requestHeaders?["Set-Cookie"] == nil)
+    }
+
+    @Test func payloadKeepsTorrentioResolverURLButMarksItForLocalDebridResolution() async throws {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let resolverURL = "https://torrentio.strem.fun/resolve/rd/\(hash)/Regional.File.1080p.mkv"
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let payload = """
+            {
+              "streams": [
+                {
+                  "title": "Regional File 1080p",
+                  "url": "\(resolverURL)",
+                  "sources": ["tracker:udp://tracker.example:1337/announce"],
+                  "behaviorHints": {"videoSize": 1234, "seeders": 25}
+                }
+              ]
+            }
+            """
+            return (response, Data(payload.utf8))
+        }
+
+        let indexer = StremioIndexer(name: "Stremio Torrentio", baseURL: "https://torrentio.strem.fun", endpointPath: "/manifest.json", session: session)
+        let results = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        #expect(results.count == 1)
+        #expect(results[0].infoHash == hash)
+        #expect(results[0].directStreamURL == resolverURL)
+        #expect(results[0].magnetURI?.contains("tr=udp%3A%2F%2Ftracker.example%3A1337%2Fannounce") == true)
+        #expect(results[0].prefersDebridResolutionOverDirectURL == true)
+        #expect(results[0].requiresDebridResolution == true)
+    }
+
     @Test func searchDoesNotFetchManifest() async throws {
         final class Capture: @unchecked Sendable {
             var requestedPaths: [String] = []
@@ -143,6 +399,103 @@ struct StremioIndexerTests {
         // No request should hit the manifest endpoint
         #expect(capture.requestedPaths.count == 1)
         #expect(!capture.requestedPaths[0].contains("manifest"))
+    }
+
+    @Test func fullManifestURLBaseDoesNotAppendManifestTwice() async throws {
+        final class Capture: @unchecked Sendable {
+            var requestedPaths: [String] = []
+            var requestedScheme: String?
+        }
+        let capture = Capture()
+
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            capture.requestedPaths.append(url.path)
+            capture.requestedScheme = url.scheme
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"streams":[{"title":"A","infoHash":"ABCDEF1234567890ABCDEF1234567890ABCDEF12"}]}"#.utf8))
+        }
+
+        let indexer = StremioIndexer(
+            name: "Stremio",
+            baseURL: "https://addon.example/stremio/user-token/manifest.json",
+            endpointPath: "/manifest.json",
+            session: session
+        )
+        _ = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        #expect(capture.requestedPaths == ["/stremio/user-token/stream/movie/tt1234567.json"])
+        #expect(capture.requestedScheme == "https")
+    }
+
+    @Test func stremioDeepLinkBaseUsesHTTPAddonTransport() async throws {
+        final class Capture: @unchecked Sendable {
+            var requestedURL: URL?
+        }
+        let capture = Capture()
+
+        let session = URLProtocolHarness.makeSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            capture.requestedURL = url
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"streams":[{"title":"A","infoHash":"ABCDEF1234567890ABCDEF1234567890ABCDEF12"}]}"#.utf8))
+        }
+
+        let indexer = StremioIndexer(
+            name: "Stremio",
+            baseURL: "stremio://addon.example/stremio/user-token/manifest.json",
+            endpointPath: "/manifest.json",
+            session: session
+        )
+        _ = try await indexer.search(imdbId: "tt1234567", type: .movie, season: nil, episode: nil)
+
+        #expect(capture.requestedURL?.scheme == "https")
+        #expect(capture.requestedURL?.host == "addon.example")
+        #expect(capture.requestedURL?.path == "/stremio/user-token/stream/movie/tt1234567.json")
+    }
+
+    @Test func searchByQueryWithFullManifestURLUsesAddonRoot() async throws {
+        final class Capture: @unchecked Sendable {
+            var requestedPaths: [String] = []
+        }
+        let capture = Capture()
+
+        let session = URLProtocolHarness.makeSession { request in
+            let url = try #require(request.url)
+            let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+            capture.requestedPaths.append(path)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+
+            switch path {
+            case "/stremio/user-token/manifest.json":
+                let body = #"{"catalogs":[{"id":"regional","type":"series","extra":[{"name":"search"}]}]}"#
+                return (response, Data(body.utf8))
+            case "/stremio/user-token/catalog/series/regional/search=CID%20S02E01.json":
+                let body = #"{"metas":[{"id":"tt9999999","name":"CID","type":"series"}]}"#
+                return (response, Data(body.utf8))
+            case "/stremio/user-token/stream/series/tt9999999:2:1.json":
+                let body = #"{"streams":[{"title":"CID Source","infoHash":"ABCDEF1234567890ABCDEF1234567890ABCDEF12"}]}"#
+                return (response, Data(body.utf8))
+            default:
+                throw URLError(.unsupportedURL)
+            }
+        }
+
+        let indexer = StremioIndexer(
+            name: "Stremio",
+            baseURL: "https://addon.example/stremio/user-token/manifest.json",
+            endpointPath: "/manifest.json",
+            session: session
+        )
+        let results = try await indexer.searchByQuery(query: "CID S02E01", type: .series)
+
+        #expect(capture.requestedPaths == [
+            "/stremio/user-token/manifest.json",
+            "/stremio/user-token/catalog/series/regional/search=CID%20S02E01.json",
+            "/stremio/user-token/stream/series/tt9999999:2:1.json",
+        ])
+        #expect(results.count == 1)
+        #expect(results.first?.title == "CID Source S02E01")
     }
 
     @Test func missingStreamsArrayThrowsParseError() async {

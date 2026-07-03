@@ -28,11 +28,15 @@ struct OpenAIProvider: AIProvider, Sendable {
     func complete(system: String, userMessage: String) async throws -> AIProviderResponse {
         let apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty, !model.isEmpty else {
             throw AIError.invalidResponse
         }
+        guard !trimmedBaseURL.isEmpty else {
+            throw AIError.invalidResponse
+        }
 
-        guard let url = URL(string: baseURL) else {
+        guard let url = AICloudEndpointPolicy.validatedEndpoint(from: trimmedBaseURL) else {
             throw AIError.invalidResponse
         }
 
@@ -50,7 +54,7 @@ struct OpenAIProvider: AIProvider, Sendable {
         let (data, http) = try await AIHTTPTransport.perform(request, using: session, sleep: sleep)
 
         guard (200...299).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? ""
+            let msg = AIHTTPTransport.sanitizedHTTPErrorMessage(from: data)
             throw AIError.httpError(http.statusCode, msg)
         }
 
@@ -64,7 +68,7 @@ struct OpenAIProvider: AIProvider, Sendable {
         )
     }
 
-    private func requestBody(system: String, userMessage: String) -> [String: Any] {
+    internal func requestBody(system: String, userMessage: String) -> [String: Any] {
         let model = self.model.trimmingCharacters(in: .whitespacesAndNewlines)
         if endpointStyle == .chatCompletions {
             return [
@@ -142,12 +146,13 @@ struct OpenAIProvider: AIProvider, Sendable {
         )
     }
 
-    private var endpointStyle: EndpointStyle {
-        guard let url = URL(string: baseURL) else { return .responses }
+    internal var endpointStyle: EndpointStyle {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmedBaseURL) else { return .responses }
         return url.path.contains("chat/completions") ? .chatCompletions : .responses
     }
 
-    private enum EndpointStyle {
+    internal enum EndpointStyle {
         case responses
         case chatCompletions
     }

@@ -133,12 +133,12 @@ struct PlayerSessionRoutingFallbackScoringTests {
         #expect(ordered.first?.id == h265.id, "H265 should rank above H264")
     }
 
-    @Test func h264RanksAboveAv1() async {
+    @Test func av1RanksAboveH264() async {
         let h264 = Fixtures.stream(url: "https://cdn.example.com/h264.mkv", codec: .h264, fileName: "h264.mkv")
         let av1 = Fixtures.stream(url: "https://cdn.example.com/av1.mkv", codec: .av1, fileName: "av1.mkv")
 
         let ordered = await fallbackOrder(streams: [av1, h264])
-        #expect(ordered.first?.id == h264.id, "H264 should rank above AV1")
+        #expect(ordered.first?.id == av1.id, "AV1 should rank above H264")
     }
 
     @Test func av1RanksAboveXvid() async {
@@ -221,5 +221,22 @@ struct PlayerSessionRoutingFallbackScoringTests {
         // With equal score, fallback is ID sort (aaa < bbb), so fiveGB first.
         let ordered = await fallbackOrder(streams: [tenGB, fiveGB])
         #expect(ordered.count == 2, "Both streams should appear")
+    }
+
+    @Test func playbackQueueUsesIdAsFinalTiebreaker() async {
+        let laterID = Fixtures.stream(
+            url: "https://cdn.example.com/z.mkv",
+            fileName: "z.mkv",
+            sizeBytes: 1_000
+        )
+        let earlierID = Fixtures.stream(
+            url: "https://cdn.example.com/a.mkv",
+            fileName: "a.mkv",
+            sizeBytes: 1_000
+        )
+
+        let ordered = await fallbackOrder(streams: [laterID, earlierID])
+
+        #expect(ordered.map(\.id) == [earlierID.id, laterID.id])
     }
 }

@@ -11,13 +11,13 @@ struct OpenRouterProvider: AIProvider, Sendable {
 
     init(
         apiKey: String,
-        model: String = "openrouter/google/gemini-2.5-flash-lite-preview",
+        model: String = "google/gemini-2.5-flash-lite-preview",
         baseURL: String = "https://openrouter.ai/api/v1/chat/completions",
         session: URLSession = AIHTTPTransport.defaultSession,
         sleep: @escaping AIHTTPSleep = AIHTTPTransport.defaultSleep
     ) {
         self.apiKey = apiKey
-        self.model = model
+        self.model = AIModelCatalog.providerNativeOpenRouterModelID(model)
         self.baseURL = baseURL
         self.session = session
         self.sleep = sleep
@@ -26,7 +26,11 @@ struct OpenRouterProvider: AIProvider, Sendable {
     func complete(system: String, userMessage: String) async throws -> AIProviderResponse {
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAPIKey.isEmpty, !trimmedModel.isEmpty else {
+            throw AIError.invalidResponse
+        }
+        guard !trimmedBaseURL.isEmpty else {
             throw AIError.invalidResponse
         }
 
@@ -39,7 +43,7 @@ struct OpenRouterProvider: AIProvider, Sendable {
             ]
         ]
 
-        guard let url = URL(string: baseURL) else {
+        guard let url = AICloudEndpointPolicy.validatedEndpoint(from: trimmedBaseURL) else {
             throw AIError.invalidResponse
         }
         var request = URLRequest(url: url)
@@ -52,7 +56,7 @@ struct OpenRouterProvider: AIProvider, Sendable {
         let (data, http) = try await AIHTTPTransport.perform(request, using: session, sleep: sleep)
 
         guard (200...299).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? ""
+            let msg = AIHTTPTransport.sanitizedHTTPErrorMessage(from: data)
             throw AIError.httpError(http.statusCode, msg)
         }
 
@@ -82,7 +86,7 @@ extension OpenRouterProvider {
     /// GET https://openrouter.ai/api/v1/models
     static let knownModels: [AIModelDefinition] = [
         AIModelDefinition(
-            id: "openrouter/google/gemini-2.5-flash-lite-preview",
+            id: "google/gemini-2.5-flash-lite-preview",
             displayName: "Gemini 2.5 Flash Lite (OpenRouter)",
             provider: .openRouter,
             inputCostPer1MTokens: 0.10,
@@ -91,7 +95,7 @@ extension OpenRouterProvider {
             isDefault: true
         ),
         AIModelDefinition(
-            id: "openrouter/anthropic/claude-3.5-haiku",
+            id: "anthropic/claude-3.5-haiku",
             displayName: "Claude 3.5 Haiku (OpenRouter)",
             provider: .openRouter,
             inputCostPer1MTokens: 0.80,
@@ -100,7 +104,7 @@ extension OpenRouterProvider {
             isDefault: false
         ),
         AIModelDefinition(
-            id: "openrouter/openai/gpt-4o-mini",
+            id: "openai/gpt-4o-mini",
             displayName: "GPT-4o Mini (OpenRouter)",
             provider: .openRouter,
             inputCostPer1MTokens: 0.15,
@@ -109,7 +113,7 @@ extension OpenRouterProvider {
             isDefault: false
         ),
         AIModelDefinition(
-            id: "openrouter/meta-llama/llama-3.1-8b-instruct",
+            id: "meta-llama/llama-3.1-8b-instruct",
             displayName: "Llama 3.1 8B (OpenRouter)",
             provider: .openRouter,
             inputCostPer1MTokens: 0.04,
@@ -118,7 +122,7 @@ extension OpenRouterProvider {
             isDefault: false
         ),
         AIModelDefinition(
-            id: "openrouter/mistralai/mistral-nemo",
+            id: "mistralai/mistral-nemo",
             displayName: "Mistral Nemo (OpenRouter)",
             provider: .openRouter,
             inputCostPer1MTokens: 0.15,
@@ -127,7 +131,7 @@ extension OpenRouterProvider {
             isDefault: false
         ),
         AIModelDefinition(
-            id: "openrouter/qwen/qwen-2.5-72b-instruct",
+            id: "qwen/qwen-2.5-72b-instruct",
             displayName: "Qwen 2.5 72B (OpenRouter)",
             provider: .openRouter,
             inputCostPer1MTokens: 0.90,

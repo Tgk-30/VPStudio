@@ -60,4 +60,40 @@ struct WatchProgressResumePolicyTests {
         let resume = WatchProgressResumePolicy.resumeTime(for: history)
         #expect(resume == 1_425)
     }
+
+    @Test func returnsProgressWhenDurationIsUnavailable() {
+        let history = WatchHistory(
+            id: "live-progress",
+            mediaId: "live",
+            episodeId: nil,
+            title: "Unknown Duration",
+            progress: 120,
+            duration: 0,
+            quality: "1080p",
+            debridService: "rd",
+            streamURL: nil,
+            watchedAt: Date(),
+            isCompleted: false
+        )
+
+        #expect(WatchProgressResumePolicy.resumeTime(for: history) == 120)
+    }
+
+    @Test func rejectsMutatedNonFiniteProgressValues() {
+        var history = WatchHistory(
+            id: "movie-progress",
+            mediaId: "movie",
+            episodeId: nil,
+            title: "Movie",
+            progress: 120,
+            duration: 3_600,
+            quality: "1080p",
+            debridService: "rd",
+            streamURL: nil,
+            watchedAt: Date(),
+            isCompleted: false
+        )
+        history.progress = .infinity
+        #expect(WatchProgressResumePolicy.resumeTime(for: history) == nil)
+    }
 }

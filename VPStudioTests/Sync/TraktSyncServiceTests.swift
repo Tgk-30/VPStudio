@@ -166,7 +166,7 @@ struct TraktTokenRefreshCallbackTests {
             }
         )
 
-        await service.setTokens(access: "expired-token", refresh: "valid-refresh")
+        await service.setTokens(access: "stale-token", refresh: "valid-refresh")
         let _: [TraktItem] = try await service.getWatchlist(type: .movie)
 
         #expect(callbackState.callCount == 1)
@@ -453,6 +453,7 @@ struct TraktErrorDeviceCodeTests {
             .httpError(500),
             .unauthorized,
             .notConnected,
+            .invalidIdentifier("Invalid IMDb, OMDb, or TMDb ID."),
             .deviceCodeExpired,
             .deviceCodeDenied,
             .deviceCodeInvalid,
@@ -462,6 +463,22 @@ struct TraktErrorDeviceCodeTests {
             #expect(error.errorDescription != nil)
             #expect(!error.errorDescription!.isEmpty)
         }
+    }
+
+    @Test func invalidIdentifierDescriptionIncludesOMDb() {
+        let error = TraktError.invalidIdentifier("Invalid IMDb, OMDb, or TMDb ID.")
+        #expect(error.errorDescription == "Invalid IMDb, OMDb, or TMDb ID.")
+    }
+
+    @Test func invalidIdentifierDescriptionRedactsSecretBearingInput() {
+        let error = TraktError.invalidIdentifier(
+            "Invalid https://api.trakt.tv/sync?access_token=trakt-secret-token Authorization: Bearer traktBearerSecret1234567890"
+        )
+        let description = error.errorDescription ?? ""
+
+        #expect(description.contains("REDACTED"))
+        #expect(!description.contains("trakt-secret-token"))
+        #expect(!description.contains("traktBearerSecret1234567890"))
     }
 }
 
@@ -489,7 +506,7 @@ struct DeviceCodeResponseTests {
 // MARK: - TraktDefaults Tests
 
 @Suite("TraktDefaults")
-struct TraktDefaultsTests {
+struct TraktDefaultsTestsSyncTraktsyncservicetests {
 
     @Test func placeholderCredentialsReturnNil() {
         let result = TraktDefaults.resolvedCredentials(userClientId: nil, userClientSecret: nil)

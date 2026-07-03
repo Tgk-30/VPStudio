@@ -26,7 +26,10 @@ struct EnvironmentCatalogTests {
         #expect(FileManager.default.fileExists(atPath: imported.assetPath))
     }
 
-    @Test func bootstrapHasNoBundledDefaults() async throws {
+    @Test func bootstrapSeedsBundledSkyDomeDefault() async throws {
+        // Previously asserted there were NO bundled defaults (the empty-catalog state that
+        // left Environments broken out of the box). The bundled SkyDome is now seeded so a
+        // fresh install has at least one activatable immersive environment.
         let (database, rootDir) = try await makeDatabase(named: "environment-catalog-bootstrap.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -38,7 +41,7 @@ struct EnvironmentCatalogTests {
 
         let assets = try await manager.fetchAssets()
         let bundled = assets.filter { $0.sourceType == .bundled }
-        #expect(bundled.isEmpty, "No bundled defaults — void was removed")
+        #expect(bundled.contains { $0.id == EnvironmentCatalogManager.bundledSkyDomeID })
     }
 
     @Test func bootstrapRemovesStaleBundledAssetsButPreservesImported() async throws {
@@ -99,6 +102,85 @@ struct EnvironmentCatalogTests {
             Issue.record("Unexpected EnvironmentCatalogError: \(error)")
         } catch {
             Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func errorDescriptionsExplainEachFailureMode() {
+        #expect(EnvironmentCatalogError.unsupportedFileType.errorDescription?.contains(".hdr") == true)
+        #expect(EnvironmentCatalogError.missingFile.errorDescription?.contains("could not be read") == true)
+        #expect(EnvironmentCatalogError.invalidAsset.errorDescription?.contains("could not be loaded") == true)
+        #expect(EnvironmentCatalogError.downloadFailed("offline").errorDescription?.contains("offline") == true)
+    }
+
+    @Test func defaultValidatorHandlesRealityAssetsPerPlatform() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-default-validator-reality.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+
+        let source = rootDir.appendingPathComponent("plain.reality")
+        try Data("non-empty reality placeholder".utf8).write(to: source)
+
+        #if os(visionOS)
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset error")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #else
+        let imported = try await manager.importEnvironment(from: source)
+        #expect(imported.sourceType == .imported)
+        #expect(imported.assetPath.hasSuffix(".reality"))
+        #endif
+    }
+
+    @Test func defaultValidatorRejectsEmptySupportedAsset() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-default-validator-empty.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+
+        let source = rootDir.appendingPathComponent("empty.usdz")
+        try Data().write(to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset for empty file")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func defaultValidatorRejectsInvalidHDRImageData() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-default-validator-hdr.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true)
+        )
+
+        let source = rootDir.appendingPathComponent("not-image.hdr")
+        try Data("not an actual hdr image".utf8).write(to: source)
+
+        do {
+            _ = try await manager.importEnvironment(from: source)
+            Issue.record("Expected invalid asset for non-image HDR data")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 
@@ -164,7 +246,7 @@ struct EnvironmentCatalogTests {
         }
     }
 
-    @Test func deletingActiveImportedEnvironmentFallsBackToRemainingAsset() async throws {
+    @Test func deletingActiveImportedEnvironmentClearsActiveSelection() async throws {
         let (database, rootDir) = try await makeDatabase(named: "environment-catalog-fallback.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
@@ -174,7 +256,6 @@ struct EnvironmentCatalogTests {
             assetValidator: { _ in true }
         )
 
-        // Import two assets so deleting one can fall back to the other
         let source1 = rootDir.appendingPathComponent("first.reality")
         try Data("fake-reality-1".utf8).write(to: source1)
         let source2 = rootDir.appendingPathComponent("second.reality")
@@ -186,8 +267,8 @@ struct EnvironmentCatalogTests {
         try await manager.deleteAsset(id: first.id)
 
         let active = try await manager.activeAsset()
-        #expect(active != nil, "Should fall back to remaining asset after deleting active one")
-        #expect(active?.id == second.id)
+        #expect(active == nil, "Deleting the active asset should leave Apple Environment selected")
+        #expect(try await manager.fetchAssets().contains { $0.id == second.id })
     }
 
     @Test func bundledAssetWithNoExtensionRoutesToCustomEnvironment() async throws {
@@ -371,6 +452,59 @@ struct EnvironmentCatalogTests {
         }
     }
 
+    @Test func remoteImportWithFetcherErrorWrapsDownloadFailure() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-fetch-error.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        enum FetchError: Error { case offline }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { _ in throw FetchError.offline }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/offline.hdr")!
+            )
+            Issue.record("Expected download failure")
+        } catch let error as EnvironmentCatalogError {
+            if case .downloadFailed(let reason) = error {
+                #expect(!reason.isEmpty)
+            } else {
+                Issue.record("Expected downloadFailed, got \(error)")
+            }
+        }
+    }
+
+    @Test func remoteImportRejectsUnsupportedExtensionBeforeFetching() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-remote-bad-ext.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            remoteDataFetcher: { url in
+                Issue.record("Unsupported extension should not fetch: \(url)")
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("bad".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/not-supported.txt")!
+            )
+            Issue.record("Expected unsupported file type")
+        } catch EnvironmentCatalogError.unsupportedFileType {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func remoteImportWithEmptyDataThrowsDownloadFailed() async throws {
         let (database, rootDir) = try await makeDatabase(named: "environment-catalog-empty-data.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -396,6 +530,38 @@ struct EnvironmentCatalogTests {
             }
             Issue.record("Expected downloadFailed, got \(error)")
         }
+    }
+
+    @Test func remoteImportInvalidAssetCleansTemporaryFileAndPersistsNothing() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-remote-invalid-cleanup.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: envDir,
+            assetValidator: { _ in false },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("remote-invalid-hdr".utf8), response)
+            }
+        )
+
+        do {
+            _ = try await manager.importEnvironment(
+                fromRemote: URL(string: "https://example.com/invalid.hdr")!
+            )
+            Issue.record("Expected invalid asset")
+        } catch EnvironmentCatalogError.invalidAsset {
+            #expect(Bool(true))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let assets = try await manager.fetchAssets()
+        #expect(assets.isEmpty)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: envDir.path)) ?? []
+        #expect(files.isEmpty)
     }
 
     @Test func missingLocalFileThrowsMissingFile() async throws {
@@ -526,6 +692,28 @@ struct EnvironmentCatalogTests {
         #expect(imported.hdriYawOffset == 0, "Local imports should default to zero yaw offset")
     }
 
+    @Test func importUsesFallbackNameWhenPreferredNameIsBlank() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-name-fallback.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true },
+            remoteDataFetcher: { url in
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data("remote-hdr".utf8), response)
+            }
+        )
+
+        let imported = try await manager.importEnvironment(
+            fromRemote: URL(string: "https://example.com/My%20Cinema.hdr")!,
+            preferredName: "   "
+        )
+
+        #expect(imported.name == "My Cinema")
+    }
+
     @Test func hdriYawOffsetDatabaseMigrationAddsColumn() async throws {
         let (database, rootDir) = try await makeDatabase(named: "environment-catalog-migration-yaw.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
@@ -543,6 +731,86 @@ struct EnvironmentCatalogTests {
         let fetched = try await database.fetchEnvironmentAssets()
         let stored = fetched.first(where: { $0.id == "migration-test" })
         #expect(stored?.hdriYawOffset == 180.0)
+    }
+
+    @Test func deleteMissingAssetIsNoOpAndDeleteImportedRemovesFile() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-delete-idempotent.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: rootDir.appendingPathComponent("env", isDirectory: true),
+            assetValidator: { _ in true }
+        )
+        try await manager.deleteAsset(id: "missing")
+
+        let source = rootDir.appendingPathComponent("delete-me.hdr")
+        try Data("fake-hdr".utf8).write(to: source)
+        let imported = try await manager.importEnvironment(from: source)
+        #expect(FileManager.default.fileExists(atPath: imported.assetPath))
+
+        try await manager.deleteAsset(id: imported.id)
+
+        #expect(!FileManager.default.fileExists(atPath: imported.assetPath))
+        #expect(try await manager.fetchAssets().isEmpty)
+        #expect(try await manager.activeAsset() == nil)
+    }
+
+    @Test func resolvedAssetURLHandlesExistingMissingAndBundlePaths() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-resolved-url.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let manager = EnvironmentCatalogManager(database: database, environmentsDirectory: envDir)
+        let existingFile = envDir.appendingPathComponent("existing.hdr")
+        try Data("fake-hdr".utf8).write(to: existingFile)
+        let directoryURL = envDir.appendingPathComponent("directory.hdr", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let existingAsset = EnvironmentAsset(
+            id: "existing",
+            name: "Existing",
+            sourceType: .imported,
+            assetPath: existingFile.path
+        )
+        let missingAsset = EnvironmentAsset(
+            id: "missing",
+            name: "Missing",
+            sourceType: .imported,
+            assetPath: envDir.appendingPathComponent("missing.hdr").path
+        )
+        let externalAsset = EnvironmentAsset(
+            id: "external",
+            name: "External",
+            sourceType: .imported,
+            assetPath: rootDir.appendingPathComponent("outside.hdr").path
+        )
+        let directoryAsset = EnvironmentAsset(
+            id: "directory",
+            name: "Directory",
+            sourceType: .imported,
+            assetPath: directoryURL.path
+        )
+        let bundleAsset = EnvironmentAsset(
+            id: "bundle",
+            name: "Bundle",
+            sourceType: .bundled,
+            assetPath: "bundle://does/not/exist.usdz"
+        )
+        let emptyBundlePathAsset = EnvironmentAsset(
+            id: "empty-bundle-path",
+            name: "Empty Bundle Path",
+            sourceType: .bundled,
+            assetPath: "bundle:///"
+        )
+
+        #expect(await manager.resolvedAssetURL(for: existingAsset) == existingFile)
+        #expect(await manager.resolvedAssetURL(for: missingAsset) == nil)
+        #expect(await manager.resolvedAssetURL(for: externalAsset) == nil)
+        #expect(await manager.resolvedAssetURL(for: directoryAsset) == nil)
+        #expect(await manager.resolvedAssetURL(for: bundleAsset) == nil)
+        #expect(await manager.resolvedAssetURL(for: emptyBundlePathAsset) == nil)
     }
 
     @Test func bootstrapPrunesImportedAssetsWhoseFilesAreMissing() async throws {
@@ -573,6 +841,36 @@ struct EnvironmentCatalogTests {
         try await manager.bootstrapCuratedAssets()
         assets = try await manager.fetchAssets()
         #expect(!assets.contains(where: { $0.id == imported.id }), "Orphaned imported asset should be pruned on second bootstrap")
+    }
+
+    @Test func bootstrapPrunesImportedAssetsWhosePathsAreDirectories() async throws {
+        let (database, rootDir) = try await makeDatabase(named: "environment-catalog-prune-directory.sqlite")
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let envDir = rootDir.appendingPathComponent("env", isDirectory: true)
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let directoryURL = envDir.appendingPathComponent("not-a-loadable-asset.hdr", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let manager = EnvironmentCatalogManager(
+            database: database,
+            environmentsDirectory: envDir,
+            assetValidator: { _ in true }
+        )
+        let asset = EnvironmentAsset(
+            id: "directory-asset",
+            name: "Directory Asset",
+            sourceType: .imported,
+            assetPath: directoryURL.path,
+            isActive: true
+        )
+        try await database.saveEnvironmentAsset(asset)
+
+        try await manager.bootstrapCuratedAssets()
+        let assets = try await manager.fetchAssets()
+
+        #expect(!assets.contains(where: { $0.id == asset.id }))
+        #expect(try await manager.activeAsset() == nil)
     }
 
     @Test func bootstrapPrunesOnEveryCallNotJustFirstLaunch() async throws {
@@ -684,8 +982,7 @@ struct EnvironmentCatalogTests {
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }

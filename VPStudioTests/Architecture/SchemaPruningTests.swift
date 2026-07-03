@@ -12,8 +12,10 @@ struct SchemaPruningTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let dbPath = tempDir.appendingPathComponent("schema-pruning.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
-        try await database.migrate()
+        do {
+            let database = try DatabaseManager(path: dbPath)
+            try await database.migrate()
+        }
 
         let tableNames = try sqliteTableNames(at: dbPath)
 

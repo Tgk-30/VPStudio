@@ -74,4 +74,43 @@ struct RealDebridHashValidationTests {
         let hash = String(repeating: "a", count: 41)
         #expect(DebridHashValidator.normalizedInfoHash(hash) == nil)
     }
+
+    // MARK: - base32 info-hashes (some indexers/trackers publish `urn:btih:` this way)
+
+    @Test("32-char base32 of all-zero bytes decodes to 40 hex zeros")
+    func base32AllZeroBytes() async throws {
+        let hash = String(repeating: "A", count: 32) // 160 zero bits
+        #expect(DebridHashValidator.normalizedInfoHash(hash) == String(repeating: "0", count: 40))
+    }
+
+    @Test("32-char base32 of all-one bytes decodes to 40 hex f's")
+    func base32AllOneBytes() async throws {
+        let hash = String(repeating: "7", count: 32) // value 31 == 0b11111, 160 one bits
+        #expect(DebridHashValidator.normalizedInfoHash(hash) == String(repeating: "f", count: 40))
+    }
+
+    @Test("32-char base32 decodes asymmetrically (trailing 0x01)")
+    func base32TrailingOne() async throws {
+        let hash = String(repeating: "A", count: 31) + "B" // last 5 bits == 00001
+        #expect(DebridHashValidator.normalizedInfoHash(hash) == String(repeating: "0", count: 38) + "01")
+    }
+
+    @Test("Lowercase base32 is accepted (case-insensitive)")
+    func base32LowercaseAccepted() async throws {
+        let hash = String(repeating: "a", count: 32)
+        #expect(DebridHashValidator.normalizedInfoHash(hash) == String(repeating: "0", count: 40))
+    }
+
+    @Test("32-char string with non-base32 character is rejected")
+    func base32InvalidCharacterRejected() async throws {
+        // '0', '1', '8', '9' are not in the RFC 4648 base32 alphabet.
+        let hash = "0" + String(repeating: "A", count: 31)
+        #expect(DebridHashValidator.normalizedInfoHash(hash) == nil)
+    }
+
+    @Test("31-char base32 string is rejected (wrong length)")
+    func base32WrongLengthRejected() async throws {
+        let hash = String(repeating: "A", count: 31)
+        #expect(DebridHashValidator.normalizedInfoHash(hash) == nil)
+    }
 }

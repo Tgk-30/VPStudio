@@ -74,6 +74,12 @@ struct NavigationChromePolicyTests {
         let usesSidebar = NavigationChromePolicy.usesSidebar(for: layout)
         #expect(usesBottom != usesSidebar, "Bottom and sidebar should be mutually exclusive")
     }
+
+    @Test func bottomTabOrnamentStaysNearSceneBottom() {
+        #expect(BottomTabOrnamentPolicy.visionYOffset == 8)
+        #expect(BottomTabOrnamentPolicy.visionRegularChromeScale == 1.14)
+        #expect(BottomTabOrnamentPolicy.visionCompactChromeScale == 1.08)
+    }
 }
 
 // MARK: - AppState Default
@@ -122,6 +128,18 @@ struct SidebarLayoutPolicyTests {
     @Test func collapsedWidthIsPositive() {
         #expect(SidebarLayoutPolicy.collapsedWidth > 0)
         #expect(SidebarLayoutPolicy.collapsedWidth == 52)
+    }
+
+    @Test func resolvedRailWidthNeverShrinksBelowTapTarget() {
+        let unscaledWidth = SidebarLayoutPolicy.iconFrame + SidebarLayoutPolicy.railChromeInset * 2
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) == unscaledWidth)
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1.25) == unscaledWidth * 1.25)
+        #expect(SidebarLayoutPolicy.resolvedRailWidth(chromeScale: 1) > SidebarLayoutPolicy.iconFrame)
+    }
+
+    @Test func environmentButtonSpacingKeepsPickerClusteredWithRail() {
+        #expect(SidebarLayoutPolicy.environmentButtonSpacing == 5)
+        #expect(SidebarLayoutPolicy.environmentButtonSpacing < 10)
     }
 
     @Test func expandedWidthIsGreaterThanCollapsed() {

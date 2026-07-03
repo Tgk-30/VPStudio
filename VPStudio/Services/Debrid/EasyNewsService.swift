@@ -59,7 +59,6 @@ actor EasyNewsService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 }

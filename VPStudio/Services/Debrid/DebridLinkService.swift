@@ -47,8 +47,14 @@ actor DebridLinkService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
-        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: hash,
+            suppliedMagnetURI: magnetURI
+        )
         let body = formBody([
             URLQueryItem(name: "url", value: magnet),
             URLQueryItem(name: "async", value: "true"),
@@ -118,7 +124,8 @@ actor DebridLinkService: DebridServiceProtocol {
             return selectedIDs.contains(pair.offset + 1)
         })?.element ?? bestEpisodeMatch(in: torrent.files, request: episodeSelection)
 
-        guard let link = selectedFile?.downloadUrl ?? fallbackSelectedFile(in: torrent.files, request: episodeSelection)?.downloadUrl else {
+        let chosenFile = selectedFile ?? fallbackSelectedFile(in: torrent.files, request: episodeSelection)
+        guard let link = chosenFile?.downloadUrl else {
             selectedFileIDsByTorrent.removeValue(forKey: torrentId)
             episodeSelectionByTorrent.removeValue(forKey: torrentId)
             if episodeSelection != nil {
@@ -126,10 +133,14 @@ actor DebridLinkService: DebridServiceProtocol {
             }
             throw DebridError.torrentNotFound(torrentId)
         }
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: link,
+            errorMessage: "Invalid URL"
+        )
         selectedFileIDsByTorrent.removeValue(forKey: torrentId)
         episodeSelectionByTorrent.removeValue(forKey: torrentId)
-        let fileName = selectedFile?.name ?? selectedFile?.downloadUrl.flatMap { URL(string: $0)?.lastPathComponent } ?? torrent.name ?? "Unknown"
+        let fileName = chosenFile?.name ?? chosenFile?.downloadUrl.flatMap { URL(string: $0)?.lastPathComponent } ?? torrent.name ?? "Unknown"
+        let sizeBytes = chosenFile?.size ?? torrent.totalSize
         return StreamInfo(
             streamURL: url,
             quality: VideoQuality.parse(from: fileName),
@@ -138,14 +149,13 @@ actor DebridLinkService: DebridServiceProtocol {
             source: SourceType.parse(from: fileName),
             hdr: HDRFormat.parse(from: fileName),
             fileName: fileName,
-            sizeBytes: torrent.totalSize,
+            sizeBytes: sizeBytes,
             debridService: serviceType.rawValue
         )
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private func request<T: Decodable>(method: String, path: String, body: String? = nil) async throws -> T {

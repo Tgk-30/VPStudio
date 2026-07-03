@@ -56,6 +56,20 @@ struct AIMovieRecommendationTests {
         let rec = AIMovieRecommendation(title: "Dune", year: 2021, type: .movie, reason: "r", tmdbId: 438631)
         #expect(rec.id == "movie-tmdb-438631")
     }
+
+    @Test func idPrefersImdbIdWhenAvailable() {
+        let rec = AIMovieRecommendation(
+            title: "Dune",
+            year: 2021,
+            type: .movie,
+            reason: "r",
+            imdbId: " TT1160419 ",
+            tmdbId: 438631
+        )
+        #expect(rec.id == "movie-omdb-tt1160419")
+        #expect(rec.toMediaPreview().id == "tt1160419")
+        #expect(rec.toMediaPreview().tmdbId == nil)
+    }
 }
 
 // MARK: - AIAssistantManager Tests
@@ -66,8 +80,7 @@ struct AIAssistantManagerParsingTests {
     private func makeManager() async throws -> (AIAssistantManager, DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent("ai-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
         return (manager, database, tempDir)
@@ -184,6 +197,77 @@ struct AIAssistantManagerParsingTests {
             ) == AIModelCatalog.claudeSonnet46.id
         )
     }
+
+    @Test func resolvedModelIDNormalizesOpenRouterCatalogDefault() {
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .openRouter,
+                catalogDefault: "openrouter/google/gemini-2.5-flash-lite-preview",
+                configuredModel: nil
+            ) == "google/gemini-2.5-flash-lite-preview"
+        )
+    }
+
+    @Test func resolvedModelIDNormalizesConfiguredOpenRouterLegacyPrefix() {
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .openRouter,
+                catalogDefault: AIModelCatalog.openRouterGeminiFlashLite.id,
+                configuredModel: "  OpenRouter/anthropic/claude-3.5-haiku  "
+            ) == "anthropic/claude-3.5-haiku"
+        )
+    }
+
+    @Test func resolvedModelIDTrimsConfiguredModelIDForNonOpenRouter() {
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .openAI,
+                catalogDefault: "gpt-5.4",
+                configuredModel: "  gpt-4o-mini  "
+            ) == "gpt-4o-mini"
+        )
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .anthropic,
+                catalogDefault: "claude-sonnet-4-20250514",
+                configuredModel: "  claude-opus-4-20250514  "
+            ) == "claude-opus-4-20250514"
+        )
+        #expect(
+            AIAssistantManager.resolvedModelID(
+                provider: .anthropic,
+                catalogDefault: "  claude-sonnet-4-20250514  ",
+                configuredModel: nil
+            ) == "claude-sonnet-4-20250514"
+        )
+    }
+
+    @Test func configureSkipsBlankAPIKeyAndLeavesProviderUnconfigured() async throws {
+        let (manager, _, tempDir) = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await manager.configure(provider: .anthropic, apiKey: "   ", model: AIModelCatalog.claudeSonnet4.id)
+
+        #expect(await manager.hasConfiguredProvider == false)
+    }
+
+    @Test func askWithOnlyBlankAPIProviderConfiguredThrowsNoProviderConfigured() async throws {
+        let (manager, _, tempDir) = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await manager.configure(provider: .anthropic, apiKey: "   ", model: AIModelCatalog.claudeSonnet4.id)
+
+        do {
+            _ = try await manager.ask(prompt: "test")
+            Issue.record("Expected AIError.noProviderConfigured")
+        } catch let error as AIError {
+            if case .noProviderConfigured = error { /* expected */ } else {
+                Issue.record("Expected noProviderConfigured, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected AIError.noProviderConfigured, got \(error)")
+        }
+    }
 }
 
 // MARK: - AIError Tests
@@ -276,6 +360,76 @@ struct AICompareResultTests {
 
 @Suite("AI Provider Initialization")
 struct AIProviderInitTests {
+    private final class RequestBodyCapture: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bodies: [Data] = []
+
+        func record(_ request: URLRequest) {
+            lock.lock()
+            defer { lock.unlock() }
+            if let body = bodyData(from: request) {
+                bodies.append(body)
+            }
+        }
+
+        func firstBody() -> Data? {
+            lock.lock()
+            defer { lock.unlock() }
+            return bodies.first
+        }
+
+        private func bodyData(from request: URLRequest) -> Data? {
+            if let body = request.httpBody {
+                return body
+            }
+            guard let stream = request.httpBodyStream else {
+                return nil
+            }
+
+            stream.open()
+            defer { stream.close() }
+
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count > 0 {
+                    data.append(buffer, count: count)
+                } else {
+                    break
+                }
+            }
+            return data.isEmpty ? nil : data
+        }
+    }
+
+    private func openRouterSession(capturing capture: RequestBodyCapture) -> URLSession {
+        URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = try JSONSerialization.data(withJSONObject: [
+                "choices": [
+                    ["message": ["content": "ok"]]
+                ],
+                "usage": [
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1
+                ]
+            ])
+            return (response, data)
+        }
+    }
+
+    private func capturedModel(from capture: RequestBodyCapture) throws -> String {
+        let body = try #require(capture.firstBody())
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        return try #require(json["model"] as? String)
+    }
 
     @Test func anthropicDefaultModel() {
         let provider = AnthropicProvider(apiKey: "test-key")
@@ -285,6 +439,33 @@ struct AIProviderInitTests {
     @Test func openAIDefaultModel() {
         let provider = OpenAIProvider(apiKey: "test-key")
         #expect(provider.providerKind == .openAI)
+    }
+
+    @Test func openRouterResolvesLegacyModelPrefixToProviderNativeID() async throws {
+        let capture = RequestBodyCapture()
+        let provider = OpenRouterProvider(
+            apiKey: "test-key",
+            model: "  OpenRouter/openai/gpt-4o-mini  ",
+            session: openRouterSession(capturing: capture)
+        )
+
+        let response = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(response.model == "openai/gpt-4o-mini")
+        #expect(try capturedModel(from: capture) == "openai/gpt-4o-mini")
+    }
+
+    @Test func openRouterDefaultModelRequestUsesProviderNativeID() async throws {
+        let capture = RequestBodyCapture()
+        let provider = OpenRouterProvider(
+            apiKey: "test-key",
+            session: openRouterSession(capturing: capture)
+        )
+
+        let response = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(response.model == "google/gemini-2.5-flash-lite-preview")
+        #expect(try capturedModel(from: capture) == "google/gemini-2.5-flash-lite-preview")
     }
 
     @Test func ollamaDefaultModel() {
@@ -304,6 +485,102 @@ struct AIOllamaEndpointPolicyTests {
         #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://[::1]:11434") == nil)
         #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://example.com:11434") != nil)
     }
+
+    @Test func allowsUppercaseHttpsAndRejectsUnsupportedScheme() {
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTPS://ollama.example.com:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "ftp://ollama.example.com:11434") != nil)
+    }
+
+    @Test func allowsUppercaseLocalhostHttpAndRejectsUppercaseUnsupported() {
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://localhost:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://127.0.0.1:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://[::1]:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://Ollama.Example.Com:11434") != nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "WS://localhost:11434") != nil)
+    }
+
+    @Test func allowsExpandedLoopbackHostsForLocalHTTP() {
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://127.0.0.42:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://127.255.255.255:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://[0:0:0:0:0:0:0:1]:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "HTTP://[::1]:11434") == nil)
+        #expect(AIOllamaEndpointPolicy.warningMessage(for: "http://[0:0:0:0:0:0:0:2]:11434") != nil)
+    }
+
+    @Test func isAllowedBaseURLMirrorsWarningPolicy() {
+        #expect(AIOllamaEndpointPolicy.isAllowedBaseURL("http://localhost:11434"))
+        #expect(AIOllamaEndpointPolicy.isAllowedBaseURL("https://ollama.example.com"))
+        #expect(!AIOllamaEndpointPolicy.isAllowedBaseURL("http://ollama.example.com"))
+        #expect(!AIOllamaEndpointPolicy.isAllowedBaseURL("nota url"))
+        #expect(!AIOllamaEndpointPolicy.isAllowedBaseURL("ftp://localhost:11434"))
+    }
+
+    @Test func appendingPathPreservesQueryParameters() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434?source=cli&mode=fast",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.query == "source=cli&mode=fast")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat?source=cli&mode=fast")
+    }
+
+    @Test func appendingPathDoesNotDuplicateExistingFullEndpointPath() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/api/chat",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat")
+    }
+
+    @Test func appendingPathCombinesApiPrefixPathAndQuery() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/api?source=cli",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.query == "source=cli")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat?source=cli")
+    }
+
+    @Test func appendingPathKeepsExplicitApiBasePath() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/api",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/api/chat")
+        #expect(url?.absoluteString == "http://localhost:11434/api/chat")
+    }
+
+    @Test func appendingPathHandlesBlankPathAndInvalidBaseURL() {
+        let unchanged = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/base?source=cli#fragment",
+            path: "  /  "
+        )
+        let invalid = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://[::1",
+            path: "api/chat"
+        )
+
+        #expect(unchanged?.absoluteString == "http://localhost:11434/base/%20%20/%20%20?source=cli")
+        #expect(invalid == nil)
+    }
+
+    @Test func appendingPathRemovesFragmentsWhenAppending() {
+        let url = AIOllamaEndpointPolicy.appendingPath(
+            to: "http://localhost:11434/base?source=cli#fragment",
+            path: "api/chat"
+        )
+
+        #expect(url?.path == "/base/api/chat")
+        #expect(url?.query == "source=cli")
+        #expect(url?.fragment == nil)
+    }
 }
 
 // MARK: - AIAssistantManager Ollama Configuration Tests
@@ -314,8 +591,7 @@ struct AIAssistantManagerOllamaConfigurationTests {
     private func makeManager() async throws -> (AIAssistantManager, DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent("ai-ollama-config-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-ollama-config-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
         return (manager, database, tempDir)
@@ -348,12 +624,26 @@ struct AIAssistantManagerOllamaConfigurationTests {
 
         #expect(await manager.hasConfiguredProvider == true)
     }
+
+    @Test func acceptsRemoteHttpsOllamaEndpoint() async throws {
+        let (manager, _, tempDir) = try await makeManager()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await manager.configure(
+            provider: .ollama,
+            apiKey: "",
+            baseURL: "HTTPS://ollama.example.com:11434",
+            model: "llama3.1"
+        )
+
+        #expect(await manager.hasConfiguredProvider == true)
+    }
 }
 
 // MARK: - OllamaProvider Tests
 
 @Suite("OllamaProvider")
-struct OllamaProviderTests {
+struct OllamaProviderTestsAiprovidertests {
 
     private func makeProvider(session: URLSession, sleep: @escaping AIHTTPSleep = { _ in }) -> OllamaProvider {
         OllamaProvider(baseURL: "http://localhost:11434", model: "llama3.1", session: session, sleep: sleep)
@@ -385,7 +675,7 @@ struct OllamaProviderTests {
 // MARK: - AIProviderResponse Tests
 
 @Suite("AIProviderResponse")
-struct AIProviderResponseTests {
+struct AIProviderResponseTestsAiprovidertests {
 
     @Test func storesAllFields() {
         let r = AIProviderResponse(provider: .anthropic, content: "Test content", model: "claude-sonnet-4-20250514", inputTokens: 100, outputTokens: 200)
@@ -398,6 +688,51 @@ struct AIProviderResponseTests {
 }
 
 // MARK: - Provider Transport Hardening Tests
+
+@Suite("AIHTTPTransport Delay Policy")
+struct AIHTTPTransportDelayPolicyTests {
+    @Test func retryAfterIntervalParsesSecondsAndRejectsBlankOrInvalidHeaders() {
+        #expect(AIHTTPTransport.retryAfterInterval(from: " 2.5 ") == 2.5)
+        #expect(AIHTTPTransport.retryAfterInterval(from: nil) == nil)
+        #expect(AIHTTPTransport.retryAfterInterval(from: "   ") == nil)
+        #expect(AIHTTPTransport.retryAfterInterval(from: "not a date") == nil)
+    }
+
+    @Test func retryAfterIntervalParsesHTTPDateHeaders() throws {
+        let interval = try #require(
+            AIHTTPTransport.retryAfterInterval(from: "Wed, 21 Oct 2037 07:28:00 GMT")
+        )
+
+        #expect(interval > 0)
+    }
+
+    @Test func retryDelayClampsRetryAfterHeadersAndExponentialBackoff() {
+        let url = URL(string: "https://example.com")!
+        let negativeRetryAfter = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: ["Retry-After": "-5"]
+        )!
+        let longRetryAfter = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: ["Retry-After": "100"]
+        )!
+        let noRetryAfter = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+
+        #expect(AIHTTPTransport.retryDelay(from: negativeRetryAfter, attempt: 1) == 0)
+        #expect(AIHTTPTransport.retryDelay(from: longRetryAfter, attempt: 1) == 30)
+        #expect(AIHTTPTransport.retryDelay(from: noRetryAfter, attempt: 1) == 1)
+        #expect(AIHTTPTransport.retryDelay(from: noRetryAfter, attempt: 5) == 8)
+    }
+}
 
 @Suite("AI Provider Transport Hardening")
 struct AIProviderTransportHardeningTests {
@@ -584,6 +919,515 @@ struct AIProviderTransportHardeningTests {
     }
 }
 
+// MARK: - AI Provider Request/Parsing Tests
+
+@Suite("AI Provider Request and Parsing")
+struct AIProviderRequestParsingTests {
+    private final class CapturedRequest: @unchecked Sendable {
+        private let lock = NSLock()
+        private var request: URLRequest?
+
+        func record(_ request: URLRequest) {
+            lock.lock()
+            self.request = request
+            lock.unlock()
+        }
+
+        func header(_ name: String) -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return request?.value(forHTTPHeaderField: name)
+        }
+
+        func path() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return request?.url?.path
+        }
+
+        func query() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return request?.url?.query
+        }
+
+        func absoluteString() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return request?.url?.absoluteString
+        }
+
+        func jsonBody() throws -> [String: Any] {
+            lock.lock()
+            let body = request.flatMap(Self.bodyData(from:))
+            lock.unlock()
+            let data = try #require(body)
+            return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        private static func bodyData(from request: URLRequest) -> Data? {
+            if let body = request.httpBody {
+                return body
+            }
+            guard let stream = request.httpBodyStream else {
+                return nil
+            }
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let read = stream.read(&buffer, maxLength: buffer.count)
+                if read > 0 {
+                    data.append(buffer, count: read)
+                } else {
+                    break
+                }
+            }
+            return data.isEmpty ? nil : data
+        }
+    }
+
+    @Test func openAIChatCompletionsRequestAndUsageParsing() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = """
+            {"choices":[{"message":{"content":"chat response"}}],"usage":{"prompt_tokens":21,"completion_tokens":8}}
+            """
+            return (response, Data(body.utf8))
+        }
+        let provider = OpenAIProvider(
+            apiKey: " key ",
+            model: " gpt-test ",
+            baseURL: "https://api.openai.test/v1/chat/completions",
+            session: session,
+            sleep: { _ in }
+        )
+
+        let response = try await provider.complete(system: "system text", userMessage: "user text")
+        let body = try capture.jsonBody()
+        let messages = try #require(body["messages"] as? [[String: Any]])
+
+        #expect(capture.path() == "/v1/chat/completions")
+        #expect(capture.header("Authorization") == "Bearer key")
+        #expect(body["model"] as? String == "gpt-test")
+        #expect(body["max_completion_tokens"] as? Int == 4096)
+        #expect(messages.count == 2)
+        #expect(response.content == "chat response")
+        #expect(response.inputTokens == 21)
+        #expect(response.outputTokens == 8)
+    }
+
+    @Test func openAIResponsesOutputArrayAcceptsLegacyUsageKeys() async throws {
+        let session = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = """
+            {"output":[{"type":"message","content":[{"text":"hello "},{"text":"world"}]}],"usage":{"prompt_tokens":11,"completion_tokens":5}}
+            """
+            return (response, Data(body.utf8))
+        }
+        let provider = OpenAIProvider(apiKey: "key", model: "gpt-test", session: session, sleep: { _ in })
+
+        let response = try await provider.complete(system: "s", userMessage: "u")
+
+        #expect(response.content == "hello world")
+        #expect(response.inputTokens == 11)
+        #expect(response.outputTokens == 5)
+    }
+
+    @Test func openAIResponsesRequestAndOutputTextParsing() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = #"{"output_text":"responses text","usage":{"input_tokens":3,"output_tokens":2}}"#
+            return (response, Data(body.utf8))
+        }
+        let provider = OpenAIProvider(
+            apiKey: " key ",
+            model: " gpt-responses ",
+            baseURL: "https://api.openai.test/v1/responses",
+            session: session,
+            sleep: { _ in }
+        )
+
+        let response = try await provider.complete(system: "sys", userMessage: "msg")
+        let body = try capture.jsonBody()
+        let input = try #require(body["input"] as? [[String: Any]])
+        let firstContent = try #require(input.first?["content"] as? [[String: Any]])
+
+        #expect(capture.path() == "/v1/responses")
+        #expect(capture.header("Authorization") == "Bearer key")
+        #expect(body["model"] as? String == "gpt-responses")
+        #expect(body["instructions"] as? String == "sys")
+        #expect(body["max_output_tokens"] as? Int == 4096)
+        #expect(firstContent.first?["type"] as? String == "input_text")
+        #expect(firstContent.first?["text"] as? String == "msg")
+        #expect(response.content == "responses text")
+        #expect(response.inputTokens == 3)
+        #expect(response.outputTokens == 2)
+    }
+
+    @Test func openAIRejectsBlankCredentialsWithoutNetwork() async {
+        let provider = OpenAIProvider(
+            apiKey: "   ",
+            model: "gpt-test",
+            session: URLProtocolHarness.makeSession { request in
+                Issue.record("Unexpected OpenAI request: \(request.url?.absoluteString ?? "nil")")
+                let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+                return (response, Data())
+            }
+        )
+
+        await #expect(throws: AIError.self) {
+            _ = try await provider.complete(system: "s", userMessage: "u")
+        }
+    }
+
+    @Test func openAIRejectsBlankModelInvalidURLHTTPErrorAndEmptyPayload() async {
+        let noNetwork = URLProtocolHarness.makeSession { request in
+            Issue.record("Unexpected OpenAI request: \(request.url?.absoluteString ?? "nil")")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+        let failing = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 502, httpVersion: nil, headerFields: nil)!
+            return (response, Data("openai unavailable".utf8))
+        }
+        let empty = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"output_text":"","usage":{}}"#.utf8))
+        }
+
+        let blankModel = OpenAIProvider(apiKey: "key", model: "   ", session: noNetwork)
+        let badURL = OpenAIProvider(apiKey: "key", model: "gpt-test", baseURL: "http://[::1", session: noNetwork)
+        let httpFailure = OpenAIProvider(apiKey: "key", model: "gpt-test", session: failing, sleep: { _ in })
+        let emptyPayload = OpenAIProvider(apiKey: "key", model: "gpt-test", session: empty, sleep: { _ in })
+
+        await #expect(throws: AIError.self) {
+            _ = try await blankModel.complete(system: "s", userMessage: "u")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await badURL.complete(system: "s", userMessage: "u")
+        }
+        do {
+            _ = try await httpFailure.complete(system: "s", userMessage: "u")
+            Issue.record("Expected HTTP error")
+        } catch AIError.httpError(let status, let message) {
+            #expect(status == 502)
+            #expect(message == "openai unavailable")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await emptyPayload.complete(system: "s", userMessage: "u")
+        }
+    }
+
+    @Test func anthropicSendsRequiredHeadersAndParsesUsage() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = #"{"content":[{"type":"text","text":"anthropic response"}],"usage":{"input_tokens":13,"output_tokens":4}}"#
+            return (response, Data(body.utf8))
+        }
+        let provider = AnthropicProvider(
+            apiKey: "  claude-key  ",
+            model: " claude-test ",
+            baseURL: "https://api.anthropic.test/v1/messages",
+            session: session,
+            sleep: { _ in }
+        )
+
+        let response = try await provider.complete(system: "sys", userMessage: "msg")
+        let body = try capture.jsonBody()
+
+        #expect(capture.header("x-api-key") == "claude-key")
+        #expect(capture.header("anthropic-version") == "2023-06-01")
+        #expect(body["model"] as? String == "claude-test")
+        #expect(body["max_tokens"] as? Int == 4096)
+        #expect(response.content == "anthropic response")
+        #expect(response.inputTokens == 13)
+        #expect(response.outputTokens == 4)
+    }
+
+    @Test func anthropicThrowsInvalidResponseForEmptyContent() async {
+        let session = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"content":[{"text":""}],"usage":{}}"#.utf8))
+        }
+        let provider = AnthropicProvider(apiKey: "key", model: "claude-test", session: session, sleep: { _ in })
+
+        await #expect(throws: AIError.self) {
+            _ = try await provider.complete(system: "s", userMessage: "u")
+        }
+    }
+
+    @Test func anthropicRejectsBlankInputsAndSurfacesHTTPError() async {
+        let noNetwork = URLProtocolHarness.makeSession { request in
+            Issue.record("Unexpected Anthropic request: \(request.url?.absoluteString ?? "nil")")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+        let failing = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data("anthropic down".utf8))
+        }
+
+        let blankKey = AnthropicProvider(apiKey: "   ", model: "claude-test", session: noNetwork)
+        let blankModel = AnthropicProvider(apiKey: "key", model: "   ", session: noNetwork)
+        let badURL = AnthropicProvider(apiKey: "key", model: "claude-test", baseURL: "http://[::1", session: noNetwork)
+        let httpFailure = AnthropicProvider(apiKey: "key", model: "claude-test", session: failing, sleep: { _ in })
+
+        await #expect(throws: AIError.self) {
+            _ = try await blankKey.complete(system: "s", userMessage: "u")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await blankModel.complete(system: "s", userMessage: "u")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await badURL.complete(system: "s", userMessage: "u")
+        }
+        do {
+            _ = try await httpFailure.complete(system: "s", userMessage: "u")
+            Issue.record("Expected HTTP error")
+        } catch AIError.httpError(let status, let message) {
+            #expect(status == 500)
+            #expect(message == "anthropic down")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func openRouterBuildsRequestAndParsesUsage() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = #"{"choices":[{"message":{"content":"router response"}}],"usage":{"prompt_tokens":17,"completion_tokens":6}}"#
+            return (response, Data(body.utf8))
+        }
+        let provider = OpenRouterProvider(
+            apiKey: " router-key ",
+            model: " OpenRouter/openai/gpt-4o-mini ",
+            baseURL: "https://openrouter.test/api/v1/chat/completions",
+            session: session,
+            sleep: { _ in }
+        )
+
+        let response = try await provider.complete(system: "sys", userMessage: "msg")
+        let body = try capture.jsonBody()
+        let messages = try #require(body["messages"] as? [[String: Any]])
+
+        #expect(capture.header("Authorization") == "Bearer router-key")
+        #expect(capture.header("Content-Type") == "application/json")
+        #expect(capture.path() == "/api/v1/chat/completions")
+        #expect(body["model"] as? String == "openai/gpt-4o-mini")
+        #expect(body["max_completion_tokens"] as? Int == 4096)
+        #expect(messages.count == 2)
+        #expect(response.provider == .openRouter)
+        #expect(response.content == "router response")
+        #expect(response.inputTokens == 17)
+        #expect(response.outputTokens == 6)
+    }
+
+    @Test func openRouterRejectsBlankCredentialsModelAndInvalidURLWithoutNetwork() async {
+        let session = URLProtocolHarness.makeSession { request in
+            Issue.record("Unexpected OpenRouter request: \(request.url?.absoluteString ?? "nil")")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+
+        let blankKey = OpenRouterProvider(apiKey: "   ", model: "openai/gpt-4o-mini", session: session)
+        let blankModel = OpenRouterProvider(apiKey: "key", model: "   ", session: session)
+        let badURL = OpenRouterProvider(apiKey: "key", model: "openai/gpt-4o-mini", baseURL: "http://[::1", session: session)
+
+        await #expect(throws: AIError.self) {
+            _ = try await blankKey.complete(system: "s", userMessage: "u")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await blankModel.complete(system: "s", userMessage: "u")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await badURL.complete(system: "s", userMessage: "u")
+        }
+    }
+
+    @Test func openRouterThrowsHTTPErrorAndInvalidResponseForBadPayloads() async throws {
+        let failingSession = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+            return (response, Data("router unavailable".utf8))
+        }
+        let invalidSession = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"choices":[{"message":{"content":""}}],"usage":{}}"#.utf8))
+        }
+
+        let failingProvider = OpenRouterProvider(apiKey: "key", model: "openai/gpt-4o-mini", session: failingSession, sleep: { _ in })
+        let invalidProvider = OpenRouterProvider(apiKey: "key", model: "openai/gpt-4o-mini", session: invalidSession, sleep: { _ in })
+
+        do {
+            _ = try await failingProvider.complete(system: "s", userMessage: "u")
+            Issue.record("Expected HTTP error")
+        } catch AIError.httpError(let status, let message) {
+            #expect(status == 503)
+            #expect(message == "router unavailable")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        await #expect(throws: AIError.self) {
+            _ = try await invalidProvider.complete(system: "s", userMessage: "u")
+        }
+    }
+
+    @Test func ollamaBuildsChatRequestAndParsesResponse() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: " http://localhost:11434 ",
+            model: " llama3.2 ",
+            session: session,
+            sleep: { _ in }
+        )
+
+        let response = try await provider.complete(system: "sys", userMessage: "msg")
+        let body = try capture.jsonBody()
+        let messages = try #require(body["messages"] as? [[String: Any]])
+
+        #expect(capture.path() == "/api/chat")
+        #expect(body["model"] as? String == "llama3.2")
+        #expect(body["stream"] as? Bool == false)
+        #expect(messages.count == 2)
+        #expect(response.provider == .ollama)
+        #expect(response.content == "local response")
+    }
+
+    @Test func ollamaBuildsChatRequestByAppendingToExistingApiPath() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: "http://localhost:11434/api",
+            model: "llama3.2",
+            session: session,
+            sleep: { _ in }
+        )
+
+        _ = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(capture.path() == "/api/chat")
+    }
+
+    @Test func ollamaBuildsChatRequestByAppendingToExistingApiPathAndPreservingQuery() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: "http://localhost:11434/api?source=cli",
+            model: "llama3.2",
+            session: session,
+            sleep: { _ in }
+        )
+
+        _ = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(capture.path() == "/api/chat")
+        #expect(capture.query() == "source=cli")
+        #expect(capture.absoluteString() == "http://localhost:11434/api/chat?source=cli")
+    }
+
+    @Test func ollamaBuildsChatRequestWhenBaseURLAlreadyIncludesChatPathAndQuery() async throws {
+        let capture = CapturedRequest()
+        let session = URLProtocolHarness.makeSession { request in
+            capture.record(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":"local response"}}"#.utf8))
+        }
+        let provider = OllamaProvider(
+            baseURL: "http://localhost:11434/api/chat?source=cli",
+            model: "llama3.2",
+            session: session,
+            sleep: { _ in }
+        )
+
+        _ = try await provider.complete(system: "sys", userMessage: "msg")
+
+        #expect(capture.absoluteString() == "http://localhost:11434/api/chat?source=cli")
+        #expect(capture.path() == "/api/chat")
+        #expect(capture.query() == "source=cli")
+    }
+
+    @Test func ollamaRejectsBlankBaseURLWithoutNetwork() async {
+        let provider = OllamaProvider(
+            baseURL: "   ",
+            model: "llama3.2",
+            session: URLProtocolHarness.makeSession { request in
+                Issue.record("Unexpected Ollama request: \(request.url?.absoluteString ?? "nil")")
+                let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+                return (response, Data())
+            }
+        )
+
+        await #expect(throws: AIError.self) {
+            _ = try await provider.complete(system: "s", userMessage: "u")
+        }
+    }
+
+    @Test func ollamaRejectsBlankModelInvalidURLHTTPErrorAndEmptyContent() async {
+        let noNetwork = URLProtocolHarness.makeSession { request in
+            Issue.record("Unexpected Ollama request: \(request.url?.absoluteString ?? "nil")")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+        let failing = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+            return (response, Data("ollama unavailable".utf8))
+        }
+        let empty = URLProtocolHarness.makeSession { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"message":{"content":""}}"#.utf8))
+        }
+
+        let blankModel = OllamaProvider(baseURL: "http://localhost:11434", model: "   ", session: noNetwork)
+        let badURL = OllamaProvider(baseURL: "http://[::1", model: "llama3.2", session: noNetwork)
+        let httpFailure = OllamaProvider(baseURL: "http://localhost:11434", model: "llama3.2", session: failing, sleep: { _ in })
+        let emptyContent = OllamaProvider(baseURL: "http://localhost:11434", model: "llama3.2", session: empty, sleep: { _ in })
+
+        await #expect(throws: AIError.self) {
+            _ = try await blankModel.complete(system: "s", userMessage: "u")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await badURL.complete(system: "s", userMessage: "u")
+        }
+        do {
+            _ = try await httpFailure.complete(system: "s", userMessage: "u")
+            Issue.record("Expected HTTP error")
+        } catch AIError.httpError(let status, let message) {
+            #expect(status == 503)
+            #expect(message == "ollama unavailable")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        await #expect(throws: AIError.self) {
+            _ = try await emptyContent.complete(system: "s", userMessage: "u")
+        }
+    }
+}
+
 // MARK: - AI Manager Hardening Tests
 
 @Suite("AIAssistantManager Hardening")
@@ -599,7 +1443,7 @@ struct AIAssistantManagerHardeningTests {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let database = try DatabaseManager(path: tempDir.appendingPathComponent("ai-usage.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-usage-\(UUID().uuidString)")
         let manager = AIAssistantManager(database: database)
 
         await manager.registerProvider(
@@ -629,7 +1473,7 @@ struct AIAssistantManagerHardeningTests {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let database = try DatabaseManager(path: tempDir.appendingPathComponent("ai-manager.sqlite").path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-manager-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 
@@ -718,8 +1562,7 @@ struct AIPersonalizedAnalysisTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let dbURL = tempDir.appendingPathComponent("ai-analysis-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-analysis-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 
@@ -742,8 +1585,7 @@ struct AIPersonalizedAnalysisTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let dbURL = tempDir.appendingPathComponent("ai-has-provider-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-has-provider-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 
@@ -755,8 +1597,7 @@ struct AIPersonalizedAnalysisTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let dbURL = tempDir.appendingPathComponent("ai-has-provider-true-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "ai-has-provider-true-test-\(UUID().uuidString)")
         try await database.migrate()
         let manager = AIAssistantManager(database: database)
 

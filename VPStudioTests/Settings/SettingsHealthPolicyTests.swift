@@ -53,6 +53,22 @@ struct SettingsHealthPolicyTests {
         #expect(progress == 0.0)
     }
 
+    @Test
+    func progressKeepsOutOfRangeInputsUnclampedWhenTotalIsPositive() {
+        #expect(SettingsHealthPolicy.configurationProgress(configured: -1, total: 4) == -0.25)
+        #expect(SettingsHealthPolicy.configurationProgress(configured: 6, total: 4) == 1.5)
+    }
+
+    @Test
+    func warningBadgeHiddenForNegativeCounts() {
+        #expect(SettingsHealthPolicy.shouldShowWarningBadge(warningCount: -1) == false)
+    }
+
+    @Test
+    func warningCountHandlesEmptyStatusList() {
+        #expect(SettingsHealthPolicy.warningCount(statuses: []) == 0)
+    }
+
     // MARK: - Essential Destinations
 
     @Test
@@ -78,7 +94,7 @@ struct SettingsHealthPolicyTests {
     func essentialConfiguredCountIncludesOnlyEssentialPositives() {
         let statuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "1 active service", kind: .positive),
-            .metadata: SettingsDestinationStatus(message: "API key configured", kind: .positive),
+            .metadata: SettingsDestinationStatus(message: "OMDb key configured", kind: .positive),
             .ai: SettingsDestinationStatus(message: "Anthropic configured", kind: .positive),
             .player: SettingsDestinationStatus(message: "Playback preferences", kind: .neutral),
             .subtitles: SettingsDestinationStatus(message: "OpenSubtitles enabled", kind: .positive),
@@ -115,10 +131,10 @@ struct SettingsHealthPolicyTests {
         let statuses: [SettingsDestination: SettingsDestinationStatus] = [
             .debrid: SettingsDestinationStatus(message: "Not configured", kind: .warning),
             .indexers: SettingsDestinationStatus(message: "No active indexers", kind: .warning),
-            .metadata: SettingsDestinationStatus(message: "API key required", kind: .warning),
+            .metadata: SettingsDestinationStatus(message: "OMDb key required", kind: .warning),
             .ai: SettingsDestinationStatus(message: "Needs credentials", kind: .warning),
-            .trakt: SettingsDestinationStatus(message: "Not connected", kind: .warning),
-            .simkl: SettingsDestinationStatus(message: "Not connected", kind: .warning),
+            .trakt: SettingsDestinationStatus(message: "Optional", kind: .neutral),
+            .simkl: SettingsDestinationStatus(message: "Unavailable in this build", kind: .neutral),
         ]
         let count = SettingsHealthPolicy.essentialConfiguredCount(statuses: statuses)
         #expect(count == 0)

@@ -22,19 +22,22 @@ enum PlayerControlVisibilityPolicy {
     ///
     /// Returns `true` only when playback is active, the player is actively
     /// playing (not paused), and no modal interactions (scrubbing, pickers,
-    /// lock) are preventing dismissal.
+    /// cinema/environment sheets, lock) are preventing dismissal.
     static func shouldAutoHide(
         playbackState: PlayerPlaybackState,
         isPlaying: Bool,
         isScrubbing: Bool,
         isShowingSubtitlePicker: Bool,
         isShowingAudioPicker: Bool,
-        isControlsLocked: Bool
+        isControlsLocked: Bool,
+        isShowingEnvironmentPicker: Bool = false,
+        isShowingCinemaSettings: Bool = false
     ) -> Bool {
         guard playbackState == .playing else { return false }
         guard isPlaying else { return false }
         guard !isScrubbing else { return false }
         guard !isShowingSubtitlePicker && !isShowingAudioPicker else { return false }
+        guard !isShowingEnvironmentPicker && !isShowingCinemaSettings else { return false }
         guard !isControlsLocked else { return false }
         return true
     }

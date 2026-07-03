@@ -15,8 +15,9 @@ struct Episode: Codable, Sendable, Identifiable, Equatable, FetchableRecord, Per
     var runtime: Int?
 
     var stillURL: URL? {
-        guard let path = stillPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w300\(path)")
+        // w500 (not w300): episode stills render at ~160-220pt, where w300 was upscaled — sharper
+        // on Retina at a negligible size cost.
+        return MediaArtworkURLPolicy.url(for: stillPath, legacyTMDBSizePath: "w500")
     }
 
     var displayTitle: String {
@@ -47,7 +48,6 @@ struct Season: Codable, Sendable, Identifiable, Equatable {
     var airDate: String?
 
     var posterURL: URL? {
-        guard let path = posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w342\(path)")
+        MediaArtworkURLPolicy.url(for: posterPath, legacyTMDBSizePath: "w342")
     }
 }

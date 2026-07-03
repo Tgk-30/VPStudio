@@ -5,6 +5,7 @@ enum LibraryLayoutPolicy {
     static let rootPinsContentToTop = true
     static let emptyStatePinsContentToTop = true
     static let emptyStateTopPadding: CGFloat = 20
+    static let topTabMaxWidth: CGFloat = 720
 
     static func showsEmptyState(for selectedList: UserLibraryEntry.ListType, entryCount: Int, historyCount: Int) -> Bool {
         switch selectedList {
@@ -34,6 +35,32 @@ enum LibraryFolderSelectionPolicy {
     ) -> LibraryFolder? {
         guard let selectedFolderID else { return nil }
         return folders.first(where: { $0.id == selectedFolderID && $0.isSystem == false })
+    }
+
+    static func selectedFolderIDAfterReload(
+        loadedFolders: [LibraryFolder],
+        currentSelection: String?
+    ) -> String? {
+        guard let currentSelection else { return nil }
+        return loadedFolders.contains(where: { $0.id == currentSelection }) ? currentSelection : nil
+    }
+
+    static func manualFolderOrderIDs(afterReloading loadedFolders: [LibraryFolder]) -> [String] {
+        loadedFolders.filter { !$0.isSystem }.map(\.id)
+    }
+
+    static func orderedUserFolders(
+        _ userFolders: [LibraryFolder],
+        manualFolderOrderIDs: [String]
+    ) -> [LibraryFolder] {
+        guard !manualFolderOrderIDs.isEmpty else { return userFolders }
+        let byID = Dictionary(uniqueKeysWithValues: userFolders.map { ($0.id, $0) })
+        var ordered = manualFolderOrderIDs.compactMap { byID[$0] }
+        if ordered.count < userFolders.count {
+            let included = Set(ordered.map(\.id))
+            ordered.append(contentsOf: userFolders.filter { !included.contains($0.id) })
+        }
+        return ordered
     }
 }
 
@@ -110,6 +137,24 @@ enum LibraryTitleRefreshPolicy {
     ) -> Bool {
         selectedList != .history && !isRefreshing
     }
+
+    static func refreshingMessage(for listType: UserLibraryEntry.ListType) -> String {
+        "Refreshing title matches in \(listType.displayName)..."
+    }
+
+    static func completionMessage(
+        for listType: UserLibraryEntry.ListType,
+        removedCount: Int
+    ) -> String {
+        switch removedCount {
+        case 0:
+            return "Refresh complete: no duplicate titles found in \(listType.displayName)."
+        case 1:
+            return "Refresh complete: merged 1 duplicate title in \(listType.displayName)."
+        default:
+            return "Refresh complete: merged \(removedCount) duplicate titles in \(listType.displayName)."
+        }
+    }
 }
 
 enum LibraryHeaderActionKind: String, CaseIterable, Identifiable {
@@ -168,7 +213,7 @@ enum LibraryActionRowPolicy {
 }
 
 enum LibraryFolderLabelPolicy {
-    static let topLevelTitle = "Top Level"
+    static let topLevelTitle = "Unsorted"
     private static let pathSeparator = " › "
 
     static func chipTitle(for folder: LibraryFolder, in allFolders: [LibraryFolder]) -> String {
@@ -212,6 +257,164 @@ enum LibraryFolderLabelPolicy {
     }
 }
 
+enum LibraryFolderReorderPolicy {
+    static func reorderedIDs(
+        orderedFolderIDs: [String],
+        draggedFolderID: String?,
+        destinationFolderID: String
+    ) -> [String]? {
+        guard let draggedFolderID,
+              draggedFolderID != destinationFolderID,
+              let fromIndex = orderedFolderIDs.firstIndex(of: draggedFolderID),
+              let toIndex = orderedFolderIDs.firstIndex(of: destinationFolderID),
+              fromIndex != toIndex else {
+            return nil
+        }
+
+        var reorderedIDs = orderedFolderIDs
+        reorderedIDs.move(
+            fromOffsets: IndexSet(integer: fromIndex),
+            toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+        )
+        return reorderedIDs
+    }
+
+    static func shouldPersist(reorderedIDs: [String], currentIDs: [String]) -> Bool {
+        reorderedIDs != currentIDs
+    }
+}
+
+enum LibraryImportOutcomePolicy {
+    static func displayedHistoryMediaIDs(from historyEntries: [WatchHistory]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for entry in historyEntries {
+            if seen.insert(entry.mediaId).inserted {
+                ordered.append(entry.mediaId)
+            }
+        }
+        return ordered
+    }
+
+    static func preferredListType(after summary: LibraryCSVImportSummary) -> UserLibraryEntry.ListType? {
+        if summary.watchlistImported > 0 { return .watchlist }
+        if summary.favoritesImported > 0 { return .favorites }
+        if summary.historyImported > 0 { return .history }
+        return nil
+    }
+
+    static func importStatusMessage(from summary: LibraryCSVImportSummary) -> String {
+        if summary.watchlistImported == 0, summary.favoritesImported == 0, summary.historyImported == 0 {
+            if summary.ratingsImported > 0 {
+                return "Import finished: no new library items, but \(summary.ratingsImported) ratings were imported."
+            }
+            return "Import finished: no new library items were added."
+        }
+        return "Import added W:\(summary.watchlistImported) F:\(summary.favoritesImported) H:\(summary.historyImported) from \(summary.rowsImported) rows. Repeated IMDb IDs across files were merged."
+    }
+}
+
+enum LibraryMetadataHydrationPolicy {
+    struct Candidate: Sendable, Hashable, Equatable {
+        let requestedID: String
+        let detailID: String
+        let type: MediaType
+        let knownTMDBID: Int?
+
+        init(
+            requestedID: String,
+            detailID: String,
+            type: MediaType,
+            knownTMDBID: Int? = nil
+        ) {
+            self.requestedID = requestedID
+            self.detailID = detailID
+            self.type = type
+            self.knownTMDBID = knownTMDBID
+        }
+    }
+
+    static func candidates(
+        for ids: [String],
+        mediaItems: [String: MediaItem],
+        allowsTMDbIdentifier: Bool = true,
+        prefersOMDbTitleLookup: Bool = false
+    ) -> [Candidate] {
+        var seen = Set<String>()
+
+        return ids.compactMap { requestedID in
+            guard seen.insert(requestedID).inserted else { return nil }
+            guard let item = mediaItems[requestedID] else { return nil }
+            guard !item.hasArtwork else { return nil }
+
+            if let imdbID = IMDbIdentifierPolicy.appScopedID(in: item.id) {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: imdbID,
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
+                )
+            }
+
+            if let imdbID = IMDbIdentifierPolicy.appScopedID(in: requestedID) {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: imdbID,
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
+                )
+            }
+
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if prefersOMDbTitleLookup, !title.isEmpty {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: OMDbTitleLookupPolicy.lookupID(title: title, year: item.year),
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
+                )
+            }
+
+            if allowsTMDbIdentifier, let tmdbID = item.tmdbId
+                ?? MetadataProviderIdentifierPolicy.tmdbID(from: item.id)
+                ?? MetadataProviderIdentifierPolicy.tmdbID(from: requestedID) {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: "tmdb-\(tmdbID)",
+                    type: item.type,
+                    knownTMDBID: tmdbID
+                )
+            }
+
+            if !title.isEmpty {
+                return Candidate(
+                    requestedID: requestedID,
+                    detailID: title,
+                    type: item.type,
+                    knownTMDBID: item.tmdbId
+                )
+            }
+
+            return nil
+        }
+    }
+
+    static func shouldPersist(
+        hydratedType: MediaType,
+        hydratedTMDBID: Int?,
+        requestedType: MediaType,
+        knownTMDBID: Int?
+    ) -> Bool {
+        guard hydratedType == requestedType else { return false }
+
+        if let knownTMDBID, let hydratedTMDBID, knownTMDBID != hydratedTMDBID {
+            return false
+        }
+
+        return true
+    }
+}
+
 struct LibraryView: View {
     @Environment(AppState.self) private var appState
 
@@ -223,9 +426,14 @@ struct LibraryView: View {
     @State private var folders: [LibraryFolder] = []
     @State private var mediaItems: [String: MediaItem] = [:]
 
-    @State private var selectedItem: MediaPreview?
+    /// Pushed detail for the Library tab, hoisted to AppState so it survives the player
+    /// dismissing/re-opening the main window (see `AppState.libraryDetailSelection`).
+    private var librarySelection: Binding<MediaPreview?> {
+        Binding(get: { appState.libraryDetailSelection }, set: { appState.libraryDetailSelection = $0 })
+    }
     @State private var loadTask: Task<Void, Never>?
     @State private var metadataHydrationTask: Task<Void, Never>?
+    @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var didApplyQALibrarySelection = false
 
     @State private var sortOption: LibrarySortOption = .dateAddedDesc
@@ -243,16 +451,66 @@ struct LibraryView: View {
     @State private var manualFolderOrderIDs: [String] = []
     @State private var isLoadingSelection = true
     @State private var selectionLoadToken = 0
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
+
+    private let disablesAutomaticTasks: Bool
+    private let initialCreateFolderName: String
+    private let initialCreateFolderErrorMessage: String?
+    private let initialCreateFolderIsSubmitting: Bool
+    private let autoFocusesCreateFolderNameField: Bool
+
+    init(
+        initialSelectedList: UserLibraryEntry.ListType = .watchlist,
+        initialSelectedFolderID: String? = nil,
+        initialEntries: [UserLibraryEntry] = [],
+        initialHistoryEntries: [WatchHistory] = [],
+        initialFolders: [LibraryFolder] = [],
+        initialMediaItems: [String: MediaItem] = [:],
+        initialSortOption: LibrarySortOption = .dateAddedDesc,
+        initialUserRatings: [String: TasteEvent] = [:],
+        initialIsShowingCreateFolderSheet: Bool = false,
+        initialIsShowingCSVImportSheet: Bool = false,
+        initialIsShowingCSVExportSheet: Bool = false,
+        initialCreateFolderListType: UserLibraryEntry.ListType = .watchlist,
+        initialFolderPendingDeletion: LibraryFolder? = nil,
+        initialStatusMessage: String? = nil,
+        initialActionError: AppError? = nil,
+        initialIsRefreshingTitleDuplicates: Bool = false,
+        initialManualFolderOrderIDs: [String] = [],
+        initialIsLoadingSelection: Bool = true,
+        initialCreateFolderName: String = "",
+        initialCreateFolderErrorMessage: String? = nil,
+        initialCreateFolderIsSubmitting: Bool = false,
+        autoFocusesCreateFolderNameField: Bool = true,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _selectedList = State(initialValue: initialSelectedList)
+        _selectedFolderID = State(initialValue: initialSelectedFolderID)
+        _entries = State(initialValue: initialEntries)
+        _historyEntries = State(initialValue: initialHistoryEntries)
+        _folders = State(initialValue: initialFolders)
+        _mediaItems = State(initialValue: initialMediaItems)
+        _sortOption = State(initialValue: initialSortOption)
+        _userRatings = State(initialValue: initialUserRatings)
+        _isShowingCreateFolderSheet = State(initialValue: initialIsShowingCreateFolderSheet)
+        _isShowingCSVImportSheet = State(initialValue: initialIsShowingCSVImportSheet)
+        _isShowingCSVExportSheet = State(initialValue: initialIsShowingCSVExportSheet)
+        _createFolderListType = State(initialValue: initialCreateFolderListType)
+        _folderPendingDeletion = State(initialValue: initialFolderPendingDeletion)
+        _statusMessage = State(initialValue: initialStatusMessage)
+        _actionError = State(initialValue: initialActionError)
+        _isRefreshingTitleDuplicates = State(initialValue: initialIsRefreshingTitleDuplicates)
+        _manualFolderOrderIDs = State(initialValue: initialManualFolderOrderIDs)
+        _isLoadingSelection = State(initialValue: initialIsLoadingSelection)
+        self.initialCreateFolderName = initialCreateFolderName
+        self.initialCreateFolderErrorMessage = initialCreateFolderErrorMessage
+        self.initialCreateFolderIsSubmitting = initialCreateFolderIsSubmitting
+        self.autoFocusesCreateFolderNameField = autoFocusesCreateFolderNameField
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     private var displayedHistoryMediaIDs: [String] {
-        var seen = Set<String>()
-        var ordered: [String] = []
-        for entry in historyEntries {
-            if seen.insert(entry.mediaId).inserted {
-                ordered.append(entry.mediaId)
-            }
-        }
-        return ordered
+        LibraryImportOutcomePolicy.displayedHistoryMediaIDs(from: historyEntries)
     }
 
     private var isEmptyStateVisible: Bool {
@@ -276,25 +534,17 @@ struct LibraryView: View {
     }
 
     private var orderedUserFolders: [LibraryFolder] {
-        guard !manualFolderOrderIDs.isEmpty else { return userFolders }
-        let byID = Dictionary(uniqueKeysWithValues: userFolders.map { ($0.id, $0) })
-        var ordered = manualFolderOrderIDs.compactMap { byID[$0] }
-        if ordered.count < userFolders.count {
-            let included = Set(ordered.map(\.id))
-            ordered.append(contentsOf: userFolders.filter { !included.contains($0.id) })
-        }
-        return ordered
+        LibraryFolderSelectionPolicy.orderedUserFolders(
+            userFolders,
+            manualFolderOrderIDs: manualFolderOrderIDs
+        )
     }
 
     private var rootFolder: LibraryFolder? {
         allFolderOptions.first { $0.isSystem && $0.folderKind == .systemRoot }
     }
 
-    private struct MetadataHydrationCandidate: Sendable, Hashable {
-        let requestedID: String
-        let detailID: String
-        let type: MediaType
-    }
+    private typealias MetadataHydrationCandidate = LibraryMetadataHydrationPolicy.Candidate
 
     private var selectedManualFolder: LibraryFolder? {
         LibraryFolderSelectionPolicy.selectedManualFolder(
@@ -356,8 +606,8 @@ struct LibraryView: View {
                         if selectedList == .history {
                             ForEach(displayedHistoryMediaIDs, id: \.self) { mediaId in
                                 if let preview = historyPreview(for: mediaId) {
-                                    Button { selectedItem = preview } label: {
-                                        MediaCardView(item: preview, userRating: userRatings[preview.id])
+                                    Button { appState.libraryDetailSelection = preview } label: {
+                                        MediaCardView(item: preview, userRating: userRating(for: preview, storedMediaID: mediaId))
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -365,8 +615,8 @@ struct LibraryView: View {
                         } else {
                             ForEach(entries, id: \.id) { entry in
                                 if let preview = preview(for: entry.mediaId) {
-                                    Button { selectedItem = preview } label: {
-                                        MediaCardView(item: preview, userRating: userRatings[entry.mediaId])
+                                    Button { appState.libraryDetailSelection = preview } label: {
+                                        MediaCardView(item: preview, userRating: userRating(for: preview, storedMediaID: entry.mediaId))
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu {
@@ -395,7 +645,8 @@ struct LibraryView: View {
                         }
                     }
                     .padding(.horizontal, LibraryGridPolicy.horizontalPadding)
-                    .padding(.vertical)
+                    .padding(.top, LibraryGridPolicy.topContentPadding)
+                    .padding(.bottom, LibraryGridPolicy.bottomContentPadding)
                 }
             }
         }
@@ -405,15 +656,29 @@ struct LibraryView: View {
             alignment: LibraryLayoutPolicy.rootPinsContentToTop ? .top : .center
         )
         .background {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            if useObsidianGlass {
+                VPBackground()
+            } else {
+                VPMenuBackground()
+                    .ignoresSafeArea()
+            }
         }
-        .navigationTitle("Library")
-        .navigationDestination(item: $selectedItem) { item in
+        .navigationTitle(useObsidianGlass ? "" : "Library")
+        #if !os(macOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
+        .navigationDestination(item: librarySelection) { item in
             DetailView(preview: item)
         }
         .sheet(isPresented: $isShowingCreateFolderSheet) {
-            CreateLibraryFolderSheet(listType: createFolderListType) { name, listType in
+            CreateLibraryFolderSheet(
+                listType: createFolderListType,
+                initialFolderName: initialCreateFolderName,
+                initialErrorMessage: initialCreateFolderErrorMessage,
+                initialIsSubmitting: initialCreateFolderIsSubmitting,
+                autoFocusesNameField: autoFocusesCreateFolderNameField
+            ) { name, listType in
                 await createFolder(named: name, in: listType)
             }
         }
@@ -463,6 +728,7 @@ struct LibraryView: View {
             }
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             if let qaList = QARuntimeOptions.libraryList, !didApplyQALibrarySelection {
                 didApplyQALibrarySelection = true
                 selectedList = qaList
@@ -474,6 +740,8 @@ struct LibraryView: View {
             loadTask = nil
             metadataHydrationTask?.cancel()
             metadataHydrationTask = nil
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = nil
         }
         .onChange(of: selectedList) { previous, next in
             selectedFolderID = nil
@@ -484,46 +752,58 @@ struct LibraryView: View {
                 mediaItems = [:]
             }
 
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .onChange(of: selectedFolderID) { _, _ in
+            guard !disablesAutomaticTasks else { return }
             guard selectedList.supportsFolders else { return }
             scheduleReload()
         }
         .onChange(of: sortOption) { _, _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .watchHistoryDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             scheduleReload()
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             await loadUserRatings()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tasteProfileDidChange)) { _ in
-            Task { await loadUserRatings() }
+            guard !disablesAutomaticTasks else { return }
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = Task { await loadUserRatings() }
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(selectedList.displayName)
-                        .font(.headline)
+                    // Stable title — the active list name already shows in the picker below,
+                    // so mirroring it here printed e.g. "Watchlist" twice.
+                    Text("My Library")
+                        .font(.title3)
+                        .fontWeight(.semibold)
                     GlassTag(text: "\(titleCount) titles", symbol: "film")
                 }
                 Spacer(minLength: 20)
-            }
 
-            actionRow
+                actionRow
+            }
 
             GlassPillPicker(
                 options: UserLibraryEntry.ListType.libraryTopTabs,
                 selection: $selectedList
             )
+            .frame(maxWidth: LibraryLayoutPolicy.topTabMaxWidth, alignment: .leading)
 
             if selectedList.supportsFolders {
                 folderControls
@@ -546,18 +826,88 @@ struct LibraryView: View {
     }
 
     private var actionRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(headerActions) { action in
-                    actionView(for: action)
-                }
+        HStack(spacing: 12) {
+            // Sort stays a first-class capsule; the infrequent maintenance
+            // actions (Export/Import/Refresh) collapse into a trailing overflow.
+            sortMenu
+            overflowMenu
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var overflowMenu: some View {
+        Menu {
+            ForEach(headerActions.filter { $0.kind != .sort }) { action in
+                overflowMenuItem(for: action)
             }
-            .padding(.vertical, 2)
+        } label: {
+            actionCapsuleLabel(
+                title: "More",
+                systemImage: "ellipsis",
+                tint: .secondary
+            )
+            .labelStyle(.iconOnly)
+            .accessibilityLabel("More Library Actions")
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func overflowMenuItem(for action: LibraryHeaderActionSpec) -> some View {
+        switch action.kind {
+        case .sort:
+            EmptyView()
+        case .export:
+            Button {
+                isShowingCSVExportSheet = true
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        case .import:
+            Button {
+                isShowingCSVImportSheet = true
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        case .refresh:
+            Button {
+                refreshTitleDuplicates()
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .disabled(!action.isEnabled)
         }
     }
 
     private var folderControls: some View {
         HStack(spacing: 12) {
+            Button {
+                createFolderListType = selectedList
+                isShowingCreateFolderSheet = true
+            } label: {
+                actionCapsuleLabel(
+                    title: "New Folder",
+                    systemImage: "folder.badge.plus",
+                    tint: VPColor.accent
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Create Folder")
+
+            if let selectedManualFolder {
+                Button(role: .destructive) {
+                    folderPendingDeletion = selectedManualFolder
+                } label: {
+                    actionCapsuleLabel(
+                        title: "Delete",
+                        systemImage: "trash",
+                        tint: .red
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete Selected Folder")
+            }
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     folderChip(title: "All", isSelected: selectedFolderID == nil) {
@@ -596,21 +946,6 @@ struct LibraryView: View {
                     }
                 }
             }
-
-            GlassIconButton(icon: "plus", size: 28) {
-                createFolderListType = selectedList
-                isShowingCreateFolderSheet = true
-            }
-            .accessibilityLabel("Create Folder")
-            .padding(.vertical, 2)
-
-            if let selectedManualFolder {
-                GlassIconButton(icon: "trash", tint: .red, size: 28) {
-                    folderPendingDeletion = selectedManualFolder
-                }
-                .accessibilityLabel("Delete Selected Folder")
-                .padding(.vertical, 2)
-            }
         }
     }
 
@@ -632,55 +967,13 @@ struct LibraryView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func actionView(for action: LibraryHeaderActionSpec) -> some View {
-        switch action.kind {
-        case .sort:
-            sortMenu
-        case .export:
-            Button {
-                isShowingCSVExportSheet = true
-            } label: {
-                actionCapsuleLabel(
-                    title: action.title,
-                    systemImage: action.systemImage,
-                    tint: .blue
-                )
-            }
-            .buttonStyle(.plain)
-        case .import:
-            Button {
-                isShowingCSVImportSheet = true
-            } label: {
-                actionCapsuleLabel(
-                    title: action.title,
-                    systemImage: action.systemImage,
-                    tint: .green
-                )
-            }
-            .buttonStyle(.plain)
-        case .refresh:
-            Button {
-                refreshTitleDuplicates()
-            } label: {
-                actionCapsuleLabel(
-                    title: action.title,
-                    systemImage: action.systemImage,
-                    tint: .orange
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(!action.isEnabled)
-            .opacity(action.isEnabled ? 1 : 0.5)
-        }
-    }
-
     private func actionCapsuleLabel(title: String, systemImage: String, tint: Color) -> some View {
         Label(title, systemImage: systemImage)
             .font(.subheadline.weight(.semibold))
             .labelStyle(.titleAndIcon)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            .frame(minHeight: 44)
             .contentShape(Capsule())
             .background(.regularMaterial, in: Capsule())
             .overlay {
@@ -696,24 +989,47 @@ struct LibraryView: View {
 
     private func folderChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                    isSelected ? AnyShapeStyle(Color.vpRed) : AnyShapeStyle(.ultraThinMaterial),
-                    in: Capsule()
-                )
-                .overlay {
-                    if !isSelected {
-                        Capsule()
-                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+            if useObsidianGlass {
+                Text(title)
+                    .font(VPFont.label)
+                    .lineLimit(1)
+                    .foregroundStyle(isSelected ? VPColor.textPrimary : VPColor.textSecondary)
+                    .padding(.horizontal, VPSpace.normal)
+                    .frame(minHeight: VPSpace.minTapTarget)
+                    // Selected state stays glass with an accent ring + glow — never an opaque red slab.
+                    .glassSurface(isSelected ? .hero : .rest, cornerRadius: VPSpace.minTapTarget / 2)
+                    .background {
+                        if isSelected {
+                            Capsule().fill(VPColor.accent.opacity(0.20))
+                        }
                     }
-                }
-                .foregroundStyle(isSelected ? .white : .primary)
+                    .overlay {
+                        if isSelected {
+                            Capsule().strokeBorder(VPColor.accent, lineWidth: 2)
+                        }
+                    }
+                    .shadow(color: isSelected ? VPColor.accentGlow : .clear, radius: 12)
+            } else {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        isSelected ? AnyShapeStyle(Color.vpRed) : AnyShapeStyle(.ultraThinMaterial),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        if !isSelected {
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                        }
+                    }
+                    .foregroundStyle(isSelected ? .white : .primary)
+            }
         }
         .buttonStyle(.plain)
+        .vpInteractive()
     }
 
     private func folderChip(for folder: LibraryFolder) -> some View {
@@ -752,20 +1068,11 @@ struct LibraryView: View {
     }
 
     private func preferredListType(after summary: LibraryCSVImportSummary) -> UserLibraryEntry.ListType? {
-        if summary.watchlistImported > 0 { return .watchlist }
-        if summary.favoritesImported > 0 { return .favorites }
-        if summary.historyImported > 0 { return .history }
-        return nil
+        LibraryImportOutcomePolicy.preferredListType(after: summary)
     }
 
     private func importStatusMessage(from summary: LibraryCSVImportSummary) -> String {
-        if summary.watchlistImported == 0, summary.favoritesImported == 0, summary.historyImported == 0 {
-            if summary.ratingsImported > 0 {
-                return "Import finished: no new library items, but \(summary.ratingsImported) ratings were imported."
-            }
-            return "Import finished: no new library items were added."
-        }
-        return "Import added W:\(summary.watchlistImported) F:\(summary.favoritesImported) H:\(summary.historyImported) from \(summary.rowsImported) rows. Repeated IMDb IDs across files were merged."
+        LibraryImportOutcomePolicy.importStatusMessage(from: summary)
     }
 
     private func scheduleReload() {
@@ -825,12 +1132,11 @@ struct LibraryView: View {
         guard selectionLoadToken == loadToken else { return }
         folders = loadedFolders
         draggedFolderID = nil
-        manualFolderOrderIDs = loadedFolders.filter { !$0.isSystem }.map(\.id)
-
-        if let selectedFolderID,
-           !loadedFolders.contains(where: { $0.id == selectedFolderID }) {
-            self.selectedFolderID = nil
-        }
+        manualFolderOrderIDs = LibraryFolderSelectionPolicy.manualFolderOrderIDs(afterReloading: loadedFolders)
+        selectedFolderID = LibraryFolderSelectionPolicy.selectedFolderIDAfterReload(
+            loadedFolders: loadedFolders,
+            currentSelection: selectedFolderID
+        )
     }
 
     private func loadLibraryEntries(loadToken: Int) async {
@@ -875,14 +1181,22 @@ struct LibraryView: View {
 
     @MainActor
     private func loadUserRatings() async {
-        let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
-        var dict: [String: TasteEvent] = [:]
-        for event in events {
-            if let mediaId = event.mediaId {
-                dict[mediaId] = event
-            }
-        }
-        userRatings = dict
+        async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)
+        async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()
+        let events = (try? await eventsLoad) ?? []
+        let aliasItems = (try? await aliasItemsLoad) ?? []
+        guard !Task.isCancelled else { return }
+        userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)
+    }
+
+    private func userRating(for preview: MediaPreview, storedMediaID: String) -> TasteEvent? {
+        TasteRatingLookupPolicy.rating(
+            in: userRatings,
+            mediaId: storedMediaID,
+            type: preview.type,
+            tmdbId: preview.tmdbId,
+            resolvedMediaId: mediaItems[storedMediaID]?.id ?? preview.id
+        )
     }
 
     private func preview(for mediaID: String) -> MediaPreview? {
@@ -925,27 +1239,50 @@ struct LibraryView: View {
     private func scheduleMetadataHydration(for ids: [String]) {
         metadataHydrationTask?.cancel()
 
-        let candidates = Array(metadataHydrationCandidates(for: ids).prefix(24))
-        guard !candidates.isEmpty else {
+        guard !ids.isEmpty else {
             metadataHydrationTask = nil
             return
         }
+        let mediaItemsSnapshot = mediaItems
 
         metadataHydrationTask = Task {
-            let apiKey = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
-            let normalizedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedAPIKey.isEmpty else {
+            let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
+            guard configuration.isConfigured else {
                 await MainActor.run {
                     metadataHydrationTask = nil
                 }
                 return
             }
 
-            let metadataService = appState.createMetadataService(apiKey: normalizedAPIKey)
+            let candidates = Array(
+                LibraryMetadataHydrationPolicy.candidates(
+                    for: ids,
+                    mediaItems: mediaItemsSnapshot,
+                    allowsTMDbIdentifier: configuration.hasTMDb,
+                    prefersOMDbTitleLookup: configuration.hasOMDb
+                )
+                .prefix(24)
+            )
+            guard !candidates.isEmpty else {
+                await MainActor.run {
+                    metadataHydrationTask = nil
+                }
+                return
+            }
+
+            let metadataService = appState.createMetadataService(configuration: configuration)
 
             for candidate in candidates {
                 guard !Task.isCancelled else { break }
                 guard let hydrated = try? await metadataService.getDetail(id: candidate.detailID, type: candidate.type) else {
+                    continue
+                }
+                guard LibraryMetadataHydrationPolicy.shouldPersist(
+                    hydratedType: hydrated.type,
+                    hydratedTMDBID: hydrated.tmdbId,
+                    requestedType: candidate.type,
+                    knownTMDBID: candidate.knownTMDBID
+                ) else {
                     continue
                 }
 
@@ -963,40 +1300,17 @@ struct LibraryView: View {
         }
     }
 
-    private func metadataHydrationCandidates(for ids: [String]) -> [MetadataHydrationCandidate] {
-        var seen = Set<String>()
-
-        return ids.compactMap { requestedID in
-            guard seen.insert(requestedID).inserted else { return nil }
-            guard let item = mediaItems[requestedID] else { return nil }
-            guard !item.hasArtwork else { return nil }
-
-            if let tmdbID = item.tmdbId {
-                return MetadataHydrationCandidate(
-                    requestedID: requestedID,
-                    detailID: String(tmdbID),
-                    type: item.type
-                )
-            }
-
-            if item.id.hasPrefix("tt") {
-                return MetadataHydrationCandidate(
-                    requestedID: requestedID,
-                    detailID: item.id,
-                    type: item.type
-                )
-            }
-
-            if requestedID.hasPrefix("tt") {
-                return MetadataHydrationCandidate(
-                    requestedID: requestedID,
-                    detailID: requestedID,
-                    type: item.type
-                )
-            }
-
-            return nil
-        }
+    private func metadataHydrationCandidates(
+        for ids: [String],
+        allowsTMDbIdentifier: Bool = true,
+        prefersOMDbTitleLookup: Bool = false
+    ) -> [MetadataHydrationCandidate] {
+        LibraryMetadataHydrationPolicy.candidates(
+            for: ids,
+            mediaItems: mediaItems,
+            allowsTMDbIdentifier: allowsTMDbIdentifier,
+            prefersOMDbTitleLookup: prefersOMDbTitleLookup
+        )
     }
 
     private func createFolder(named name: String, in targetList: UserLibraryEntry.ListType) async -> String? {
@@ -1085,7 +1399,7 @@ struct LibraryView: View {
         loadTask?.cancel()
         isRefreshingTitleDuplicates = true
         actionError = nil
-        statusMessage = "Refreshing title matches in \(listType.displayName)..."
+        statusMessage = LibraryTitleRefreshPolicy.refreshingMessage(for: listType)
 
         loadTask = Task {
             defer { isRefreshingTitleDuplicates = false }
@@ -1093,16 +1407,13 @@ struct LibraryView: View {
             do {
                 let removedCount = try await appState.database
                     .dedupeLibraryEntriesByTitleEquivalence(listType: listType)
-                try await appState.database.pruneEmptyManualFolders()
+                _ = try await appState.database.pruneEmptyManualFolders()
 
                 actionError = nil
-                if removedCount == 0 {
-                    statusMessage = "Refresh complete: no duplicate titles found in \(listType.displayName)."
-                } else if removedCount == 1 {
-                    statusMessage = "Refresh complete: merged 1 duplicate title in \(listType.displayName)."
-                } else {
-                    statusMessage = "Refresh complete: merged \(removedCount) duplicate titles in \(listType.displayName)."
-                }
+                statusMessage = LibraryTitleRefreshPolicy.completionMessage(
+                    for: listType,
+                    removedCount: removedCount
+                )
                 NotificationCenter.default.post(name: .libraryDidChange, object: nil)
                 await loadSelection()
             } catch {
@@ -1117,11 +1428,15 @@ struct LibraryView: View {
 
     private func commitFolderReorder(_ reorderedIDs: [String]) {
         let currentIDs = userFolders.map(\.id)
-        guard reorderedIDs != currentIDs else { return }
+        guard LibraryFolderReorderPolicy.shouldPersist(reorderedIDs: reorderedIDs, currentIDs: currentIDs) else {
+            return
+        }
         persistFolderOrder(reorderedIDs)
     }
 
     private func persistFolderOrder(_ reorderedIDs: [String]) {
+        let listType = selectedList
+        let loadToken = selectionLoadToken
         loadTask?.cancel()
         statusMessage = nil
         actionError = nil
@@ -1129,11 +1444,13 @@ struct LibraryView: View {
             do {
                 try await appState.database.reorderLibraryFolders(
                     ids: reorderedIDs,
-                    listType: selectedList
+                    listType: listType
                 )
                 actionError = nil
                 statusMessage = "Folder order updated."
-                await loadFolders(loadToken: selectionLoadToken)
+                if selectedList == listType {
+                    await loadFolders(loadToken: loadToken)
+                }
             } catch {
                 statusMessage = nil
                 actionError = LibraryActionFailurePolicy.appError(for: error, action: .reorderFolders)
@@ -1173,19 +1490,16 @@ private struct FolderChipDropDelegate: DropDelegate {
     let onCommit: ([String]) -> Void
 
     func dropEntered(info: DropInfo) {
-        guard let draggedFolderID,
-              draggedFolderID != destinationFolderID,
-              let fromIndex = orderedFolderIDs.firstIndex(of: draggedFolderID),
-              let toIndex = orderedFolderIDs.firstIndex(of: destinationFolderID),
-              fromIndex != toIndex else {
+        guard let reorderedIDs = LibraryFolderReorderPolicy.reorderedIDs(
+            orderedFolderIDs: orderedFolderIDs,
+            draggedFolderID: draggedFolderID,
+            destinationFolderID: destinationFolderID
+        ) else {
             return
         }
 
         withAnimation(.easeInOut(duration: 0.14)) {
-            orderedFolderIDs.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
-            )
+            orderedFolderIDs = reorderedIDs
         }
     }
 
@@ -1209,6 +1523,23 @@ private struct CreateLibraryFolderSheet: View {
     @State private var errorMessage: String?
     @State private var isSubmitting = false
     @FocusState private var isNameFieldFocused: Bool
+    private let autoFocusesNameField: Bool
+
+    init(
+        listType: UserLibraryEntry.ListType,
+        initialFolderName: String = "",
+        initialErrorMessage: String? = nil,
+        initialIsSubmitting: Bool = false,
+        autoFocusesNameField: Bool = true,
+        onCreate: @escaping (String, UserLibraryEntry.ListType) async -> String?
+    ) {
+        self.listType = listType
+        self.onCreate = onCreate
+        _folderName = State(initialValue: initialFolderName)
+        _errorMessage = State(initialValue: initialErrorMessage)
+        _isSubmitting = State(initialValue: initialIsSubmitting)
+        self.autoFocusesNameField = autoFocusesNameField
+    }
 
     private var canSubmit: Bool {
         LibraryFolderCreationPolicy.normalizedName(folderName) != nil && !isSubmitting
@@ -1254,6 +1585,7 @@ private struct CreateLibraryFolderSheet: View {
                 }
             }
             .onAppear {
+                guard autoFocusesNameField else { return }
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(120))
                     isNameFieldFocused = true

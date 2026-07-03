@@ -18,10 +18,11 @@ private let logger = Logger(subsystem: "com.vpstudio", category: "HeadTracker")
 /// lower values produce heavier smoothing at the cost of latency.
 ///
 /// ## Simulator
-/// On the visionOS Simulator, `queryDeviceAnchor(atTimestamp:)` always returns `nil`.
-/// The tracker remains `isRunning = true` but `isTracking` stays `false`, and
+/// On the visionOS Simulator, `queryDeviceAnchor(atTimestamp:)` can either return
+/// simulated device anchors or no anchors depending on runtime version and scene
+/// state. When anchors are unavailable, `isTracking` stays `false` and
 /// `headTransform` stays at `matrix_identity_float4x4`, so the controls panel stays
-/// stationary at the origin — which is the correct fallback.
+/// stationary at the origin.
 @Observable
 @MainActor
 final class HeadTracker {
@@ -115,7 +116,8 @@ final class HeadTracker {
             do {
                 try await session.run([provider])
             } catch {
-                logger.error("ARKit session failed to start: \(error.localizedDescription)")
+                let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+                logger.error("ARKit session failed to start: \(reason)")
                 await MainActor.run { self.isRunning = false }
                 return
             }
@@ -159,6 +161,9 @@ final class HeadTracker {
                     let headMatrix = mat
 
                     await MainActor.run {
+                        // A poll iteration may already be suspended waiting for this hop when
+                        // stop()/deinit resets state; bail so a stale pose isn't resurrected.
+                        guard self.isRunning, !Task.isCancelled else { return }
                         self.headTransform = headMatrix
                         if self.initialHeadTransform == nil {
                             self.initialHeadTransform = headMatrix

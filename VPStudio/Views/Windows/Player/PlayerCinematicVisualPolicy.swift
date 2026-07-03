@@ -15,6 +15,7 @@ enum PlayerCinematicVisualPolicy {
     static let iconSurfaceBorderOpacity: Double = 0.30
     static let iconSurfaceHighlightOpacity: Double = 0.22
     static let iconSurfaceShadowOpacity: Double = 0.44
+    static let activeControlBorderOpacity: Double = 0.88
 
     static let progressTrackOpacity: Double = 0.18
     static let progressBufferedOpacity: Double = 0.32

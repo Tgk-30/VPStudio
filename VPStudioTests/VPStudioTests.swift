@@ -96,7 +96,12 @@ private actor MockDebridService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
-        calls.append("add:\(hash)")
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        let magnetSuffix = magnetURI.map { "|magnet:\($0)" } ?? ""
+        calls.append("add:\(hash)\(magnetSuffix)")
         if shouldFailAddMagnet {
             throw DebridError.networkError("forced addMagnet failure")
         }
@@ -183,8 +188,7 @@ struct VPStudioTests {
     private func makeTemporaryDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }
@@ -300,6 +304,194 @@ struct VPStudioTests {
         #expect(stream.streamURL.absoluteString == expectedStream.streamURL.absoluteString)
         #expect(calls.count == 3, "Expected exactly 3 calls, no duplicates")
         #expect(calls == ["add:abc123", "select:torrent-abc123", "stream:torrent-abc123"])
+    }
+
+    @Test func debridManagerForwardsFullMagnetToProvider() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-full-magnet.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let hash = "0123456789abcdef0123456789abcdef01234567"
+        let magnet = "magnet:?xt=urn:btih:\(hash)&dn=Regional.Release&tr=udp://tracker.example/announce"
+        let mockService = MockDebridService(serviceType: .realDebrid, streamToReturn: Fixtures.stream())
+        let secretStore = TestSecretStore()
+        let secretKey = SecretKey.debridToken(service: .realDebrid, configId: "rd-full-magnet")
+        try await secretStore.setSecret("token", for: secretKey)
+
+        try await database.saveDebridConfig(DebridConfig(
+            id: "rd-full-magnet",
+            serviceType: .realDebrid,
+            apiTokenRef: SecretReference.encode(key: secretKey),
+            isActive: true,
+            priority: 0,
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+
+        let manager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { _, _ in mockService }
+        )
+
+        let stream = try await manager.resolveStream(
+            hash: hash,
+            preferredService: .realDebrid,
+            magnetURI: magnet
+        )
+        let calls = await mockService.callSequence()
+
+        #expect(stream.recoveryContext?.magnetURI == magnet)
+        #expect(calls.first == "add:\(hash)|magnet:\(magnet)")
+    }
+
+    @Test func debridManagerForwardsFullMagnetFromRecoveryContext() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-full-magnet-context.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let magnet = "magnet:?xt=urn:btih:\(hash)&dn=Cached+Episode"
+        let expectedStream = Fixtures.stream()
+        let mockService = MockDebridService(serviceType: .realDebrid, streamToReturn: expectedStream)
+
+        let secretStore = TestSecretStore()
+        let secretKey = SecretKey.debridToken(service: .realDebrid, configId: "rd-recovery-magnet")
+        try await secretStore.setSecret("token", for: secretKey)
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "rd-recovery-magnet",
+                serviceType: .realDebrid,
+                apiTokenRef: SecretReference.encode(key: secretKey),
+                isActive: true,
+                priority: 0,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+
+        let manager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { _, _ in mockService }
+        )
+
+        let recoveryContext = try #require(
+            StreamRecoveryContext(
+                infoHash: hash,
+                preferredService: .realDebrid,
+                magnetURI: magnet,
+                seasonNumber: nil,
+                episodeNumber: nil,
+                torrentId: "stale-torrent-id",
+                resolvedDebridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+
+        let stream = try await manager.resolveStream(from: recoveryContext)
+        let calls = await mockService.callSequence()
+
+        #expect(stream.recoveryContext?.magnetURI == magnet)
+        #expect(calls == [
+            "cleanup:stale-torrent-id",
+            "add:\(hash)|magnet:\(magnet)",
+            "select:torrent-\(hash)",
+            "stream:torrent-\(hash)",
+        ])
+    }
+
+    @Test func debridManagerFallsBackToPreferredServiceWhenResolvedServiceIsUnknown() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-context-preferred-fallback.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let hash = "1234567890abcdef1234567890abcdef12345678"
+        let magnet = "magnet:?xt=urn:btih:\(hash)&dn=Unknown.Resolved.Service"
+
+        let preferredService = DebridServiceType.allDebrid
+        let allDebridStream = StreamInfo(
+            streamURL: URL(string: "https://cdn.example.com/all.mkv")!,
+            quality: .hd1080p,
+            codec: .h264,
+            audio: .aac,
+            source: .webDL,
+            hdr: .sdr,
+            fileName: "Fallback.Recovery.mkv",
+            sizeBytes: 1_500_000,
+            debridService: preferredService.rawValue
+        )
+        let allDebridService = MockDebridService(serviceType: .allDebrid, streamToReturn: allDebridStream)
+        let realDebridService = MockDebridService(
+            serviceType: .realDebrid,
+            streamToReturn: Fixtures.stream(url: "https://cdn.example.com/real.mkv")
+        )
+
+        let secretStore = TestSecretStore()
+        let allDebridKey = SecretKey.debridToken(service: .allDebrid, configId: "all")
+        let realDebridKey = SecretKey.debridToken(service: .realDebrid, configId: "rd")
+        try await secretStore.setSecret("all-token", for: allDebridKey)
+        try await secretStore.setSecret("rd-token", for: realDebridKey)
+
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "all",
+                serviceType: .allDebrid,
+                apiTokenRef: SecretReference.encode(key: allDebridKey),
+                isActive: true,
+                priority: 0,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "rd",
+                serviceType: .realDebrid,
+                apiTokenRef: SecretReference.encode(key: realDebridKey),
+                isActive: true,
+                priority: 1,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+
+        let manager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { type, _ in
+                switch type {
+                case .allDebrid:
+                    return allDebridService
+                case .realDebrid:
+                    return realDebridService
+                default:
+                    return allDebridService
+                }
+            }
+        )
+        try await manager.initialize()
+
+        let recoveryContext = try #require(
+            StreamRecoveryContext(
+                infoHash: hash,
+                preferredService: preferredService,
+                magnetURI: magnet,
+                torrentId: "stale-all-torrent",
+                resolvedDebridService: "unsupported-service"
+            )
+        )
+
+        let stream = try await manager.resolveStream(from: recoveryContext)
+        let allCalls = await allDebridService.callSequence()
+        let realCalls = await realDebridService.callSequence()
+
+        #expect(stream.debridService == preferredService.rawValue)
+        #expect(stream.recoveryContext?.resolvedDebridService == preferredService.rawValue)
+        #expect(stream.recoveryContext?.torrentId == "torrent-\(hash)")
+        #expect(allCalls == [
+            "cleanup:stale-all-torrent",
+            "add:\(hash)|magnet:\(magnet)",
+            "select:torrent-\(hash)",
+            "stream:torrent-\(hash)",
+        ])
+        #expect(realCalls.isEmpty)
     }
 
     @Test func debridManagerFallsBackWhenFirstProviderResolveFails() async throws {
@@ -590,6 +782,180 @@ struct VPStudioTests {
         #expect(stream.streamURL.absoluteString == adStream.streamURL.absoluteString)
         #expect(rdCalls.isEmpty)
         #expect(adCalls == ["add:hash-1", "select:torrent-hash-1", "stream:torrent-hash-1"])
+    }
+
+    @Test func debridManagerResolveStreamThrowsWhenNoSharedMagnetServicesAreConfigured() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-no-services.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = DebridManager(
+            database: database,
+            secretStore: TestSecretStore(),
+            serviceFactory: { _, _ in
+                MockDebridService(serviceType: .realDebrid, streamToReturn: Fixtures.stream())
+            }
+        )
+
+        do {
+            _ = try await manager.resolveStream(hash: "0123456789abcdef0123456789abcdef01234567")
+            Issue.record("Expected no-service debrid error")
+        } catch let error as DebridError {
+            #expect(error == .networkError("No debrid services configured. Add one in Settings > Debrid Services."))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func debridManagerDoesNotFailOverInvalidHashErrors() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-invalid-hash-no-failover.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretStore = TestSecretStore()
+        let rdSecretKey = SecretKey.debridToken(service: .realDebrid, configId: "rd")
+        let adSecretKey = SecretKey.debridToken(service: .allDebrid, configId: "ad")
+        try await secretStore.setSecret("rd-token", for: rdSecretKey)
+        try await secretStore.setSecret("ad-token", for: adSecretKey)
+
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "rd",
+                serviceType: .realDebrid,
+                apiTokenRef: SecretReference.encode(key: rdSecretKey),
+                isActive: true,
+                priority: 0,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "ad",
+                serviceType: .allDebrid,
+                apiTokenRef: SecretReference.encode(key: adSecretKey),
+                isActive: true,
+                priority: 1,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+
+        let fallbackService = MockDebridService(serviceType: .allDebrid, streamToReturn: Fixtures.stream())
+        let fixture = QADebridFixture(
+            hash: "0123456789abcdef0123456789abcdef01234567",
+            serviceType: .realDebrid,
+            streamURLs: [URL(string: "https://fixtures.example/rd.mkv")!],
+            fileName: "Fixture.Release.mkv"
+        )
+        let manager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { type, _ in
+                switch type {
+                case .realDebrid:
+                    return QADebridService(fixture: fixture)
+                case .allDebrid:
+                    return fallbackService
+                default:
+                    return fallbackService
+                }
+            }
+        )
+        try await manager.initialize()
+
+        do {
+            _ = try await manager.resolveStream(hash: "not-a-valid-infohash")
+            Issue.record("Expected invalid hash error")
+        } catch let error as DebridError {
+            #expect(error == .invalidHash("not-a-valid-infohash"))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+        #expect(await fallbackService.callSequence().isEmpty)
+    }
+
+    @Test func debridManagerCleanupRemoteTransferFromContextUsesResolvedService() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-cleanup-context.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretStore = TestSecretStore()
+        let adSecretKey = SecretKey.debridToken(service: .allDebrid, configId: "ad")
+        try await secretStore.setSecret("ad-token", for: adSecretKey)
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "ad",
+                serviceType: .allDebrid,
+                apiTokenRef: SecretReference.encode(key: adSecretKey),
+                isActive: true,
+                priority: 0,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+
+        let service = MockDebridService(serviceType: .allDebrid, streamToReturn: Fixtures.stream())
+        let manager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { _, _ in service }
+        )
+        try await manager.initialize()
+
+        let context = StreamRecoveryContext(
+            infoHash: "0123456789abcdef0123456789abcdef01234567",
+            preferredService: .realDebrid,
+            torrentId: "remote-transfer-1",
+            resolvedDebridService: DebridServiceType.allDebrid.rawValue
+        )!
+
+        await manager.cleanupRemoteTransfer(from: context)
+
+        #expect(await service.callSequence() == ["cleanup:remote-transfer-1"])
+    }
+
+    @Test func debridManagerFailsEpisodeResolveWhenServiceCannotSelectMatchingFile() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "vpstudio-debrid-episode-select-failure.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretStore = TestSecretStore()
+        let rdSecretKey = SecretKey.debridToken(service: .realDebrid, configId: "rd")
+        try await secretStore.setSecret("rd-token", for: rdSecretKey)
+        try await database.saveDebridConfig(
+            DebridConfig(
+                id: "rd",
+                serviceType: .realDebrid,
+                apiTokenRef: SecretReference.encode(key: rdSecretKey),
+                isActive: true,
+                priority: 0,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        )
+
+        let service = MockDebridService(serviceType: .realDebrid, streamToReturn: Fixtures.stream())
+        let manager = DebridManager(
+            database: database,
+            secretStore: secretStore,
+            serviceFactory: { _, _ in service }
+        )
+        try await manager.initialize()
+
+        do {
+            _ = try await manager.resolveStream(
+                hash: "0123456789abcdef0123456789abcdef01234567",
+                seasonNumber: 1,
+                episodeNumber: 2
+            )
+            Issue.record("Expected deterministic episode selection failure")
+        } catch let error as DebridError {
+            #expect(error == .networkError("Could not deterministically select the requested episode file."))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+
+        #expect(await service.callSequence() == [
+            "add:0123456789abcdef0123456789abcdef01234567",
+            "cleanup:torrent-0123456789abcdef0123456789abcdef01234567",
+        ])
     }
 
     @Test func debridManagerMigratesPlaintextTokensToSecretStore() async throws {
@@ -939,17 +1305,34 @@ struct VPStudioTests {
         )
         let service = QADebridService(fixture: fixture)
 
+        #expect(try await service.validateToken())
+        let account = try await service.getAccountInfo()
+        #expect(account.username == "qa-fixture")
+        #expect(account.isPremium == true)
+
         let torrentId = try await service.addMagnet(hash: fixture.hash)
         try await service.selectFiles(torrentId: torrentId, fileIds: [])
 
         let first = try await service.getStreamURL(torrentId: torrentId)
         let second = try await service.getStreamURL(torrentId: torrentId)
         let cache = try await service.checkCache(hashes: [fixture.hash, "deadbeef"])
+        let unrestricted = try await service.unrestrict(link: fixture.streamURLs[0].absoluteString)
 
         #expect(first.streamURL.absoluteString == fixture.streamURLs[0].absoluteString)
         #expect(second.streamURL.absoluteString == fixture.streamURLs[1].absoluteString)
+        #expect(unrestricted.absoluteString == fixture.streamURLs[0].absoluteString)
         #expect(first.debridService == DebridServiceType.realDebrid.rawValue)
         #expect(second.fileName == fixture.fileName)
+
+        await #expect(throws: DebridError.self) {
+            _ = try await service.addMagnet(hash: "invalid")
+        }
+        await #expect(throws: DebridError.self) {
+            _ = try await service.getStreamURL(torrentId: "missing")
+        }
+        await #expect(throws: DebridError.self) {
+            _ = try await service.unrestrict(link: "http://[")
+        }
 
         guard let cachedEntry = cache[fixture.hash] else {
             Issue.record("Expected cached QA fixture entry")
@@ -1127,8 +1510,7 @@ struct VPStudioTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let dbPath = tempDir.appendingPathComponent("vpstudio-tests.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "vpstudio-tests-\(UUID().uuidString)")
         try await database.migrate()
 
         // Insert all known defaults as inactive so hydration doesn't add live built-ins.
@@ -1148,7 +1530,7 @@ struct VPStudioTests {
         )
         try await database.saveIndexerConfigs([brokenConfig] + inactiveDefaults)
 
-        let manager = IndexerManager(database: database)
+        let manager = IndexerManager(database: database, secretStore: TestSecretStore())
         try await manager.initialize()
 
         do {
@@ -1170,8 +1552,7 @@ struct VPStudioTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let dbPath = tempDir.appendingPathComponent("vpstudio-library-tests.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "vpstudio-library-tests-\(UUID().uuidString)")
         try await database.migrate()
 
         let folderId = try await database.fetchSystemLibraryFolderID(listType: .watchlist)
@@ -1436,7 +1817,7 @@ struct VPStudioTests {
         #expect(capturedQuery == query)
     }
 
-    @Test func torBoxRequestDownloadUsesAuthHeaderNotQueryToken() async throws {
+    @Test func torBoxRequestDownloadUsesRequiredQueryTokenAndAuthHeader() async throws {
         final class RequestState: @unchecked Sendable {
             var requestAuthHeader: String?
             var requestTorrentId: String?
@@ -1489,7 +1870,7 @@ struct VPStudioTests {
         let stream = try await service.getStreamURL(torrentId: "42")
 
         #expect(stream.streamURL.absoluteString == "https://cdn.example.com/video.mkv")
-        #expect(state.tokenInQuery == false) // Token must NOT be in URL
+        #expect(state.tokenInQuery == true)
         #expect(state.requestAuthHeader == "Bearer \(token)")
         #expect(state.requestTorrentId == "42")
     }
@@ -1543,7 +1924,7 @@ struct VPStudioTests {
             let url = try #require(request.url)
             let path = url.path
 
-            if path.hasSuffix("/api/v1/subtitles") {
+            if path.hasSuffix("/subtitles") {
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let body = """
                 {
@@ -1567,7 +1948,7 @@ struct VPStudioTests {
                 return (response, Data(body.utf8))
             }
 
-            if path.hasSuffix("/api/v1/download") {
+            if path.hasSuffix("/download") {
                 state.didCallDownloadEndpoint = true
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let body = #"{"link":"https://cdn.example.com/example.srt"}"#
@@ -1604,8 +1985,7 @@ struct VPStudioTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let dbPath = tempDir.appendingPathComponent("vpstudio-settings-tests.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "vpstudio-settings-tests-\(UUID().uuidString)")
         try await database.migrate()
 
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
@@ -1620,8 +2000,7 @@ struct VPStudioTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let dbPath = tempDir.appendingPathComponent("vpstudio-environment-settings-tests.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "vpstudio-environment-settings-tests-\(UUID().uuidString)")
         try await database.migrate()
 
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
@@ -1900,8 +2279,8 @@ struct VPStudioTests {
                   "streams": [
                     {
                       "title": "Source",
-                      "url": "magnet:?xt=urn:btih:abc",
-                      "infoHash": "abc",
+                      "url": "https://cdn.example.com/stream.mkv",
+                      "infoHash": "1111111111111111111111111111111111111111",
                       "behaviorHints": { "videoSize": 12345, "seeders": 9, "leechers": 0 }
                     }
                   ]
@@ -1941,7 +2320,7 @@ struct VPStudioTests {
     @Test func offcloudSelectFilesUsesRequestedFileId() async throws {
         let session = makeStubSession { request in
             let url = request.url ?? URL(string: "https://offcloud.com/api")!
-            if url.path == "/cloud/status" {
+            if url.path == "/api/cloud/status" {
                 let body = """
                 {"requestId":"req-123","fileName":"show.mkv","status":"downloaded"}
                 """

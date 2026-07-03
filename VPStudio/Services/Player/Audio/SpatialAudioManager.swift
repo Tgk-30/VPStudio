@@ -1,14 +1,11 @@
 import Foundation
 import AVFoundation
-import os
 
 /// Manages spatial audio configuration for immersive and windowed playback modes.
 /// Configures AVAudioSession for optimal spatial rendering on visionOS.
 @MainActor
 @Observable
 final class SpatialAudioManager {
-    private let logger = Logger(subsystem: "com.vpstudio", category: "SpatialAudioManager")
-
     private(set) var isImmersiveMode = false
     private(set) var isSpatialAudioAvailable = false
 
@@ -41,31 +38,7 @@ final class SpatialAudioManager {
 
     private func configureForImmersive() {
         #if !os(macOS)
-        let session = AVAudioSession.sharedInstance()
-        do {
-            // Use .moviePlayback mode with spatial rendering policy
-            try session.setCategory(
-                .playback,
-                mode: .moviePlayback,
-                policy: .longFormVideo,
-                options: []
-            )
-
-            // Enable multichannel content support for spatial audio passthrough
-            if #available(iOS 15.0, tvOS 15.0, visionOS 1.0, *) {
-                try session.setSupportsMultichannelContent(true)
-            }
-
-            // Request maximum available output channels for surround/Atmos
-            let maxChannels = session.maximumOutputNumberOfChannels
-            if maxChannels > 2 {
-                try session.setPreferredOutputNumberOfChannels(maxChannels)
-            }
-
-            try session.setActive(true)
-        } catch {
-            logger.error("Failed to configure immersive audio: \(error.localizedDescription, privacy: .public)")
-        }
+        AudioSessionConfigurator.configurePlaybackAsync(policy: .immersive)
         #endif
 
         refreshSpatialCapabilities()
@@ -73,13 +46,7 @@ final class SpatialAudioManager {
 
     private func configureForWindowed() {
         #if !os(macOS)
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .moviePlayback)
-            try session.setActive(true)
-        } catch {
-            logger.error("Failed to restore windowed audio: \(error.localizedDescription, privacy: .public)")
-        }
+        AudioSessionConfigurator.configurePlaybackAsync(policy: .standard)
         #endif
     }
 
@@ -123,11 +90,13 @@ final class SpatialAudioManager {
     }
 
     @objc private func handleAudioRouteChange(_ notification: Notification) {
-        refreshSpatialCapabilities()
+        // CoreAudio posts route-change notifications on an arbitrary thread; this @MainActor
+        // @Observable's state must be mutated on the main actor (mirrors NetworkMonitor).
+        Task { @MainActor in self.refreshSpatialCapabilities() }
     }
 
     @available(iOS 15.0, tvOS 15.0, visionOS 1.0, *)
     @objc private func handleSpatialPlaybackCapabilitiesChange(_ notification: Notification) {
-        refreshSpatialCapabilities()
+        Task { @MainActor in self.refreshSpatialCapabilities() }
     }
 }

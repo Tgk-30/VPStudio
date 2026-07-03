@@ -12,7 +12,7 @@ enum PlayerStartupFailurePolicy {
         "file does not exist"
     ]
 
-    private static let directLinkStatusCodes = [401, 403, 404, 410]
+    private static let directLinkStatusCodes = [401, 403, 404, 410, 451]
     private static let directLinkNSErrorCodes = [-1011, -1100]
 
     static func shouldSkipRemainingEnginesAndRefreshCurrentStream(
@@ -65,11 +65,11 @@ enum PlayerStartupFailurePolicy {
         if let engineError = error as? PlayerEngineError {
             switch engineError {
             case .invalidStreamURL(let value):
-                append(value)
+                append(IndexerLogSanitizer.redactedMessage(value))
             case .startupTimeout:
                 break
             case .initializationFailed(_, let message):
-                append(message)
+                append(IndexerLogSanitizer.redactedMessage(message))
             }
         }
 

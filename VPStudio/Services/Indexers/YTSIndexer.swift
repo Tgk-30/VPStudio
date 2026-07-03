@@ -15,9 +15,11 @@ struct YTSIndexer: TorrentIndexer {
         return URLSession(configuration: configuration)
     }()
 
+    private let apiBaseURLs: [String]
     private let session: URLSession
 
-    init(session: URLSession? = nil) {
+    init(baseURLs: [String]? = nil, session: URLSession? = nil) {
+        self.apiBaseURLs = baseURLs ?? Self.apiBaseURLs
         self.session = session ?? Self.defaultSession
     }
 
@@ -29,7 +31,7 @@ struct YTSIndexer: TorrentIndexer {
 
     func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
         guard type == .movie else { return [] }
-        let ytsResponse = try await fetchResponse(queryTerm: query)
+        let ytsResponse = try await fetchResponse(queryTerm: normalizedQueryTerm(from: query))
         return mapResults(from: ytsResponse)
     }
 
@@ -37,7 +39,7 @@ struct YTSIndexer: TorrentIndexer {
         var lastError: Error = URLError(.badServerResponse)
         var lastEmptyResponse: YTSResponse?
 
-        for baseURL in Self.apiBaseURLs {
+        for baseURL in apiBaseURLs {
             let url: URL
             do {
                 url = try buildSearchURL(baseURL: baseURL, queryTerm: queryTerm)
@@ -63,7 +65,7 @@ struct YTSIndexer: TorrentIndexer {
                         reason: "malformed JSON from \(url.host ?? "unknown-host")"
                     )
                 }
-                if let movies = ytsResponse.data?.movies, !movies.isEmpty {
+                if let movies = ytsResponse.data?.movies, movies.isEmpty == false {
                     return ytsResponse
                 }
                 lastEmptyResponse = ytsResponse
@@ -106,17 +108,56 @@ struct YTSIndexer: TorrentIndexer {
     }
 
     private func buildSearchURL(baseURL: String, queryTerm: String) throws -> URL {
-        guard var components = URLComponents(string: "\(baseURL)/list_movies.json") else {
+        guard var components = URLComponents(string: baseURL) else {
             throw URLError(.badURL)
         }
+
+        let baseSegments = Self.pathSegments(components.path)
+        let endpointSegments: [String]
+        if baseSegments.suffix(3) == ["api", "v2", "list_movies.json"] {
+            endpointSegments = []
+        } else if baseSegments.suffix(2) == ["api", "v2"] {
+            endpointSegments = ["list_movies.json"]
+        } else {
+            endpointSegments = ["api", "v2", "list_movies.json"]
+        }
+        components.path = Self.path(from: baseSegments + endpointSegments)
+
         components.queryItems = [
             URLQueryItem(name: "query_term", value: queryTerm),
             URLQueryItem(name: "limit", value: "20"),
         ]
-        guard let url = components.url else {
-            throw URLError(.badURL)
+        guard let url = components.url,
+              IndexerURLSecurityPolicy.permits(url: url) else {
+            throw URLError(.unsupportedURL)
         }
         return url
+    }
+
+    private static func pathSegments(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
+    }
+
+    private static func path(from segments: [String]) -> String {
+        segments.isEmpty ? "" : "/" + segments.joined(separator: "/")
+    }
+
+    private func normalizedQueryTerm(from query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+
+        var seen = Set<String>()
+        var deduped: [String] = []
+        deduped.reserveCapacity(trimmed.split(whereSeparator: \.isWhitespace).count)
+
+        for term in trimmed.split(whereSeparator: \.isWhitespace).map(String.init) {
+            let normalized = term.lowercased()
+            if seen.insert(normalized).inserted {
+                deduped.append(term)
+            }
+        }
+
+        return deduped.isEmpty ? trimmed : deduped.joined(separator: " ")
     }
 }
 

@@ -3,6 +3,7 @@ import GRDB
 
 enum LibraryCSVImportError: LocalizedError, Equatable {
     case unreadableFile
+    case fileTooLarge
     case unsupportedEncoding
     case emptyFile
     case missingHeader
@@ -11,6 +12,8 @@ enum LibraryCSVImportError: LocalizedError, Equatable {
         switch self {
         case .unreadableFile:
             return "Could not read the selected CSV file."
+        case .fileTooLarge:
+            return "CSV file is too large to import."
         case .unsupportedEncoding:
             return "CSV file encoding is unsupported."
         case .emptyFile:
@@ -102,6 +105,8 @@ struct LibraryCSVImportSummary: Sendable, Equatable {
 }
 
 actor LibraryCSVImportService {
+    static let maximumFileSizeBytes = 64 * 1024 * 1024
+
     private struct ParsedRow: Sendable {
         var mediaID: String
         var title: String
@@ -584,6 +589,8 @@ actor LibraryCSVImportService {
     }
 
     private static func readCSVText(from fileURL: URL) throws -> String {
+        try validateCSVFileForImport(fileURL)
+
         guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else {
             throw LibraryCSVImportError.unreadableFile
         }
@@ -591,7 +598,8 @@ actor LibraryCSVImportService {
         if let utf8 = String(data: data, encoding: .utf8) {
             return utf8
         }
-        if let utf16 = String(data: data, encoding: .utf16) {
+        if Self.looksLikeUTF16(data),
+           let utf16 = String(data: data, encoding: .utf16) {
             return utf16
         }
         if let latin = String(data: data, encoding: .isoLatin1) {
@@ -599,6 +607,35 @@ actor LibraryCSVImportService {
         }
 
         throw LibraryCSVImportError.unsupportedEncoding
+    }
+
+    private static func validateCSVFileForImport(_ fileURL: URL) throws {
+        let values: URLResourceValues
+        do {
+            values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        } catch {
+            throw LibraryCSVImportError.unreadableFile
+        }
+
+        guard values.isRegularFile == true else {
+            throw LibraryCSVImportError.unreadableFile
+        }
+
+        guard (values.fileSize ?? 0) <= maximumFileSizeBytes else {
+            throw LibraryCSVImportError.fileTooLarge
+        }
+    }
+
+    private static func looksLikeUTF16(_ data: Data) -> Bool {
+        guard data.count >= 2 else { return false }
+
+        let prefix = Array(data.prefix(64))
+        if prefix.starts(with: [0xFF, 0xFE]) || prefix.starts(with: [0xFE, 0xFF]) {
+            return true
+        }
+
+        let nullCount = prefix.filter { $0 == 0 }.count
+        return nullCount >= max(2, prefix.count / 4)
     }
 
     private static func parseCSVRecords(_ text: String) -> [[String]] {
@@ -740,15 +777,7 @@ actor LibraryCSVImportService {
     }
 
     private static func parseIMDbID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        if let directMatch = raw.range(of: "tt\\d+", options: .regularExpression) {
-            return String(raw[directMatch]).lowercased()
-        }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("tt"), trimmed.dropFirst(2).allSatisfy(\.isNumber) {
-            return trimmed.lowercased()
-        }
-        return nil
+        IMDbIdentifierPolicy.appScopedID(in: raw)
     }
 
     private static func parseMediaType(_ raw: String?) -> MediaType {

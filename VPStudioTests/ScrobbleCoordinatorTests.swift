@@ -8,6 +8,12 @@ private enum ScrobbleStubError: Error {
     case missingHandler
 }
 
+private struct SecretBearingScrobbleError: LocalizedError {
+    var errorDescription: String? {
+        "POST https://api.trakt.tv/oauth/token?client_secret=trakt-client-secret-value&access_token=trakt-access-token-value failed Authorization: Bearer traktBearerTokenValue1234567890 omdbApiKey=omdb-secret-value"
+    }
+}
+
 private final class ScrobbleURLProtocolStub: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestHandlers: [String: (URLRequest) throws -> (HTTPURLResponse, Data)] = [:]
     static let lock = NSLock()
@@ -93,6 +99,7 @@ private func makeScrobbleStubSession(
 private final class RequestTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var _paths: [String] = []
+    private var _bodies: [[String: Any]] = []
 
     func record(_ path: String) {
         lock.lock()
@@ -100,9 +107,32 @@ private final class RequestTracker: @unchecked Sendable {
         lock.unlock()
     }
 
+    func record(_ request: URLRequest) {
+        let path = request.url?.path ?? ""
+        let body: [String: Any]
+        if let data = request.httpBody,
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            body = object
+        } else {
+            body = [:]
+        }
+
+        lock.lock()
+        _paths.append(path)
+        _bodies.append(body)
+        lock.unlock()
+    }
+
     var paths: [String] {
         lock.lock()
         let copy = _paths
+        lock.unlock()
+        return copy
+    }
+
+    var bodies: [[String: Any]] {
+        lock.lock()
+        let copy = _bodies
         lock.unlock()
         return copy
     }
@@ -114,13 +144,9 @@ private final class RequestTracker: @unchecked Sendable {
 
 // MARK: - Test Helpers
 
-/// Creates a fresh SettingsManager backed by a temporary on-disk SQLite database.
+/// Creates a fresh SettingsManager backed by an isolated in-memory SQLite database.
 private func makeSettingsManager() async throws -> (SettingsManager, TestSecretStore) {
-    let tempDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbPath = tempDir.appendingPathComponent("scrobble-test.sqlite").path
-    let database = try DatabaseManager(path: dbPath)
+    let database = try DatabaseManager(inMemoryNamed: "scrobble-test-\(UUID().uuidString)")
     try await database.migrate()
     let secretStore = TestSecretStore()
     let manager = SettingsManager(database: database, secretStore: secretStore)
@@ -149,7 +175,7 @@ private func disableTraktScrobble(settings: SettingsManager) async throws {
 private func makeTrackingSession(tracker: RequestTracker) -> URLSession {
     makeScrobbleStubSession { request in
         let path = request.url?.path ?? ""
-        tracker.record(path)
+        tracker.record(request)
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
@@ -170,7 +196,7 @@ private func makeTrackingSession(tracker: RequestTracker) -> URLSession {
 // MARK: - Tests
 
 @Suite("ScrobbleCoordinator - Disabled / No Credentials", .serialized)
-struct ScrobbleCoordinatorDisabledTests {
+struct ScrobbleCoordinatorDisabledTestsScrobblecoordinatortests {
 
     @Test("startPlayback does nothing when traktAutoScrobble is disabled")
     func startPlaybackNoOpWhenDisabled() async throws {
@@ -252,7 +278,7 @@ struct ScrobbleCoordinatorDisabledTests {
 }
 
 @Suite("ScrobbleCoordinator - Active Scrobbling", .serialized)
-struct ScrobbleCoordinatorActiveTests {
+struct ScrobbleCoordinatorActiveTestsScrobblecoordinatortests {
 
     @Test("startPlayback sends scrobble/start when enabled with full credentials")
     func startPlaybackScrobblesWhenEnabled() async throws {
@@ -268,6 +294,191 @@ struct ScrobbleCoordinatorActiveTests {
         )
         await coordinator.startPlayback(mediaId: "tt1234567", mediaType: .movie, progress: 5.0)
         #expect(tracker.contains("/scrobble/start"))
+    }
+
+    @Test("TMDb-only playback sends remote scrobble and history")
+    func tmdbOnlyPlaybackSendsRemoteScrobbleAndHistory() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+
+        let tracker = RequestTracker()
+        let session = makeTrackingSession(tracker: tracker)
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "tmdb-12345", mediaType: .movie, progress: 0.2)
+        await coordinator.pausePlayback(progress: 0.4)
+        await coordinator.resumePlayback(progress: 0.5)
+        await coordinator.stopPlayback(progress: 0.95)
+
+        #expect(tracker.paths == [
+            "/scrobble/start",
+            "/scrobble/pause",
+            "/scrobble/start",
+            "/scrobble/stop",
+            "/sync/history",
+        ])
+        let firstMovie = tracker.bodies.first?["movie"] as? [String: Any]
+        let firstIDs = firstMovie?["ids"] as? [String: Any]
+        #expect(firstIDs?["tmdb"] as? Int == 12_345)
+        #expect(firstIDs?["imdb"] == nil)
+        #expect(await coordinator.lastErrorMessage == nil)
+    }
+
+    @Test("typed TMDb movie and series scrobbles do not collide")
+    func typedTMDbMovieAndSeriesScrobblesDoNotCollide() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+
+        let tracker = RequestTracker()
+        let session = makeTrackingSession(tracker: tracker)
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "movie-tmdb-12345", mediaType: .movie, progress: 0.1)
+        await coordinator.startPlayback(mediaId: "series-tmdb-12345", mediaType: .series, progress: 0.2)
+
+        #expect(tracker.paths == [
+            "/scrobble/start",
+            "/scrobble/stop",
+            "/scrobble/start",
+        ])
+        let firstMovie = tracker.bodies.first?["movie"] as? [String: Any]
+        let firstMovieIDs = firstMovie?["ids"] as? [String: Any]
+        let stoppedMovie = tracker.bodies.dropFirst().first?["movie"] as? [String: Any]
+        let stoppedMovieIDs = stoppedMovie?["ids"] as? [String: Any]
+        let startedShow = tracker.bodies.last?["show"] as? [String: Any]
+        let startedShowIDs = startedShow?["ids"] as? [String: Any]
+
+        #expect(firstMovieIDs?["tmdb"] as? Int == 12_345)
+        #expect(stoppedMovieIDs?["tmdb"] as? Int == 12_345)
+        #expect(startedShowIDs?["tmdb"] as? Int == 12_345)
+        #expect(await coordinator.lastErrorMessage == nil)
+    }
+
+    @Test("OMDb-prefixed playback sends IMDb scrobble and history IDs")
+    func omdbPrefixedPlaybackSendsIMDbScrobbleAndHistoryIDs() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+
+        let tracker = RequestTracker()
+        let session = makeTrackingSession(tracker: tracker)
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "movie-omdb-TT1160419", mediaType: .movie, progress: 0.2)
+        await coordinator.pausePlayback(progress: 0.4)
+        await coordinator.resumePlayback(progress: 0.5)
+        await coordinator.stopPlayback(progress: 0.95)
+
+        #expect(tracker.paths == [
+            "/scrobble/start",
+            "/scrobble/pause",
+            "/scrobble/start",
+            "/scrobble/stop",
+            "/sync/history",
+        ])
+        let firstMovie = tracker.bodies.first?["movie"] as? [String: Any]
+        let firstIDs = firstMovie?["ids"] as? [String: Any]
+        #expect(firstIDs?["imdb"] as? String == "tt1160419")
+        #expect(firstIDs?["tmdb"] == nil)
+        #expect(await coordinator.lastErrorMessage == nil)
+    }
+
+    @Test("active session sends pause resume and stop scrobbles with normalized progress")
+    func activeSessionSendsPauseResumeAndStop() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+
+        let tracker = RequestTracker()
+        let session = makeTrackingSession(tracker: tracker)
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "tt1234567", mediaType: .movie, progress: 0.25)
+        await coordinator.pausePlayback(progress: 25.0)
+        await coordinator.resumePlayback(progress: 150.0)
+        await coordinator.stopPlayback(progress: 0.8)
+
+        #expect(tracker.paths == [
+            "/scrobble/start",
+            "/scrobble/pause",
+            "/scrobble/start",
+            "/scrobble/stop",
+        ])
+        let progressValues = tracker.bodies.compactMap { $0["progress"] as? Double }
+        #expect(progressValues == [25.0, 25.0, 100.0, 80.0])
+    }
+
+    @Test("negative progress values normalize to zero before scrobbling")
+    func negativeProgressNormalizesToZeroInScrobbleRequests() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+
+        let tracker = RequestTracker()
+        let session = makeTrackingSession(tracker: tracker)
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "tt91000001", mediaType: .movie, progress: -0.25)
+        await coordinator.pausePlayback(progress: -12)
+        await coordinator.resumePlayback(progress: -1)
+        await coordinator.stopPlayback(progress: -5)
+
+        #expect(tracker.paths == [
+            "/scrobble/start",
+            "/scrobble/pause",
+            "/scrobble/start",
+            "/scrobble/stop",
+        ])
+        #expect(tracker.bodies.compactMap { $0["progress"] as? Double } == [0, 0, 0, 0])
+    }
+
+    @Test("stop scrobble failures are recorded without blocking reset")
+    func stopScrobbleErrorIsRecorded() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+
+        let session = makeScrobbleStubSession { request in
+            let url = request.url!
+            let statusCode = url.path.contains("/scrobble/stop") ? 500 : 200
+            let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":1,"action":"scrobble"}"#.utf8))
+        }
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "tt1234567", mediaType: .movie, progress: 0)
+        await coordinator.stopPlayback(progress: 50)
+
+        #expect(await coordinator.lastErrorMessage?.contains("stop scrobble failed") == true)
+
+        await coordinator.pausePlayback(progress: 60)
+        #expect(await coordinator.lastErrorMessage?.contains("stop scrobble failed") == true)
     }
 
     @Test("pausePlayback only works after startPlayback has been called")
@@ -344,7 +555,7 @@ struct ScrobbleCoordinatorActiveTests {
 }
 
 @Suite("ScrobbleCoordinator - History Integration", .serialized)
-struct ScrobbleCoordinatorHistoryTests {
+struct ScrobbleCoordinatorHistoryTestsScrobblecoordinatortests {
 
     @Test("stopPlayback attempts addToHistory when progress > 80 and history sync enabled")
     func stopAddsToHistoryAbove80() async throws {
@@ -431,7 +642,26 @@ struct ScrobbleCoordinatorHistoryTests {
             session: session
         )
 
-        await coordinator.startPlayback(mediaId: "ttfractional", mediaType: .movie, progress: 0)
+        await coordinator.startPlayback(mediaId: "tt91000002", mediaType: .movie, progress: 0)
+        await coordinator.stopPlayback(progress: 0.85)
+
+        #expect(tracker.contains("/sync/history"))
+    }
+
+    @Test("history sync defaults enabled when the setting is absent")
+    func stopUsesDefaultEnabledHistorySettingWhenMissing() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+
+        let tracker = RequestTracker()
+        let session = makeTrackingSession(tracker: tracker)
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "tt91000003", mediaType: .movie, progress: 0)
         await coordinator.stopPlayback(progress: 0.85)
 
         #expect(tracker.contains("/sync/history"))
@@ -439,7 +669,7 @@ struct ScrobbleCoordinatorHistoryTests {
 }
 
 @Suite("ScrobbleCoordinator - Settings Gate Logic", .serialized)
-struct ScrobbleCoordinatorSettingsGateTests {
+struct ScrobbleCoordinatorSettingsGateTestsScrobblecoordinatortests {
 
     @Test("coordinator respects traktAutoScrobble=false even with all credentials present")
     func scrobbleDisabledBlocksAllActions() async throws {
@@ -562,7 +792,22 @@ struct ScrobbleCoordinatorSettingsGateTests {
 }
 
 @Suite("ScrobbleCoordinator - Error Resilience", .serialized)
-struct ScrobbleCoordinatorErrorResilienceTests {
+struct ScrobbleCoordinatorErrorResilienceTestsScrobblecoordinatortests {
+
+    @Test("recorded scrobble errors redact URLs and provider credentials")
+    func recordedScrobbleErrorsRedactSensitiveValues() {
+        let message = ScrobbleCoordinator.sanitizedErrorMessage(
+            operation: "Trakt start scrobble failed",
+            error: SecretBearingScrobbleError()
+        )
+
+        #expect(message.contains("Trakt start scrobble failed"))
+        #expect(message.contains("REDACTED"))
+        #expect(!message.contains("trakt-client-secret-value"))
+        #expect(!message.contains("trakt-access-token-value"))
+        #expect(!message.contains("traktBearerTokenValue1234567890"))
+        #expect(!message.contains("omdb-secret-value"))
+    }
 
     @Test("scrobble errors are non-fatal and do not propagate")
     func scrobbleErrorsSwallowed() async throws {
@@ -622,6 +867,35 @@ struct ScrobbleCoordinatorErrorResilienceTests {
         #expect(lastError?.contains("history sync failed") == true)
     }
 
+    @Test("pause and resume scrobble failures are recorded after successful start")
+    func pauseAndResumeErrorsAreRecorded() async throws {
+        let (settings, secretStore) = try await makeSettingsManager()
+        try await enableTraktScrobble(settings: settings)
+
+        let session = makeScrobbleStubSession { request in
+            let path = request.url!.path
+            let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let statusCode = path.contains("/scrobble/pause")
+                || (path.contains("/scrobble/start") && body.contains(#""progress":50"#))
+                ? 500
+                : 200
+            let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"id":1,"action":"scrobble"}"#.utf8))
+        }
+        let coordinator = ScrobbleCoordinator(
+            settingsManager: settings,
+            secretStore: secretStore,
+            session: session
+        )
+
+        await coordinator.startPlayback(mediaId: "tt1234567", mediaType: .movie, progress: 0.1)
+        await coordinator.pausePlayback(progress: 25)
+        #expect(await coordinator.lastErrorMessage?.contains("pause scrobble failed") == true)
+
+        await coordinator.resumePlayback(progress: 50)
+        #expect(await coordinator.lastErrorMessage?.contains("resume scrobble failed") == true)
+    }
+
     @Test("history sync still runs when start scrobble failed but playback meaningfully completed")
     func historySyncStillRunsAfterStartFailure() async throws {
         let (settings, secretStore) = try await makeSettingsManager()
@@ -647,7 +921,7 @@ struct ScrobbleCoordinatorErrorResilienceTests {
             session: session
         )
 
-        await coordinator.startPlayback(mediaId: "tt-start-failure", mediaType: .movie, progress: 0)
+        await coordinator.startPlayback(mediaId: "tt91000004", mediaType: .movie, progress: 0)
         await coordinator.stopPlayback(progress: 0.95)
 
         #expect(tracker.contains("/sync/history"))

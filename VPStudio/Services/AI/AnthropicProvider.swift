@@ -26,7 +26,11 @@ struct AnthropicProvider: AIProvider, Sendable {
     func complete(system: String, userMessage: String) async throws -> AIProviderResponse {
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAPIKey.isEmpty, !trimmedModel.isEmpty else {
+            throw AIError.invalidResponse
+        }
+        guard !trimmedBaseURL.isEmpty else {
             throw AIError.invalidResponse
         }
 
@@ -39,7 +43,7 @@ struct AnthropicProvider: AIProvider, Sendable {
             ]
         ]
 
-        guard let url = URL(string: baseURL) else {
+        guard let url = AICloudEndpointPolicy.validatedEndpoint(from: trimmedBaseURL) else {
             throw AIError.invalidResponse
         }
         var request = URLRequest(url: url)
@@ -53,7 +57,7 @@ struct AnthropicProvider: AIProvider, Sendable {
         let (data, http) = try await AIHTTPTransport.perform(request, using: session, sleep: sleep)
 
         guard (200...299).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? ""
+            let msg = AIHTTPTransport.sanitizedHTTPErrorMessage(from: data)
             throw AIError.httpError(http.statusCode, msg)
         }
 

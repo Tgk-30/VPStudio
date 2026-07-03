@@ -44,6 +44,7 @@ enum SettingsCategory: String, CaseIterable, Sendable, Equatable, Identifiable {
 
 enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
     case debrid
+    case debridCloud
     case indexers
     case metadata
     case ai
@@ -64,10 +65,12 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .debrid:
             return "Streaming Providers (Debrid)"
+        case .debridCloud:
+            return "Debrid Cloud"
         case .indexers:
             return "Search Providers"
         case .metadata:
-            return "Movie & TV Metadata (TMDB)"
+            return "Movie & TV Metadata"
         case .ai:
             return "AI Recommendations"
         case .trakt:
@@ -97,6 +100,8 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .debrid:
             return "cloud"
+        case .debridCloud:
+            return "cloud.fill"
         case .indexers:
             return "magnifyingglass.circle"
         case .metadata:
@@ -130,16 +135,18 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .debrid:
             return "Connect and prioritize debrid providers so streams can resolve reliably."
+        case .debridCloud:
+            return "Check provider account, premium, and cloud availability without editing tokens."
         case .indexers:
             return "Add search providers so VPStudio can find sources quickly."
         case .metadata:
-            return "Add your TMDB key for posters, details, and Discover results."
+            return "Add an OMDb key for ratings, artwork, details, Discover results, and sync identity."
         case .ai:
-            return "Connect an AI provider for personalized recommendations and rating help."
+            return "Choose and configure your AI provider for personalized recommendations and rating help."
         case .trakt:
             return "Connect Trakt to sync watch history, ratings, and watchlist."
         case .simkl:
-            return "Simkl cleanup-only: authorization can be cleared here, but sync and scrobbling are unavailable in this build."
+            return "Simkl sync is unavailable in this build — cleanup-only."
         case .imdbImport:
             return "Import your IMDb watchlist, ratings, and watch history from CSV exports."
         case .player:
@@ -161,7 +168,7 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
 
     var category: SettingsCategory {
         switch self {
-        case .debrid, .indexers, .metadata, .ai, .trakt, .simkl, .imdbImport:
+        case .debrid, .debridCloud, .indexers, .metadata, .ai, .trakt, .simkl, .imdbImport:
             return .connect
         case .player, .subtitles:
             return .watch
@@ -183,7 +190,7 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .debrid, .indexers, .metadata, .ai, .trakt:
             return true
-        case .player, .subtitles, .environments, .library, .downloads, .resetData, .imdbImport, .testMode, .simkl:
+        case .debridCloud, .player, .subtitles, .environments, .library, .downloads, .resetData, .imdbImport, .testMode, .simkl:
             return false
         }
     }
@@ -192,10 +199,12 @@ enum SettingsDestination: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .debrid:
             return ["realdebrid", "all debrid", "premiumize", "offcloud", "torbox", "token", "provider"]
+        case .debridCloud:
+            return ["cloud", "account", "premium", "expiry", "realdebrid", "torbox", "premiumize"]
         case .indexers:
             return ["torznab", "jackett", "prowlarr", "zilean", "stremio", "search"]
         case .metadata:
-            return ["tmdb", "movie database", "api key"]
+            return ["omdb", "tmdb", "imdb", "metadata", "movie database", "api key"]
         case .ai:
             return ["openai", "anthropic", "ollama", "openrouter", "llm", "assistant", "ratings", "recommendations", "local", "on-device", "mlx", "download model", "qwen", "phi", "llama"]
         case .trakt:
@@ -245,6 +254,7 @@ struct SettingsDestinationGroup: Equatable, Sendable, Identifiable {
 enum SettingsNavigationCatalog {
     static let orderedDestinations: [SettingsDestination] = [
         .debrid,
+        .debridCloud,
         .indexers,
         .metadata,
         .ai,

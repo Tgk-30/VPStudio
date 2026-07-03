@@ -149,7 +149,7 @@ struct MediaCategoryTests {
 // MARK: - TrendingWindow Tests
 
 @Suite("TrendingWindow")
-struct TrendingWindowTests {
+struct TrendingWindowTestsMetadataandpreferencestests {
 
     @Test func rawValues() {
         #expect(TrendingWindow.day.rawValue == "day")
@@ -160,7 +160,7 @@ struct TrendingWindowTests {
 // MARK: - ExternalIds Tests
 
 @Suite("ExternalIds")
-struct ExternalIdsTests {
+struct ExternalIdsTestsMetadataandpreferencestests {
 
     @Test func codableRoundTrip() throws {
         let original = ExternalIds(imdbId: "tt1234567", tvdbId: 42)
@@ -194,7 +194,7 @@ struct ExternalIdsTests {
 // MARK: - MetadataSearchResult Tests
 
 @Suite("MetadataSearchResult")
-struct MetadataSearchResultTests {
+struct MetadataSearchResultTestsMetadataandpreferencestests {
 
     @Test func storesAllFields() {
         let result = MetadataSearchResult(

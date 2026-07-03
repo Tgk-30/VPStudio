@@ -54,8 +54,14 @@ actor AllDebridService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
-        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: hash,
+            suppliedMagnetURI: magnetURI
+        )
         let params = ["magnets[0]": magnet]
         let response: ADResponse<ADUploadResponse> = try await request(path: "/magnet/upload", params: params, method: "POST")
         guard let id = response.data.magnets?.first?.id else {
@@ -177,25 +183,28 @@ actor AllDebridService: DebridServiceProtocol {
         let selectedIDs = selectedFileIDsByTorrent[torrentId] ?? []
         let selectedLink = status.links?.enumerated().first(where: { pair in
             selectedIDs.contains(pair.offset + 1)
-        })?.element.link
-        let fallbackLink = status.links?.first?.link
-        guard let link = selectedLink ?? fallbackLink else {
+        })?.element
+        let fallbackLink = status.links?.first
+        guard let chosenLink = selectedLink ?? fallbackLink,
+              let link = chosenLink.link else {
             throw DebridError.torrentNotFound(torrentId)
         }
 
         selectedFileIDsByTorrent.removeValue(forKey: torrentId)
         let url = try await unrestrict(link: link)
-        let fileName = status.filename ?? "Unknown"
+        let fileName = chosenLink.filename ?? status.filename ?? "Unknown"
+        let metadataCandidates = [chosenLink.filename, status.filename, url.lastPathComponent]
+        let sizeBytes = chosenLink.size ?? status.size
 
         return StreamInfo(
             streamURL: url,
-            quality: VideoQuality.parse(from: fileName),
-            codec: VideoCodec.parse(from: fileName),
-            audio: AudioFormat.parse(from: fileName),
-            source: SourceType.parse(from: fileName),
-            hdr: HDRFormat.parse(from: fileName),
+            quality: DebridStreamMetadata.quality(from: metadataCandidates),
+            codec: DebridStreamMetadata.codec(from: metadataCandidates),
+            audio: DebridStreamMetadata.audio(from: metadataCandidates),
+            source: DebridStreamMetadata.source(from: metadataCandidates),
+            hdr: DebridStreamMetadata.hdr(from: metadataCandidates),
             fileName: fileName,
-            sizeBytes: status.size,
+            sizeBytes: sizeBytes,
             debridService: serviceType.rawValue
         )
     }
@@ -203,10 +212,13 @@ actor AllDebridService: DebridServiceProtocol {
     func unrestrict(link: String) async throws -> URL {
         let params = ["link": link]
         let response: ADResponse<ADUnlockResponse> = try await request(path: "/link/unlock", params: params)
-        guard let urlStr = response.data.link, let url = URL(string: urlStr) else {
+        guard let urlStr = response.data.link else {
             throw DebridError.networkError("Invalid unrestrict URL")
         }
-        return url
+        return try DebridRemoteStreamURLPolicy.validatedURL(
+            from: urlStr,
+            errorMessage: "Invalid unrestrict URL"
+        )
     }
 
     private static let formEncodingAllowed: CharacterSet = {

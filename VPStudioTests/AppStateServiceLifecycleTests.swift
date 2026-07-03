@@ -13,11 +13,38 @@ struct AppStateServiceLifecycleTests {
         func deleteAllSecrets() async throws { throw Failure() }
     }
 
+    private actor CountingSecretStore: SecretStore {
+        enum Failure: Error {
+            case deleteAllFailed
+        }
+
+        private(set) var deleteAllCount = 0
+        let shouldFailDeleteAll: Bool
+
+        init(shouldFailDeleteAll: Bool = false) {
+            self.shouldFailDeleteAll = shouldFailDeleteAll
+        }
+
+        func setSecret(_ value: String, for key: String) async throws {}
+        func getSecret(for key: String) async throws -> String? { nil }
+        func deleteSecret(for key: String) async throws {}
+
+        func deleteAllSecrets() async throws {
+            deleteAllCount += 1
+            if shouldFailDeleteAll {
+                throw Failure.deleteAllFailed
+            }
+        }
+
+        func deleteAllCallCount() -> Int {
+            deleteAllCount
+        }
+    }
+
     private func makeTemporaryDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }
@@ -103,8 +130,15 @@ struct AppStateServiceLifecycleTests {
 
     @Test(arguments: cases)
     @MainActor
-    func serviceIdentityIsStable(_: Int) {
-        let appState = AppState()
+    func serviceIdentityIsStable(_: Int) async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-service-identity.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            secretStore: TestSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
 
         let db1 = appState.database
         let db2 = appState.database
@@ -143,6 +177,8 @@ struct AppStateServiceLifecycleTests {
         let database = appState.database
         try await database.migrate()
         #expect(ObjectIdentifier(database) == ObjectIdentifier(appState.database))
+        try await appState.settingsManager.setString(key: "vfstest", value: "ok")
+        #expect(try await appState.settingsManager.getString(key: "vfstest") == "ok")
     }
 
     @Test(arguments: ExhaustiveMode.choose(fast: Array(0..<8), full: Array(0..<16)))
@@ -169,6 +205,25 @@ struct AppStateServiceLifecycleTests {
 
         await appState.reloadIndexers()
         #expect(flag.didPost())
+    }
+
+    @Test
+    @MainActor
+    func configureAIProvidersRegistersDefaultOllamaModelWhenOnlyEndpointIsStored() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-ollama-default.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            secretStore: TestSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
+        try await appState.settingsManager.setString(key: SettingsKeys.ollamaEndpoint, value: "http://localhost:11434")
+        try await appState.settingsManager.setString(key: SettingsKeys.ollamaModelPreset, value: nil)
+
+        await appState.configureAIProviders()
+
+        #expect(await appState.aiAssistantManager.hasConfiguredProvider)
     }
 
     @Test(arguments: ExhaustiveMode.choose(fast: Array(0..<8), full: Array(0..<16)))
@@ -212,7 +267,11 @@ struct AppStateServiceLifecycleTests {
         let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-service-reset.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let appState = AppState(database: database, secretStore: TestSecretStore())
+        let appState = AppState(
+            database: database,
+            secretStore: TestSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
 
         let beforeSettings = appState.settingsManager
         let beforeDebrid = appState.debridManager
@@ -239,6 +298,82 @@ struct AppStateServiceLifecycleTests {
         #expect(appState.localInferenceEngine !== beforeLocalInference)
         #expect(appState.libraryCSVImportService !== beforeLibraryCSV)
         #expect(appState.scrobbleCoordinator !== beforeScrobble)
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataPostsLifecycleNotifications() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-notifications.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            secretStore: TestSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
+        appState.selectedTab = .library
+
+        let appDidResetFlag = NotificationFlag()
+        let settingsDidChangeFlag = NotificationFlag()
+        let resetToken = NotificationCenter.default.addObserver(
+            forName: .appDidResetAllData,
+            object: nil,
+            queue: nil
+        ) { _ in appDidResetFlag.markPosted() }
+        let settingsToken = NotificationCenter.default.addObserver(
+            forName: .settingsDidChange,
+            object: nil,
+            queue: nil
+        ) { _ in settingsDidChangeFlag.markPosted() }
+        defer {
+            NotificationCenter.default.removeObserver(resetToken)
+            NotificationCenter.default.removeObserver(settingsToken)
+        }
+
+        try await appState.resetAllData()
+
+        #expect(appDidResetFlag.didPost())
+        #expect(settingsDidChangeFlag.didPost())
+        #expect(appState.selectedTab == .discover)
+        #expect(appState.setupRecommendationNeeded == true)
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataClearsMainWindowSuppressionState() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-mainwindow-suppression.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            secretStore: TestSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
+        appState.isMainWindowSuppressedForPlayer = true
+
+        try await appState.resetAllData()
+
+        #expect(appState.isMainWindowSuppressedForPlayer == false)
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataExitsSpatialAudioImmersiveMode() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-spatial-audio-mode.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            secretStore: TestSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
+        appState.spatialAudioManager.enterImmersiveMode()
+
+        #expect(appState.spatialAudioManager.isImmersiveMode == true)
+
+        try await appState.resetAllData()
+
+        #expect(appState.spatialAudioManager.isImmersiveMode == false)
     }
 
     @Test
@@ -322,7 +457,11 @@ struct AppStateServiceLifecycleTests {
         )
         try await database.saveWatchHistory(existingHistory)
 
-        let appState = AppState(database: database, secretStore: ThrowingDeleteAllSecretStore())
+        let appState = AppState(
+            database: database,
+            secretStore: ThrowingDeleteAllSecretStore(),
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
         appState.selectedTab = .library
 
         let flag = NotificationFlag()
@@ -344,6 +483,112 @@ struct AppStateServiceLifecycleTests {
 
         #expect(appState.selectedTab == .library)
         #expect(flag.didPost() == false)
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataWithInjectedSecretStoreDoesNotAdvanceSecretNamespace() async throws {
+        let defaults = UserDefaults.standard
+        let originalNamespace = AppState.currentSecretStoreNamespace(defaults: defaults)
+        let sentinelNamespace = max(originalNamespace + 1, 900_000)
+        defaults.set(sentinelNamespace, forKey: "app.secret_store_namespace")
+        defer { defaults.set(originalNamespace, forKey: "app.secret_store_namespace") }
+
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-injected-secret-namespace.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretStore = CountingSecretStore()
+        let appState = AppState(
+            database: database,
+            secretStore: secretStore,
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
+
+        try await appState.resetAllData()
+
+        #expect(AppState.currentSecretStoreNamespace(defaults: defaults) == sentinelNamespace)
+        #expect(await secretStore.deleteAllCallCount() == 1)
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataFailureFromInjectedSecretStoreLeavesSecretNamespaceUnchanged() async throws {
+        let defaults = UserDefaults.standard
+        let originalNamespace = AppState.currentSecretStoreNamespace(defaults: defaults)
+        let sentinelNamespace = max(originalNamespace + 1, 900_001)
+        defaults.set(sentinelNamespace, forKey: "app.secret_store_namespace")
+        defer { defaults.set(originalNamespace, forKey: "app.secret_store_namespace") }
+
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-injected-secret-failure.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretStore = CountingSecretStore(shouldFailDeleteAll: true)
+        let appState = AppState(
+            database: database,
+            secretStore: secretStore,
+            testHooks: .init(cleanupPersistentArtifacts: { _ in })
+        )
+        appState.selectedTab = .library
+
+        let flag = NotificationFlag()
+        let token = NotificationCenter.default.addObserver(
+            forName: .appDidResetAllData,
+            object: nil,
+            queue: nil
+        ) { _ in
+            flag.markPosted()
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        do {
+            try await appState.resetAllData()
+            Issue.record("Expected resetAllData to throw when injected secret store deleteAllSecrets fails")
+        } catch is CountingSecretStore.Failure {
+            // expected
+        }
+
+        #expect(AppState.currentSecretStoreNamespace(defaults: defaults) == sentinelNamespace)
+        #expect(await secretStore.deleteAllCallCount() == 1)
+        #expect(appState.selectedTab == .library)
+        #expect(flag.didPost() == false)
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataDoesNotDeleteInjectedSecretsWhenArtifactCleanupFails() async throws {
+        enum CleanupFailure: Error {
+            case diskFailure
+        }
+
+        let defaults = UserDefaults.standard
+        let originalNamespace = AppState.currentSecretStoreNamespace(defaults: defaults)
+        let sentinelNamespace = max(originalNamespace + 1, 900_002)
+        defaults.set(sentinelNamespace, forKey: "app.secret_store_namespace")
+        defer { defaults.set(originalNamespace, forKey: "app.secret_store_namespace") }
+
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-injected-cleanup-failure.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretStore = CountingSecretStore()
+        let appState = AppState(
+            database: database,
+            secretStore: secretStore,
+            testHooks: .init(
+                cleanupPersistentArtifacts: { _ in
+                    throw CleanupFailure.diskFailure
+                }
+            )
+        )
+
+        do {
+            try await appState.resetAllData()
+            Issue.record("Expected resetAllData to throw when cleanupPersistentArtifacts fails")
+        } catch is CleanupFailure {
+            // expected
+        }
+
+        #expect(AppState.currentSecretStoreNamespace(defaults: defaults) == sentinelNamespace)
+        #expect(await secretStore.deleteAllCallCount() == 0)
     }
 
     @Test
@@ -432,6 +677,63 @@ struct AppStateServiceLifecycleTests {
             #expect(appState.selectedTab == .library)
             #expect(flag.didPost() == false)
         }
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataRollsBackSecretNamespaceWhenArtifactCleanupFails() async throws {
+        enum CleanupFailure: Error {
+            case diskFailure
+        }
+
+        let defaults = UserDefaults.standard
+        let originalNamespace = AppState.currentSecretStoreNamespace(defaults: defaults)
+        let sentinelNamespace = max(originalNamespace + 1, 2_000_000)
+        defaults.set(sentinelNamespace, forKey: "app.secret_store_namespace")
+        defer { defaults.set(originalNamespace, forKey: "app.secret_store_namespace") }
+
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-namespace-cleanup-failure.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            testHooks: .init(
+                cleanupPersistentArtifacts: { _ in
+                    throw CleanupFailure.diskFailure
+                }
+            )
+        )
+
+        do {
+            try await appState.resetAllData()
+            Issue.record("Expected resetAllData to throw when cleanupPersistentArtifacts fails")
+        } catch is CleanupFailure {
+            #expect(AppState.currentSecretStoreNamespace(defaults: defaults) == sentinelNamespace)
+        }
+    }
+
+    @Test
+    @MainActor
+    func resetAllDataPreservesRotatedSecretNamespaceAfterDefaultsWipe() async throws {
+        let defaults = UserDefaults.standard
+        let originalNamespace = AppState.currentSecretStoreNamespace(defaults: defaults)
+        let sentinelNamespace = max(originalNamespace + 1, 1_000_000)
+        defaults.set(sentinelNamespace, forKey: "app.secret_store_namespace")
+        defer { defaults.set(originalNamespace, forKey: "app.secret_store_namespace") }
+
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "appstate-reset-secret-namespace.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appState = AppState(
+            database: database,
+            testHooks: .init(
+                cleanupPersistentArtifacts: { _ in }
+            )
+        )
+
+        try await appState.resetAllData()
+
+        #expect(AppState.currentSecretStoreNamespace(defaults: defaults) == sentinelNamespace + 1)
     }
 
     @Test

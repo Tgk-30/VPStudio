@@ -1,11 +1,51 @@
-#if os(visionOS)
 import Foundation
+
+enum HDRISkyboxGroundPolicy {
+    static let groundY: Float = 0
+    static let ambientRimY: Float = 0.08
+}
+
+#if os(visionOS)
 import SwiftUI
 import RealityKit
 import ImageIO
 import os
 
 private let logger = Logger(subsystem: "com.vpstudio", category: "HDRISkybox")
+
+enum HDRISkyboxFailureCopy {
+    static let noEnvironmentSelected = "No environment selected. Playing on a plain screen."
+    static let missingEnvironmentFile = "The selected environment file is missing. Playing on a plain screen."
+    static let decodeFailure = "This panorama could not be decoded. Playing on a plain screen."
+    static let resourceFailure = "The environment failed to load. Playing on a plain screen."
+}
+
+enum HDRISkyboxImagePolicy {
+    static let maximumDimension = 16_384
+    static let maximumPixelCount = 67_108_864
+
+    static func permitsDecode(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0 else { return false }
+        guard width <= maximumDimension, height <= maximumDimension else { return false }
+        guard width <= Int.max / height else { return false }
+        return width * height <= maximumPixelCount
+    }
+}
+
+enum HDRISkyboxTransitionPolicy {
+    static let fadeStepCount = 8
+    static let fadeDurationNanoseconds: UInt64 = 220_000_000
+
+    static var fadeStepDelayNanoseconds: UInt64 {
+        fadeDurationNanoseconds / UInt64(max(fadeStepCount, 1))
+    }
+
+    static func fadeProgress(step: Int) -> Float {
+        guard fadeStepCount > 0 else { return 1 }
+        let clamped = max(0, min(step, fadeStepCount))
+        return Float(clamped) / Float(fadeStepCount)
+    }
+}
 
 // MARK: - Screen Size Presets
 
@@ -48,6 +88,64 @@ enum ScreenSizePreset: String, CaseIterable, Sendable {
 
 // MARK: - View
 
+private final class HDRISkyboxRenderState {
+    var cinemaScreen: ModelEntity?
+    var controlsAnchor: Entity?
+    var tapCatcher: Entity?
+    var subtitleEntity: Entity?
+    var lastMaterialSourceID: ObjectIdentifier?
+    var autoDismissTask: Task<Void, Never>?
+    var hdriLoadTask: Task<CGImage?, Never>?
+    var activeEnvironmentAssetID: String?
+    var activeEnvironmentLoadID: UUID?
+    var didAnchorScreenToHead = false
+
+    func beginEnvironmentLoad(assetID: String) -> UUID {
+        hdriLoadTask?.cancel()
+        let loadID = UUID()
+        activeEnvironmentAssetID = assetID
+        activeEnvironmentLoadID = loadID
+        hdriLoadTask = nil
+        lastMaterialSourceID = nil
+        return loadID
+    }
+
+    func setHDRILoadTask(_ task: Task<CGImage?, Never>, for loadID: UUID) {
+        guard activeEnvironmentLoadID == loadID else {
+            task.cancel()
+            return
+        }
+        hdriLoadTask = task
+    }
+
+    func isCurrentEnvironmentLoad(_ loadID: UUID, assetID: String) -> Bool {
+        activeEnvironmentLoadID == loadID && activeEnvironmentAssetID == assetID
+    }
+
+    func cancelEnvironmentLoad() {
+        hdriLoadTask?.cancel()
+        hdriLoadTask = nil
+        activeEnvironmentAssetID = nil
+        activeEnvironmentLoadID = nil
+        lastMaterialSourceID = nil
+    }
+
+    func reset() {
+        autoDismissTask?.cancel()
+        hdriLoadTask?.cancel()
+        autoDismissTask = nil
+        hdriLoadTask = nil
+        cinemaScreen = nil
+        controlsAnchor = nil
+        tapCatcher = nil
+        subtitleEntity = nil
+        lastMaterialSourceID = nil
+        activeEnvironmentAssetID = nil
+        activeEnvironmentLoadID = nil
+        didAnchorScreenToHead = false
+    }
+}
+
 struct HDRISkyboxEnvironment: View {
     @Environment(AppState.self) private var appState
     @Environment(VPPlayerEngine.self) private var engine
@@ -55,19 +153,10 @@ struct HDRISkyboxEnvironment: View {
 
     @State private var headTracker = HeadTracker()
     @State private var isShowingImmersiveControls = false
-    @State private var cinemaScreen: ModelEntity?
-    @State private var controlsAnchor: Entity?
-    @State private var didAnchorScreenToHead = false
+    @State private var renderState = HDRISkyboxRenderState()
     @State private var screenSizePreset: ScreenSizePreset = .cinema
     @State private var loadingState: LoadingState = .loading
-    @State private var autoDismissTask: Task<Void, Never>?
-    @State private var subtitleEntity: Entity?
     @State private var subtitleFontSize: Double = 24
-
-    /// Tracks the identity of the current video source so we only rebuild the
-    /// `VideoMaterial` when the source actually changes — avoids GPU churn on
-    /// every RealityView update cycle (P1-IM-005).
-    @State private var lastMaterialSourceID: ObjectIdentifier?
 
     private enum LoadingState: Equatable {
         case loading
@@ -83,6 +172,7 @@ struct HDRISkyboxEnvironment: View {
             placeholderMat.color = .init(tint: .init(red: 0.02, green: 0.02, blue: 0.04, alpha: 1))
             let placeholder = ModelEntity(mesh: placeholderMesh, materials: [placeholderMat])
             placeholder.scale *= SIMD3<Float>(x: -1, y: 1, z: 1)
+            placeholder.components[OpacityComponent.self] = OpacityComponent(opacity: 1.0)
             placeholder.name = "hdri-placeholder"
             content.add(placeholder)
 
@@ -94,22 +184,21 @@ struct HDRISkyboxEnvironment: View {
             screen.name = "cinema-screen"
             screen.position = SIMD3<Float>(0, 1.6, -preset.distance)
             content.add(screen)
-            cinemaScreen = screen
+            renderState.cinemaScreen = screen
 
             // MARK: TapCatcher
-            let tapShape = ShapeResource.generateBox(size: [200, 200, 0.5])
             let tapCatcher = Entity()
             tapCatcher.name = "tap-catcher"
-            tapCatcher.components.set(CollisionComponent(shapes: [tapShape], mode: .trigger, filter: .default))
             tapCatcher.components.set(InputTargetComponent(allowedInputTypes: .indirect))
-            tapCatcher.position = SIMD3<Float>(0, 0, -5)
+            updateTapCatcher(tapCatcher, for: screen, width: preset.width, height: preset.height)
             content.add(tapCatcher)
+            renderState.tapCatcher = tapCatcher
 
             // MARK: Controls anchor
             let anchor = Entity()
             anchor.name = "controls-anchor"
             content.add(anchor)
-            controlsAnchor = anchor
+            renderState.controlsAnchor = anchor
 
             if let controlsPanel = attachments.entity(for: "playerControls") {
                 controlsPanel.position = SIMD3<Float>(0, -0.15, -1.5)
@@ -130,26 +219,39 @@ struct HDRISkyboxEnvironment: View {
                     screen.position.z
                 )
                 content.add(subtitlePanel)
-                subtitleEntity = subtitlePanel
+                renderState.subtitleEntity = subtitlePanel
             }
 
             // MARK: Async HDRI load
             guard let asset = appState.selectedEnvironmentAsset else {
-                loadingState = .failed("No environment selected")
+                renderState.cancelEnvironmentLoad()
+                setLoadingState(.failed(HDRISkyboxFailureCopy.noEnvironmentSelected))
                 return
             }
+
+            let environmentLoadID = renderState.beginEnvironmentLoad(assetID: asset.id)
+            setLoadingState(.loading)
 
             guard let url = await appState.environmentCatalogManager.resolvedAssetURL(for: asset) else {
-                loadingState = .failed("Environment file missing: \(asset.name)")
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
+                setLoadingState(.failed(HDRISkyboxFailureCopy.missingEnvironmentFile))
                 return
             }
 
-            guard let cgImage = await Task.detached(priority: .userInitiated, operation: {
-                Self.loadHDRImage(from: url)
-            }).value else {
-                loadingState = .failed("Could not decode HDRI image")
+            let hdriLoadTask = Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard !Task.isCancelled else { return nil }
+                let image = Self.loadHDRImage(from: url)
+                guard !Task.isCancelled else { return nil }
+                return image
+            }
+            renderState.setHDRILoadTask(hdriLoadTask, for: environmentLoadID)
+
+            guard let cgImage = await hdriLoadTask.value else {
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
+                setLoadingState(.failed(HDRISkyboxFailureCopy.decodeFailure))
                 return
             }
+            guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
 
             let yawRadians = (asset.hdriYawOffset ?? 0) * (.pi / 180.0)
 
@@ -160,28 +262,23 @@ struct HDRISkyboxEnvironment: View {
                     image: cgImage,
                     options: .init(semantic: .hdrColor)
                 )
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
 
                 var skyMaterial = UnlitMaterial()
                 skyMaterial.color = .init(texture: .init(texture))
 
                 let skyEntity = ModelEntity(mesh: skyMesh, materials: [skyMaterial])
                 skyEntity.scale *= SIMD3<Float>(x: -1, y: 1, z: 1)
+                skyEntity.components[OpacityComponent.self] = OpacityComponent(opacity: 0.0)
                 if yawRadians != 0 {
                     skyEntity.orientation = simd_quatf(angle: yawRadians, axis: [0, 1, 0])
                 }
                 skyEntity.name = "hdri-sky"
                 content.add(skyEntity)
 
-                // Remove placeholder
-                placeholder.removeFromParent()
-
-                // Remove loading indicator
-                if let loadingPanel = attachments.entity(for: "loadingIndicator") {
-                    loadingPanel.removeFromParent()
-                }
-
                 // MARK: IBL
                 let environmentResource = try await EnvironmentResource(equirectangular: cgImage)
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
                 let iblEntity = Entity()
                 iblEntity.name = "hdri-ibl"
                 if yawRadians != 0 {
@@ -213,25 +310,35 @@ struct HDRISkyboxEnvironment: View {
                 rimMat.color = .init(tint: .init(red: 0.15, green: 0.12, blue: 0.08, alpha: 0.06))
                 let rimEntity = ModelEntity(mesh: rimMesh, materials: [rimMat])
                 rimEntity.name = "hdri-floor-rim"
-                rimEntity.position.y = 0.001
+                rimEntity.position.y = HDRISkyboxGroundPolicy.ambientRimY
                 content.add(rimEntity)
 
-                loadingState = .loaded
+                await crossfadeSkybox(
+                    skyEntity: skyEntity,
+                    placeholder: placeholder,
+                    loadID: environmentLoadID,
+                    assetID: asset.id
+                )
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
+                setLoadingState(.loaded)
 
             } catch {
-                loadingState = .failed(error.localizedDescription)
+                guard renderState.isCurrentEnvironmentLoad(environmentLoadID, assetID: asset.id) else { return }
+                let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+                logger.error("HDRI environment resource creation failed: \(reason, privacy: .public)")
+                setLoadingState(.failed(HDRISkyboxFailureCopy.resourceFailure))
             }
 
         } update: { content, attachments in
             // MARK: Cinema screen material (cached — only rebuild when source changes)
-            if let screen = cinemaScreen {
+            if let screen = renderState.cinemaScreen {
                 let currentSourceID: ObjectIdentifier? = {
                     if let r = appState.activeVideoRenderer { return ObjectIdentifier(r) }
                     if let p = appState.activeAVPlayer { return ObjectIdentifier(p) }
                     return nil
                 }()
 
-                if currentSourceID != lastMaterialSourceID {
+                if currentSourceID != renderState.lastMaterialSourceID {
                     if let renderer = appState.activeVideoRenderer {
                         screen.model?.materials = [VideoMaterial(videoRenderer: renderer)]
                     } else if let player = appState.activeAVPlayer {
@@ -239,7 +346,7 @@ struct HDRISkyboxEnvironment: View {
                     } else {
                         screen.model?.materials = [SimpleMaterial(color: .black, isMetallic: false)]
                     }
-                    lastMaterialSourceID = currentSourceID
+                    renderState.lastMaterialSourceID = currentSourceID
                 }
             }
 
@@ -247,23 +354,29 @@ struct HDRISkyboxEnvironment: View {
             // Uses entity.look(at:from:relativeTo:forward:) from HUD gist research
             // to properly orient the screen toward the viewer. Head Y position is
             // used instead of hardcoded 1.6m (P2-055).
-            if !didAnchorScreenToHead,
-               let screen = cinemaScreen,
+            if !renderState.didAnchorScreenToHead,
+               let screen = renderState.cinemaScreen,
                let initial = headTracker.initialHeadTransform {
                 let col3 = initial.columns.3
                 let headPos = SIMD3<Float>(col3.x, col3.y, col3.z)
                 let col2 = initial.columns.2
-                let forward = safeHorizontalForward(from: col2)
+                let forward = ImmersiveControlsPolicy.safeHorizontalForward(from: col2)
                 let dist = screenSizePreset.distance
                 let screenPos = headPos + forward * dist
                 let finalScreenPos = SIMD3<Float>(screenPos.x, headPos.y, screenPos.z)
                 screen.look(at: headPos, from: finalScreenPos, relativeTo: nil, forward: .positiveZ)
-                didAnchorScreenToHead = true
+                renderState.didAnchorScreenToHead = true
+            }
+
+            if let tapCatcher = renderState.tapCatcher,
+               let screen = renderState.cinemaScreen {
+                let preset = screenSizePreset
+                updateTapCatcher(tapCatcher, for: screen, width: preset.width, height: preset.height)
             }
 
             // MARK: Subtitle position tracking
             if let subEnt = attachments.entity(for: "immersiveSubtitle"),
-               let screen = cinemaScreen {
+               let screen = renderState.cinemaScreen {
                 let preset = screenSizePreset
                 subEnt.position = SIMD3<Float>(
                     screen.position.x,
@@ -272,11 +385,11 @@ struct HDRISkyboxEnvironment: View {
                 )
                 // Match the screen's orientation so subtitles face the viewer.
                 subEnt.orientation = screen.orientation
-                subtitleEntity = subEnt
+                renderState.subtitleEntity = subEnt
             }
 
             // MARK: Controls anchor tracking
-            if let anchor = controlsAnchor {
+            if let anchor = renderState.controlsAnchor {
                 if headTracker.isTracking {
                     let m = headTracker.headTransform
                     let col3 = m.columns.3
@@ -286,8 +399,11 @@ struct HDRISkyboxEnvironment: View {
                         col3.z
                     )
                     let col2 = m.columns.2
-                    let forward = safeHorizontalForward(from: col2)
-                    let target = headPos + forward * ImmersiveControlsPolicy.controlsForwardOffset
+                    let forward = ImmersiveControlsPolicy.safeHorizontalForward(from: col2)
+                    let controlsOffset = ImmersiveControlsPolicy.controlsForwardOffset(
+                        forScreenDistance: screenSizePreset.distance
+                    )
+                    let target = headPos + forward * controlsOffset
                     let smoothing = ImmersiveControlsPolicy.controlsAnchorSmoothing
                     anchor.position = simd_mix(
                         anchor.position, target,
@@ -338,6 +454,7 @@ struct HDRISkyboxEnvironment: View {
                     NotificationCenter.default.post(name: .immersiveTapCatcherDidFire, object: nil)
                 }
         )
+        .id(appState.selectedEnvironmentAsset?.id ?? "no-environment")
         .preferredSurroundingsEffect(.systemDark)
         .onReceive(NotificationCenter.default.publisher(for: .immersiveTapCatcherDidFire)) { _ in
             performOptionalAnimation(.easeInOut(duration: 0.25)) {
@@ -368,17 +485,9 @@ struct HDRISkyboxEnvironment: View {
             Task { await loadSubtitleAppearance() }
         }
         .onDisappear {
-            autoDismissTask?.cancel()
-            autoDismissTask = nil
             appState.immersiveSpaceDidDisappear()
             headTracker.stop()
-
-            // Explicit cleanup to break any lingering RealityKit references.
-            cinemaScreen = nil
-            controlsAnchor = nil
-            subtitleEntity = nil
-            lastMaterialSourceID = nil
-            didAnchorScreenToHead = false
+            renderState.reset()
         }
     }
 
@@ -388,7 +497,7 @@ struct HDRISkyboxEnvironment: View {
         let newPreset = screenSizePreset.next
         screenSizePreset = newPreset
 
-        guard let screen = cinemaScreen else { return }
+        guard let screen = renderState.cinemaScreen else { return }
 
         // Regenerate mesh for new dimensions.
         screen.model?.mesh = MeshResource.generatePlane(width: newPreset.width, height: newPreset.height)
@@ -396,11 +505,11 @@ struct HDRISkyboxEnvironment: View {
         // Calculate target position using head Y instead of hardcoded 1.6m (P2-055).
         let headPos: SIMD3<Float>
         let targetPos: SIMD3<Float>
-        if didAnchorScreenToHead, let initial = headTracker.initialHeadTransform {
+        if renderState.didAnchorScreenToHead, let initial = headTracker.initialHeadTransform {
             let col3 = initial.columns.3
             headPos = SIMD3<Float>(col3.x, col3.y, col3.z)
             let col2 = initial.columns.2
-            let forward = safeHorizontalForward(from: col2)
+            let forward = ImmersiveControlsPolicy.safeHorizontalForward(from: col2)
             let newPos = headPos + forward * newPreset.distance
             targetPos = SIMD3<Float>(newPos.x, headPos.y, newPos.z)
         } else {
@@ -415,14 +524,23 @@ struct HDRISkyboxEnvironment: View {
         screen.move(to: temp.transform, relativeTo: nil, duration: accessibilityReduceMotion ? 0 : 0.4)
     }
 
+    private func updateTapCatcher(_ tapCatcher: Entity, for screen: Entity, width: Float, height: Float) {
+        let tapShape = ShapeResource.generateBox(
+            size: ImmersiveControlsPolicy.tapCatcherSize(screenWidth: width, screenHeight: height)
+        )
+        tapCatcher.components.set(CollisionComponent(shapes: [tapShape], mode: .trigger, filter: .default))
+        tapCatcher.position = ImmersiveControlsPolicy.tapCatcherPosition(forScreenPosition: screen.position)
+        tapCatcher.orientation = screen.orientation
+    }
+
     // MARK: - Auto-Dismiss
 
     /// Schedules auto-hide of controls after the policy-defined interval.
     /// Any user interaction resets the timer.
     private func scheduleAutoDismiss() {
-        autoDismissTask?.cancel()
+        renderState.autoDismissTask?.cancel()
         guard isShowingImmersiveControls else { return }
-        autoDismissTask = Task {
+        renderState.autoDismissTask = Task {
             try? await Task.sleep(for: ImmersiveControlsPolicy.autoDismissInterval)
             guard !Task.isCancelled else { return }
             performOptionalAnimation(.easeInOut(duration: 0.25)) {
@@ -430,6 +548,12 @@ struct HDRISkyboxEnvironment: View {
             }
             headTracker.isIdle = true
         }
+    }
+
+    @MainActor
+    private func setLoadingState(_ state: LoadingState) {
+        guard loadingState != state else { return }
+        loadingState = state
     }
 
     private func performOptionalAnimation(_ animation: Animation, updates: () -> Void) {
@@ -447,16 +571,41 @@ struct HDRISkyboxEnvironment: View {
         subtitleFontSize = storedSize.map { max(16, min(48, $0)) } ?? screenSizePreset.subtitleFontSize
     }
 
-    private func safeHorizontalForward(from column: SIMD4<Float>) -> SIMD3<Float> {
-        let candidate = SIMD3<Float>(-column.x, 0, -column.z)
-        let lengthSquared = candidate.x * candidate.x + candidate.y * candidate.y + candidate.z * candidate.z
-        guard lengthSquared > .leastNonzeroMagnitude else {
-            return SIMD3<Float>(0, 0, -1)
-        }
-        return candidate / sqrt(lengthSquared)
-    }
-
     // MARK: - Loading / Error Views
+
+    @MainActor
+    private func crossfadeSkybox(
+        skyEntity: Entity,
+        placeholder: Entity,
+        loadID: UUID,
+        assetID: String
+    ) async {
+        let applyOpacity: (Entity, Float) -> Void = { entity, opacity in
+            entity.components[OpacityComponent.self] = OpacityComponent(opacity: opacity)
+        }
+
+        guard !accessibilityReduceMotion else {
+            applyOpacity(skyEntity, 1.0)
+            placeholder.removeFromParent()
+            return
+        }
+
+        applyOpacity(skyEntity, 0.0)
+        applyOpacity(placeholder, 1.0)
+
+        for step in 1...HDRISkyboxTransitionPolicy.fadeStepCount {
+            guard renderState.isCurrentEnvironmentLoad(loadID, assetID: assetID) else { return }
+            try? await Task.sleep(nanoseconds: HDRISkyboxTransitionPolicy.fadeStepDelayNanoseconds)
+            guard !Task.isCancelled,
+                  renderState.isCurrentEnvironmentLoad(loadID, assetID: assetID) else { return }
+
+            let progress = HDRISkyboxTransitionPolicy.fadeProgress(step: step)
+            applyOpacity(skyEntity, progress)
+            applyOpacity(placeholder, max(0, 1 - progress))
+        }
+
+        placeholder.removeFromParent()
+    }
 
     private var loadingView: some View {
         VStack(spacing: 12) {
@@ -475,17 +624,17 @@ struct HDRISkyboxEnvironment: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.title2)
                 .foregroundStyle(.yellow)
-            Text("Failed to load environment")
+            Text("Environment Issue")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
             Button {
                 NotificationCenter.default.post(name: .immersiveControlDismiss, object: nil)
             } label: {
-                Text("Close")
+                Text("Exit Environment")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
@@ -497,7 +646,7 @@ struct HDRISkyboxEnvironment: View {
             .padding(.top, 4)
         }
         .padding(24)
-        .frame(maxWidth: 300)
+        .frame(maxWidth: 320)
         .glassBackgroundEffect()
     }
 
@@ -514,12 +663,30 @@ struct HDRISkyboxEnvironment: View {
             kCGImageSourceShouldAllowFloat: true,
         ]
 
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = Self.intImageProperty(properties[kCGImagePropertyPixelWidth]),
+              let height = Self.intImageProperty(properties[kCGImagePropertyPixelHeight]),
+              HDRISkyboxImagePolicy.permitsDecode(width: width, height: height) else {
+            logger.error("Refusing to decode oversized environment image \(url.lastPathComponent, privacy: .public)")
+            return nil
+        }
+
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else {
             logger.error("Could not decode image at \(url.lastPathComponent, privacy: .public)")
             return nil
         }
 
         return image
+    }
+
+    nonisolated private static func intImageProperty(_ value: Any?) -> Int? {
+        if let intValue = value as? Int {
+            return intValue
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return nil
     }
 }
 #endif

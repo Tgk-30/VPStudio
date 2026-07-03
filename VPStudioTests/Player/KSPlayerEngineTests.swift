@@ -1,4 +1,5 @@
 import Foundation
+import KSPlayer
 import Testing
 @testable import VPStudio
 
@@ -245,5 +246,135 @@ struct KSPlayerEngineTuningProfileTests {
         #else
         #expect(profile.maxBufferDuration == 16.0)
         #endif
+    }
+}
+
+@Suite("KSPlayerEngine - Prepare")
+@MainActor
+struct KSPlayerEnginePrepareTests {
+    @Test func prepareReturnsKSPlayerSessionWithDefaultOptions() async throws {
+        let engine = KSPlayerEngine(resolveStream: { $0 })
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mp4",
+            quality: .hd1080p,
+            hdr: .sdr,
+            fileName: "Movie.1080p.WEBDL.mp4"
+        )
+
+        let prepared = try await engine.prepare(stream: stream)
+
+        #expect(engine.canHandle(stream: stream))
+        #expect(prepared.engineKind == .ksPlayer)
+        #expect(prepared.avPlayer == nil)
+        #expect(prepared.ksPlayerCoordinator != nil)
+        #expect(prepared.ksOptions?.hardwareDecode == true)
+        #expect(prepared.ksOptions?.asynchronousDecompression == true)
+        #expect(prepared.ksOptions?.autoSelectEmbedSubtitle == true)
+        #expect(prepared.ksOptions?.formatContextOptions["rw_timeout"] as? Int == 30_000_000)
+    }
+
+    @Test func prepareRejectsResolvedMissingLocalFile() async {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ksplayer-resolved-missing-\(UUID().uuidString).mkv")
+        let engine = KSPlayerEngine(resolveStream: { stream in
+            Fixtures.stream(
+                url: missingURL.absoluteString,
+                quality: stream.quality,
+                codec: stream.codec,
+                audio: stream.audio,
+                source: stream.source,
+                hdr: stream.hdr,
+                fileName: "missing.mkv"
+            )
+        })
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mkv",
+            fileName: "movie.mkv"
+        )
+
+        await #expect(throws: PlayerEngineError.invalidStreamURL(missingURL.absoluteString)) {
+            try await engine.prepare(stream: stream)
+        }
+    }
+
+    @Test func canHandleUsesSharedLaunchableURLPolicy() throws {
+        let engine = KSPlayerEngine(resolveStream: { $0 })
+        let publicRemote = Fixtures.stream(url: "https://cdn.example.com/movie.mkv")
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ksplayer-existing-download-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let fileURL = tempDir.appendingPathComponent("movie.mkv")
+        try Data([0]).write(to: fileURL)
+        let downloadedFile = Fixtures.stream(url: fileURL.absoluteString)
+        let missingDownloadedFile = Fixtures.stream(
+            url: tempDir.appendingPathComponent("missing.mkv").absoluteString
+        )
+        let privateRemote = Fixtures.stream(url: "http://192.168.1.10/movie.mkv")
+
+        #expect(engine.canHandle(stream: publicRemote))
+        #expect(engine.canHandle(stream: downloadedFile))
+        #expect(engine.canHandle(stream: missingDownloadedFile) == false)
+        #expect(engine.canHandle(stream: privateRemote) == false)
+    }
+
+    @Test func prepareAppliesHighDemandTuningOptions() async throws {
+        let engine = KSPlayerEngine(resolveStream: { $0 })
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mkv",
+            quality: .uhd4k,
+            audio: .trueHD,
+            hdr: .hdr10Plus,
+            fileName: "Movie.2160p.HDR10Plus.TrueHD.Remux.mkv"
+        )
+
+        let prepared = try await engine.prepare(stream: stream)
+        let expected = KSPlayerEngine.tuningProfile(for: stream)
+
+        #expect(prepared.engineKind == PlayerEngineKind.ksPlayer)
+        #expect(prepared.ksOptions?.preferredForwardBufferDuration == expected.preferredForwardBufferDuration)
+        #expect(prepared.ksOptions?.maxBufferDuration == expected.maxBufferDuration)
+        #expect(prepared.ksOptions?.probesize == expected.probesize)
+        #expect(prepared.ksOptions?.maxAnalyzeDuration == expected.maxAnalyzeDuration)
+        #expect(prepared.ksOptions?.autoSelectEmbedSubtitle == expected.autoSelectEmbedSubtitle)
+    }
+
+    @Test func prepareAppliesDirectStreamRequestHeadersToFFmpeg() async throws {
+        let engine = KSPlayerEngine(resolveStream: { $0 })
+        let stream = Fixtures.stream(
+            url: "https://cdn.example.com/movie.mkv",
+            fileName: "Movie.1080p.WEBDL.mkv"
+        ).withRequestHeaders([
+            "User-Agent": "Stremio",
+            "Referer": "https://app.strem.io/",
+            "Bad\nHeader": "ignored"
+        ])
+
+        let prepared = try await engine.prepare(stream: stream)
+        let headers = prepared.ksOptions?.formatContextOptions["headers"] as? String
+
+        #expect(headers?.contains("User-Agent: Stremio\r\n") == true)
+        #expect(headers?.contains("Referer: https://app.strem.io/\r\n") == true)
+        #expect(headers?.contains("Bad\nHeader") == false)
+        #expect(prepared.ksOptions?.formatContextOptions["user_agent"] as? String == "Stremio")
+    }
+
+    @Test func ffmpegHeaderStringSortsAllowedHeadersAndTerminatesEachLine() {
+        let headerString = KSPlayerEngine.ffmpegHeaderString(for: [
+            "user-agent": "Stremio",
+            "Accept": "video/*",
+            "referrer": "https://app.strem.io/",
+        ])
+
+        #expect(headerString == "Accept: video/*\r\nReferer: https://app.strem.io/\r\nUser-Agent: Stremio\r\n")
+    }
+
+    @Test func ffmpegHeaderStringReturnsNilWhenNoValidHeadersRemain() {
+        #expect(KSPlayerEngine.ffmpegHeaderString(for: [:]) == nil)
+        #expect(KSPlayerEngine.ffmpegHeaderString(for: [
+            "Bad\nHeader": "ignored",
+            "Also-Bad": "line\rbreak",
+            "Blank": "   ",
+        ]) == nil)
     }
 }

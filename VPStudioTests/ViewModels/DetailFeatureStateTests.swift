@@ -40,6 +40,125 @@ struct ViewStateTests {
         let unique = Set(phases.map(\.rawValue))
         #expect(unique.count == phases.count)
     }
+
+    @Test func loadingPhaseRawValuesRemainStable() {
+        #expect(LoadingPhase.detail.rawValue == "detail")
+        #expect(LoadingPhase.seasonEpisodes.rawValue == "seasonEpisodes")
+        #expect(LoadingPhase.torrentSearch.rawValue == "torrentSearch")
+        #expect(LoadingPhase.streamResolution.rawValue == "streamResolution")
+        #expect(LoadingPhase.downloadQueue.rawValue == "downloadQueue")
+        #expect(LoadingPhase.librarySync.rawValue == "librarySync")
+    }
+
+    @Test func errorStatesCompareAssociatedErrors() {
+        #expect(ViewState.error(.unknown("same")) == .error(.unknown("same")))
+        #expect(ViewState.error(.unknown("one")) != .error(.unknown("two")))
+        #expect(ViewState.error(.unknown("x")) != .loading(.detail))
+    }
+}
+
+// MARK: - DownloadButtonState
+
+@Suite("DownloadButtonState")
+struct DownloadButtonStateTests {
+    @Test
+    func buttonStatesCompareByCase() {
+        #expect(DownloadButtonState.idle == .idle)
+        #expect(DownloadButtonState.resolving == .resolving)
+        #expect(DownloadButtonState.downloading == .downloading)
+        #expect(DownloadButtonState.completed == .completed)
+        #expect(DownloadButtonState.failed == .failed)
+        #expect(DownloadButtonState.idle != .resolving)
+        #expect(DownloadButtonState.downloading != .completed)
+    }
+
+    @Test
+    func allButtonStatesAreDistinct() {
+        let states: [DownloadButtonState] = [
+            .idle,
+            .resolving,
+            .downloading,
+            .completed,
+            .failed,
+        ]
+
+        for lhsIndex in states.indices {
+            for rhsIndex in states.indices where lhsIndex != rhsIndex {
+                #expect(states[lhsIndex] != states[rhsIndex])
+            }
+        }
+    }
+}
+
+// MARK: - Detail protocol defaults
+
+@Suite("Detail protocol defaults")
+struct DetailProtocolDefaultTests {
+    @Test
+    func detailIndexerDefaultEnsureInitializedCallsInitialize() async throws {
+        let indexer = DefaultEnsureInitializedIndexer()
+
+        try await indexer.ensureInitialized()
+
+        #expect(await indexer.initializeCallCount() == 1)
+    }
+
+    @Test
+    func detailDebridDefaultUnrestrictReportsUnsupportedRefresh() async {
+        let debrid = DefaultUnrestrictDebridManager()
+
+        do {
+            _ = try await debrid.unrestrict(link: "https://cdn.example.com/file.mkv", serviceType: .realDebrid)
+            Issue.record("Expected default unrestrict to throw")
+        } catch DebridError.networkError(let message) {
+            #expect(message == "Direct debrid link refresh is not supported.")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    private actor DefaultEnsureInitializedIndexer: DetailIndexerManaging {
+        private var count = 0
+
+        func initialize() async throws {
+            count += 1
+        }
+
+        func initializeCallCount() -> Int {
+            count
+        }
+
+        func search(
+            imdbId: String,
+            type: MediaType,
+            season: Int?,
+            episode: Int?
+        ) async throws -> [TorrentResult] {
+            []
+        }
+
+        func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
+            []
+        }
+    }
+
+    private actor DefaultUnrestrictDebridManager: DetailDebridManaging {
+        func checkCacheAcrossServices(
+            hashes: [String]
+        ) async throws -> [String: (CacheStatus, DebridServiceType)] {
+            [:]
+        }
+
+        func resolveStream(
+            hash: String,
+            preferredService: DebridServiceType?,
+            magnetURI: String?,
+            seasonNumber: Int?,
+            episodeNumber: Int?
+        ) async throws -> StreamInfo {
+            Fixtures.stream(fileName: "\(hash).mkv")
+        }
+    }
 }
 
 // MARK: - TorrentSearchState
@@ -76,6 +195,16 @@ struct TorrentSearchStateTests {
         #expect(state.results.count == 3)
         #expect(state.remainingResultCount == 0)
         #expect(state.canLoadMoreResults == false)
+    }
+
+    @Test @MainActor
+    func setSearchResultsClampsNegativeInitialBatchToEmptyWindow() {
+        let state = TorrentSearchState()
+        state.setSearchResults(makeTorrentResults(count: 3), initialBatchSize: -4)
+
+        #expect(state.results.isEmpty)
+        #expect(state.remainingResultCount == 3)
+        #expect(state.canLoadMoreResults)
     }
 
     @Test @MainActor
@@ -216,6 +345,22 @@ struct TorrentSearchStateTests {
     }
 
     @Test @MainActor
+    func allHashesSkipsDirectStreamResults() {
+        let state = TorrentSearchState()
+        var direct = Fixtures.torrent(
+            hash: "abcdef1234567890abcdef1234567890abcdef12",
+            title: "Direct.1080p"
+        )
+        direct.directStreamURL = "https://cdn.example.com/direct.mkv?token=abc"
+        state.setSearchResults([
+            Fixtures.torrent(hash: "hash-0", title: "Debrid.1080p"),
+            direct,
+        ], initialBatchSize: 2)
+
+        #expect(state.allHashes == ["hash-0"])
+    }
+
+    @Test @MainActor
     func updateCacheStatusMarksMatchingResultsCached() {
         let state = TorrentSearchState()
         state.setSearchResults(makeTorrentResults(count: 4), initialBatchSize: 3)
@@ -242,6 +387,20 @@ struct TorrentSearchStateTests {
     }
 
     @Test @MainActor
+    func updateCacheStatusIgnoresUnknownHashesWithoutRefreshingVisibleWindow() {
+        let state = TorrentSearchState()
+        state.setSearchResults(makeTorrentResults(count: 3), initialBatchSize: 2)
+
+        state.updateCacheStatus([
+            "missing-hash": (.cached(fileId: "file", fileName: "Missing.mkv", fileSize: 1), .realDebrid),
+        ])
+
+        #expect(state.results.map(\.infoHash) == ["hash-0", "hash-1"])
+        #expect(state.results.allSatisfy { !$0.isCached })
+        #expect(state.remainingResultCount == 1)
+    }
+
+    @Test @MainActor
     func updateCacheStatusDoesNotDowngradeAlreadyCachedResults() {
         let state = TorrentSearchState()
         var results = makeTorrentResults(count: 2)
@@ -256,6 +415,83 @@ struct TorrentSearchStateTests {
 
         #expect(state.results[0].isCached == true)
         #expect(state.results[0].cachedOnService == DebridServiceType.realDebrid.rawValue)
+    }
+
+    @Test @MainActor
+    func updateCacheStatusIgnoresMatchingNotCachedResults() {
+        let state = TorrentSearchState()
+        state.setSearchResults(makeTorrentResults(count: 2), initialBatchSize: 2)
+
+        state.updateCacheStatus([
+            "hash-0": (.notCached, .premiumize),
+            "hash-1": (.unknown, .allDebrid),
+        ])
+
+        #expect(state.results[0].isCached == false)
+        #expect(state.results[0].cachedOnService == nil)
+        #expect(state.results[1].isCached == false)
+        #expect(state.results[1].cachedOnService == nil)
+    }
+
+    @Test @MainActor
+    func updateCacheStatusForHiddenResultIsAppliedWhenRevealed() {
+        let state = TorrentSearchState()
+        state.setSearchResults(makeTorrentResults(count: 4), initialBatchSize: 2)
+
+        state.updateCacheStatus([
+            "hash-3": (.cached(fileId: "file-3", fileName: "Hidden.mkv", fileSize: 123), .premiumize),
+        ])
+
+        #expect(state.results.count == 2)
+        #expect(state.results.allSatisfy { !$0.isCached })
+
+        #expect(state.revealMoreResults(batchSize: 2))
+        #expect(state.results[3].isCached)
+        #expect(state.results[3].cachedOnService == DebridServiceType.premiumize.rawValue)
+    }
+
+    @Test @MainActor
+    func sourceFilterHidesConfirmedDownloadsButKeepsRawHashesForCacheChecks() {
+        let state = TorrentSearchState()
+        state.setSourceFilterOptions(SourceFilterPreset.instant.defaultOptions)
+        state.setSearchResults(makeTorrentResults(count: 3), initialBatchSize: 3)
+
+        state.updateCacheStatus([
+            "hash-0": (.notCached, .premiumize),
+            "hash-1": (.cached(fileId: "file-1", fileName: "Cached.mkv", fileSize: nil), .realDebrid),
+        ])
+
+        #expect(state.allHashes == ["hash-0", "hash-1", "hash-2"])
+        #expect(state.results.map(\.infoHash) == ["hash-1", "hash-2"])
+        #expect(state.results[0].isCached)
+        #expect(state.results[0].cachedOnService == DebridServiceType.realDebrid.rawValue)
+    }
+
+    @Test @MainActor
+    func changingSourceFilterPreservesVisibleWindowCount() {
+        let state = TorrentSearchState()
+        let results = [
+            Fixtures.torrent(hash: "hash-0", title: "Result.0.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-1", title: "Result.1.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-2", title: "Result.2.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-3", title: "Result.3.2160p", quality: .uhd4k),
+            Fixtures.torrent(hash: "hash-4", title: "Result.4.720p", quality: .hd720p),
+            Fixtures.torrent(hash: "hash-5", title: "Result.5.720p", quality: .hd720p),
+        ]
+        state.setSearchResults(results, initialBatchSize: 3)
+        #expect(state.results.count == 3)
+
+        state.setSourceFilterOptions(SourceFilterOptions(
+            preset: .custom,
+            hideConfirmedDownloads: false,
+            hideCamSources: true,
+            minimumSeeders: 0,
+            maximumSizeGB: nil,
+            minimumQuality: .uhd4k
+        ))
+
+        #expect(state.results.count == 3)
+        #expect(state.results.allSatisfy { $0.quality == .uhd4k })
     }
 
     private func makeTorrentResults(count: Int) -> [TorrentResult] {
@@ -400,6 +636,65 @@ struct MediaLibraryStateTests {
         #expect(state.isInFavorites)
         state.isInFavorites = false
         #expect(state.isInFavorites == false)
+    }
+
+    @Test @MainActor
+    func watchHistoryCanBeAssignedAndCleared() {
+        let state = MediaLibraryState()
+        let history = WatchHistory(
+            id: "history-1",
+            mediaId: "tt1234567",
+            title: "Stored Movie",
+            progress: 42,
+            duration: 100,
+            watchedAt: Date(timeIntervalSince1970: 1_000),
+            isCompleted: false
+        )
+
+        state.watchHistory = history
+        #expect(state.watchHistory == history)
+
+        state.watchHistory = nil
+        #expect(state.watchHistory == nil)
+    }
+
+    @Test @MainActor
+    func folderBucketsCanBeAssignedIndependently() {
+        let state = MediaLibraryState()
+        let watchlistFolder = makeFolder(
+            id: "watchlist-manual",
+            name: "Weekend",
+            listType: .watchlist
+        )
+        let favoriteFolder = makeFolder(
+            id: "favorites-manual",
+            name: "Best",
+            listType: .favorites
+        )
+
+        state.watchlistFolders = [watchlistFolder]
+        state.favoriteFolders = [favoriteFolder]
+
+        #expect(state.watchlistFolders.map(\.id) == ["watchlist-manual"])
+        #expect(state.favoriteFolders.map(\.id) == ["favorites-manual"])
+    }
+
+    private func makeFolder(
+        id: String,
+        name: String,
+        listType: UserLibraryEntry.ListType
+    ) -> LibraryFolder {
+        LibraryFolder(
+            id: id,
+            name: name,
+            parentId: LibraryFolder.systemFolderID(for: listType),
+            listType: listType,
+            folderKind: .manual,
+            isSystem: false,
+            sortOrder: 0,
+            createdAt: Date(timeIntervalSince1970: 0),
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
     }
 }
 

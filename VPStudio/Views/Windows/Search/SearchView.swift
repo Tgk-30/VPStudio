@@ -22,7 +22,8 @@ enum SearchShellCopyPolicy {
     static func subtitle(
         activeMoodCardTitle: String?,
         selectedGenreName: String?,
-        submittedQuery: String
+        submittedQuery: String,
+        supportsPersonCreditSearch: Bool = true
     ) -> String {
         if let activeMoodCardTitle {
             return "You are already inside \(activeMoodCardTitle.lowercased()) picks. Tighten the lane with search and filters without losing the browse context."
@@ -33,10 +34,13 @@ enum SearchShellCopyPolicy {
         }
 
         if !submittedQuery.isEmpty {
-            return "Tighten the query, switch type, or add filters without losing the current poster wall."
+            return "Tighten the query, switch type, or add filters."
         }
 
-        return "Start with a title, actor, or keyword, then drift into the browse rails below if you want a wider opening."
+        if supportsPersonCreditSearch {
+            return "Search a title, actor, or keyword — or let AI pick for you."
+        }
+        return "Search a title or keyword — or let AI pick for you."
     }
 }
 
@@ -78,14 +82,356 @@ enum SearchLoadingPresentationPolicy {
     }
 }
 
+enum SearchAutoOpenPolicy {
+    static func selectedResult(
+        from results: [MediaPreview],
+        preferredTitle: String?
+    ) -> MediaPreview? {
+        let normalizedPreferredTitle = preferredTitle?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if let normalizedPreferredTitle, !normalizedPreferredTitle.isEmpty,
+           let preferredResult = results.first(where: {
+               $0.title.lowercased().contains(normalizedPreferredTitle)
+           }) {
+            return preferredResult
+        }
+
+        return results.first
+    }
+}
+
+enum SearchResultsPresentationPolicy {
+    static let standardBottomContentPadding: CGFloat = 180
+    static let bottomTabBarContentPadding: CGFloat = 288
+    static let bottomViewportInset: CGFloat = 132
+
+    static func bottomContentPadding(for layout: NavigationLayout) -> CGFloat {
+        switch layout {
+        case .bottomTabBar:
+            return bottomTabBarContentPadding
+        case .leftSidebar:
+            return standardBottomContentPadding
+        }
+    }
+
+    static func shouldShowTypeFilterSection(
+        submittedQuery: String,
+        hasSelectedGenre: Bool,
+        hasActiveMoodCard: Bool,
+        explorePhase: ExplorePhase,
+        hasActiveFilters: Bool
+    ) -> Bool {
+        !submittedQuery.isEmpty
+            || hasSelectedGenre
+            || hasActiveMoodCard
+            || explorePhase == .results
+            || hasActiveFilters
+    }
+
+    static func shouldShowFilterSummary(
+        hasActiveMoodCard: Bool,
+        hasSelectedGenre: Bool,
+        sortOption: DiscoverFilters.SortOption,
+        languageFilters: Set<String>,
+        yearFilter: Int?,
+        yearRangePreset: YearRangePreset?,
+        supportsLanguageFilters: Bool = true
+    ) -> Bool {
+        hasActiveMoodCard
+            || hasSelectedGenre
+            || sortOption != .popularityDesc
+            || (supportsLanguageFilters && isExplicitLanguageSelection(languageFilters))
+            || yearFilter != nil
+            || yearRangePreset != nil
+    }
+
+    static func shouldShowResultsFilterSummary(
+        hasSelectedGenre: Bool,
+        sortOption: DiscoverFilters.SortOption,
+        languageFilters: Set<String>,
+        yearFilter: Int?,
+        yearRangePreset: YearRangePreset?,
+        supportsLanguageFilters: Bool = true
+    ) -> Bool {
+        sortOption != .popularityDesc
+            || hasSelectedGenre
+            || (supportsLanguageFilters && isExplicitLanguageSelection(languageFilters))
+            || yearFilter != nil
+            || yearRangePreset != nil
+    }
+
+    static func visibleActiveFilterCount(
+        sortOption: DiscoverFilters.SortOption,
+        languageFilters: Set<String>,
+        yearFilter: Int?,
+        yearRangePreset: YearRangePreset?,
+        selectedGenre: Genre?,
+        supportsLanguageFilters: Bool
+    ) -> Int {
+        var count = 0
+        if sortOption != .popularityDesc { count += 1 }
+        if yearFilter != nil || yearRangePreset != nil { count += 1 }
+        if supportsLanguageFilters && isExplicitLanguageSelection(languageFilters) { count += 1 }
+        if selectedGenre != nil { count += 1 }
+        return count
+    }
+
+    static func selectedContentDescriptor(selectedType: MediaType?) -> String {
+        switch selectedType {
+        case .movie?: return "movies"
+        case .series?: return "TV shows"
+        case nil: return "movies and TV shows"
+        }
+    }
+
+    static func resultsContextTitle(
+        activeMoodCardTitle: String?,
+        selectedGenreName: String?,
+        submittedQuery: String
+    ) -> String {
+        if let activeMoodCardTitle {
+            return activeMoodCardTitle
+        }
+
+        if let selectedGenreName {
+            return selectedGenreName
+        }
+
+        if !submittedQuery.isEmpty {
+            return "Results for \"\(submittedQuery)\""
+        }
+
+        return "Browse Results"
+    }
+
+    static func resultsContextSubtitle(
+        activeMoodCardTitle: String?,
+        activeMoodCardIsNewReleases: Bool,
+        activeMoodCardIsFutureReleases: Bool,
+        selectedGenreName: String?,
+        submittedQuery: String,
+        selectedType: MediaType?,
+        resultCount: Int = 0,
+        sortName: String? = nil
+    ) -> String {
+        let descriptor = selectedContentDescriptor(selectedType: selectedType)
+
+        if activeMoodCardTitle != nil {
+            if activeMoodCardIsNewReleases {
+                return "Fresh \(descriptor) sorted to surface what just landed."
+            }
+
+            if activeMoodCardIsFutureReleases {
+                return "Upcoming \(descriptor) worth tracking before release."
+            }
+
+            return "Mood-led \(descriptor) you can tighten with filters or a direct search."
+        }
+
+        if let selectedGenreName {
+            return "Popular \(descriptor) in \(selectedGenreName), ready for deeper filtering."
+        }
+
+        if !submittedQuery.isEmpty {
+            let countText = resultCount == 1 ? "1 result" : "\(resultCount) results"
+            if let sortName {
+                return "\(countText) for \(descriptor), sorted by \(sortName.lowercased())."
+            }
+            return "\(countText) for \(descriptor)."
+        }
+
+        return "Browse rails and direct search stay in the same place so you can pivot quickly."
+    }
+
+    static func emptyStateQuery(from query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "this selection" : trimmed
+    }
+
+    static func displayedSortOptions() -> [DiscoverFilters.SortOption] {
+        [.popularityDesc, .ratingDesc, .releaseDateDesc, .titleAsc]
+    }
+
+    private static func isExplicitLanguageSelection(_ languageFilters: Set<String>) -> Bool {
+        languageFilters != ["en-US"] && !languageFilters.isEmpty
+    }
+}
+
+/// Policy for the companion `searchDetailInitialAction` that rides alongside the
+/// Search tab's pushed detail selection. The action must be reset to `.none` the
+/// moment the selection clears (back-nav), otherwise a `.playBestCached` set for an
+/// AI Pick "Play" leaks into the NEXT plain row tap and auto-plays instead of opening
+/// Detail normally (regression from the one-tap-play work, f62f2e8).
+enum SearchDetailActionResetPolicy {
+    /// The action that should accompany a new selection value. A `nil` selection
+    /// (the binding clearing on back-nav) always resets to `.none`; a non-nil
+    /// selection preserves the caller-supplied `intendedAction`.
+    static func resolvedAction(
+        forNewSelection newSelection: MediaPreview?,
+        intendedAction: DetailInitialAction
+    ) -> DetailInitialAction {
+        newSelection == nil ? .none : intendedAction
+    }
+}
+
+enum SearchQueryBarPolicy {
+    static func trimmedDraft(_ draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func showsClearButton(localDraft: String, submittedQuery: String) -> Bool {
+        !trimmedDraft(localDraft).isEmpty || !submittedQuery.isEmpty
+    }
+
+    static func canSubmit(localDraft: String) -> Bool {
+        !trimmedDraft(localDraft).isEmpty
+    }
+}
+
+struct ExploreStarterTitle: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let query: String
+    let symbol: String
+}
+
+enum ExploreStarterTitlePolicy {
+    static let chipMinWidth: CGFloat = 150
+    static let chipMaxWidth: CGFloat = 190
+    static let chipMinHeight: CGFloat = 44
+    static let chipSpacing: CGFloat = 10
+    static let titleMinimumScale: CGFloat = 0.82
+
+    static let titles: [ExploreStarterTitle] = [
+        ExploreStarterTitle(id: "dune-part-two", title: "Dune: Part Two", query: "Dune: Part Two", symbol: "film"),
+        ExploreStarterTitle(id: "severance", title: "Severance", query: "Severance", symbol: "tv"),
+        ExploreStarterTitle(id: "oppenheimer", title: "Oppenheimer", query: "Oppenheimer", symbol: "atom"),
+        ExploreStarterTitle(id: "the-bear", title: "The Bear", query: "The Bear", symbol: "play.rectangle"),
+        ExploreStarterTitle(id: "inside-out-2", title: "Inside Out 2", query: "Inside Out 2", symbol: "face.smiling"),
+        ExploreStarterTitle(id: "the-last-of-us", title: "The Last of Us", query: "The Last of Us", symbol: "star"),
+    ]
+
+    static func gridColumns() -> [GridItem] {
+        [
+            GridItem(
+                .adaptive(minimum: chipMinWidth, maximum: chipMaxWidth),
+                spacing: chipSpacing,
+                alignment: .top
+            )
+        ]
+    }
+
+    static func accessibilityLabel(for title: ExploreStarterTitle) -> String {
+        "Search for \(title.title)"
+    }
+}
+
+private struct ExploreStarterTitleShelf: View {
+    let titles: [ExploreStarterTitle]
+    let onSelect: (ExploreStarterTitle) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Starter Titles")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            LazyVGrid(
+                columns: ExploreStarterTitlePolicy.gridColumns(),
+                alignment: .leading,
+                spacing: ExploreStarterTitlePolicy.chipSpacing
+            ) {
+                ForEach(titles) { title in
+                    Button {
+                        onSelect(title)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: title.symbol)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .frame(width: 14, height: 14)
+
+                            Text(title.title)
+                                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.86))
+                                .lineLimit(1)
+                                .minimumScaleFactor(ExploreStarterTitlePolicy.titleMinimumScale)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: ExploreStarterTitlePolicy.chipMinHeight,
+                            alignment: .leading
+                        )
+                        .background {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.07))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(0.07),
+                                                    .clear,
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(.white.opacity(0.11), lineWidth: 0.75)
+                                }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(ExploreStarterTitlePolicy.accessibilityLabel(for: title)))
+                    #if os(visionOS)
+                    .hoverEffect(.highlight)
+                    #endif
+                }
+            }
+        }
+        .frame(maxWidth: ExploreGenreTilePolicy.maxGridWidth, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 struct SearchView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @State private var viewModel = SearchViewModel()
-    @State private var selectedItem: MediaPreview?
-    @State private var tmdbReloadTask: Task<Void, Never>?
+    /// Pushed detail for the Search tab, hoisted to AppState so it survives the player
+    /// dismissing/re-opening the main window (see `AppState.searchDetailSelection`).
+    private var searchSelection: Binding<MediaPreview?> {
+        Binding(
+            get: { appState.searchDetailSelection },
+            set: { newValue in
+                // When the selection clears (back-nav pops the pushed detail), reset the
+                // companion action too. Otherwise a stale `.playBestCached` from a prior
+                // AI Pick "Play" leaks into the NEXT plain row tap and auto-plays instead
+                // of opening Detail normally (regression from the one-tap-play work, f62f2e8).
+                appState.searchDetailInitialAction = SearchDetailActionResetPolicy.resolvedAction(
+                    forNewSelection: newValue,
+                    intendedAction: appState.searchDetailInitialAction
+                )
+                appState.searchDetailSelection = newValue
+            }
+        )
+    }
+    @State private var metadataReloadTask: Task<Void, Never>?
+    @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var selectedYear: Int? = nil
     @State private var selectedLanguages: Set<String> = ["en-US"]
     @State private var isShowingFilters = false
+    // Genre + sort are local drafts (like year/language) so the filter sheet commits ALL filters
+    // once via applyFilterDraft on Apply, instead of live-browsing genre/sort on every change.
+    @State private var draftSortOption: DiscoverFilters.SortOption = .popularityDesc
+    @State private var draftGenre: Genre?
     @State private var userRatings: [String: TasteEvent] = [:]
     @State private var hasLoadedUserRatings = false
     @State private var hasHydratedRecentSearches = false
@@ -93,16 +439,24 @@ struct SearchView: View {
     @State private var hasAutoOpenedQAResult = false
     @State private var suppressNextSearchDraftDebounce = false
     @State private var searchDraft = ""
+    /// Trakt gating for the "For You" affordance, loaded async in `.task`
+    /// (SettingsManager reads are async) and evaluated via `PersonalizedRecsGatePolicy`.
+    @State private var hasTraktToken = false
+    @State private var traktHistorySyncEnabled = false
     private let contentMaxWidth: CGFloat = 1080
-    private let celestialSurface = Color(red: 0.09, green: 0.09, blue: 0.11)
-    private let celestialSurfaceRaised = Color(red: 0.15, green: 0.15, blue: 0.18)
-    private let celestialPurple = Color(red: 0.56, green: 0.58, blue: 1.0)
-    private let celestialPurpleDeep = Color(red: 0.44, green: 0.45, blue: 1.0)
-    private let celestialMint = Color(red: 0.80, green: 0.92, blue: 0.92)
-    private let atmosphericBlue = Color(red: 0.08, green: 0.42, blue: 0.94)
-    private let atmosphericGreen = Color(red: 0.14, green: 0.90, blue: 0.56)
-    private let atmosphericPink = Color(red: 0.72, green: 0.24, blue: 0.96)
-    private let atmosphericGold = Color(red: 0.92, green: 0.74, blue: 0.26)
+    // OMDb has no original-language filter; TMDb-backed configurations can surface it.
+    @State private var supportsSearchLanguageFilters = false
+    private let disablesAutomaticTasks: Bool
+
+    init(
+        initialViewModel: SearchViewModel? = nil,
+        initialSearchDraft: String = "",
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _viewModel = State(initialValue: initialViewModel ?? SearchViewModel())
+        _searchDraft = State(initialValue: initialSearchDraft)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     private var searchLoadingPresentation: SearchLoadingPresentationMode {
         SearchLoadingPresentationPolicy.presentationMode(
@@ -114,8 +468,14 @@ struct SearchView: View {
 
     var body: some View {
         ZStack {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            // Match the rest of the app's Obsidian-Glass background instead of the legacy
+            // purple menu background (Explore was missed in the v2.0.1 migration).
+            if useObsidianGlass {
+                VPBackground()
+            } else {
+                VPMenuBackground()
+                    .ignoresSafeArea()
+            }
 
             VStack(spacing: 0) {
                 searchBarSection
@@ -149,56 +509,75 @@ struct SearchView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         #endif
-        .navigationDestination(item: $selectedItem) { item in
-            DetailView(preview: item)
+        .navigationDestination(item: searchSelection) { item in
+            DetailView(preview: item, initialAction: appState.searchDetailInitialAction)
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             if searchDraft.isEmpty {
                 searchDraft = viewModel.queryDraft
             }
-            hydrateRecentSearchesIfNeeded()
-            await reloadTMDBConfigurationAndSearch()
+            await hydrateRecentSearchesIfNeeded()
+            await reloadMetadataConfigurationAndSearch()
+            await reloadPersonalizedRecsGate()
             applySearchQARuntimeIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tasteProfileDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             guard hasLoadedUserRatings else { return }
-            Task { await loadUserRatings(force: true) }
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = Task { await loadUserRatings(force: true) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = Task { await reloadTMDBConfigurationAndSearch() }
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
+            metadataReloadTask?.cancel()
+            metadataReloadTask = Task { await reloadMetadataConfigurationAndSearch() }
         }
         .onDisappear {
             viewModel.cancelInFlightWork()
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = nil
-            viewModel.saveRecentSearches(to: appState.settingsManager)
+            metadataReloadTask?.cancel()
+            metadataReloadTask = nil
+            userRatingsReloadTask?.cancel()
+            userRatingsReloadTask = nil
+            if !disablesAutomaticTasks {
+                viewModel.saveRecentSearches(to: appState.settingsManager)
+            }
         }
         .onChange(of: viewModel.results.map(\.id)) { _, _ in
             applySearchResultQARuntimeIfNeeded()
         }
         .sheet(isPresented: $isShowingFilters) {
             ExploreFilterSheet(
-                sortOption: Bindable(viewModel).sortOption,
+                sortOption: $draftSortOption,
                 selectedYear: $selectedYear,
                 selectedLanguages: $selectedLanguages,
                 genres: viewModel.genres,
-                selectedGenre: Binding(
-                    get: { viewModel.selectedGenre },
-                    set: { viewModel.selectGenre($0) }
-                ),
+                selectedGenre: $draftGenre,
                 displayedSortOptions: displayedSortOptions,
+                showsLanguageFilters: supportsSearchLanguageFilters,
                 onApply: {
-                    viewModel.applyYearFilter(selectedYear)
-                    viewModel.applyLanguageFilters(selectedLanguages)
+                    // Commit all filters in ONE batched requery instead of genre/sort browsing
+                    // live and year/language re-querying separately.
+                    viewModel.applyFilterDraft(SearchFilterDraft(
+                        sortOption: draftSortOption,
+                        selectedYear: selectedYear,
+                        selectedLanguages: supportsSearchLanguageFilters
+                            ? selectedLanguages
+                            : [ExploreFilterSheetLanguageSelectionPolicy.defaultLanguageCode],
+                        selectedGenre: draftGenre
+                    ))
                 }
             )
         }
         .onChange(of: isShowingFilters) { _, showing in
             if showing {
-                // Sync local filter state from viewModel when sheet opens
+                // Sync local filter drafts from viewModel when sheet opens
                 selectedYear = viewModel.yearFilter
-                selectedLanguages = SearchLanguageOption.normalizeSelection(from: viewModel.languageFilters)
+                selectedLanguages = supportsSearchLanguageFilters
+                    ? SearchLanguageOption.normalizeSelection(from: viewModel.languageFilters)
+                    : [ExploreFilterSheetLanguageSelectionPolicy.defaultLanguageCode]
+                draftSortOption = viewModel.sortOption
+                draftGenre = viewModel.selectedGenre
                 // Ensure genres are loaded for the filter sheet
                 if viewModel.genres.isEmpty {
                     viewModel.loadGenres()
@@ -211,164 +590,6 @@ struct SearchView: View {
         content()
             .frame(maxWidth: contentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private var searchAtmosphereBackground: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-
-            ZStack {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.02, green: 0.04, blue: 0.09),
-                        Color(red: 0.06, green: 0.09, blue: 0.17),
-                        Color(red: 0.02, green: 0.03, blue: 0.08),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-
-                atmosphericGlow(color: atmosphericBlue, width: size.width * 0.42, height: size.height * 0.50)
-                    .offset(x: -size.width * 0.18, y: -size.height * 0.08)
-
-                atmosphericGlow(color: atmosphericPink, width: size.width * 0.32, height: size.height * 0.40)
-                    .offset(x: -size.width * 0.02, y: -size.height * 0.10)
-
-                atmosphericGlow(color: atmosphericGreen, width: size.width * 0.34, height: size.height * 0.42)
-                    .offset(x: size.width * 0.12, y: -size.height * 0.08)
-
-                atmosphericGlow(color: atmosphericPink, width: size.width * 0.30, height: size.height * 0.40)
-                    .offset(x: size.width * 0.16, y: size.height * 0.12)
-
-                atmosphericGlow(color: atmosphericGreen, width: size.width * 0.34, height: size.height * 0.42)
-                    .offset(x: size.width * 0.30, y: size.height * 0.10)
-
-                atmosphericGlow(color: atmosphericGold, width: size.width * 0.28, height: size.height * 0.34)
-                    .offset(x: size.width * 0.38, y: size.height * 0.22)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.10, blur: 20)
-                    .offset(x: -size.width * 0.11, y: -size.height * 0.31)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.09, blur: 18)
-                    .offset(x: size.width * 0.00, y: -size.height * 0.30)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.10, blur: 20)
-                    .offset(x: size.width * 0.10, y: -size.height * 0.30)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.09, blur: 20)
-                    .offset(x: size.width * 0.25, y: size.height * 0.02)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.09, blur: 18)
-                    .offset(x: size.width * 0.34, y: size.height * 0.06)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.08, blur: 18)
-                    .offset(x: size.width * 0.39, y: -size.height * 0.02)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.10, blur: 34)
-                    .offset(x: -size.width * 0.36, y: -size.height * 0.26)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.07, blur: 20)
-                    .offset(x: -size.width * 0.12, y: -size.height * 0.28)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: size.width * 0.00, y: -size.height * 0.29)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.08, blur: 20)
-                    .offset(x: size.width * 0.13, y: -size.height * 0.25)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.08, blur: 26)
-                    .offset(x: -size.width * 0.25, y: -size.height * 0.07)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: -size.width * 0.19, y: -size.height * 0.17)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: -size.width * 0.18, y: size.height * 0.07)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.08, blur: 22)
-                    .offset(x: -size.width * 0.08, y: size.height * 0.17)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: size.width * 0.12, y: size.height * 0.23)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.09, blur: 30)
-                    .offset(x: -size.width * 0.06, y: -size.height * 0.02)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.11, blur: 34)
-                    .offset(x: size.width * 0.08, y: -size.height * 0.18)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.10, blur: 30)
-                    .offset(x: size.width * 0.24, y: -size.height * 0.04)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.09, blur: 28)
-                    .offset(x: size.width * 0.34, y: -size.height * 0.22)
-
-                atmosphericOrb(color: atmosphericBlue, diameter: size.width * 0.08, blur: 20)
-                    .offset(x: size.width * 0.44, y: -size.height * 0.03)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.08, blur: 20)
-                    .offset(x: -size.width * 0.33, y: size.height * 0.09)
-
-                atmosphericOrb(color: atmosphericPink, diameter: size.width * 0.08, blur: 22)
-                    .offset(x: size.width * 0.24, y: size.height * 0.17)
-
-                atmosphericOrb(color: atmosphericGreen, diameter: size.width * 0.08, blur: 22)
-                    .offset(x: size.width * 0.36, y: size.height * 0.11)
-
-                atmosphericOrb(color: atmosphericGold, diameter: size.width * 0.07, blur: 18)
-                    .offset(x: size.width * 0.45, y: size.height * 0.20)
-
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.black.opacity(0.01),
-                                Color.black.opacity(0.14),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            }
-        }
-    }
-
-    private func atmosphericGlow(color: Color, width: CGFloat, height: CGFloat) -> some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [
-                        color.opacity(0.70),
-                        color.opacity(0.20),
-                        .clear,
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: max(width, height) * 0.5
-                )
-            )
-            .frame(width: width, height: height)
-            .blur(radius: 88)
-            .blendMode(.screen)
-    }
-
-    private func atmosphericOrb(color: Color, diameter: CGFloat, blur: CGFloat) -> some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [
-                        color.opacity(0.95),
-                        color.opacity(0.36),
-                        .clear,
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: diameter * 0.5
-                )
-            )
-            .frame(width: diameter, height: diameter)
-            .blur(radius: blur)
-            .blendMode(.screen)
     }
 
     // MARK: - Search Bar
@@ -386,7 +607,8 @@ struct SearchView: View {
         SearchShellCopyPolicy.subtitle(
             activeMoodCardTitle: viewModel.activeMoodCard?.title,
             selectedGenreName: viewModel.selectedGenre?.name,
-            submittedQuery: viewModel.submittedQuery
+            submittedQuery: viewModel.submittedQuery,
+            supportsPersonCreditSearch: viewModel.supportsPersonCreditSearch
         )
     }
 
@@ -404,7 +626,7 @@ struct SearchView: View {
 
                     Text(searchShellSubtitle)
                         .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.32))
+                        .foregroundStyle(.white.opacity(0.52))
                         .lineLimit(2)
                 }
 
@@ -413,7 +635,7 @@ struct SearchView: View {
                         viewModel: viewModel,
                         seedQuery: searchDraft,
                         suppressNextDraftDebounce: $suppressNextSearchDraftDebounce,
-                        placeholder: "Try: gritty sci-fi movies, cozy TV, or ask for AI picks",
+                        placeholder: "Search movies, shows, or ask AI…",
                         onSubmit: { text in submitSearch(queryText: text) },
                         onClear: {
                             searchDraft = ""
@@ -424,7 +646,15 @@ struct SearchView: View {
 
                     askAIButton
 
+                    if personalizedRecsEnabled {
+                        forYouButton
+                    }
+
                     filterUtilityButton
+                }
+
+                if shouldShowAskAIPhraseChip {
+                    askAIPhraseChip
                 }
             }
         }
@@ -433,88 +663,16 @@ struct SearchView: View {
         .padding(.bottom, 10)
     }
 
-
-    private var searchHeroCompanionPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(viewModel.aiRecommendations.isEmpty ? "Curator" : "AI picks ready")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(
-                viewModel.aiRecommendations.isEmpty
-                    ? "Use the AI curator once you have the lane roughly framed."
-                    : "\(viewModel.aiRecommendations.count) curated picks are ready below if you want a fast jump."
-            )
-            .font(.subheadline)
-            .foregroundStyle(Color.primary.opacity(0.9))
-            .fixedSize(horizontal: false, vertical: true)
-
-            askAIButton
-        }
-        .frame(maxWidth: 278, alignment: .leading)
-        .padding(18)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(celestialSurfaceRaised.opacity(0.78))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    .white.opacity(0.08),
-                                    celestialPurple.opacity(0.14),
-                                    .clear,
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-        }
-        .shadow(color: celestialPurple.opacity(0.08), radius: 22, y: 10)
-    }
-
-    private var searchHeroSupportPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(shouldShowTypeFilterSection ? "Focus" : "How To Start")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            if shouldShowTypeFilterSection {
-                typeFilterSection
-                    .frame(maxWidth: 560, alignment: .leading)
-            } else {
-                Text("Search by title, performer, or keyword first. The browse composition below stays live so you can widen the search without resetting the page.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(18)
-        .background {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(celestialSurfaceRaised.opacity(0.52))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [.white.opacity(0.06), .clear],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-        }
-    }
-
     // MARK: - AI Button
 
     private var shouldShowTypeFilterSection: Bool {
-        !viewModel.submittedQuery.isEmpty
-            || viewModel.selectedGenre != nil
-            || viewModel.activeMoodCard != nil
-            || viewModel.explorePhase == .results
-            || viewModel.hasActiveFilters
+        SearchResultsPresentationPolicy.shouldShowTypeFilterSection(
+            submittedQuery: viewModel.submittedQuery,
+            hasSelectedGenre: viewModel.selectedGenre != nil,
+            hasActiveMoodCard: viewModel.activeMoodCard != nil,
+            explorePhase: viewModel.explorePhase,
+            hasActiveFilters: visibleActiveFilterCount > 0
+        )
     }
 
     private var aiButtonEnabled: Bool {
@@ -533,6 +691,7 @@ struct SearchView: View {
                 } else {
                     Image(systemName: "sparkles")
                         .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.purple)
                 }
 
                 Text(viewModel.isLoadingAI ? "Curating" : "Curate For Me")
@@ -549,8 +708,8 @@ struct SearchView: View {
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        .white.opacity(0.12),
-                                        Color(red: 0.48, green: 0.93, blue: 0.96).opacity(0.10),
+                                        Color.purple.opacity(0.28),
+                                        Color.purple.opacity(0.16),
                                         .clear,
                                     ],
                                     startPoint: .leading,
@@ -574,6 +733,91 @@ struct SearchView: View {
         .hoverEffect(.highlight)
         #endif
     }
+
+    /// Trakt-personalized "For You" — gated on a connected Trakt account with
+    /// history sync (see `PersonalizedRecsGatePolicy`). Renders into the same
+    /// AI Picks rail as Curate For Me.
+    private var forYouButton: some View {
+        Button {
+            guard aiButtonEnabled else { return }
+            viewModel.fetchPersonalizedRecommendations(aiManager: appState.aiAssistantManager)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "person.fill.viewfinder")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.purple)
+                Text("For You")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(.white.opacity(0.94))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background {
+                Capsule()
+                    .fill(Color.white.opacity(0.10))
+                    .overlay {
+                        Capsule()
+                            .stroke(.white.opacity(0.14), lineWidth: 0.8)
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+        .opacity(aiButtonEnabled ? 1.0 : 0.5)
+        .allowsHitTesting(aiButtonEnabled)
+        .accessibilityLabel("Personalized recommendations")
+        .accessibilityHint("Uses your recently watched Trakt history to assemble a personalized short list.")
+        #if os(visionOS)
+        .hoverEffect(.highlight)
+        #endif
+    }
+
+    /// First-class natural-language search: show a prominent submit chip when the
+    /// current draft reads like a phrase/request rather than a short keyword
+    /// title lookup (`NaturalLanguageSearchPolicy.looksLikePhrase`).
+    private var shouldShowAskAIPhraseChip: Bool {
+        aiButtonEnabled && NaturalLanguageSearchPolicy.looksLikePhrase(searchDraft)
+    }
+
+    private var askAIPhraseChip: some View {
+        let trimmed = searchDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Button {
+            guard aiButtonEnabled else { return }
+            viewModel.fetchNaturalLanguageRecommendations(
+                query: trimmed,
+                aiManager: appState.aiAssistantManager
+            )
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.purple)
+                Text("Ask AI: \u{201C}\(trimmed)\u{201D}")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .foregroundStyle(.white.opacity(0.94))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background {
+                Capsule()
+                    .fill(Color.purple.opacity(0.18))
+                    .overlay {
+                        Capsule()
+                            .stroke(.white.opacity(0.16), lineWidth: 0.8)
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+        .accessibilityLabel("Ask AI about your search")
+        .accessibilityHint("Sends your phrase to the AI recommendation engine instead of a plain title search.")
+        #if os(visionOS)
+        .hoverEffect(.highlight)
+        #endif
+    }
+
     private var filterUtilityButton: some View {
         Button {
             isShowingFilters = true
@@ -605,8 +849,8 @@ struct SearchView: View {
                             }
                     }
 
-                if viewModel.activeFilterCount > 0 {
-                    Text("\(viewModel.activeFilterCount)")
+                if visibleActiveFilterCount > 0 {
+                    Text("\(visibleActiveFilterCount)")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
@@ -618,109 +862,10 @@ struct SearchView: View {
         }
         .buttonStyle(.plain)
         .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
-        .accessibilityLabel("Open Filters")
+        .accessibilityLabel("Open more search filters")
         .accessibilityHint("Opens the search filters.")
         #if os(visionOS)
         .hoverEffect(.highlight)
-        #endif
-    }
-
-
-    private var curationBanner: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("AI CURATION")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(celestialPurple.opacity(0.92))
-                    .tracking(1.4)
-                Text("Need a stronger nudge?")
-                    .font(.headline)
-                Text("Let VPStudio assemble a short list from your taste profile after you browse the rails.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 24)
-
-            askAIButton
-        }
-        .padding(22)
-        .background {
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    celestialSurface.opacity(0.72),
-                                    celestialPurpleDeep.opacity(0.24),
-                                    .white.opacity(0.05),
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-        }
-        .shadow(color: celestialPurple.opacity(0.12), radius: 24, y: 10)
-    }
-
-    // MARK: - More Filters Button
-
-    private var moreFiltersButton: some View {
-        Button {
-            isShowingFilters = true
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Refine")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 10) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 14, weight: .semibold))
-
-                    Text("Filters")
-                        .font(.subheadline.weight(.semibold))
-
-                    if viewModel.activeFilterCount > 0 {
-                        Text("\(viewModel.activeFilterCount)")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 18, height: 18)
-                            .background(celestialSurfaceRaised, in: Circle())
-                            .transition(.scale.combined(with: .opacity))
-                    }
-                }
-                .foregroundStyle(.primary)
-            }
-            .frame(width: 134, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 18)
-            .background {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(celestialSurfaceRaised.opacity(0.82))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [.white.opacity(0.08), .clear],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    }
-            }
-            .shadow(color: .black.opacity(0.14), radius: 20, y: 10)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: viewModel.activeFilterCount)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open more search filters")
-        .accessibilityHint("Opens additional sort, year, genre, and language filters.")
-        #if os(visionOS)
-        .hoverEffect(.lift)
         #endif
     }
 
@@ -729,8 +874,10 @@ struct SearchView: View {
     private var inlineFilterBar: some View {
         centeredStage {
             VStack(spacing: shouldShowCompactFilterSummary ? 8 : 0) {
-                typeFilterSection
-                    .frame(maxWidth: .infinity, alignment: .center)
+                if shouldShowTypeFilterSection {
+                    typeFilterSection
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
 
                 if shouldShowCompactFilterSummary {
                     compactFilterSummaryRow
@@ -739,7 +886,7 @@ struct SearchView: View {
         }
         .padding(.horizontal, 26)
         .padding(.bottom, 8)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: viewModel.activeFilterCount)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: visibleActiveFilterCount)
     }
 
     private var chipDivider: some View {
@@ -749,12 +896,10 @@ struct SearchView: View {
             .padding(.horizontal, 4)
     }
 
-    /// Language chips currently shown as active (non-default selections).
-    private var activeLanguageChips: [SearchLanguageOption.Option] {
-        // Show removable chips for all selected languages except the default "en-US"
-        // when it's the only one selected
-        if viewModel.languageFilters == ["en-US"] { return [] }
-        return SearchLanguageOption.common.filter { viewModel.languageFilters.contains($0.code) }
+    /// Language options currently shown as active (non-default selections).
+    private var activeLanguageOptions: [SearchLanguageOption.Option] {
+        guard supportsSearchLanguageFilters else { return [] }
+        return SearchLanguageOption.activeOptions(for: viewModel.languageFilters)
     }
 
     /// Menu button to add additional languages.
@@ -794,12 +939,26 @@ struct SearchView: View {
     }
 
     private var shouldShowCompactFilterSummary: Bool {
-        viewModel.activeMoodCard != nil
-            || viewModel.selectedGenre != nil
-            || viewModel.sortOption != .popularityDesc
-            || (viewModel.languageFilters != ["en-US"] && !viewModel.languageFilters.isEmpty)
-            || viewModel.yearFilter != nil
-            || viewModel.yearRangePreset != nil
+        SearchResultsPresentationPolicy.shouldShowFilterSummary(
+            hasActiveMoodCard: viewModel.activeMoodCard != nil,
+            hasSelectedGenre: viewModel.selectedGenre != nil,
+            sortOption: viewModel.sortOption,
+            languageFilters: viewModel.languageFilters,
+            yearFilter: viewModel.yearFilter,
+            yearRangePreset: viewModel.yearRangePreset,
+            supportsLanguageFilters: supportsSearchLanguageFilters
+        )
+    }
+
+    private var visibleActiveFilterCount: Int {
+        SearchResultsPresentationPolicy.visibleActiveFilterCount(
+            sortOption: viewModel.sortOption,
+            languageFilters: viewModel.languageFilters,
+            yearFilter: viewModel.yearFilter,
+            yearRangePreset: viewModel.yearRangePreset,
+            selectedGenre: viewModel.selectedGenre,
+            supportsLanguageFilters: supportsSearchLanguageFilters
+        )
     }
 
     private var compactFilterSummaryRow: some View {
@@ -833,7 +992,7 @@ struct SearchView: View {
                 )
             }
 
-            if viewModel.languageFilters != ["en-US"], !viewModel.languageFilters.isEmpty {
+            if !activeLanguageOptions.isEmpty {
                 compactSummaryChip(
                     title: SearchLanguageOption.summaryName(for: viewModel.languageFilters),
                     symbol: "globe",
@@ -855,7 +1014,11 @@ struct SearchView: View {
                 )
             }
 
-            if viewModel.hasActiveFilters {
+            if supportsSearchLanguageFilters {
+                addLanguageMenu
+            }
+
+            if visibleActiveFilterCount > 0 {
                 Button {
                     viewModel.clearAllFilters()
                 } label: {
@@ -947,15 +1110,21 @@ struct SearchView: View {
         } label: {
             Text(title)
                 .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(isSelected ? Color.black.opacity(0.84) : .white.opacity(0.62))
+                .foregroundStyle(isSelected ? VPColor.textPrimary : .white.opacity(0.74))
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 .background {
                     if isSelected {
-                        Capsule()
-                            .fill(Color(red: 0.46, green: 0.93, blue: 0.95))
-                            .shadow(color: Color(red: 0.46, green: 0.93, blue: 0.95).opacity(0.42), radius: 5, y: 0)
+                        // Canonical nav-selection idiom: glass + faint accent tint +
+                        // thin accent ring + soft glow — never an opaque red slab.
+                        ZStack {
+                            Capsule().fill(.regularMaterial)
+                            Capsule().fill(VPColor.glassTintRaised)
+                            Capsule().fill(VPColor.accent.opacity(0.16))
+                            Capsule().strokeBorder(VPColor.accent, lineWidth: 1.5)
+                        }
+                        .shadow(color: VPColor.accent.opacity(0.35), radius: 8)
                     }
                 }
         }
@@ -1006,11 +1175,20 @@ struct SearchView: View {
                             viewModel.selectMoodCard(card)
                         }
                     )
+
+                    ExploreStarterTitleShelf(titles: ExploreStarterTitlePolicy.titles) { title in
+                        submitSearch(queryText: title.query)
+                    }
                 }
-                .padding(.horizontal, 40)
                 .padding(.top, 12)
-                .padding(.bottom, 32)
+                .padding(.bottom, SearchResultsPresentationPolicy.bottomContentPadding(for: appState.navigationLayout))
             }
+            // Match searchBarSection: pad OUTSIDE centeredStage (was an inner .horizontal 40
+            // that pushed Recent/Browse ~40pt right of the search bar's left edge).
+            .padding(.horizontal, 34)
+        }
+        .safeAreaInset(edge: .bottom) {
+            VPBottomViewportScrim(height: SearchResultsPresentationPolicy.bottomViewportInset)
         }
     }
 
@@ -1036,59 +1214,39 @@ struct SearchView: View {
     // MARK: - Active Filter Summary
 
     private var selectedContentDescriptor: String {
-        switch viewModel.selectedType {
-        case .movie?: return "movies"
-        case .series?: return "TV shows"
-        case nil: return "movies and TV shows"
-        }
+        SearchResultsPresentationPolicy.selectedContentDescriptor(selectedType: viewModel.selectedType)
     }
 
     private var resultsContextTitle: String {
-        if let card = viewModel.activeMoodCard {
-            return card.title
-        }
-
-        if let genre = viewModel.selectedGenre {
-            return genre.name
-        }
-
-        if !viewModel.submittedQuery.isEmpty {
-            return "Results for \"\(viewModel.submittedQuery)\""
-        }
-
-        return "Browse Results"
+        SearchResultsPresentationPolicy.resultsContextTitle(
+            activeMoodCardTitle: viewModel.activeMoodCard?.title,
+            selectedGenreName: viewModel.selectedGenre?.name,
+            submittedQuery: viewModel.submittedQuery
+        )
     }
 
     private var resultsContextSubtitle: String {
-        if let card = viewModel.activeMoodCard {
-            if card.isNewReleases {
-                return "Fresh \(selectedContentDescriptor) sorted to surface what just landed."
-            }
-
-            if card.isFutureReleases {
-                return "Upcoming \(selectedContentDescriptor) worth tracking before release."
-            }
-
-            return "Mood-led \(selectedContentDescriptor) you can tighten with filters or a direct search."
-        }
-
-        if let genre = viewModel.selectedGenre {
-            return "Popular \(selectedContentDescriptor) in \(genre.name), ready for deeper filtering."
-        }
-
-        if !viewModel.submittedQuery.isEmpty {
-            return "Refine the query or switch type without losing the current poster wall."
-        }
-
-        return "Browse rails and direct search stay in the same place so you can pivot quickly."
+        SearchResultsPresentationPolicy.resultsContextSubtitle(
+            activeMoodCardTitle: viewModel.activeMoodCard?.title,
+            activeMoodCardIsNewReleases: viewModel.activeMoodCard?.isNewReleases == true,
+            activeMoodCardIsFutureReleases: viewModel.activeMoodCard?.isFutureReleases == true,
+            selectedGenreName: viewModel.selectedGenre?.name,
+            submittedQuery: viewModel.submittedQuery,
+            selectedType: viewModel.selectedType,
+            resultCount: viewModel.results.count,
+            sortName: viewModel.sortOption.displayName
+        )
     }
 
     private var shouldShowResultsFilterSummary: Bool {
-        viewModel.sortOption != .popularityDesc
-            || viewModel.selectedGenre != nil
-            || (viewModel.languageFilters != ["en-US"] && !viewModel.languageFilters.isEmpty)
-            || viewModel.yearFilter != nil
-            || viewModel.yearRangePreset != nil
+        SearchResultsPresentationPolicy.shouldShowResultsFilterSummary(
+            hasSelectedGenre: viewModel.selectedGenre != nil,
+            sortOption: viewModel.sortOption,
+            languageFilters: viewModel.languageFilters,
+            yearFilter: viewModel.yearFilter,
+            yearRangePreset: viewModel.yearRangePreset,
+            supportsLanguageFilters: supportsSearchLanguageFilters
+        )
     }
 
     private var activeFilterSummary: some View {
@@ -1104,7 +1262,7 @@ struct SearchView: View {
                 .buttonStyle(.plain)
             }
 
-            if viewModel.languageFilters != ["en-US"], !viewModel.languageFilters.isEmpty {
+            if !activeLanguageOptions.isEmpty {
                 GlassTag(
                     text: SearchLanguageOption.summaryName(for: viewModel.languageFilters),
                     tintColor: .accentColor,
@@ -1162,7 +1320,7 @@ struct SearchView: View {
 
     /// Expose a useful subset of sort options for the menu.
     private var displayedSortOptions: [DiscoverFilters.SortOption] {
-        [.popularityDesc, .ratingDesc, .releaseDateDesc, .titleAsc]
+        SearchResultsPresentationPolicy.displayedSortOptions()
     }
 
     // MARK: - Results
@@ -1208,8 +1366,11 @@ struct SearchView: View {
 
                             SearchResultsGrid(
                                 viewModel: viewModel,
-                                selectedItem: $selectedItem,
-                                userRatings: userRatings
+                                selectedItem: searchSelection,
+                                userRatings: userRatings,
+                                // DEFENSE: a plain row tap must never inherit a prior AI Pick's
+                                // `.playBestCached`; open Detail with an explicit `.none` action.
+                                onSelect: { item in openDetail(for: item, action: .none) }
                             )
 
                             if viewModel.isLoadingMore {
@@ -1219,10 +1380,13 @@ struct SearchView: View {
                         }
                         .padding(.horizontal, 24)
                         .padding(.top, 8)
-                        .padding(.bottom, 32)
+                        .padding(.bottom, SearchResultsPresentationPolicy.bottomContentPadding(for: appState.navigationLayout))
                     }
                 }
                 .id("results-scroll-\(viewModel.selectedType?.rawValue ?? "all")")
+                .safeAreaInset(edge: .bottom) {
+                    VPBottomViewportScrim(height: SearchResultsPresentationPolicy.bottomViewportInset)
+                }
                 .task {
                     await ensureUserRatingsLoaded()
                 }
@@ -1236,8 +1400,7 @@ struct SearchView: View {
     }
 
     private var emptyStateQuery: String {
-        let query = viewModel.emptyStateQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? "this selection" : query
+        SearchResultsPresentationPolicy.emptyStateQuery(from: viewModel.emptyStateQuery)
     }
 
     @ViewBuilder
@@ -1296,9 +1459,11 @@ struct SearchView: View {
                     HStack(spacing: 12) {
                         ForEach(viewModel.aiRecommendations) { rec in
                             Button {
-                                selectedItem = rec.toMediaPreview()
+                                openDetail(for: rec.toMediaPreview(), action: .none)
                             } label: {
-                                AIRecommendationCard(recommendation: rec)
+                                AIRecommendationCard(recommendation: rec) {
+                                    openDetail(for: rec.toMediaPreview(), action: .playBestCached)
+                                }
                             }
                             .buttonStyle(.plain)
                             #if os(visionOS)
@@ -1315,10 +1480,10 @@ struct SearchView: View {
 
     // MARK: - Helpers
 
-    private func hydrateRecentSearchesIfNeeded() {
+    private func hydrateRecentSearchesIfNeeded() async {
         guard !hasHydratedRecentSearches else { return }
         hasHydratedRecentSearches = true
-        viewModel.loadRecentSearches(from: appState.settingsManager)
+        await viewModel.loadRecentSearchesAndAwait(from: appState.settingsManager)
     }
 
     @MainActor
@@ -1331,14 +1496,12 @@ struct SearchView: View {
     private func loadUserRatings(force: Bool) async {
         guard force || !hasLoadedUserRatings else { return }
 
-        let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
-        var dict: [String: TasteEvent] = [:]
-        for event in events {
-            if let mediaId = event.mediaId {
-                dict[mediaId] = event
-            }
-        }
-        userRatings = dict
+        async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)
+        async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()
+        let events = (try? await eventsLoad) ?? []
+        let aliasItems = (try? await aliasItemsLoad) ?? []
+        guard !Task.isCancelled else { return }
+        userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)
         hasLoadedUserRatings = true
     }
 
@@ -1378,39 +1541,59 @@ struct SearchView: View {
     private func applySearchResultQARuntimeIfNeeded() {
         guard QARuntimeOptions.autoOpenFirstSearchResult else { return }
         guard !hasAutoOpenedQAResult else { return }
-        guard selectedItem == nil else { return }
+        guard appState.searchDetailSelection == nil else { return }
         guard !viewModel.results.isEmpty else { return }
 
-        let preferredTitle = QARuntimeOptions.preferredResultTitle?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        let selectedResult =
-            viewModel.results.first { result in
-                guard let preferredTitle else { return false }
-                return result.title.lowercased().contains(preferredTitle)
-            }
-            ?? viewModel.results.first
-
+        let selectedResult = SearchAutoOpenPolicy.selectedResult(
+            from: viewModel.results,
+            preferredTitle: QARuntimeOptions.preferredResultTitle
+        )
         guard let selectedResult else { return }
         hasAutoOpenedQAResult = true
-        selectedItem = selectedResult
+        appState.searchDetailSelection = selectedResult
     }
 
     @MainActor
-    private func reloadTMDBConfigurationAndSearch() async {
-        let key = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+    private func reloadMetadataConfigurationAndSearch() async {
+        let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
+        supportsSearchLanguageFilters = configuration.hasTMDb
         let shouldRequery =
             !viewModel.submittedQuery.isEmpty ||
             viewModel.selectedGenre != nil ||
             viewModel.activeMoodCard != nil
 
-        viewModel.configure(apiKey: key)
+        viewModel.configure(configuration: configuration)
 
         // Genres are still loaded lazily when the filter summary appears.
         if shouldRequery {
             viewModel.requery()
         }
+    }
+
+    @MainActor
+    private func reloadPersonalizedRecsGate() async {
+        let token = (try? await appState.settingsManager.getString(key: SettingsKeys.traktAccessToken)) ?? ""
+        hasTraktToken = !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        traktHistorySyncEnabled = (try? await appState.settingsManager.getBool(
+            key: SettingsKeys.traktSyncHistory,
+            default: true
+        )) ?? true
+    }
+
+    private var personalizedRecsEnabled: Bool {
+        PersonalizedRecsGatePolicy.isEnabled(
+            hasTraktToken: hasTraktToken,
+            historySyncEnabled: traktHistorySyncEnabled
+        )
+    }
+
+    /// Pushes the Search detail for a recommendation, optionally requesting an
+    /// initial action (one-tap play of the best cached source). Sets the action
+    /// before the selection so the destination reads the right value on push.
+    @MainActor
+    private func openDetail(for preview: MediaPreview, action: DetailInitialAction) {
+        appState.searchDetailInitialAction = action
+        appState.searchDetailSelection = preview
     }
 }
 
@@ -1443,15 +1626,18 @@ private struct SearchQueryBar: View {
     }
 
     private var showsClearButton: Bool {
-        !localDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !viewModel.submittedQuery.isEmpty
+        SearchQueryBarPolicy.showsClearButton(
+            localDraft: localDraft,
+            submittedQuery: viewModel.submittedQuery
+        )
     }
 
     private var trimmedDraft: String {
-        localDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        SearchQueryBarPolicy.trimmedDraft(localDraft)
     }
 
     private var canSubmit: Bool {
-        !trimmedDraft.isEmpty
+        SearchQueryBarPolicy.canSubmit(localDraft: localDraft)
     }
 
     private var leadingIndicator: some View {
@@ -1508,11 +1694,12 @@ private struct SearchQueryBar: View {
             onClear()
         } label: {
             Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.28))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: 14, height: 14)
         .accessibilityLabel("Clear search text")
         .accessibilityHint("Clears the current search query.")
         .transition(.scale.combined(with: .opacity))
@@ -1569,14 +1756,33 @@ private struct SearchResultsGrid: View {
     @Bindable var viewModel: SearchViewModel
     @Binding var selectedItem: MediaPreview?
     var userRatings: [String: TasteEvent] = [:]
+    /// Plain row selection. Routes through the parent so the companion
+    /// `searchDetailInitialAction` is explicitly cleared (defense against a stale
+    /// `.playBestCached` leaking from a prior AI Pick "Play"). Falls back to setting
+    /// the binding directly if no handler is supplied.
+    var onSelect: ((MediaPreview) -> Void)?
 
     private static let columns = [GridItem(.adaptive(minimum: 160), spacing: 14)]
 
     var body: some View {
         LazyVGrid(columns: Self.columns, spacing: 16) {
             ForEach(viewModel.results) { item in
-                Button { selectedItem = item } label: {
-                    MediaCardView(item: item, userRating: userRatings[item.id])
+                Button {
+                    if let onSelect {
+                        onSelect(item)
+                    } else {
+                        selectedItem = item
+                    }
+                } label: {
+                    MediaCardView(
+                        item: item,
+                        userRating: TasteRatingLookupPolicy.rating(
+                            in: userRatings,
+                            mediaId: item.id,
+                            type: item.type,
+                            tmdbId: item.tmdbId
+                        )
+                    )
                 }
                 .buttonStyle(.plain)
                 #if os(visionOS)
@@ -1688,5 +1894,15 @@ enum SearchLanguageOption {
         }
 
         return ["en-US"]
+    }
+
+    static func activeOptions(for codes: Set<String>) -> [Option] {
+        let normalized = normalizeSelection(from: codes)
+
+        guard normalized != ["en-US"] else {
+            return []
+        }
+
+        return common.filter { normalized.contains($0.code) }
     }
 }

@@ -201,7 +201,10 @@ struct EpisodeRow: View {
                 ForEach(episodes) { episode in
                     EpisodeCardView(
                         episode: episode,
-                        watchState: episodeWatchStates[episode.id],
+                        watchState: EpisodeWatchStateAliasPolicy.watchHistory(
+                            for: episode,
+                            in: episodeWatchStates
+                        ),
                         isSelected: selectedEpisodeID == episode.id,
                         onSelect: { onSelectEpisode(episode) },
                         onToggleWatched: { onToggleWatched(episode) }

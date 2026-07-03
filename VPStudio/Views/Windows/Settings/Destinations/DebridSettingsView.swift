@@ -3,10 +3,74 @@ import UniformTypeIdentifiers
 
 // MARK: - Debrid Settings
 
-struct DebridSettingsView: View {
+enum DebridSettingsPolicy {
     static let sharedStreamingServiceTypes: [DebridServiceType] = DebridServiceType.allCases.filter { type in
         type != .easyNews
     }
+
+    static func trimmedApiKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func canSaveNewService(apiKey: String) -> Bool {
+        !trimmedApiKey(apiKey).isEmpty
+    }
+
+    static func supportedConfigs(from configs: [DebridConfig]) -> [DebridConfig] {
+        configs.filter(\.supportsSharedMagnetResolveFlow)
+    }
+
+    static func unsupportedConfigs(from configs: [DebridConfig]) -> [DebridConfig] {
+        configs.filter { !$0.supportsSharedMagnetResolveFlow }
+    }
+
+    static func successMessage(for serviceType: DebridServiceType) -> String {
+        "\(serviceType.displayName) token is valid."
+    }
+
+    static func rejectedMessage(for serviceType: DebridServiceType) -> String {
+        "\(serviceType.displayName) token was rejected."
+    }
+
+    static func fallbackToken(from apiTokenRef: String) -> String? {
+        let token = trimmedApiKey(apiTokenRef)
+        return token.isEmpty ? nil : token
+    }
+
+    static func normalizePriorities(_ input: [DebridConfig], updatedAt: Date) -> [DebridConfig] {
+        input
+            .sorted { lhs, rhs in lhs.priority < rhs.priority }
+            .enumerated()
+            .map { offset, config in
+                var copy = config
+                copy.priority = offset
+                copy.updatedAt = updatedAt
+                return copy
+            }
+    }
+
+    static func makeDebridService(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
+        switch type {
+        case .realDebrid:
+            return RealDebridService(apiToken: token)
+        case .allDebrid:
+            return AllDebridService(apiToken: token)
+        case .premiumize:
+            return PremiumizeService(apiToken: token)
+        case .torBox:
+            return TorBoxService(apiToken: token)
+        case .debridLink:
+            return DebridLinkService(apiToken: token)
+        case .offcloud:
+            return OffcloudService(apiToken: token)
+        case .easyNews:
+            return EasyNewsService(apiToken: token)
+        }
+    }
+}
+
+struct DebridSettingsView: View {
+    nonisolated static let sharedStreamingServiceTypes = DebridSettingsPolicy.sharedStreamingServiceTypes
 
     @Environment(AppState.self) private var appState
     @State private var configs: [DebridConfig] = []
@@ -18,6 +82,7 @@ struct DebridSettingsView: View {
     @State private var updatingConfigID: String?
     @State private var connectivityStatusByConfigID: [String: ConnectivityStatus] = [:]
     @State private var pendingDeletion: PendingDeletion?
+    private let disablesAutomaticTasks: Bool
 
     private enum ConnectivityStatus {
         case success(String)
@@ -30,19 +95,48 @@ struct DebridSettingsView: View {
     }
 
     private var trimmedNewApiKey: String {
-        newApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        DebridSettingsPolicy.trimmedApiKey(newApiKey)
     }
 
     private var canSaveNewService: Bool {
-        !trimmedNewApiKey.isEmpty
+        DebridSettingsPolicy.canSaveNewService(apiKey: newApiKey)
     }
 
     private var supportedConfigs: [DebridConfig] {
-        configs.filter(\.supportsSharedMagnetResolveFlow)
+        DebridSettingsPolicy.supportedConfigs(from: configs)
     }
 
     private var unsupportedConfigs: [DebridConfig] {
-        configs.filter { !$0.supportsSharedMagnetResolveFlow }
+        DebridSettingsPolicy.unsupportedConfigs(from: configs)
+    }
+
+    init(
+        initialConfigs: [DebridConfig] = [],
+        initialShowingAddSheet: Bool = false,
+        initialNewServiceType: DebridServiceType = .realDebrid,
+        initialNewApiKey: String = "",
+        initialSurfaceError: AppError? = nil,
+        initialTestingConfigID: String? = nil,
+        initialUpdatingConfigID: String? = nil,
+        initialValidationSuccessMessagesByConfigID: [String: String] = [:],
+        initialValidationErrorMessagesByConfigID: [String: String] = [:],
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _configs = State(initialValue: initialConfigs)
+        _showingAddSheet = State(initialValue: initialShowingAddSheet)
+        _newServiceType = State(initialValue: initialNewServiceType)
+        _newApiKey = State(initialValue: initialNewApiKey)
+        _surfaceError = State(initialValue: initialSurfaceError)
+        _testingConfigID = State(initialValue: initialTestingConfigID)
+        _updatingConfigID = State(initialValue: initialUpdatingConfigID)
+        let validationStatuses = initialValidationSuccessMessagesByConfigID
+            .mapValues { ConnectivityStatus.success($0) }
+            .merging(
+                initialValidationErrorMessagesByConfigID.mapValues { ConnectivityStatus.failure(.unknown($0)) },
+                uniquingKeysWith: { _, failure in failure }
+            )
+        _connectivityStatusByConfigID = State(initialValue: validationStatuses)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
     }
 
     var body: some View {
@@ -95,6 +189,7 @@ struct DebridSettingsView: View {
         }
         .navigationTitle("Streaming Providers")
         .task {
+            guard !disablesAutomaticTasks else { return }
             await loadConfigs()
         }
         .refreshable {
@@ -204,7 +299,7 @@ struct DebridSettingsView: View {
                 case .success(let message):
                     Label(message, systemImage: "checkmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 case .failure(let error):
                     AppErrorInlineView(error: error)
                 }
@@ -246,7 +341,7 @@ struct DebridSettingsView: View {
                 case .success(let message):
                     Label(message, systemImage: "checkmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(VPColor.success)
                 case .failure(let error):
                     AppErrorInlineView(error: error)
                 }
@@ -357,9 +452,9 @@ struct DebridSettingsView: View {
             let service = makeDebridService(type: config.serviceType, token: token)
             let isValid = try await service.validateToken()
             if isValid {
-                connectivityStatusByConfigID[config.id] = .success("\(config.serviceType.displayName) token is valid.")
+                connectivityStatusByConfigID[config.id] = .success(DebridSettingsPolicy.successMessage(for: config.serviceType))
             } else {
-                connectivityStatusByConfigID[config.id] = .failure(.unknown("\(config.serviceType.displayName) token was rejected."))
+                connectivityStatusByConfigID[config.id] = .failure(.unknown(DebridSettingsPolicy.rejectedMessage(for: config.serviceType)))
             }
         } catch {
             connectivityStatusByConfigID[config.id] = .failure(AppError(error))
@@ -367,19 +462,13 @@ struct DebridSettingsView: View {
     }
 
     private func saveConfigs(_ input: [DebridConfig]) async throws {
-        let now = Date()
-        let normalized = input
-            .sorted { lhs, rhs in lhs.priority < rhs.priority }
-            .enumerated()
-            .map { offset, config in
-                var copy = config
-                copy.priority = offset
-                copy.updatedAt = now
-                return copy
-            }
+        let normalized = DebridSettingsPolicy.normalizePriorities(input, updatedAt: Date())
 
         for config in normalized {
             try await appState.database.saveDebridConfig(config)
+        }
+        for config in normalized where config.shouldDeleteStoredSecretAfterPersisting {
+            try? await config.deleteStoredSecret(using: appState.secretStore)
         }
     }
 
@@ -388,26 +477,10 @@ struct DebridSettingsView: View {
             return try await appState.secretStore.getSecret(for: secretKey)
         }
 
-        let token = config.apiTokenRef.trimmingCharacters(in: .whitespacesAndNewlines)
-        return token.isEmpty ? nil : token
+        return DebridSettingsPolicy.fallbackToken(from: config.apiTokenRef)
     }
 
     private func makeDebridService(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
-        switch type {
-        case .realDebrid:
-            return RealDebridService(apiToken: token)
-        case .allDebrid:
-            return AllDebridService(apiToken: token)
-        case .premiumize:
-            return PremiumizeService(apiToken: token)
-        case .torBox:
-            return TorBoxService(apiToken: token)
-        case .debridLink:
-            return DebridLinkService(apiToken: token)
-        case .offcloud:
-            return OffcloudService(apiToken: token)
-        case .easyNews:
-            return EasyNewsService(apiToken: token)
-        }
+        DebridSettingsPolicy.makeDebridService(type: type, token: token)
     }
 }

@@ -11,6 +11,18 @@ struct LibraryCSVExportSheet: View {
     @State private var errorMessage: String?
     @State private var isShowingShareSheet = false
 
+    init(
+        initialIsExporting: Bool = false,
+        initialExportSummary: LibraryCSVExportSummary? = nil,
+        initialExportDirectoryURL: URL? = nil,
+        initialErrorMessage: String? = nil
+    ) {
+        _isExporting = State(initialValue: initialIsExporting)
+        _exportSummary = State(initialValue: initialExportSummary)
+        _exportDirectoryURL = State(initialValue: initialExportDirectoryURL)
+        _errorMessage = State(initialValue: initialErrorMessage)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 20) {
@@ -81,7 +93,7 @@ struct LibraryCSVExportSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(.vpRed)
+            .tint(.white)
             .disabled(isExporting)
         }
     }
@@ -118,7 +130,7 @@ struct LibraryCSVExportSheet: View {
                 .buttonStyle(.bordered)
                 #else
                 ShareLink(
-                    items: csvFileURLs(in: url),
+                    items: Self.csvFileURLs(in: url),
                     subject: Text("VPStudio Library Export"),
                     message: Text("Exported library CSVs from VPStudio")
                 ) {
@@ -170,7 +182,7 @@ struct LibraryCSVExportSheet: View {
         }
     }
 
-    private func csvFileURLs(in directory: URL) -> [URL] {
+    nonisolated static func csvFileURLs(in directory: URL) -> [URL] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
             return []

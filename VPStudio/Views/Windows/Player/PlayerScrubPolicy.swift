@@ -30,12 +30,21 @@ enum PlayerScrubPolicy {
     ) -> TimeInterval? {
         guard duration > 0 else { return nil }
         let threshold = chapterSnapDistance(duration: duration)
+        var bestMatch: (chapter: ChapterBoundary, distance: TimeInterval)?
         for chapter in chapters where chapter.startTime > 0 {
-            if abs(scrubTime - chapter.startTime) <= threshold {
-                return chapter.startTime
+            let distance = abs(scrubTime - chapter.startTime)
+            guard distance <= threshold else { continue }
+            if let currentBest = bestMatch {
+                guard distance < currentBest.distance
+                    || (distance == currentBest.distance && chapter.startTime < currentBest.chapter.startTime) else {
+                    continue
+                }
+            }
+            if distance.isFinite {
+                bestMatch = (chapter, distance)
             }
         }
-        return nil
+        return bestMatch?.chapter.startTime
     }
 
     /// Computes the snap distance in seconds, clamped between the min/max.
@@ -66,7 +75,11 @@ enum PlayerScrubPolicy {
         velocityX: Double,
         barWidth: Double
     ) -> Double {
-        guard barWidth > 0 else { return 0 }
+        guard barWidth.isFinite, barWidth > 0,
+              translationX.isFinite,
+              velocityX.isFinite else {
+            return 0
+        }
         let rawDelta = translationX / barWidth
         if abs(velocityX) < fineScrubVelocityThreshold {
             return rawDelta * fineScrubScale
@@ -87,7 +100,10 @@ enum PlayerScrubPolicy {
         at time: TimeInterval,
         chapters: [ChapterBoundary]
     ) -> String? {
-        chapters.last(where: { $0.startTime <= time })?.title
+        chapters
+            .filter { $0.startTime <= time }
+            .max(by: { $0.startTime < $1.startTime })?
+            .title
     }
 
     // MARK: - Supporting Types

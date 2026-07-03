@@ -1,0 +1,557 @@
+import Foundation
+import Testing
+import GRDB
+@testable import VPStudio
+
+// MARK: - MediaItem Computed Properties
+
+@Suite("MediaItemComputedProperties")
+struct MediaItemComputedPropertiesTests {
+
+    @Test func posterURLBuildsTMDBw500() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "/poster.jpg"
+        )
+        #expect(item.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w500/poster.jpg")
+    }
+
+    @Test func posterURLIsNilWhenPathMissing() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test")
+        #expect(item.posterURL == nil)
+    }
+
+    @Test func posterURLIsNilWhenPathIsEmpty() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: ""
+        )
+        #expect(item.posterURL == nil)
+    }
+
+    @Test func posterURLPreservesSecureArtworkURLsFromOMDb() {
+        let secure = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+
+        #expect(secure.posterURL?.absoluteString == "https://m.media-amazon.com/images/M/poster.jpg")
+        #expect(MediaArtworkURLPolicy.url(
+            for: "https://img.omdbapi.com/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        )?.absoluteString == "https://img.omdbapi.com/poster.jpg")
+        #expect(MediaArtworkURLPolicy.url(
+            for: "https://ia.media-imdb.com/images/M/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        )?.absoluteString == "https://ia.media-imdb.com/images/M/poster.jpg")
+    }
+
+    @Test func artworkURLRejectsUnsafeAbsoluteSchemes() {
+        #expect(MediaArtworkURLPolicy.url(for: "http://img.omdb.example/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "file:///Users/example/private.png", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "javascript:alert(1)", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "data:image/png;base64,AAAA", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https:///missing-host.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "http:/missing-host.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "//m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+    }
+
+    @Test func artworkURLRejectsUntrustedAbsoluteHostsAndSensitiveQueries() {
+        #expect(MediaArtworkURLPolicy.url(for: "https://example.com/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://cdn.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com:444/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?token=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://img.omdbapi.com/?i=tt1234567&apikey=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?client_secret=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?api-key=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?secret=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?password=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?jwt=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?refreshToken=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?authToken=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://m.media-amazon.com/images/M/poster.jpg?x-amz-signature=secret", legacyTMDBSizePath: "w500") == nil)
+    }
+
+    @Test func artworkURLRejectsCredentialBearingHTTPSURLs() {
+        #expect(MediaArtworkURLPolicy.url(for: "https://user:password@m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "https://token@m.media-amazon.com/images/M/poster.jpg", legacyTMDBSizePath: "w500") == nil)
+
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "https://token@m.media-amazon.com/images/M/poster.jpg",
+            backdropPath: "https://user:password@m.media-amazon.com/images/M/backdrop.jpg"
+        )
+        #expect(item.posterURL == nil)
+        #expect(item.backdropURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func artworkURLAcceptsKnownRegionalIMDbAmazonHosts() throws {
+        let euURL = try #require(MediaArtworkURLPolicy.url(
+            for: "https://images-eu.ssl-images-amazon.com/images/M/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        ))
+        let feURL = try #require(MediaArtworkURLPolicy.url(
+            for: "https://images-fe.ssl-images-amazon.com/images/M/poster.jpg",
+            legacyTMDBSizePath: "w500"
+        ))
+
+        #expect(euURL.host == "images-eu.ssl-images-amazon.com")
+        #expect(feURL.host == "images-fe.ssl-images-amazon.com")
+    }
+
+    @Test func artworkURLRejectsOMDbPlaceholderPaths() {
+        #expect(MediaArtworkURLPolicy.url(for: "N/A", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: " n/a ", legacyTMDBSizePath: "w500") == nil)
+
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "N/A",
+            backdropPath: " n/a "
+        )
+        #expect(item.posterURL == nil)
+        #expect(item.backdropURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func artworkURLNormalizesLegacyTMDBPathWithoutLeadingSlash() {
+        #expect(MediaArtworkURLPolicy.url(for: "poster.jpg", legacyTMDBSizePath: "w500")?.absoluteString == "https://image.tmdb.org/t/p/w500/poster.jpg")
+    }
+
+    @Test func artworkURLRejectsLegacyRelativePathsWithQueryOrFragment() {
+        #expect(MediaArtworkURLPolicy.url(for: "/poster.jpg?token=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "poster.jpg?apikey=secret", legacyTMDBSizePath: "w500") == nil)
+        #expect(MediaArtworkURLPolicy.url(for: "/poster.jpg#fragment", legacyTMDBSizePath: "w500") == nil)
+    }
+
+    @Test func artworkURLAllowsLegacyRelativePathWithSpaces() {
+        #expect(MediaArtworkURLPolicy.url(
+            for: "/poster with spaces.jpg",
+            legacyTMDBSizePath: "w500"
+        )?.absoluteString == "https://image.tmdb.org/t/p/w500/poster%20with%20spaces.jpg")
+    }
+
+    @Test func backdropURLBuildsTMDBW1280() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            backdropPath: "/backdrop.jpg"
+        )
+        // w1280 (not original): intentional payload reduction with no visible quality loss (see MediaItem.backdropURL).
+        #expect(item.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/backdrop.jpg")
+    }
+
+    @Test func backdropURLIsNilWhenPathMissingOrEmpty() {
+        let missing = MediaItem(id: "tt123", type: .movie, title: "Test")
+        let empty = MediaItem(id: "tt456", type: .movie, title: "Test", backdropPath: "")
+
+        #expect(missing.backdropURL == nil)
+        #expect(empty.backdropURL == nil)
+    }
+
+    @Test func hasArtworkTrueWithPoster() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "/poster.jpg"
+        )
+        #expect(item.hasArtwork == true)
+    }
+
+    @Test func hasArtworkTrueWithBackdrop() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            backdropPath: "/backdrop.jpg"
+        )
+        #expect(item.hasArtwork == true)
+    }
+
+    @Test func hasArtworkFalseWithEmptyPaths() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "",
+            backdropPath: ""
+        )
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func hasArtworkFalseWithNilPaths() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test")
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func hasArtworkFalseWhenPersistedArtworkCannotRender() {
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test",
+            posterPath: "javascript:alert(1)",
+            backdropPath: "//m.media-amazon.com/images/M/backdrop.jpg"
+        )
+
+        #expect(item.posterURL == nil)
+        #expect(item.backdropURL == nil)
+        #expect(item.hasArtwork == false)
+    }
+
+    @Test func yearStringReturnsValue() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test", year: 2024)
+        #expect(item.yearString == "2024")
+    }
+
+    @Test func yearStringReturnsEmptyWhenNil() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test")
+        #expect(item.yearString == "")
+    }
+
+    @Test func ratingStringFormatsToOneDecimal() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test", imdbRating: 8.75)
+        #expect(item.ratingString == "8.8")
+    }
+
+    @Test func ratingStringReturnsEmptyWhenNil() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test")
+        #expect(item.ratingString == "")
+    }
+
+    @Test func ratingPolicyRejectsNonFiniteAndOutOfRangeValues() {
+        #expect(MediaRatingPolicy.normalizedIMDbRating(.nan) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(.infinity) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(-1) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(0) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(10.1) == nil)
+        #expect(MediaRatingPolicy.normalizedIMDbRating(10) == 10)
+    }
+
+    @Test func ratingStringDoesNotRenderInvalidPersistedValues() {
+        #expect(MediaItem(id: "nan", type: .movie, title: "NaN", imdbRating: .nan).ratingString == "")
+        #expect(MediaItem(id: "inf", type: .movie, title: "Inf", imdbRating: .infinity).ratingString == "")
+        #expect(MediaItem(id: "negative", type: .movie, title: "Negative", imdbRating: -2).ratingString == "")
+        #expect(MediaItem(id: "too-high", type: .movie, title: "Too High", imdbRating: 42).ratingString == "")
+    }
+
+    @Test func mediaPreviewRatingStringDoesNotRenderInvalidValues() {
+        #expect(MediaPreview(id: "valid", type: .movie, title: "Valid", imdbRating: 8.94).ratingString == "8.9")
+        #expect(MediaPreview(id: "nan", type: .movie, title: "NaN", imdbRating: .nan).ratingString == "")
+        #expect(MediaPreview(id: "inf", type: .movie, title: "Inf", imdbRating: .infinity).ratingString == "")
+        #expect(MediaPreview(id: "zero", type: .movie, title: "Zero", imdbRating: 0).ratingString == "")
+        #expect(MediaPreview(id: "too-high", type: .movie, title: "Too High", imdbRating: 42).ratingString == "")
+    }
+
+    @Test func omdbRatingParserAcceptsOnlyPlainIMDbScaleDecimals() {
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("8.7") == 8.7)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("10.0") == 10.0)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("N/A") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("nan") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("inf") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("8e0") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("0x1p4") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("8.5/10") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("12") == nil)
+        #expect(MediaRatingPolicy.normalizedOMDbIMDbRating("0") == nil)
+    }
+
+    @Test func runtimeStringWithHoursAndMinutes() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test", runtime: 145)
+        #expect(item.runtimeString == "2h 25m")
+    }
+
+    @Test func runtimeStringWithMinutesOnly() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test", runtime: 45)
+        #expect(item.runtimeString == "45m")
+    }
+
+    @Test func runtimeStringReturnsEmptyWhenNil() {
+        let item = MediaItem(id: "tt123", type: .movie, title: "Test")
+        #expect(item.runtimeString == "")
+    }
+}
+
+// MARK: - MediaItem Value Semantics
+
+@Suite("MediaItemValueSemantics")
+struct MediaItemValueSemanticsTests {
+
+    @Test func withIDReturnsCopyWithNewID() {
+        let original = MediaItem(id: "tt123", type: .movie, title: "Original")
+        let copy = original.withID("tt456")
+        #expect(copy.id == "tt456")
+        #expect(original.id == "tt123")
+        #expect(copy.title == original.title)
+    }
+
+    @Test func mediaItemEquality() {
+        let a = MediaItem(id: "tt123", type: .movie, title: "Test", year: 2024)
+        let b = MediaItem(id: "tt123", type: .movie, title: "Test", year: 2024)
+        #expect(a == b)
+    }
+
+    @Test func mediaItemInequality() {
+        let a = MediaItem(id: "tt123", type: .movie, title: "Test")
+        let b = MediaItem(id: "tt456", type: .movie, title: "Test")
+        #expect(a != b)
+    }
+}
+
+// MARK: - MediaItem GRDB Round-Trip
+
+@Suite("MediaItemGRDB")
+struct MediaItemGRDBTests {
+
+    @Test func initFromRowDecodesTypeAndGenres() throws {
+        let row = Row([
+            "id": "tt123",
+            "type": "series",
+            "title": "Test",
+            "year": 2024,
+            "posterPath": nil,
+            "backdropPath": nil,
+            "overview": nil,
+            "genres": try JSONEncoder().encode(["Comedy"]),
+            "imdbRating": nil,
+            "runtime": nil,
+            "status": nil,
+            "tmdbId": nil,
+            "lastFetched": nil,
+        ])
+        let item = try MediaItem(row: row)
+        #expect(item.id == "tt123")
+        #expect(item.type == .series)
+        #expect(item.genres == ["Comedy"])
+    }
+
+    @Test func initFromRowFallsBackToMovieForUnknownType() throws {
+        let row = Row([
+            "id": "tt123",
+            "type": "invalid",
+            "title": "Test",
+            "year": nil,
+            "posterPath": nil,
+            "backdropPath": nil,
+            "overview": nil,
+            "genres": nil,
+            "imdbRating": nil,
+            "runtime": nil,
+            "status": nil,
+            "tmdbId": nil,
+            "lastFetched": nil,
+        ])
+        let item = try MediaItem(row: row)
+        #expect(item.type == .movie)
+        #expect(item.genres == [])
+    }
+
+    @Test func initFromRowFallsBackToEmptyGenresForMalformedJSON() throws {
+        let row = Row([
+            "id": "tt123",
+            "type": "movie",
+            "title": "Test",
+            "year": nil,
+            "posterPath": nil,
+            "backdropPath": nil,
+            "overview": nil,
+            "genres": Data("not-json".utf8),
+            "imdbRating": nil,
+            "runtime": nil,
+            "status": nil,
+            "tmdbId": nil,
+            "lastFetched": nil,
+        ])
+
+        let item = try MediaItem(row: row)
+
+        #expect(item.type == .movie)
+        #expect(item.genres == [])
+    }
+
+    @Test func customDecoderDefaultsMissingTypeAndGenres() throws {
+        let data = Data("""
+        {
+          "id": "tt123",
+          "title": "Decoded"
+        }
+        """.utf8)
+
+        let item = try JSONDecoder().decode(MediaItem.self, from: data)
+
+        #expect(item.type == .movie)
+        #expect(item.genres == [])
+        #expect(item.title == "Decoded")
+    }
+}
+
+// MARK: - MediaPreview Properties
+
+@Suite("MediaPreviewProperties")
+struct MediaPreviewPropertiesTests {
+
+    @Test func posterURLUsesw342() {
+        let preview = MediaPreview(id: "tt123", type: .movie, title: "Test", posterPath: "/poster.jpg")
+        #expect(preview.posterURL?.absoluteString == "https://image.tmdb.org/t/p/w342/poster.jpg")
+    }
+
+    @Test func posterURLIsNilWhenPreviewPathMissingOrEmpty() {
+        let missing = MediaPreview(id: "tt123", type: .movie, title: "Test")
+        let empty = MediaPreview(id: "tt456", type: .movie, title: "Test", posterPath: "")
+
+        #expect(missing.posterURL == nil)
+        #expect(empty.posterURL == nil)
+    }
+
+    @Test func backdropURLUsesw1280() {
+        let preview = MediaPreview(id: "tt123", type: .movie, title: "Test", backdropPath: "/bg.jpg")
+        #expect(preview.backdropURL?.absoluteString == "https://image.tmdb.org/t/p/w1280/bg.jpg")
+    }
+
+    @Test func backdropURLIsNilWhenPreviewPathMissingOrEmpty() {
+        let missing = MediaPreview(id: "tt123", type: .movie, title: "Test")
+        let empty = MediaPreview(id: "tt456", type: .movie, title: "Test", backdropPath: "")
+
+        #expect(missing.backdropURL == nil)
+        #expect(empty.backdropURL == nil)
+    }
+
+    @Test func episodeMetadataDefaultsAndStoresValues() {
+        let defaultPreview = MediaPreview(id: "tt123", type: .series, title: "Show")
+        let episodePreview = MediaPreview(
+            id: "tt123-s1e2",
+            type: .series,
+            title: "Episode",
+            episodeId: "ep-2",
+            seasonNumber: 1,
+            episodeNumber: 2
+        )
+
+        #expect(defaultPreview.episodeId == nil)
+        #expect(defaultPreview.seasonNumber == nil)
+        #expect(defaultPreview.episodeNumber == nil)
+        #expect(episodePreview.episodeId == "ep-2")
+        #expect(episodePreview.seasonNumber == 1)
+        #expect(episodePreview.episodeNumber == 2)
+    }
+
+    @Test func mediaPreviewEquatable() {
+        let a = MediaPreview(id: "tt123", type: .movie, title: "Test")
+        let b = MediaPreview(id: "tt123", type: .movie, title: "Test")
+        #expect(a == b)
+    }
+}
+
+// MARK: - MediaItem Database Round-Trip
+
+@Suite("MediaItemDatabaseRoundTrip")
+struct MediaItemDatabaseRoundTripTests {
+    private func makeTempDatabase() async throws -> (DatabaseManager, URL) {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let database = try DatabaseManager(inMemoryNamed: "media-item-test-\(UUID().uuidString)")
+        try await database.migrate()
+        return (database, tempDir)
+    }
+
+    @Test func roundTripsThroughDatabaseManager() async throws {
+        let (database, tempDir) = try await makeTempDatabase()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let item = MediaItem(
+            id: "tt123",
+            type: .movie,
+            title: "Test Movie",
+            year: 2024
+        )
+        try await database.saveMediaItem(item)
+        let fetched = try await database.fetchMediaItem(id: "tt123")
+
+        #expect(fetched != nil)
+        #expect(fetched?.id == item.id)
+        #expect(fetched?.title == item.title)
+        #expect(fetched?.type == item.type)
+    }
+
+    @Test
+    func mediaItemWithAllFieldsRoundTripsCorrectly() async throws {
+        let (database, tempDir) = try await makeTempDatabase()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let item = MediaItem(
+            id: "tt456",
+            type: .series,
+            title: "Test Series",
+            year: 2023,
+            posterPath: "/poster.jpg",
+            backdropPath: "/backdrop.jpg",
+            overview: "A great series",
+            genres: ["Drama", "Action"],
+            imdbRating: 8.5,
+            runtime: 60,
+            status: "Released",
+            tmdbId: 12345
+        )
+        try await database.saveMediaItem(item)
+        let fetched = try await database.fetchMediaItem(id: "tt456")
+
+        #expect(fetched != nil)
+        #expect(fetched?.overview == "A great series")
+        #expect(fetched?.genres == ["Drama", "Action"])
+        #expect(fetched?.imdbRating == 8.5)
+        #expect(fetched?.tmdbId == 12345)
+    }
+
+    @Test
+    func multipleMediaItemsRoundTripCorrectly() async throws {
+        let (database, tempDir) = try await makeTempDatabase()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let items = [
+            MediaItem(id: "tt001", type: .movie, title: "Movie 1", year: 2020),
+            MediaItem(id: "tt002", type: .movie, title: "Movie 2", year: 2021),
+            MediaItem(id: "tt003", type: .series, title: "Series 1", year: 2022)
+        ]
+
+        for item in items {
+            try await database.saveMediaItem(item)
+        }
+
+        let ids = items.map(\.id)
+        let fetched = try await database.fetchMediaItems(ids: ids)
+
+        #expect(fetched.count == 3)
+        #expect(fetched.contains { $0.id == "tt001" })
+        #expect(fetched.contains { $0.id == "tt002" })
+        #expect(fetched.contains { $0.id == "tt003" })
+    }
+
+    @Test func mediaItemGenresArrayPersistsCorrectly() async throws {
+        let (database, tempDir) = try await makeTempDatabase()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let item = MediaItem(
+            id: "tt789",
+            type: .movie,
+            title: "Genre Test",
+            genres: ["Sci-Fi", "Adventure", "Action"]
+        )
+        try await database.saveMediaItem(item)
+        let fetched = try await database.fetchMediaItem(id: "tt789")
+
+        #expect(fetched != nil)
+        #expect(fetched?.genres.count == 3)
+        #expect(fetched?.genres == ["Sci-Fi", "Adventure", "Action"])
+    }
+}

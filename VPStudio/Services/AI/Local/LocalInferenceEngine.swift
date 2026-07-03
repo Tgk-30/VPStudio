@@ -1,17 +1,32 @@
 import Foundation
 import os
 
+private func defaultLocalInferenceAvailableMemoryBytes() -> UInt64 {
+#if os(macOS)
+    ProcessInfo.processInfo.physicalMemory
+#else
+    UInt64(os_proc_available_memory())
+#endif
+}
+
 /// Actor owning model load/unload/generate lifecycle with memory-aware management.
 actor LocalInferenceEngine {
 
     private let catalogStore: LocalModelCatalogStore
     private let adapter: any LocalInferenceAdapting
+    private let availableMemoryProvider: @Sendable () -> UInt64
     private let logger = Logger(subsystem: "com.vpstudio", category: "local-inference")
 
     private var loadedModel: LoadedLocalModel?
     private var loadedModelID: String?
     private var lastUsed: Date?
     private var idleUnloadTask: Task<Void, Never>?
+
+    /// Serializes `generate` so a second call can't reuse the same loaded model
+    /// (which is `@unchecked Sendable` and not proven thread-safe) while the first
+    /// is still streaming. The actor only guarantees mutual exclusion between
+    /// suspension points; this flag enforces it across the awaits in `generate`.
+    private var isGenerating = false
 
     private static let idleTimeout: Duration = .seconds(300)       // 5 minutes
     private static let warmWindow: TimeInterval = 120              // keep warm if used in last 2 min
@@ -20,15 +35,23 @@ actor LocalInferenceEngine {
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var thermalObserver: NSObjectProtocol?
 
-    init(catalogStore: LocalModelCatalogStore, adapter: any LocalInferenceAdapting = CoreMLInferenceAdapter()) {
+    init(
+        catalogStore: LocalModelCatalogStore,
+        adapter: any LocalInferenceAdapting = CoreMLInferenceAdapter(),
+        availableMemoryProvider: @escaping @Sendable () -> UInt64 = defaultLocalInferenceAvailableMemoryBytes
+    ) {
         self.catalogStore = catalogStore
         self.adapter = adapter
+        self.availableMemoryProvider = availableMemoryProvider
     }
 
     // MARK: - Memory Pressure Monitoring
 
-    /// Call once after init to start listening for memory/thermal pressure.
+    /// Start listening for memory/thermal pressure. Idempotent: cancels any prior source/observer
+    /// first so a repeat call (e.g. re-arming after resetAllData) can't leak a DispatchSource +
+    /// NotificationCenter observer.
     func startMonitoring() {
+        stopMonitoring()
         // Memory pressure via GCD
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global())
         source.setEventHandler { [weak self] in
@@ -139,11 +162,7 @@ actor LocalInferenceEngine {
     }
 
     private func availableMemoryBytes() -> UInt64 {
-#if os(macOS)
-        ProcessInfo.processInfo.physicalMemory
-#else
-        UInt64(os_proc_available_memory())
-#endif
+        availableMemoryProvider()
     }
 
     /// Force unload on memory pressure — no hysteresis check.
@@ -159,6 +178,15 @@ actor LocalInferenceEngine {
         userMessage: String,
         maxTokens: Int = 4096
     ) async throws -> LocalGenerationResult {
+        // Reject overlapping generations. The check-and-set runs with no `await`
+        // in between, so the actor executes it atomically: a reentrant call that
+        // slips in while the first is suspended will observe `isGenerating == true`.
+        guard !isGenerating else {
+            throw LocalInferenceError.busy
+        }
+        isGenerating = true
+        defer { isGenerating = false }
+
         // Load model separately — not subject to generation timeout.
         // First load mmaps weights from disk which can take 30-60s.
         if loadedModelID != modelID {
@@ -222,22 +250,25 @@ actor LocalInferenceEngine {
 
 // MARK: - Errors
 
-enum LocalInferenceError: LocalizedError {
+enum LocalInferenceError: LocalizedError, Equatable {
     case modelNotDownloaded
     case insufficientMemory(availableMB: Int, requiredMB: Int)
     case generationTimeout
+    case busy
     case inferenceError(String)
 
     var errorDescription: String? {
         switch self {
         case .modelNotDownloaded:
-            return "Model not downloaded. Please download it first in Settings → AI."
+            return "Model not downloaded."
         case .insufficientMemory(let avail, let req):
             return "Insufficient memory: \(avail)MB available, \(req)MB required."
         case .generationTimeout:
-            return "Generation timed out after 5 minutes."
+            return "Generation timed out."
+        case .busy:
+            return "A local generation is already in progress. Try again when it finishes."
         case .inferenceError(let msg):
-            return "Inference error: \(msg)"
+            return msg
         }
     }
 }

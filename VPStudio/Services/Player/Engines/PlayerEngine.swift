@@ -31,11 +31,11 @@ enum PlayerEngineError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidStreamURL(let value):
-            return "Invalid stream URL: \(value)"
+            return "Invalid stream URL: \(IndexerLogSanitizer.redactedMessage(value))"
         case .startupTimeout(let engine):
             return "\(engine.displayName) timed out before playback started."
         case .initializationFailed(let engine, let message):
-            return "\(engine.displayName) failed: \(message)"
+            return "\(engine.displayName) failed: \(IndexerLogSanitizer.redactedMessage(message))"
         }
     }
 }

@@ -5,7 +5,7 @@ import Foundation
 // MARK: - fromStoredValue Legacy Mapping
 
 @Suite("FeedbackScaleMode - fromStoredValue")
-struct FeedbackScaleModeFromStoredValueTests {
+struct FeedbackScaleModeFromStoredValueTestsFeedbackscalemodetests {
 
     @Test func fiveStarMapsToOneToTen() {
         let mode = FeedbackScaleMode.fromStoredValue("five_star")
@@ -51,7 +51,7 @@ struct FeedbackScaleModeFromStoredValueTests {
 // MARK: - canonicalMode
 
 @Suite("FeedbackScaleMode - canonicalMode")
-struct FeedbackScaleModeCanonicalTests {
+struct FeedbackScaleModeCanonicalTestsFeedbackscalemodetests {
 
     @Test func likeDislikeIsCanonical() {
         #expect(FeedbackScaleMode.likeDislike.canonicalMode == .likeDislike)
@@ -77,7 +77,7 @@ struct FeedbackScaleModeCanonicalTests {
 // MARK: - clamp
 
 @Suite("FeedbackScaleMode - clamp")
-struct FeedbackScaleModeClampTests {
+struct FeedbackScaleModeClampTestsFeedbackscalemodetests {
 
     @Test func likeDislikeClampMin() {
         #expect(FeedbackScaleMode.likeDislike.clamp(-5) == 0)
@@ -119,7 +119,7 @@ struct FeedbackScaleModeClampTests {
 // MARK: - normalizedValue
 
 @Suite("FeedbackScaleMode - normalizedValue")
-struct FeedbackScaleModeNormalizedValueTests {
+struct FeedbackScaleModeNormalizedValueTestsFeedbackscalemodetests {
 
     @Test func likeDislikeNormalization() {
         #expect(FeedbackScaleMode.likeDislike.normalizedValue(0) == 0.0)
@@ -301,7 +301,7 @@ struct FeedbackScaleModeSelectableCasesTests {
 // MARK: - displayName
 
 @Suite("FeedbackScaleMode - displayName")
-struct FeedbackScaleModeDisplayNameTests {
+struct FeedbackScaleModeDisplayNameTestsFeedbackscalemodetests {
 
     @Test func likeDislikeDisplayName() {
         #expect(FeedbackScaleMode.likeDislike.displayName == "Like / Dislike")

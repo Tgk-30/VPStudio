@@ -4,15 +4,14 @@ import Foundation
 
 // MARK: - Database Layer Tests
 
-@Suite("Episode Watch Tracking - Database")
+@Suite("Episode Watch Tracking - Database", .serialized)
 struct EpisodeWatchTrackingDatabaseTests {
 
     private func makeDatabase() async throws -> DatabaseManager {
         let rootDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent("episode_watch_test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "episode-watch-test-\(UUID().uuidString)")
         try await database.migrate()
         return database
     }
@@ -298,7 +297,7 @@ struct EpisodeWatchTrackingDatabaseTests {
 
 // MARK: - ViewModel Layer Tests
 
-@Suite("Episode Watch Tracking - ViewModel")
+@Suite("Episode Watch Tracking - ViewModel", .serialized)
 struct EpisodeWatchTrackingViewModelTests {
     private struct StubDetailMetadataProvider: DetailMetadataProviding {
         let seasons: [Season]
@@ -306,6 +305,14 @@ struct EpisodeWatchTrackingViewModelTests {
 
         func getDetail(id: String, type: MediaType) async throws -> MediaItem {
             MediaItem(id: id, type: type, title: "Stub")
+        }
+
+        func getSeasons(id: String, type: MediaType) async throws -> [Season] {
+            seasons
+        }
+
+        func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+            episodesBySeason[season] ?? []
         }
 
         func getSeasons(tmdbId: Int) async throws -> [Season] {
@@ -321,8 +328,7 @@ struct EpisodeWatchTrackingViewModelTests {
         let rootDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent("episode_vm_test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "episode-vm-test-\(UUID().uuidString)")
         try await database.migrate()
         return database
     }
@@ -580,6 +586,52 @@ struct EpisodeWatchTrackingViewModelTests {
         let episode = makeEpisode(id: "ep-1", seasonNumber: 1, episodeNumber: 1)
         await vm.toggleEpisodeWatched(episode)
         #expect(vm.episodeWatchStates.isEmpty)
+    }
+
+    @MainActor
+    @Test func omdbEpisodeIMDbIDResolvesTraktSeasonEpisodeAliasForCurrentStateAndToggle() async throws {
+        let db = try await makeDatabase()
+        let appState = AppState(database: db)
+        let vm = DetailViewModel(appState: appState)
+        let episode = makeEpisode(id: "tt9000002", seasonNumber: 1, episodeNumber: 2, title: "Second")
+
+        vm.mediaItem = makeSeriesItem(id: "tt7654321", title: "OMDb Show")
+        vm.episodes = [episode]
+        vm.selectedEpisode = episode
+        try await db.markEpisodeWatched(mediaId: "tt7654321", episodeId: "s01e02", title: "Second")
+
+        await vm.loadEpisodeWatchStates()
+
+        #expect(vm.watchHistory(for: episode)?.episodeId == "s01e02")
+        #expect(vm.isEpisodeWatched(episode))
+        #expect(vm.currentWatchStatusState == .watched)
+
+        await vm.toggleCurrentWatchState()
+
+        let states = try await db.fetchEpisodeWatchStates(mediaId: "tt7654321")
+        #expect(states["s01e02"] == nil)
+        #expect(states["tt9000002"] == nil)
+        #expect(vm.currentWatchStatusState == .notWatched)
+    }
+
+    @MainActor
+    @Test func markSeasonWatchedDoesNotDuplicateOMDbEpisodeWhenTraktAliasAlreadyWatched() async throws {
+        let db = try await makeDatabase()
+        let appState = AppState(database: db)
+        let vm = DetailViewModel(appState: appState)
+        let episode = makeEpisode(id: "tt9000002", seasonNumber: 1, episodeNumber: 2, title: "Second")
+
+        vm.mediaItem = makeSeriesItem(id: "tt7654321", title: "OMDb Show")
+        vm.episodes = [episode]
+        try await db.markEpisodeWatched(mediaId: "tt7654321", episodeId: "s01e02", title: "Second")
+
+        await vm.loadEpisodeWatchStates()
+        await vm.markSeasonWatched()
+
+        let states = try await db.fetchEpisodeWatchStates(mediaId: "tt7654321")
+        #expect(states.count == 1)
+        #expect(states["s01e02"]?.isCompleted == true)
+        #expect(states["tt9000002"] == nil)
     }
 
     @MainActor

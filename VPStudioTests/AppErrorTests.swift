@@ -67,6 +67,21 @@ struct AppErrorInitMappingTests {
         #expect(mapped == .network(.offline))
     }
 
+    @Test func urlErrorBadURLUsesFailingURLWhenAvailable() {
+        let failingURL = URL(string: "bad://url")!
+        let urlErr = URLError(
+            .badURL,
+            userInfo: [NSURLErrorFailingURLErrorKey: failingURL]
+        )
+        let mapped = AppError(urlErr)
+        #expect(mapped == .network(.invalidURL("bad://url")))
+    }
+
+    @Test func urlErrorUnsupportedURLWithoutFailingURLUsesUnknownFallback() {
+        let mapped = AppError(URLError(.unsupportedURL))
+        #expect(mapped == .network(.invalidURL("unknown")))
+    }
+
     @Test func urlErrorOtherCodeMappedToTransport() {
         let urlErr = URLError(.cannotConnectToHost)
         let mapped = AppError(urlErr)
@@ -86,6 +101,11 @@ struct AppErrorInitMappingTests {
         let tmdbErr = TMDBError.unauthorized
         let mapped = AppError(tmdbErr)
         #expect(mapped == .network(.unauthorized))
+    }
+
+    @Test func tmdbErrorInvalidURLAndInvalidResponseMapped() {
+        #expect(AppError(TMDBError.invalidURL("/bad")) == .network(.invalidURL("/bad")))
+        #expect(AppError(TMDBError.invalidResponse) == .network(.invalidResponse))
     }
 
     @Test func tmdbErrorNotFoundMapped() {
@@ -147,6 +167,33 @@ struct AppErrorInitMappingTests {
         }
         let mapped = AppError(Named())
         #expect(mapped == .unknown("named error"))
+    }
+
+    @Test func appErrorDescriptionRedactsSensitiveProviderDetails() {
+        let error = AppError.network(
+            .server(
+                statusCode: 500,
+                message: "Failed https://api.example.com/title?apikey=omdb-banner-secret&token=tmdb-banner-secret Authorization: Bearer appErrorBearerSecret123456 clientSecret=app-error-client-secret-1234567890"
+            )
+        )
+        let description = error.errorDescription ?? ""
+
+        #expect(description.contains("REDACTED"))
+        #expect(!description.contains("omdb-banner-secret"))
+        #expect(!description.contains("tmdb-banner-secret"))
+        #expect(!description.contains("appErrorBearerSecret123456"))
+        #expect(!description.contains("app-error-client-secret-1234567890"))
+    }
+
+    @Test func metadataSetupRequiredMarksActionableSetupErrorsOnly() {
+        let setup = AppError.metadataSetupRequired(feature: "Search")
+        let plain = AppError.unknown("Search needs an OMDb API key.")
+        let network = AppError.network(.unauthorized)
+
+        #expect(setup.requiresMetadataSetupAction)
+        #expect(setup.errorDescription?.contains("Search needs an OMDb metadata API key") == true)
+        #expect(!plain.requiresMetadataSetupAction)
+        #expect(!network.requiresMetadataSetupAction)
     }
 }
 
@@ -313,6 +360,11 @@ struct AppErrorDebridRecoverySuggestionsTests {
 
     @Test func rateLimitedHasSuggestion() {
         let err = AppError.debrid(.rateLimited)
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func unavailableForLegalReasonsHasSuggestion() {
+        let err = AppError.debrid(.unavailableForLegalReasons("blocked"))
         #expect(err.recoverySuggestion?.isEmpty == false)
     }
 

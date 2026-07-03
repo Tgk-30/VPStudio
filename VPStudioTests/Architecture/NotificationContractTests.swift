@@ -9,7 +9,7 @@ struct NotificationContractTests {
         .downloadsDidChange,
         .environmentsDidChange,
         .indexersDidChange,
-        .tmdbApiKeyDidChange,
+        .metadataApiKeyDidChange,
     ]
 
     @Test(arguments: ExhaustiveMode.choose(fast: Array(0..<8), full: Array(0..<16)))
@@ -18,7 +18,8 @@ struct NotificationContractTests {
         #expect(Notification.Name.downloadsDidChange.rawValue == "VPStudio.DownloadsDidChange")
         #expect(Notification.Name.environmentsDidChange.rawValue == "VPStudio.EnvironmentsDidChange")
         #expect(Notification.Name.indexersDidChange.rawValue == "VPStudio.IndexersDidChange")
-        #expect(Notification.Name.tmdbApiKeyDidChange.rawValue == "VPStudio.TMDBApiKeyDidChange")
+        #expect(Notification.Name.metadataApiKeyDidChange.rawValue == "VPStudio.MetadataApiKeyDidChange")
+        #expect(Notification.Name.metadataProviderDidChange == .metadataApiKeyDidChange)
         AssertionHelpers.expectUnique(Self.expectedNames.map(\.rawValue))
     }
 }

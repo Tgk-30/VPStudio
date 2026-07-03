@@ -8,6 +8,21 @@ struct SimklSettingsView: View {
     @State private var isShowingDisconnectConfirmation = false
     @State private var statusMessage: String?
     @State private var errorMessage: String?
+    private let disablesAutomaticTasks: Bool
+
+    init(
+        initialHasSavedAuthorization: Bool = false,
+        initialIsShowingDisconnectConfirmation: Bool = false,
+        initialStatusMessage: String? = nil,
+        initialErrorMessage: String? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _hasSavedAuthorization = State(initialValue: initialHasSavedAuthorization)
+        _isShowingDisconnectConfirmation = State(initialValue: initialIsShowingDisconnectConfirmation)
+        _statusMessage = State(initialValue: initialStatusMessage)
+        _errorMessage = State(initialValue: initialErrorMessage)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     var body: some View {
         Form {
@@ -52,6 +67,7 @@ struct SimklSettingsView: View {
             Text("This removes any saved Simkl authorization from this device. Simkl remains cleanup-only in this build.")
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             await loadSavedAuthorizationState()
         }
     }
@@ -72,7 +88,7 @@ struct SimklSettingsView: View {
         } catch {
             hasSavedAuthorization = false
             statusMessage = nil
-            errorMessage = error.localizedDescription
+            errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -86,7 +102,7 @@ struct SimklSettingsView: View {
                 await loadSavedAuthorizationState()
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
+                    errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
             }
         }

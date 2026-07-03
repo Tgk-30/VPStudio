@@ -17,38 +17,179 @@ enum QARuntimeOptions {
         case playFirstCompleted
     }
 
-    static let isEnabled: Bool = {
-        ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("VPSTUDIO_QA_") || $0.hasPrefix("SIMCTL_CHILD_VPSTUDIO_QA_") }
-    }()
+    struct EnvironmentSnapshot: Sendable {
+        var values: [String: String]
+
+        init(_ values: [String: String] = ProcessInfo.processInfo.environment) {
+            self.values = values
+        }
+
+        var isQAEnabled: Bool {
+            values.keys.contains { $0.hasPrefix("VPSTUDIO_QA_") || $0.hasPrefix("SIMCTL_CHILD_VPSTUDIO_QA_") }
+        }
+
+        func value(_ key: String) -> String? {
+            values[key] ?? values["SIMCTL_CHILD_\(key)"]
+        }
+
+        func bool(_ key: String) -> Bool {
+            guard let value = value(key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() else {
+                return false
+            }
+            return ["1", "true", "yes", "on"].contains(value)
+        }
+
+        func string(_ key: String) -> String? {
+            guard let value = value(key)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+                return nil
+            }
+            return value
+        }
+
+        func double(_ key: String) -> Double? {
+            guard let value = value(key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return nil
+            }
+            return Double(value)
+        }
+
+        func stringList(_ key: String) -> [String] {
+            guard let value = value(key) else { return [] }
+            return value
+                .split(whereSeparator: { $0 == "," || $0 == "\n" })
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+    }
+
+    static let environment = EnvironmentSnapshot()
+
+    static let isEnabled = environment.isQAEnabled
 
     private static func env(_ key: String) -> String? {
-        let env = ProcessInfo.processInfo.environment
-        return env[key] ?? env["SIMCTL_CHILD_\(key)"]
+        environment.value(key)
     }
 
     private static func bool(_ key: String) -> Bool {
-        guard let value = env(key)?.lowercased() else { return false }
-        return ["1", "true", "yes", "on"].contains(value)
+        environment.bool(key)
     }
 
     private static func string(_ key: String) -> String? {
-        guard let value = env(key)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
-        }
-        return value
+        environment.string(key)
     }
 
     private static func double(_ key: String) -> Double? {
-        guard let value = env(key) else { return nil }
-        return Double(value)
+        environment.double(key)
     }
 
     private static func stringList(_ key: String) -> [String] {
-        guard let value = env(key) else { return [] }
-        return value
-            .split(whereSeparator: { $0 == "," || $0 == "\n" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        environment.stringList(key)
+    }
+
+    static let initialTab: SidebarTab? = {
+        guard let rawValue = string("VPSTUDIO_QA_INITIAL_TAB")?.lowercased() else { return nil }
+        return SidebarTab.allCases.first {
+            $0.rawValue.lowercased() == rawValue || String(describing: $0).lowercased() == rawValue
+        }
+    }()
+
+    static func absoluteURL(from value: String) -> URL? {
+        publicMediaURL(from: value)
+    }
+
+    static func publicMediaURL(from value: String) -> URL? {
+        guard let normalized = TorrentResult.normalizedDirectStreamURLString(value) else {
+            return nil
+        }
+        return URL(string: normalized)
+    }
+
+    static func sampleURLs(from snapshot: EnvironmentSnapshot) -> [URL] {
+        let configured = snapshot.stringList("VPSTUDIO_QA_SAMPLE_URLS").compactMap(publicMediaURL(from:))
+        if !configured.isEmpty {
+            return configured
+        }
+        if let sampleURL = snapshot.value("VPSTUDIO_QA_SAMPLE_URL").flatMap(publicMediaURL(from:)) {
+            return [sampleURL]
+        }
+        return []
+    }
+
+    static func debridFixture(from snapshot: EnvironmentSnapshot) -> QADebridFixture? {
+        guard let hash = snapshot.string("VPSTUDIO_QA_DEBRID_FIXTURE_HASH")?.lowercased() else {
+            return nil
+        }
+
+        let streamURLs = snapshot.stringList("VPSTUDIO_QA_DEBRID_FIXTURE_URLS").compactMap(publicMediaURL(from:))
+        guard !streamURLs.isEmpty else { return nil }
+
+        let serviceType = snapshot.string("VPSTUDIO_QA_DEBRID_FIXTURE_SERVICE")
+            .flatMap(DebridServiceType.init(rawValue:)) ?? .realDebrid
+        let fileName = snapshot.string("VPSTUDIO_QA_DEBRID_FIXTURE_FILE_NAME")
+            ?? "QA.Debrid.\(hash.prefix(8)).mp4"
+
+        return QADebridFixture(
+            hash: hash,
+            serviceType: serviceType,
+            streamURLs: streamURLs,
+            fileName: fileName
+        )
+    }
+
+    static func syntheticTorrent(from snapshot: EnvironmentSnapshot) -> TorrentResult? {
+        guard let fixture = debridFixture(from: snapshot) else { return nil }
+
+        var torrent = TorrentResult.fromSearch(
+            infoHash: fixture.hash,
+            title: snapshot.string("VPSTUDIO_QA_SYNTHETIC_TORRENT_TITLE") ?? fixture.fileName,
+            sizeBytes: 1_500_000_000,
+            seeders: 42,
+            leechers: 3,
+            indexerName: "QA Debrid Fixture"
+        )
+        torrent.isCached = true
+        torrent.cachedOnService = fixture.serviceType.rawValue
+        return torrent
+    }
+
+    static func testScreenRawValue(from snapshot: EnvironmentSnapshot) -> String? {
+        snapshot.string("VPSTUDIO_QA_TEST_SCREEN")
+    }
+
+    static func selectedTab(from snapshot: EnvironmentSnapshot) -> SidebarTab? {
+        guard let rawValue = snapshot.string("VPSTUDIO_QA_SELECTED_TAB") else { return nil }
+        switch normalizedNavigationValue(rawValue) {
+        case "discover": return .discover
+        case "search", "explore": return .search
+        case "library": return .library
+        case "downloads": return .downloads
+        case "environments", "environment": return .environments
+        case "settings": return .settings
+        default:
+            return SidebarTab.allCases.first { normalizedNavigationValue($0.rawValue) == normalizedNavigationValue(rawValue) }
+        }
+    }
+
+    static func navigationLayout(from snapshot: EnvironmentSnapshot) -> NavigationLayout? {
+        guard let rawValue = snapshot.string("VPSTUDIO_QA_NAVIGATION_LAYOUT") else { return nil }
+        switch normalizedNavigationValue(rawValue) {
+        case "bottom", "bottomtab", "bottomtabs", "bottomtabbar", "tabbar", "tabs":
+            return .bottomTabBar
+        case "sidebar", "leftsidebar", "side":
+            return .leftSidebar
+        default:
+            return NavigationLayout(rawValue: rawValue)
+        }
+    }
+
+    static func suppressQuickStartPrompt(from snapshot: EnvironmentSnapshot) -> Bool {
+        snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START")
+            || snapshot.bool("VPSTUDIO_QA_SUPPRESS_QUICK_START_PROMPT")
+            || snapshot.bool("VPSTUDIO_QA_SEED_DISCOVER")
+            || testScreenRawValue(from: snapshot) != nil
     }
 
     static let searchQuery = env("VPSTUDIO_QA_SEARCH_QUERY")
@@ -60,6 +201,7 @@ enum QARuntimeOptions {
     static let preferredResultTitle = env("VPSTUDIO_QA_PREFERRED_RESULT_TITLE")
     static let autoOpenFirstSearchResult = bool("VPSTUDIO_QA_AUTO_OPEN_FIRST_RESULT")
     static let scrollDebug = bool("VPSTUDIO_QA_SCROLL_DEBUG")
+    static let scrollAnchorBottom = bool("VPSTUDIO_QA_SCROLL_ANCHOR_BOTTOM")
     static let autoOpenSearchFilterSheet = bool("VPSTUDIO_QA_AUTO_OPEN_FILTER_SHEET")
     static let autoApplySearchFilterSheet = bool("VPSTUDIO_QA_AUTO_APPLY_FILTER_SHEET")
     static let autoSelectFilterGenre = bool("VPSTUDIO_QA_AUTO_SELECT_FILTER_GENRE")
@@ -73,63 +215,21 @@ enum QARuntimeOptions {
     static let autoAddFavorites = bool("VPSTUDIO_QA_AUTO_ADD_FAVORITES")
     static let autoRemoveWatchlist = bool("VPSTUDIO_QA_AUTO_REMOVE_WATCHLIST")
     static let autoRemoveFavorites = bool("VPSTUDIO_QA_AUTO_REMOVE_FAVORITES")
-    static let sampleURL = env("VPSTUDIO_QA_SAMPLE_URL").flatMap(URL.init(string:))
-    static let sampleURLs: [URL] = {
-        let configured = stringList("VPSTUDIO_QA_SAMPLE_URLS").compactMap(URL.init(string:))
-        if !configured.isEmpty {
-            return configured
-        }
-        if let sampleURL {
-            return [sampleURL]
-        }
-        return []
-    }()
-    static let sampleRefreshURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_URL").flatMap(URL.init(string:))
-    static let sampleRefreshSignalURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_SIGNAL_URL").flatMap(URL.init(string:))
+    static let sampleURL = env("VPSTUDIO_QA_SAMPLE_URL").flatMap(publicMediaURL(from:))
+    static let sampleURLs = sampleURLs(from: environment)
+    static let sampleRefreshURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_URL").flatMap(publicMediaURL(from:))
+    static let sampleRefreshSignalURL = env("VPSTUDIO_QA_SAMPLE_REFRESH_SIGNAL_URL").flatMap(absoluteURL(from:))
     static let autoQueueSampleDownload = bool("VPSTUDIO_QA_AUTO_QUEUE_SAMPLE_DOWNLOAD")
     static let autoPlaySample = bool("VPSTUDIO_QA_AUTO_PLAY_SAMPLE")
-    static let debridFixture: QADebridFixture? = {
-        guard let hash = string("VPSTUDIO_QA_DEBRID_FIXTURE_HASH")?.lowercased() else {
-            return nil
-        }
-
-        let streamURLs = stringList("VPSTUDIO_QA_DEBRID_FIXTURE_URLS")
-            .compactMap { URL(string: $0) }
-        guard !streamURLs.isEmpty else { return nil }
-
-        let serviceType = string("VPSTUDIO_QA_DEBRID_FIXTURE_SERVICE")
-            .flatMap(DebridServiceType.init(rawValue:)) ?? .realDebrid
-        let fileName = string("VPSTUDIO_QA_DEBRID_FIXTURE_FILE_NAME")
-            ?? "QA.Debrid.\(hash.prefix(8)).mp4"
-
-        return QADebridFixture(
-            hash: hash,
-            serviceType: serviceType,
-            streamURLs: streamURLs,
-            fileName: fileName
-        )
-    }()
+    static let debridFixture = debridFixture(from: environment)
     static let autoPlaySyntheticTorrent = bool("VPSTUDIO_QA_AUTO_PLAY_SYNTHETIC_TORRENT")
-    static let syntheticTorrent: TorrentResult? = {
-        guard let fixture = debridFixture else { return nil }
-
-        var torrent = TorrentResult.fromSearch(
-            infoHash: fixture.hash,
-            title: string("VPSTUDIO_QA_SYNTHETIC_TORRENT_TITLE") ?? fixture.fileName,
-            sizeBytes: 1_500_000_000,
-            seeders: 42,
-            leechers: 3,
-            indexerName: "QA Debrid Fixture"
-        )
-        torrent.isCached = true
-        torrent.cachedOnService = fixture.serviceType.rawValue
-        return torrent
-    }()
+    static let syntheticTorrent = syntheticTorrent(from: environment)
 
     static let downloadAction = env("VPSTUDIO_QA_DOWNLOAD_ACTION").flatMap(DownloadAction.init(rawValue:))
     static let playerAutoCloseAfterSeconds = double("VPSTUDIO_QA_PLAYER_AUTOCLOSE_SECONDS")
     static let playerAspectRatioSelection = env("VPSTUDIO_QA_PLAYER_ASPECT_RATIO")
     static let showAspectRatioBadge = bool("VPSTUDIO_QA_SHOW_ASPECT_BADGE")
+    static let playerAppleEnvironmentMode = bool("VPSTUDIO_QA_PLAYER_APPLE_ENVIRONMENT")
 
     static let autoOpenResetSheet = bool("VPSTUDIO_QA_AUTO_OPEN_RESET_SHEET")
     static let autoExecuteReset = bool("VPSTUDIO_QA_AUTO_EXECUTE_RESET")
@@ -139,13 +239,26 @@ enum QARuntimeOptions {
 
     // QA-only visual/debug helpers for deterministic screenshot capture.
     static let forceCompactNavScale = bool("VPSTUDIO_QA_FORCE_COMPACT_NAV_SCALE")
+    /// Seeds the main-window Discover tab with realistic metadata artwork (no API key) for visual QA.
+    static let seedDiscoverPreview = bool("VPSTUDIO_QA_SEED_DISCOVER")
+    static let testScreenRawValue = testScreenRawValue(from: environment)
+    static let selectedTab = selectedTab(from: environment)
+    static let navigationLayout = navigationLayout(from: environment)
+    static let suppressQuickStartPrompt = suppressQuickStartPrompt(from: environment)
 
     static let setupAutoAdvance = bool("VPSTUDIO_QA_SETUP_AUTO_ADVANCE")
-    static let setupTMDBApiKey = env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")
+    static let setupOMDbApiKey = env("VPSTUDIO_QA_SETUP_OMDB_API_KEY")
+    static let setupTMDbApiKey = env("VPSTUDIO_QA_SETUP_TMDB_API_KEY")
     static let setupPreferredQuality = env("VPSTUDIO_QA_SETUP_PREFERRED_QUALITY").flatMap(VideoQuality.init(rawValue:))
     static let setupSubtitleLanguage = env("VPSTUDIO_QA_SETUP_SUBTITLE_LANGUAGE").flatMap(SubtitleLanguageOption.init(rawValue:))
 
     static func sleepNanoseconds(for seconds: Double) -> UInt64 {
         UInt64(max(0, seconds) * 1_000_000_000)
+    }
+
+    private static func normalizedNavigationValue(_ value: String) -> String {
+        value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
     }
 }

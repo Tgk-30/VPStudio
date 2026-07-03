@@ -336,7 +336,7 @@ struct AppStateBootstrapErrorHandlingTests {
                 fetchActiveEnvironment: { nil },
                 fetchDebridConfigs: { [] },
                 availableDebridServices: { [] },
-                fetchTMDBApiKey: { "tmdb-key" }
+                fetchMetadataApiKey: { "omdb-key" }
             )
         )
 
@@ -357,7 +357,7 @@ struct AppStateBootstrapErrorHandlingTests {
                 fetchActiveEnvironment: { nil },
                 fetchDebridConfigs: { [DebridConfig(id: "rd", serviceType: .realDebrid, apiTokenRef: "tok")] },
                 availableDebridServices: { [] },
-                fetchTMDBApiKey: { "tmdb-key" }
+                fetchMetadataApiKey: { "omdb-key" }
             )
         )
 
@@ -378,7 +378,7 @@ struct AppStateBootstrapErrorHandlingTests {
                 fetchActiveEnvironment: { nil },
                 fetchDebridConfigs: { [] },
                 availableDebridServices: { [.realDebrid] },
-                fetchTMDBApiKey: { "tmdb-key" }
+                fetchMetadataApiKey: { "omdb-key" }
             )
         )
 
@@ -399,7 +399,7 @@ struct AppStateBootstrapErrorHandlingTests {
                 fetchActiveEnvironment: { nil },
                 fetchDebridConfigs: { [DebridConfig(id: "rd", serviceType: .realDebrid, apiTokenRef: "tok")] },
                 availableDebridServices: { [.realDebrid] },
-                fetchTMDBApiKey: { "tmdb-key" }
+                fetchMetadataApiKey: { "omdb-key" }
             )
         )
 

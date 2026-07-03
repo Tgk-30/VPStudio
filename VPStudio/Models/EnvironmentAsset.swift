@@ -18,13 +18,16 @@ struct EnvironmentAsset: Codable, Sendable, Identifiable, Equatable, FetchableRe
     var sourceAttributionURL: String?
     var previewImagePath: String?
     var hdriYawOffset: Float?
+    /// Stable, policy-assigned tag (e.g. genre/mood key) used to auto-resolve an
+    /// installed environment for a given title. Nullable + additive (migration v17).
+    var environmentTag: String?
     var createdAt: Date
     var isActive: Bool
 
     enum Columns: String, ColumnExpression {
         case id, name, sourceType, assetPath, thumbnailPath
         case licenseName, sourceAttributionURL, previewImagePath
-        case hdriYawOffset, createdAt, isActive
+        case hdriYawOffset, environmentTag, createdAt, isActive
     }
 
     func encode(to container: inout PersistenceContainer) {
@@ -37,6 +40,7 @@ struct EnvironmentAsset: Codable, Sendable, Identifiable, Equatable, FetchableRe
         container[Columns.sourceAttributionURL] = sourceAttributionURL
         container[Columns.previewImagePath] = previewImagePath
         container[Columns.hdriYawOffset] = hdriYawOffset.map { Double($0) }
+        container[Columns.environmentTag] = environmentTag
         container[Columns.createdAt] = createdAt
         container[Columns.isActive] = isActive
     }
@@ -51,6 +55,7 @@ struct EnvironmentAsset: Codable, Sendable, Identifiable, Equatable, FetchableRe
         sourceAttributionURL = row[Columns.sourceAttributionURL]
         previewImagePath = row[Columns.previewImagePath]
         hdriYawOffset = (row[Columns.hdriYawOffset] as Double?).map { Float($0) }
+        environmentTag = row[Columns.environmentTag]
         createdAt = row[Columns.createdAt]
         isActive = row[Columns.isActive]
     }
@@ -65,6 +70,7 @@ struct EnvironmentAsset: Codable, Sendable, Identifiable, Equatable, FetchableRe
         sourceAttributionURL: String? = nil,
         previewImagePath: String? = nil,
         hdriYawOffset: Float? = nil,
+        environmentTag: String? = nil,
         createdAt: Date = Date(),
         isActive: Bool = false
     ) {
@@ -77,6 +83,7 @@ struct EnvironmentAsset: Codable, Sendable, Identifiable, Equatable, FetchableRe
         self.sourceAttributionURL = sourceAttributionURL
         self.previewImagePath = previewImagePath
         self.hdriYawOffset = hdriYawOffset
+        self.environmentTag = environmentTag
         self.createdAt = createdAt
         self.isActive = isActive
     }

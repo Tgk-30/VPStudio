@@ -4,11 +4,14 @@ actor SettingsManager {
     private let database: DatabaseManager
     private let secretStore: any SecretStore
     private let secretKeys: Set<String> = [
+        SettingsKeys.omdbApiKey,
         SettingsKeys.tmdbApiKey,
         SettingsKeys.openSubtitlesApiKey,
         SettingsKeys.openAIApiKey,
         SettingsKeys.anthropicApiKey,
         SettingsKeys.openRouterApiKey,
+        SettingsKeys.mistralApiKey,
+        SettingsKeys.minimaxApiKey,
         SettingsKeys.traktClientId,
         SettingsKeys.traktClientSecret,
         SettingsKeys.traktAccessToken,
@@ -46,7 +49,9 @@ actor SettingsManager {
         do {
             try await database.setSetting(key: key, value: SecretReference.encode(key: migratedKey))
         } catch {
-            // Roll back keychain entry — plaintext value remains in DB, migration will retry next read.
+            // Roll back keychain entry — plaintext value remains in DB, migration will retry next
+            // read. Best-effort (try?): a transient keychain delete failure must NOT throw away the
+            // successful read we already have, contradicting the graceful-degradation intent.
             try? await secretStore.deleteSecret(for: migratedKey)
             return stored
         }
@@ -66,12 +71,20 @@ actor SettingsManager {
                 try await database.setSetting(key: key, value: SecretReference.encode(key: secretKey))
             } catch {
                 // Roll back keychain entry to avoid orphaned secrets.
-                try? await secretStore.deleteSecret(for: secretKey)
+                try await secretStore.deleteSecret(for: secretKey)
                 throw error
             }
         } else {
+            let existingStoredValue = try await database.getSetting(key: key)
             try await database.setSetting(key: key, value: nil)
-            try? await secretStore.deleteSecret(for: secretKey)
+            do {
+                try await secretStore.deleteSecret(for: secretKey)
+            } catch {
+                if let existingStoredValue {
+                    try? await database.setSetting(key: key, value: existingStoredValue)
+                }
+                throw error
+            }
         }
     }
 
@@ -91,7 +104,28 @@ actor SettingsManager {
     }
 
     func getTMDBApiKey() async throws -> String? {
-        try await getValue(forKey: SettingsKeys.tmdbApiKey)
+        normalizedSecretValue(try await getValue(forKey: SettingsKeys.tmdbApiKey))
+    }
+
+    func getMetadataApiKey() async throws -> String? {
+        normalizedSecretValue(try await getValue(forKey: SettingsKeys.omdbApiKey))
+    }
+
+    func getMetadataProviderConfiguration() async throws -> MetadataProviderConfiguration {
+        let omdbApiKey = normalizedSecretValue(try await getValue(forKey: SettingsKeys.omdbApiKey))
+        let tmdbApiKey = normalizedSecretValue(try await getValue(forKey: SettingsKeys.tmdbApiKey))
+        let omdbPlan = MetadataProviderPlan.fromStoredValue(try await getValue(forKey: SettingsKeys.omdbProviderPlan))
+        let tmdbPlan = MetadataProviderPlan.fromStoredValue(try await getValue(forKey: SettingsKeys.tmdbProviderPlan))
+        return MetadataProviderConfiguration(
+            omdbApiKey: omdbApiKey,
+            tmdbApiKey: tmdbApiKey,
+            omdbPlan: omdbPlan,
+            tmdbPlan: tmdbPlan
+        )
+    }
+
+    func hasMetadataProviderConfiguration() async throws -> Bool {
+        try await getMetadataProviderConfiguration().isConfigured
     }
 
     func getPreferredQuality() async throws -> VideoQuality {
@@ -116,11 +150,15 @@ actor SettingsManager {
 }
 
 enum SettingsKeys {
+    nonisolated static let omdbApiKey = "omdb_api_key"
     nonisolated static let tmdbApiKey = "tmdb_api_key"
+    nonisolated static let omdbProviderPlan = "omdb_provider_plan"
+    nonisolated static let tmdbProviderPlan = "tmdb_provider_plan"
     nonisolated static let preferredQuality = "preferred_quality"
     nonisolated static let subtitleLanguage = "subtitle_language"
     nonisolated static let audioLanguage = "audio_language"
     nonisolated static let subtitleFontSize = "subtitle_font_size"
+    nonisolated static let subtitleOffsetMilliseconds = "subtitle_offset_milliseconds"
     nonisolated static let subtitleAutoSearch = "subtitle_auto_search"
     nonisolated static let openSubtitlesApiKey = "opensubtitles_api_key"
     nonisolated static let autoPlayNext = "auto_play_next"
@@ -132,6 +170,12 @@ enum SettingsKeys {
     nonisolated static let preferAtmosAudio = "prefer_atmos_audio"
     nonisolated static let preferredHDRFormat = "preferred_hdr_format"
     nonisolated static let defaultDebridService = "default_debrid_service"
+    nonisolated static let sourceFilterPreset = "source_filter_preset"
+    nonisolated static let sourceFilterHideDownloads = "source_filter_hide_downloads"
+    nonisolated static let sourceFilterHideCam = "source_filter_hide_cam"
+    nonisolated static let sourceFilterMinimumSeeders = "source_filter_minimum_seeders"
+    nonisolated static let sourceFilterMaximumSizeGB = "source_filter_maximum_size_gb"
+    nonisolated static let sourceFilterMinimumQuality = "source_filter_minimum_quality"
 
     nonisolated static let openAIApiKey = "openai_api_key"
     nonisolated static let anthropicApiKey = "anthropic_api_key"
@@ -139,6 +183,10 @@ enum SettingsKeys {
     nonisolated static let openAIModelPreset = "openai_model_preset"
     nonisolated static let anthropicModelPreset = "anthropic_model_preset"
     nonisolated static let openRouterModelPreset = "openrouter_model_preset"
+    nonisolated static let mistralApiKey = "mistral_api_key"
+    nonisolated static let mistralModelPreset = "mistral_model_preset"
+    nonisolated static let minimaxApiKey = "minimax_api_key"
+    nonisolated static let minimaxModelPreset = "minimax_model_preset"
     nonisolated static let geminiApiKey = "gemini_api_key"
     nonisolated static let geminiModelPreset = "gemini_model_preset"
     nonisolated static let ollamaEndpoint = "ollama_endpoint"
@@ -165,9 +213,12 @@ enum SettingsKeys {
     nonisolated static let lastSelectedTab = "last_selected_tab"
     nonisolated static let personalizationEnabled = "personalization_enabled"
     nonisolated static let preferredEnvironment = "preferred_environment"
+    nonisolated static let activeEnvironmentSelectionCleared = "active_environment_selection_cleared"
     nonisolated static let autoOpenEnvironment = "auto_open_environment"
+    nonisolated static let autoSuggestEnvironmentByGenre = "auto_suggest_environment_by_genre"
     nonisolated static let feedbackScaleMode = "feedback_scale_mode"
     nonisolated static let runtimeDiagnosticsEnabled = "runtime_diagnostics_enabled"
+    nonisolated static let guestModeEnabled = "guest_mode_enabled"
     nonisolated static let recentSearches = "recent_searches"
     nonisolated static let navigationLayout = "navigation_layout"
     nonisolated static let discoverAIRecommendationsEnabled = "discover_ai_recommendations_enabled"
@@ -175,4 +226,5 @@ enum SettingsKeys {
     nonisolated static let aiCachedRecommendations = "ai_cached_recommendations"
 
     nonisolated static let playerDimPassthrough = "player_dim_passthrough"
+    nonisolated static let cinemaAutoDimOnPlay = "cinema_auto_dim_on_play"
 }

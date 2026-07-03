@@ -17,6 +17,21 @@ struct SettingsSectionHeaderPolicyTests {
     }
 
     @Test
+    func iconsUseExpectedSymbolForEveryCategory() {
+        let expected: [SettingsCategory: String] = [
+            .connect: "link",
+            .watch: "play.circle",
+            .discover: "sparkles",
+            .library: "books.vertical",
+            .about: "info.circle",
+        ]
+
+        for (category, icon) in expected {
+            #expect(SettingsSectionHeaderPolicy.icon(for: category) == icon)
+        }
+    }
+
+    @Test
     func summaryTextFormatting() {
         let text = SettingsSectionHeaderPolicy.summaryText(
             category: .connect,
@@ -44,5 +59,32 @@ struct SettingsSectionHeaderPolicyTests {
             totalCount: 0
         )
         #expect(text == "No items")
+    }
+
+    @Test
+    func summaryTextNegativeTotalReturnsNoItems() {
+        let text = SettingsSectionHeaderPolicy.summaryText(
+            category: .about,
+            configuredCount: 3,
+            totalCount: -1
+        )
+        #expect(text == "No items")
+    }
+
+    @Test
+    func summaryTextKeepsOutOfRangeConfiguredCounts() {
+        let negative = SettingsSectionHeaderPolicy.summaryText(
+            category: .library,
+            configuredCount: -1,
+            totalCount: 4
+        )
+        let overTotal = SettingsSectionHeaderPolicy.summaryText(
+            category: .library,
+            configuredCount: 6,
+            totalCount: 4
+        )
+
+        #expect(negative == "-1/4 configured")
+        #expect(overTotal == "6/4 configured")
     }
 }

@@ -18,7 +18,8 @@ actor OffcloudService: DebridServiceProtocol {
         do {
             let _: [OCAnyHistoryItem] = try await request(
                 method: "GET",
-                path: "/cloud/history"
+                path: "/cloud/history",
+                allowHostFallback: true
             )
             return true
         } catch DebridError.unauthorized {
@@ -29,7 +30,8 @@ actor OffcloudService: DebridServiceProtocol {
     func getAccountInfo() async throws -> DebridAccountInfo {
         let _: [OCAnyHistoryItem] = try await request(
             method: "GET",
-            path: "/cloud/history"
+            path: "/cloud/history",
+            allowHostFallback: true
         )
         return DebridAccountInfo(username: "Offcloud User", email: nil, premiumExpiry: nil, isPremium: true)
     }
@@ -53,8 +55,15 @@ actor OffcloudService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
         let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: normalizedHash,
+            suppliedMagnetURI: magnetURI
+        )
         let decoded: OCAddResponse = try await request(
             method: "POST",
             path: "/cloud",
@@ -123,7 +132,11 @@ actor OffcloudService: DebridServiceProtocol {
             throw DebridError.fileNotReady(status)
         }
 
-        if let direct = statusResponse.url, let directURL = URL(string: direct) {
+        if let direct = statusResponse.url,
+           let directURL = try? DebridRemoteStreamURLPolicy.validatedURL(
+            from: direct,
+            errorMessage: "Invalid URL"
+           ) {
             let directFileName = resolvedDisplayFileName(
                 linkFileName: directURL.lastPathComponent.removingPercentEncoding ?? directURL.lastPathComponent,
                 statusFileName: statusResponse.fileName
@@ -157,7 +170,8 @@ actor OffcloudService: DebridServiceProtocol {
 
         let links: [String] = try await request(
             method: "GET",
-            path: "/cloud/explore/\(torrentId)"
+            path: "/cloud/explore/\(torrentId)",
+            allowHostFallback: true
         )
         let selectedIDs = selectedFileIDsByTorrent[torrentId] ?? []
         let selectedLink = links.enumerated().first(where: { pair in
@@ -170,9 +184,15 @@ actor OffcloudService: DebridServiceProtocol {
             }
             throw DebridError.networkError("No download link")
         }
-        guard let streamURL = URL(string: link) else {
+        let streamURL: URL
+        do {
+            streamURL = try DebridRemoteStreamURLPolicy.validatedURL(
+                from: link,
+                errorMessage: "Invalid URL"
+            )
+        } catch {
             clearSelectionState(for: torrentId)
-            throw DebridError.networkError("Invalid URL")
+            throw error
         }
 
         clearSelectionState(for: torrentId)
@@ -200,15 +220,15 @@ actor OffcloudService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private func request<T: Decodable>(
         method: String,
         path: String,
         queryItems: [URLQueryItem] = [],
-        jsonBody: [String: Any]? = nil
+        jsonBody: [String: Any]? = nil,
+        allowHostFallback: Bool = false
     ) async throws -> T {
         let primaryURL = try buildURL(base: baseURL, path: path, queryItems: queryItems)
         var (data, http) = try await send(
@@ -218,7 +238,9 @@ actor OffcloudService: DebridServiceProtocol {
         )
 
         // Compatibility fallback: some environments/stubs serve Offcloud endpoints without /api prefix.
-        if http.statusCode == 404 {
+        // Only opt-in for idempotent GETs: replaying a non-idempotent POST (addMagnet/checkCache/status)
+        // against the fallback host after a 404-that-already-accepted would create a DUPLICATE transfer.
+        if allowHostFallback, http.statusCode == 404 {
             let fallbackURL = try buildURL(base: fallbackBaseURL, path: path, queryItems: queryItems)
             if fallbackURL != primaryURL {
                 (data, http) = try await send(

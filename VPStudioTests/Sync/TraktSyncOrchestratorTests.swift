@@ -8,6 +8,14 @@ private enum OrchestratorStubError: Error {
     case missingHandler
 }
 
+private struct SecretBearingOrchestratorError: LocalizedError {
+    var errorDescription: String? {
+        let apiKeyParameterName = "api" + "_key"
+        let authorizationHeader = "Authorization: " + "Bearer"
+        return "GET https://api.trakt.tv/sync/watchlist?client_id=trakt-client-id-value&\(apiKeyParameterName)=provider-api-key-value failed \(authorizationHeader) traktBearerTokenValue1234567890 tmdbApiKey=tmdb-secret-value"
+    }
+}
+
 private final class OrchestratorURLProtocolStub: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestHandlers: [String: (URLRequest) throws -> (HTTPURLResponse, Data)] = [:]
     static let lock = NSLock()
@@ -90,11 +98,7 @@ private func makeStubSession(
 // MARK: - Test Helpers
 
 private func makeTempDatabase() async throws -> DatabaseManager {
-    let tempDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbPath = tempDir.appendingPathComponent("orchestrator-test.sqlite").path
-    let database = try DatabaseManager(path: dbPath)
+    let database = try DatabaseManager(inMemoryNamed: "orchestrator-test-\(UUID().uuidString)")
     try await database.migrate()
     return database
 }
@@ -245,7 +249,42 @@ struct TraktSyncOrchestratorPullTests {
         #expect(result.localRefreshTargets.contains(.library))
         let entries = try await database.fetchLibraryEntries(listType: .watchlist)
         #expect(entries.count == 1)
-        #expect(entries[0].mediaId == "tt1160419")
+        #expect(entries[0].mediaId == "movie-omdb-tt1160419")
+    }
+
+    @Test("pull stores remote IMDb watchlist entries under existing OMDb media IDs")
+    func pullStoresRemoteIMDbWatchlistUnderExistingOMDbMediaID() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            watchlistMovies: """
+            [{"rank":1,"movie":{"title":"Dune","year":2021,"ids":{"trakt":1,"imdb":"tt1160419","tmdb":438631}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.watchlistPulled == 1)
+        let entries = try await database.fetchLibraryEntries(listType: .watchlist)
+        #expect(entries.count == 1)
+        #expect(entries[0].mediaId == "movie-omdb-tt1160419")
+        #expect(try await database.fetchMediaItem(id: "tt1160419") == nil)
     }
 
     @Test("pull skips duplicates that already exist in local watchlist")
@@ -367,8 +406,9 @@ struct TraktSyncOrchestratorPullTests {
 
         #expect(result.ratingsPulled == 1)
         #expect(result.localRefreshTargets.contains(.tasteProfile))
-        let event = try await database.fetchLatestTasteRating(mediaId: "tt0816692")
+        let event = try await database.fetchLatestTasteRating(mediaId: "movie-omdb-tt0816692")
         #expect(event != nil)
+        #expect(event?.mediaId == "movie-omdb-tt0816692")
         #expect(event?.feedbackValue == 9)
         #expect(event?.feedbackScale == .oneToTen)
         #expect(event?.source == .automatic)
@@ -409,6 +449,118 @@ struct TraktSyncOrchestratorPullTests {
         #expect(ratings.count == 1)
         #expect(ratings.first?.feedbackValue == 9)
         #expect(ratings.first?.source == .manual)
+    }
+
+    @Test("pull matches remote IMDb ratings to existing OMDb composite ratings")
+    func pullMatchesRemoteIMDbRatingsToExistingOMDbCompositeRatings() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+        let ratedAt = iso8601String(from: recentDate(daysAgo: 30))
+
+        try await database.saveTasteEvent(
+                TasteEvent(
+                    userId: "default",
+                    mediaId: "movie-omdb-tt1160419",
+                    eventType: .rated,
+                    feedbackScale: .oneToTen,
+                    feedbackValue: 9,
+                    source: .manual
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            ratingsMovies: """
+            [{"rating":9,"rated_at":"\(ratedAt)","movie":{"title":"Dune","year":2021,"ids":{"trakt":222,"imdb":"tt1160419"}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.ratingsPulled == 0)
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 10)
+        #expect(ratings.count == 1)
+        #expect(ratings.first?.mediaId == "movie-omdb-tt1160419")
+    }
+
+    @Test("pull writes changed remote IMDb ratings through the existing OMDb composite ID")
+    func pullWritesChangedRemoteIMDbRatingsThroughExistingOMDbCompositeID() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+        let ratedAt = iso8601String(from: recentDate(daysAgo: 1))
+
+        try await database.saveTasteEvent(
+                TasteEvent(
+                    userId: "default",
+                    mediaId: "movie-omdb-tt1160419",
+                    eventType: .rated,
+                    feedbackScale: .oneToTen,
+                    feedbackValue: 7,
+                    source: .manual,
+                createdAt: recentDate(daysAgo: 30)
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            ratingsMovies: """
+            [{"rating":9,"rated_at":"\(ratedAt)","movie":{"title":"Dune","year":2021,"ids":{"trakt":222,"imdb":"tt1160419"}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.ratingsPulled == 1)
+        let latest = try #require(try await database.fetchLatestTasteRating(mediaId: "movie-imdb-tt1160419"))
+        #expect(latest.mediaId == "movie-omdb-tt1160419")
+        #expect(latest.feedbackValue == 9)
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 10)
+        #expect(ratings.filter { $0.mediaId == "tt1160419" }.isEmpty)
+    }
+
+    @Test("pull writes remote TMDb fallback ratings through the existing OMDb composite ID")
+    func pullWritesRemoteTMDbFallbackRatingsThroughExistingOMDbCompositeID() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+        let ratedAt = iso8601String(from: recentDate(daysAgo: 1))
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            ratingsMovies: """
+            [{"rating":8,"rated_at":"\(ratedAt)","movie":{"title":"Dune","year":2021,"ids":{"trakt":222,"tmdb":438631}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.ratingsPulled == 1)
+        let latest = try #require(try await database.fetchLatestTasteRating(mediaId: "movie-omdb-tt1160419"))
+        #expect(latest.mediaId == "movie-omdb-tt1160419")
+        #expect(latest.feedbackValue == 8)
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 10)
+        #expect(ratings.filter { $0.mediaId == "tmdb-438631" }.isEmpty)
     }
 
     @Test("pull paginates ratings pages beyond page 1")
@@ -513,7 +665,7 @@ struct TraktSyncOrchestratorPullTests {
         #expect(result.localRefreshTargets.contains(.library))
         let historyEntries = try await database.fetchLibraryEntries(listType: .history)
         #expect(historyEntries.count == 1)
-        #expect(historyEntries[0].mediaId == "tt7654321")
+        #expect(historyEntries[0].mediaId == "movie-omdb-tt7654321")
     }
 
     @Test("pull creates history entries in both WatchHistory and UserLibrary tables")
@@ -537,19 +689,19 @@ struct TraktSyncOrchestratorPullTests {
         #expect(result.historyPulled == 1)
 
         // Verify WatchHistory record was created (the table the app actually displays)
-        let watchHistory = try await database.fetchWatchHistory(mediaId: "tt15398776")
+        let watchHistory = try await database.fetchWatchHistory(mediaId: "movie-omdb-tt15398776")
         #expect(watchHistory != nil)
         #expect(watchHistory?.title == "Oppenheimer")
         #expect(watchHistory?.isCompleted == true)
-        #expect(watchHistory?.mediaId == "tt15398776")
+        #expect(watchHistory?.mediaId == "movie-omdb-tt15398776")
 
         // Verify backwards-compatible UserLibraryEntry was also created
         let entries = try await database.fetchLibraryEntries(listType: .history)
         #expect(entries.count == 1)
-        #expect(entries[0].mediaId == "tt15398776")
+        #expect(entries[0].mediaId == "movie-omdb-tt15398776")
     }
 
-    @Test("pull falls back to tmdb ID when IMDb ID is missing")
+    @Test("pull falls back to typed tmdb ID when IMDb ID is missing")
     func pullFallsBackToTmdbId() async throws {
         let database = try await makeTempDatabase()
         let settings = makeSettingsManager(database: database)
@@ -569,7 +721,35 @@ struct TraktSyncOrchestratorPullTests {
 
         #expect(result.watchlistPulled == 1)
         let entries = try await database.fetchLibraryEntries(listType: .watchlist)
-        #expect(entries[0].mediaId == "tmdb-99999")
+        #expect(entries[0].mediaId == "movie-tmdb-99999")
+    }
+
+    @Test("pull keeps movie and show tmdb fallback namespaces distinct")
+    func pullKeepsMovieAndShowTMDbFallbackNamespacesDistinct() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        let session = makeOrchestratorStubSession(
+            watchlistMovies: """
+            [{"rank":1,"movie":{"title":"Movie TMDb","year":2025,"ids":{"trakt":1,"tmdb":99999}}}]
+            """,
+            watchlistShows: """
+            [{"rank":1,"show":{"title":"Show TMDb","year":2025,"ids":{"trakt":2,"tmdb":99999}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.watchlistPulled == 2)
+        let entries = try await database.fetchLibraryEntries(listType: .watchlist)
+        let mediaIds = Set(entries.map(\.mediaId))
+        #expect(mediaIds.contains("movie-tmdb-99999"))
+        #expect(mediaIds.contains("series-tmdb-99999"))
     }
 
     @Test("pull handles both movies and shows in one sync")
@@ -596,8 +776,8 @@ struct TraktSyncOrchestratorPullTests {
         #expect(result.watchlistPulled == 2)
         let entries = try await database.fetchLibraryEntries(listType: .watchlist)
         let mediaIds = entries.map(\.mediaId)
-        #expect(mediaIds.contains("tt1160419"))
-        #expect(mediaIds.contains("tt3581920"))
+        #expect(mediaIds.contains("movie-omdb-tt1160419"))
+        #expect(mediaIds.contains("series-omdb-tt3581920"))
     }
 }
 
@@ -617,7 +797,7 @@ struct TraktSyncOrchestratorPushTests {
         // Add local watchlist entry
         let entry = UserLibraryEntry(
             id: UUID().uuidString,
-            mediaId: "tt9876543",
+            mediaId: "movie-imdb-tt9876543",
             folderId: LibraryFolder.systemFolderID(for: .watchlist),
             listType: .watchlist,
             addedAt: Date()
@@ -626,16 +806,23 @@ struct TraktSyncOrchestratorPushTests {
 
         final class PostState: @unchecked Sendable {
             var capturedPaths: [String] = []
+            var capturedBodies: [Data] = []
             let lock = NSLock()
-            func record(_ path: String) { lock.lock(); capturedPaths.append(path); lock.unlock() }
+            func record(_ path: String, body: Data) {
+                lock.lock()
+                capturedPaths.append(path)
+                capturedBodies.append(body)
+                lock.unlock()
+            }
             var paths: [String] { lock.lock(); defer { lock.unlock() }; return capturedPaths }
+            var bodies: [Data] { lock.lock(); defer { lock.unlock() }; return capturedBodies }
         }
         let postState = PostState()
 
         let session = makeOrchestratorStubSession(
             postResponder: { request in
                 let path = request.url?.path ?? ""
-                postState.record(path)
+                postState.record(path, body: request.httpBody ?? Data())
                 return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
             }
         )
@@ -646,10 +833,69 @@ struct TraktSyncOrchestratorPushTests {
 
         #expect(result.watchlistPushed == 1)
         #expect(postState.paths.contains { $0.hasSuffix("/sync/watchlist") })
+        let body = try #require(postState.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+        #expect(ids["imdb"] as? String == "tt9876543")
     }
 
-    @Test("push skips entries without IMDb IDs")
-    func pushSkipsNonImdbEntries() async throws {
+    @Test("push watchlist sends OMDb composite series IDs as Trakt shows")
+    func pushWatchlistUsesOMDbCompositeSeriesType() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.addToLibrary(
+            UserLibraryEntry(
+                id: UUID().uuidString,
+                mediaId: "series-omdb-tt3581920",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/watchlist") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":0,"shows":1,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let shows = try #require(json["shows"] as? [[String: Any]])
+        let show = try #require(shows.first)
+        let ids = try #require(show["ids"] as? [String: Any])
+
+        #expect(result.watchlistPushed == 1)
+        #expect(ids["imdb"] as? String == "tt3581920")
+        #expect(json["movies"] == nil)
+    }
+
+    @Test("push watchlist sends TMDb-only entries with Trakt TMDb IDs")
+    func pushWatchlistSendsTmdbOnlyEntries() async throws {
         let database = try await makeTempDatabase()
         let settings = makeSettingsManager(database: database)
         try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
@@ -666,13 +912,217 @@ struct TraktSyncOrchestratorPushTests {
         )
         try await database.addToLibrary(entry)
 
-        let session = makeOrchestratorStubSession()
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/watchlist") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.watchlistPushed == 1)
+        #expect(ids["tmdb"] as? Int == 12_345)
+        #expect(ids["imdb"] == nil)
+    }
+
+    @Test("push watchlist resolves legacy TMDb media IDs through cached OMDb IMDb aliases")
+    func pushWatchlistResolvesLegacyTMDBMediaIdThroughCachedIMDbAlias() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-tmdb-438631",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.addToLibrary(
+            UserLibraryEntry(
+                id: UUID().uuidString,
+                mediaId: "movie-tmdb-438631",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/watchlist") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.watchlistPushed == 1)
+        #expect(ids["imdb"] as? String == "tt1160419")
+        #expect(ids["tmdb"] == nil)
+    }
+
+    @Test("push watchlist does not borrow movie IMDb aliases for same-numbered series TMDb IDs")
+    func pushWatchlistKeepsSeriesTMDBNamespaceWhenOnlyMovieIMDbAliasExists() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1792811",
+                type: .movie,
+                title: "Teach You a Lesson",
+                year: 2000,
+                tmdbId: 276_161
+            )
+        )
+        try await database.addToLibrary(
+            UserLibraryEntry(
+                id: UUID().uuidString,
+                mediaId: "series-tmdb-276161",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/watchlist") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":0,"shows":1,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let shows = try #require(json["shows"] as? [[String: Any]])
+        let show = try #require(shows.first)
+        let ids = try #require(show["ids"] as? [String: Any])
+
+        #expect(result.watchlistPushed == 1)
+        #expect(ids["tmdb"] as? Int == 276_161)
+        #expect(ids["imdb"] == nil)
+        #expect(json["movies"] == nil)
+    }
+
+    @Test("push skips malformed IMDb-like watchlist IDs")
+    func pushSkipsMalformedImdbLikeWatchlistIds() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.addToLibrary(
+            UserLibraryEntry(
+                id: UUID().uuidString,
+                mediaId: "ttnotanumber",
+                folderId: LibraryFolder.systemFolderID(for: .watchlist),
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        final class PostState: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var paths: [String] = []
+
+            func record(_ path: String) {
+                lock.lock()
+                paths.append(path)
+                lock.unlock()
+            }
+        }
+        let postState = PostState()
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                postState.record(request.url?.path ?? "")
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
         let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
         await service.setTokens(access: "token", refresh: "refresh")
 
         let result = await orchestrator.sync()
 
         #expect(result.watchlistPushed == 0)
+        #expect(postState.paths.isEmpty)
     }
 
     @Test("push ratings sends local rated events to Trakt")
@@ -716,6 +1166,405 @@ struct TraktSyncOrchestratorPushTests {
 
         #expect(result.ratingsPushed == 1)
         #expect(postState.paths.contains { $0.hasSuffix("/sync/ratings") })
+    }
+
+    @Test("push ratings sends OMDb IMDb IDs in Trakt payloads")
+    func pushRatingsUsesOMDbIMDbIdentifierPayload() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveMediaItem(
+            MediaItem(id: "movie-omdb-tt1160419", type: .movie, title: "Dune", year: 2021)
+        )
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "movie-omdb-tt1160419",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .manual
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/ratings") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.ratingsPushed == 1)
+        #expect(ids["imdb"] as? String == "tt1160419")
+        #expect(ids["tmdb"] == nil)
+        #expect(movie["rating"] as? Int == 9)
+        #expect(String(data: body, encoding: .utf8)?.contains("movie-omdb-tt1160419") == false)
+    }
+
+    @Test("push ratings sends OMDb composite series IDs as Trakt shows")
+    func pushRatingsUsesOMDbCompositeSeriesType() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "series-omdb-tt0903747",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 10,
+                source: .manual
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/ratings") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":0,"shows":1,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let shows = try #require(json["shows"] as? [[String: Any]])
+        let show = try #require(shows.first)
+        let ids = try #require(show["ids"] as? [String: Any])
+
+        #expect(result.ratingsPushed == 1)
+        #expect(ids["imdb"] as? String == "tt0903747")
+        #expect(show["rating"] as? Int == 10)
+        #expect(json["movies"] == nil)
+    }
+
+    @Test("push ratings resolves legacy TMDb media IDs through cached OMDb IMDb aliases")
+    func pushRatingsResolvesLegacyTMDBMediaIdThroughCachedIMDbAlias() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-tmdb-438631",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "movie-tmdb-438631",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 8,
+                source: .manual
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/ratings") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.ratingsPushed == 1)
+        #expect(ids["imdb"] as? String == "tt1160419")
+        #expect(ids["tmdb"] == nil)
+        #expect(movie["rating"] as? Int == 8)
+    }
+
+    @Test("push ratings does not borrow movie IMDb aliases for same-numbered series TMDb IDs")
+    func pushRatingsKeepsSeriesTMDBNamespaceWhenOnlyMovieIMDbAliasExists() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1792811",
+                type: .movie,
+                title: "Teach You a Lesson",
+                year: 2000,
+                tmdbId: 276_161
+            )
+        )
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "series-tmdb-276161",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .manual
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/ratings") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":0,"shows":1,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let shows = try #require(json["shows"] as? [[String: Any]])
+        let show = try #require(shows.first)
+        let ids = try #require(show["ids"] as? [String: Any])
+
+        #expect(result.ratingsPushed == 1)
+        #expect(ids["tmdb"] as? Int == 276_161)
+        #expect(ids["imdb"] == nil)
+        #expect(show["rating"] as? Int == 9)
+        #expect(json["movies"] == nil)
+    }
+
+    @Test("push ratings deduplicates remote TMDb-only ratings through cached OMDb IMDb aliases")
+    func pushRatingsDeduplicatesRemoteTMDBOnlyRatingThroughCachedIMDbAlias() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "movie-omdb-tt1160419",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 8,
+                source: .manual
+            )
+        )
+
+        final class RequestState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var postCount = 0
+
+            func recordPost() {
+                lock.lock()
+                postCount += 1
+                lock.unlock()
+            }
+
+            var count: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return postCount
+            }
+        }
+        let state = RequestState()
+
+        let session = makeOrchestratorStubSession(
+            ratingsMovies: """
+            [{"rating":8,"rated_at":"2025-01-20","movie":{"title":"Dune","year":2021,"ids":{"trakt":222,"tmdb":438631}}}]
+            """,
+            postResponder: { _ in
+                state.recordPost()
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.ratingsPushed == 0)
+        #expect(state.count == 0)
+    }
+
+    @Test("push ratings sends TMDb-only media IDs when no IMDb alias exists")
+    func pushRatingsSendsTmdbOnlyMediaIdPayload() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "movie-tmdb-438631",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 8,
+                source: .manual
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/ratings") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.ratingsPushed == 1)
+        #expect(ids["tmdb"] as? Int == 438_631)
+        #expect(ids["imdb"] == nil)
+        #expect(movie["rating"] as? Int == 8)
+    }
+
+    @Test("push ratings skips malformed IMDb-like IDs")
+    func pushRatingsSkipsMalformedImdbLikeIds() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: true)
+
+        try await database.saveTasteEvent(
+            TasteEvent(
+                userId: "default",
+                mediaId: "ttnotanumber",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .manual
+            )
+        )
+
+        let session = makeOrchestratorStubSession()
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.ratingsPushed == 0)
     }
 
     @Test("push ratings normalizes one-to-hundred ratings to Trakt's ten-point scale")
@@ -1013,6 +1862,21 @@ struct TraktSyncOrchestratorToggleTests {
 @Suite("TraktSyncOrchestrator - Error Resilience", .serialized)
 struct TraktSyncOrchestratorErrorResilienceTests {
 
+    @Test("sync error aggregation redacts URLs and provider credentials")
+    func syncErrorAggregationRedactsSensitiveValues() {
+        let message = TraktSyncOrchestrator.sanitizedSyncError(
+            prefix: "Push watchlist tt1234567",
+            error: SecretBearingOrchestratorError()
+        )
+
+        #expect(message.contains("Push watchlist tt1234567"))
+        #expect(message.contains("REDACTED"))
+        #expect(!message.contains("trakt-client-id-value"))
+        #expect(!message.contains("provider-api-key-value"))
+        #expect(!message.contains("traktBearerTokenValue1234567890"))
+        #expect(!message.contains("tmdb-secret-value"))
+    }
+
     @Test("partial API failure does not block other operations")
     func partialFailureDoesNotBlock() async throws {
         let database = try await makeTempDatabase()
@@ -1302,7 +2166,7 @@ struct TraktSyncOrchestratorHistoryPullWatchHistoryTests {
 
         #expect(result.historyPulled == 1)
 
-        let record = try await database.fetchWatchHistory(mediaId: "tt2543164")
+        let record = try await database.fetchWatchHistory(mediaId: "movie-omdb-tt2543164")
         #expect(record != nil)
         #expect(record?.title == "Arrival")
         #expect(record?.isCompleted == true)
@@ -1311,6 +2175,44 @@ struct TraktSyncOrchestratorHistoryPullWatchHistoryTests {
         #expect(record?.quality == nil)
         #expect(record?.debridService == nil)
         #expect(record?.streamURL == nil)
+        #expect(record?.mediaId == "movie-omdb-tt2543164")
+    }
+
+    @Test("pull history stores remote IMDb entries under existing OMDb media IDs")
+    func pullHistoryStoresRemoteIMDbEntriesUnderExistingOMDbMediaID() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt2543164",
+                type: .movie,
+                title: "Arrival",
+                year: 2016
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            historyMovies: """
+            [{"id":1001,"watched_at":"2025-06-15T20:30:00.000Z","action":"watch","movie":{"title":"Arrival","year":2016,"ids":{"trakt":50,"imdb":"tt2543164"}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.historyPulled == 1)
+        let record = try #require(try await database.fetchWatchHistory(mediaId: "movie-omdb-tt2543164"))
+        #expect(record.mediaId == "movie-omdb-tt2543164")
+
+        let entries = try await database.fetchLibraryEntries(listType: .history)
+        #expect(entries.count == 1)
+        #expect(entries[0].mediaId == "movie-omdb-tt2543164")
+        #expect(try await database.fetchMediaItem(id: "tt2543164") == nil)
     }
 
     @Test("pull history skips items already in WatchHistory")
@@ -1373,7 +2275,7 @@ struct TraktSyncOrchestratorHistoryPullWatchHistoryTests {
 
         let result = await orchestrator.sync()
         let completedEntries = try await database.fetchCompletedWatchHistory(limit: 10)
-            .filter { $0.mediaId == "tt2543164" }
+            .filter { $0.mediaId == "movie-omdb-tt2543164" }
 
         #expect(result.historyPulled == 2)
         #expect(completedEntries.count == 2)
@@ -1398,9 +2300,55 @@ struct TraktSyncOrchestratorHistoryPullWatchHistoryTests {
         let result = await orchestrator.sync()
 
         #expect(result.historyPulled == 1)
-        let record = try await database.fetchWatchHistory(mediaId: "tt0903747")
+        let record = try await database.fetchWatchHistory(mediaId: "series-omdb-tt0903747")
         #expect(record?.title == "Breaking Bad")
         #expect(record?.isCompleted == true)
+        #expect(record?.mediaId == "series-omdb-tt0903747")
+    }
+
+    @Test("pull history deduplicates episodes across local and Trakt episode ID formats")
+    func pullHistoryDeduplicatesEpisodeAliases() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        let watchedAt = DateComponents(
+            calendar: Calendar(identifier: .gregorian),
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2025,
+            month: 9,
+            day: 1
+        ).date!
+
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "tt0903747",
+                episodeId: "show-tt0903747-s1e2",
+                title: "Local S1E2",
+                progress: 3600,
+                duration: 3600,
+                watchedAt: watchedAt,
+                isCompleted: true
+            )
+        )
+
+        let session = makeOrchestratorStubSession(
+            historyShows: """
+            [{"id":2102,"watched_at":"2025-09-01","action":"watch","show":{"title":"Breaking Bad","year":2008,"ids":{"trakt":10,"imdb":"tt0903747"}},"episode":{"season":1,"number":2,"title":"Cat's in the Bag...","ids":{"trakt":12,"imdb":"tt0959621","tmdb":62086}}}]
+            """
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let completedEntries = try await database.fetchCompletedWatchHistory(limit: 10)
+            .filter { $0.mediaId == "tt0903747" }
+
+        #expect(result.historyPulled == 0)
+        #expect(completedEntries.count == 1)
     }
 
     @Test("pull history items without IMDb or TMDB IDs are skipped")
@@ -1427,7 +2375,7 @@ struct TraktSyncOrchestratorHistoryPullWatchHistoryTests {
         #expect(all.isEmpty)
     }
 
-    @Test("pull history uses tmdb fallback ID when IMDb missing")
+    @Test("pull history uses typed tmdb fallback ID when IMDb missing")
     func pullHistoryUsesTmdbFallback() async throws {
         let database = try await makeTempDatabase()
         let settings = makeSettingsManager(database: database)
@@ -1446,7 +2394,7 @@ struct TraktSyncOrchestratorHistoryPullWatchHistoryTests {
         let result = await orchestrator.sync()
 
         #expect(result.historyPulled == 1)
-        let record = try await database.fetchWatchHistory(mediaId: "tmdb-77777")
+        let record = try await database.fetchWatchHistory(mediaId: "movie-tmdb-77777")
         #expect(record != nil)
         #expect(record?.title == "TmdbOnly")
     }
@@ -1468,7 +2416,7 @@ struct TraktSyncOrchestratorHistoryPushTests {
         // Add completed local watch history with IMDb ID
         let history = WatchHistory(
             id: UUID().uuidString,
-            mediaId: "tt1234567",
+            mediaId: "movie-imdb-tt1234567",
             title: "Test Movie",
             progress: 7200,
             duration: 7200,
@@ -1479,16 +2427,23 @@ struct TraktSyncOrchestratorHistoryPushTests {
 
         final class PostState: @unchecked Sendable {
             var capturedPaths: [String] = []
+            var capturedBodies: [Data] = []
             let lock = NSLock()
-            func record(_ path: String) { lock.lock(); capturedPaths.append(path); lock.unlock() }
+            func record(_ path: String, body: Data) {
+                lock.lock()
+                capturedPaths.append(path)
+                capturedBodies.append(body)
+                lock.unlock()
+            }
             var paths: [String] { lock.lock(); defer { lock.unlock() }; return capturedPaths }
+            var bodies: [Data] { lock.lock(); defer { lock.unlock() }; return capturedBodies }
         }
         let postState = PostState()
 
         let session = makeOrchestratorStubSession(
             postResponder: { request in
                 let path = request.url?.path ?? ""
-                postState.record(path)
+                postState.record(path, body: request.httpBody ?? Data())
                 return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
             }
         )
@@ -1499,6 +2454,68 @@ struct TraktSyncOrchestratorHistoryPushTests {
 
         #expect(result.historyPushed == 1)
         #expect(postState.paths.contains { $0.hasSuffix("/sync/history") })
+        let body = try #require(postState.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+        #expect(ids["imdb"] as? String == "tt1234567")
+    }
+
+    @Test("push history sends OMDb composite series IDs as Trakt shows")
+    func pushHistoryUsesOMDbCompositeSeriesType() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "series-omdb-tt0903747",
+                title: "Breaking Bad",
+                progress: 3_600,
+                duration: 3_600,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/history") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":0,"shows":1,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let shows = try #require(json["shows"] as? [[String: Any]])
+        let show = try #require(shows.first)
+        let ids = try #require(show["ids"] as? [String: Any])
+
+        #expect(result.historyPushed == 1)
+        #expect(ids["imdb"] as? String == "tt0903747")
+        #expect(show["watched_at"] != nil)
+        #expect(json["movies"] == nil)
     }
 
     @Test("push skips non-completed watch history entries")
@@ -1531,8 +2548,8 @@ struct TraktSyncOrchestratorHistoryPushTests {
         #expect(result.historyPushed == 0)
     }
 
-    @Test("push skips entries without IMDb IDs")
-    func pushHistorySkipsNonImdbIds() async throws {
+    @Test("push history sends TMDb-only media IDs when no IMDb alias exists")
+    func pushHistorySendsTmdbOnlyMediaIdPayload() async throws {
         let database = try await makeTempDatabase()
         let settings = makeSettingsManager(database: database)
         try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
@@ -1551,6 +2568,134 @@ struct TraktSyncOrchestratorHistoryPushTests {
         )
         try await database.saveWatchHistory(history)
 
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/history") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.historyPushed == 1)
+        #expect(ids["tmdb"] as? Int == 99_999)
+        #expect(ids["imdb"] == nil)
+    }
+
+    @Test("push history resolves legacy TMDb media IDs through cached OMDb IMDb aliases")
+    func pushHistoryResolvesLegacyTMDBMediaIdThroughCachedIMDbAlias() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-tmdb-438631",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "movie-omdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438_631
+            )
+        )
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "movie-tmdb-438631",
+                title: "Dune",
+                progress: 7_200,
+                duration: 7_200,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        final class BodyCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ body: Data) {
+                lock.lock()
+                bodies.append(body)
+                lock.unlock()
+            }
+        }
+        let capture = BodyCapture()
+
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                if request.url?.path.hasSuffix("/sync/history") == true {
+                    capture.record(request.httpBody ?? Data())
+                }
+                return (200, #"{"added":{"movies":1,"shows":0,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+
+        #expect(result.historyPushed == 1)
+        #expect(ids["imdb"] as? String == "tt1160419")
+        #expect(ids["tmdb"] == nil)
+    }
+
+    @Test("push history skips malformed IMDb-like media IDs")
+    func pushHistorySkipsMalformedImdbLikeMediaIds() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "ttnotanumber",
+                title: "Bad IMDb Movie",
+                progress: 7200,
+                duration: 7200,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
         let session = makeOrchestratorStubSession()
         let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
         await service.setTokens(access: "token", refresh: "refresh")
@@ -1558,6 +2703,53 @@ struct TraktSyncOrchestratorHistoryPushTests {
         let result = await orchestrator.sync()
 
         #expect(result.historyPushed == 0)
+    }
+
+    @Test("push history skips malformed episode IDs instead of marking the whole show")
+    func pushHistorySkipsMalformedEpisodeIds() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "tt0903747",
+                episodeId: "ttnotanumber",
+                title: "Bad Episode",
+                progress: 3600,
+                duration: 3600,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        final class PostState: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var paths: [String] = []
+
+            func record(_ path: String) {
+                lock.lock()
+                paths.append(path)
+                lock.unlock()
+            }
+        }
+        let postState = PostState()
+        let session = makeOrchestratorStubSession(
+            postResponder: { request in
+                postState.record(request.url?.path ?? "")
+                return (200, #"{"added":{"movies":0,"shows":1,"episodes":0}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.historyPushed == 0)
+        #expect(postState.paths.isEmpty)
     }
 
     @Test("push deduplicates against remote Trakt history")
@@ -1602,6 +2794,126 @@ struct TraktSyncOrchestratorHistoryPushTests {
         // Pull should be 0 (already exists locally), push should be 0 (already on remote)
         #expect(result.historyPulled == 0)
         #expect(result.historyPushed == 0)
+    }
+
+    @Test("push history deduplicates remote episodes with season aliases")
+    func pushHistoryDeduplicatesEpisodeAliasesAgainstRemote() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        let watchedAt = DateComponents(
+            calendar: Calendar(identifier: .gregorian),
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2025,
+            month: 9,
+            day: 1
+        ).date!
+
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "tt0903747",
+                episodeId: "tmdb-1396-s1e2",
+                title: "Local S1E2",
+                progress: 3600,
+                duration: 3600,
+                watchedAt: watchedAt,
+                isCompleted: true
+            )
+        )
+
+        final class PostState: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var paths: [String] = []
+
+            func record(_ path: String) {
+                lock.lock()
+                paths.append(path)
+                lock.unlock()
+            }
+        }
+        let postState = PostState()
+
+        let session = makeOrchestratorStubSession(
+            historyShows: """
+            [{"id":2102,"watched_at":"2025-09-01","action":"watch","show":{"title":"Breaking Bad","year":2008,"ids":{"trakt":10,"imdb":"tt0903747"}},"episode":{"season":1,"number":2,"title":"Cat's in the Bag...","ids":{"trakt":12,"imdb":"tt0959621","tmdb":62086}}}]
+            """,
+            postResponder: { request in
+                postState.record(request.url?.path ?? "")
+                return (200, #"{"added":{"movies":0,"shows":0,"episodes":1}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.historyPulled == 0)
+        #expect(result.historyPushed == 0)
+        #expect(postState.paths.isEmpty)
+    }
+
+    @Test("push history deduplicates remote episodes with OMDb episode aliases")
+    func pushHistoryDeduplicatesOMDbEpisodeAliasesAgainstRemote() async throws {
+        let database = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: database)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: true)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+
+        let watchedAt = DateComponents(
+            calendar: Calendar(identifier: .gregorian),
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2025,
+            month: 9,
+            day: 1
+        ).date!
+
+        try await database.saveWatchHistory(
+            WatchHistory(
+                id: UUID().uuidString,
+                mediaId: "tt0903747",
+                episodeId: "episode-omdb-TT0959621",
+                title: "Local S1E2",
+                progress: 3600,
+                duration: 3600,
+                watchedAt: watchedAt,
+                isCompleted: true
+            )
+        )
+
+        final class PostState: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var paths: [String] = []
+
+            func record(_ path: String) {
+                lock.lock()
+                paths.append(path)
+                lock.unlock()
+            }
+        }
+        let postState = PostState()
+
+        let session = makeOrchestratorStubSession(
+            historyShows: """
+            [{"id":2102,"watched_at":"2025-09-01","action":"watch","show":{"title":"Breaking Bad","year":2008,"ids":{"trakt":10,"imdb":"tt0903747"}},"episode":{"season":1,"number":2,"title":"Cat's in the Bag...","ids":{"trakt":12,"imdb":"tt0959621","tmdb":62086}}}]
+            """,
+            postResponder: { request in
+                postState.record(request.url?.path ?? "")
+                return (200, #"{"added":{"movies":0,"shows":0,"episodes":1}}"#)
+            }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: database, settingsManager: settings, session: session)
+        await service.setTokens(access: "token", refresh: "refresh")
+
+        let result = await orchestrator.sync()
+
+        #expect(result.historyPulled == 0)
+        #expect(result.historyPushed == 0)
+        #expect(postState.paths.isEmpty)
     }
 
     @Test("push sends multiple completed entries")
@@ -2024,9 +3336,10 @@ struct TraktSyncOrchestratorBidirectionalHistoryTests {
 
         // Should pull the remote item
         #expect(result.historyPulled == 1)
-        let remoteRecord = try await database.fetchWatchHistory(mediaId: "tt2222222")
+        let remoteRecord = try await database.fetchWatchHistory(mediaId: "movie-omdb-tt2222222")
         #expect(remoteRecord != nil)
         #expect(remoteRecord?.title == "Remote Only Movie")
+        #expect(remoteRecord?.mediaId == "movie-omdb-tt2222222")
 
         // Should push the local item
         #expect(result.historyPushed == 1)

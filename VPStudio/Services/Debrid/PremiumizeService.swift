@@ -46,8 +46,15 @@ actor PremiumizeService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
         let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: normalizedHash,
+            suppliedMagnetURI: magnetURI
+        )
         let body = "src=\(magnet.addingPercentEncoding(withAllowedCharacters: Self.formEncodingAllowed) ?? magnet)"
         let response: PMTransferResponse = try await request(path: "/transfer/create", method: "POST", body: body)
         return response.id ?? normalizedHash
@@ -131,9 +138,10 @@ actor PremiumizeService: DebridServiceProtocol {
         guard transfer.status == "finished", let link = transfer.link else {
             throw DebridError.fileNotReady(transfer.status ?? "unknown")
         }
-        guard let url = URL(string: link) else {
-            throw DebridError.networkError("Invalid URL")
-        }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: link,
+            errorMessage: "Invalid URL"
+        )
         let fileName = transfer.name ?? "Unknown"
         episodeSelectionByTorrent.removeValue(forKey: torrentId)
         return StreamInfo(
@@ -150,8 +158,7 @@ actor PremiumizeService: DebridServiceProtocol {
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
     private static let formEncodingAllowed: CharacterSet = {
@@ -209,6 +216,12 @@ private struct PMAccountResponse: Sendable {
     let status: String?
     let customerId: String?
     let premiumUntil: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case customerId = "customer_id"
+        case premiumUntil = "premium_until"
+    }
 }
 extension PMAccountResponse: Decodable {}
 

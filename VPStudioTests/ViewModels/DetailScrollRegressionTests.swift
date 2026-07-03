@@ -84,6 +84,84 @@ struct DetailScrollRegressionTests {
     }
 
     @Test
+    func seriesDetailPresentationPolicyFormatsMetadataAndEpisodeText() {
+        #expect(SeriesDetailPresentationPolicy.seasonCountText(0) == nil)
+        #expect(SeriesDetailPresentationPolicy.seasonCountText(1) == "1 Season")
+        #expect(SeriesDetailPresentationPolicy.seasonCountText(3) == "3 Seasons")
+
+        #expect(SeriesDetailPresentationPolicy.runtimeText(minutes: nil) == nil)
+        #expect(SeriesDetailPresentationPolicy.runtimeText(minutes: 0) == nil)
+        #expect(SeriesDetailPresentationPolicy.runtimeText(minutes: 42) == "42 min")
+        #expect(SeriesDetailPresentationPolicy.imdbRatingText(nil) == nil)
+        #expect(SeriesDetailPresentationPolicy.imdbRatingText(0) == nil)
+        #expect(SeriesDetailPresentationPolicy.imdbRatingText(8.26) == "8.3 IMDb")
+
+        #expect(SeriesDetailPresentationPolicy.episodeContextText(season: 2, episodeNumber: 7) == "S2:E7")
+        #expect(SeriesDetailPresentationPolicy.episodeRuntimeText(minutes: nil) == nil)
+        #expect(SeriesDetailPresentationPolicy.episodeRuntimeText(minutes: 0) == nil)
+        #expect(SeriesDetailPresentationPolicy.episodeRuntimeText(minutes: 51) == "\u{2022} 51m")
+        #expect(SeriesDetailPresentationPolicy.episodeTitle(nil, episodeNumber: 4) == "Episode 4")
+        #expect(SeriesDetailPresentationPolicy.episodeTitle("", episodeNumber: 4) == "Episode 4")
+        #expect(SeriesDetailPresentationPolicy.episodeTitle("Finale", episodeNumber: 4) == "Finale")
+    }
+
+    @Test
+    func seriesDetailPresentationPolicyFormatsWatchStates() {
+        #expect(SeriesDetailPresentationPolicy.episodeAccessibilityLabel(
+            episodeNumber: 5,
+            title: "The Return"
+        ) == "Episode 5, The Return")
+        #expect(SeriesDetailPresentationPolicy.episodeAccessibilityLabel(
+            episodeNumber: 5,
+            title: nil
+        ) == "Episode 5, Untitled")
+
+        #expect(SeriesDetailPresentationPolicy.episodeAccessibilityValue(isWatched: true, isSelected: true) == "Watched, selected")
+        #expect(SeriesDetailPresentationPolicy.episodeAccessibilityValue(isWatched: true, isSelected: false) == "Watched")
+        #expect(SeriesDetailPresentationPolicy.episodeAccessibilityValue(isWatched: false, isSelected: true) == "Selected")
+        #expect(SeriesDetailPresentationPolicy.episodeAccessibilityValue(isWatched: false, isSelected: false) == "Not watched")
+
+        #expect(SeriesDetailPresentationPolicy.episodeWatchLabel(isWatched: true) == "Watched")
+        #expect(SeriesDetailPresentationPolicy.episodeWatchLabel(isWatched: false) == "Not watched")
+        #expect(SeriesDetailPresentationPolicy.episodeWatchActionTitle(isWatched: true) == "Mark Episode as Unwatched")
+        #expect(SeriesDetailPresentationPolicy.episodeWatchActionTitle(isWatched: false) == "Mark Episode as Watched")
+
+        #expect(SeriesDetailPresentationPolicy.watchStatusIcon(for: .watched) == "checkmark.circle.fill")
+        #expect(SeriesDetailPresentationPolicy.watchStatusIcon(for: .inProgress) == "play.circle.fill")
+        #expect(SeriesDetailPresentationPolicy.watchStatusIcon(for: .notWatched) == "circle")
+        #expect(SeriesDetailPresentationPolicy.watchStatusIcon(for: .selectionRequired) == "rectangle.and.hand.point.up.left.fill")
+
+        #expect(SeriesDetailPresentationPolicy.selectedEpisodeWatchState(
+            hasSelectedEpisode: false,
+            isSelectedEpisodeCompleted: true
+        ) == .selectionRequired)
+        #expect(SeriesDetailPresentationPolicy.selectedEpisodeWatchState(
+            hasSelectedEpisode: true,
+            isSelectedEpisodeCompleted: true
+        ) == .watched)
+        #expect(SeriesDetailPresentationPolicy.selectedEpisodeWatchState(
+            hasSelectedEpisode: true,
+            isSelectedEpisodeCompleted: false
+        ) == .notWatched)
+    }
+
+    @Test
+    func seriesWatchProgressLabelUsesSeasonTotalOrWatchedFallback() {
+        #expect(SeriesDetailPresentationPolicy.seriesWatchProgressLabel(
+            watchedCount: 0,
+            seasonEpisodeCounts: []
+        ) == "Series Actions")
+        #expect(SeriesDetailPresentationPolicy.seriesWatchProgressLabel(
+            watchedCount: 4,
+            seasonEpisodeCounts: [10, 8]
+        ) == "4/18 watched")
+        #expect(SeriesDetailPresentationPolicy.seriesWatchProgressLabel(
+            watchedCount: 6,
+            seasonEpisodeCounts: [2, 1]
+        ) == "6/6 watched")
+    }
+
+    @Test
     @MainActor
     func successfulSeriesSearchMarksCurrentEpisodeContextAndClearsFreshness() async {
         let appState = AppState()
@@ -169,7 +247,7 @@ struct DetailScrollRegressionTests {
                 imdbRating: nil,
                 tmdbId: 103
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
 
         #expect(viewModel.selectedSeason == 1)
@@ -222,7 +300,7 @@ struct DetailScrollRegressionTests {
                 imdbRating: nil,
                 tmdbId: 204
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
         await viewModel.searchTorrents()
 
@@ -291,7 +369,7 @@ struct DetailScrollRegressionTests {
                 imdbRating: nil,
                 tmdbId: 104
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
         await viewModel.searchTorrents()
         #expect(viewModel.requiresFreshEpisodeSearch == false)
@@ -355,7 +433,7 @@ struct DetailScrollRegressionTests {
                 title: "Race Show",
                 tmdbId: 304
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
 
         let delayedSeasonLoad = Task {
@@ -405,8 +483,9 @@ struct DetailScrollRegressionTests {
                 title: "Retry Show",
                 tmdbId: 404
             ),
-            apiKey: ""
+            apiKey: "test-omdb-key"
         )
+        await metadata.resetFailure()
 
         await viewModel.loadSeason(2, apiKey: "")
         #expect(viewModel.error != nil)
@@ -448,6 +527,8 @@ private actor ScrollRegressionMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
 }
@@ -474,7 +555,15 @@ private actor DelayedScrollRegressionMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
+
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+        if season == delayedSeason {
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+        return episodesBySeason[season] ?? []
+    }
 
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] {
         if season == delayedSeason {
@@ -504,7 +593,16 @@ private actor FlakySeasonMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
+
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+        if season == failingSeason, failedOnce == false {
+            failedOnce = true
+            throw URLError(.cannotLoadFromNetwork)
+        }
+        return episodesBySeason[season] ?? []
+    }
 
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] {
         if season == failingSeason, failedOnce == false {
@@ -512,6 +610,10 @@ private actor FlakySeasonMetadataProvider: DetailMetadataProviding {
             throw URLError(.cannotLoadFromNetwork)
         }
         return episodesBySeason[season] ?? []
+    }
+
+    func resetFailure() {
+        failedOnce = false
     }
 }
 
@@ -530,6 +632,17 @@ private actor ScrollRegressionIndexerManager: DetailIndexerManaging {
     }
 
     func searchByQuery(query: String, type: MediaType) async throws -> [TorrentResult] {
-        []
+        guard type == .series,
+              let episodeToken = query
+                  .split(separator: " ")
+                  .last?
+                  .uppercased(),
+              episodeToken.hasPrefix("S"),
+              let episodeMarker = episodeToken.firstIndex(of: "E"),
+              let season = Int(episodeToken[episodeToken.index(after: episodeToken.startIndex)..<episodeMarker]),
+              let episode = Int(episodeToken[episodeToken.index(after: episodeMarker)...]) else {
+            return resultsByContext["default"] ?? []
+        }
+        return resultsByContext["s\(season)e\(episode)"] ?? []
     }
 }

@@ -102,4 +102,57 @@ struct LibraryLayoutPolicyTests {
         )
         #expect(selected == nil)
     }
+
+    @Test
+    func orderedUserFoldersUsesManualOrderAndAppendsMissingFoldersInOriginalOrder() {
+        let alpha = manualFolder(id: "alpha", name: "Alpha")
+        let beta = manualFolder(id: "beta", name: "Beta")
+        let gamma = manualFolder(id: "gamma", name: "Gamma")
+        let delta = manualFolder(id: "delta", name: "Delta")
+
+        let ordered = LibraryFolderSelectionPolicy.orderedUserFolders(
+            [alpha, beta, gamma, delta],
+            manualFolderOrderIDs: ["gamma", "alpha"]
+        )
+
+        #expect(ordered.map(\.id) == ["gamma", "alpha", "beta", "delta"])
+    }
+
+    @Test
+    func orderedUserFoldersIgnoresUnknownManualOrderIDsDeterministically() {
+        let alpha = manualFolder(id: "alpha", name: "Alpha")
+        let beta = manualFolder(id: "beta", name: "Beta")
+        let gamma = manualFolder(id: "gamma", name: "Gamma")
+
+        let ordered = LibraryFolderSelectionPolicy.orderedUserFolders(
+            [alpha, beta, gamma],
+            manualFolderOrderIDs: ["missing", "gamma", "also-missing"]
+        )
+
+        #expect(ordered.map(\.id) == ["gamma", "alpha", "beta"])
+    }
+
+    @Test
+    func orderedUserFoldersKeepsSourceOrderWhenManualOrderIsEmpty() {
+        let alpha = manualFolder(id: "alpha", name: "Alpha")
+        let beta = manualFolder(id: "beta", name: "Beta")
+
+        let ordered = LibraryFolderSelectionPolicy.orderedUserFolders(
+            [alpha, beta],
+            manualFolderOrderIDs: []
+        )
+
+        #expect(ordered.map(\.id) == ["alpha", "beta"])
+    }
+
+    private func manualFolder(id: String, name: String) -> LibraryFolder {
+        LibraryFolder(
+            id: id,
+            name: name,
+            parentId: "system-watchlist",
+            listType: .watchlist,
+            folderKind: .manual,
+            isSystem: false
+        )
+    }
 }

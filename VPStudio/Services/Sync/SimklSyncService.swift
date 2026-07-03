@@ -8,12 +8,17 @@ actor SimklSyncService {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 90
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
         return URLSession(configuration: configuration)
     }()
 
     private let clientId: String
     private let clientSecret: String
-    private let baseURL = "https://api.simkl.com"
+    private let baseURL: String
     private let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
     private let session: URLSession
     private var accessToken: String?
@@ -23,6 +28,7 @@ actor SimklSyncService {
     init(
         clientId: String,
         clientSecret: String = "",
+        baseURL: String = "https://api.simkl.com",
         accessToken: String? = nil,
         refreshToken: String? = nil,
         session: URLSession? = nil,
@@ -30,6 +36,7 @@ actor SimklSyncService {
     ) {
         self.clientId = clientId
         self.clientSecret = clientSecret
+        self.baseURL = baseURL
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.session = session ?? Self.defaultSession
@@ -94,16 +101,17 @@ actor SimklSyncService {
             ]
         )
 
-        guard !response.accessToken.isEmpty else {
+        let trimmedAccessToken = response.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAccessToken.isEmpty else {
             throw SimklError.invalidAuthorizationResponse
         }
 
-        accessToken = response.accessToken
+        accessToken = trimmedAccessToken
         if let refreshToken = response.refreshToken, !refreshToken.isEmpty {
             self.refreshToken = refreshToken
         }
         clearAuthorizationSession()
-        await onTokensRefreshed?(response.accessToken, self.refreshToken)
+        await onTokensRefreshed?(trimmedAccessToken, self.refreshToken)
         return response
     }
 
@@ -114,8 +122,9 @@ actor SimklSyncService {
     }
 
     func addToList(imdbId: String, type: MediaType, list: String = "plantowatch") async throws {
+        let ids = try Self.simklMediaIds(from: imdbId)
         let key = type == .movie ? "movies" : "shows"
-        let item = SimklAddItem(ids: SimklAddIds(imdb: imdbId), to: list, watchedAt: nil)
+        let item = SimklAddItem(ids: ids, to: list, watchedAt: nil)
 
         var dict: [String: [SimklAddItem]] = [:]
         dict[key] = [item]
@@ -128,10 +137,11 @@ actor SimklSyncService {
         type: MediaType,
         watchedAt: Date = Date()
     ) async throws {
+        let ids = try Self.simklMediaIds(from: imdbId)
         let key = type == .movie ? "movies" : "shows"
         let formatter = ISO8601DateFormatter()
         let item = SimklAddItem(
-            ids: SimklAddIds(imdb: imdbId),
+            ids: ids,
             to: nil,
             watchedAt: formatter.string(from: watchedAt)
         )
@@ -141,10 +151,20 @@ actor SimklSyncService {
         let _: SimklActionResponse = try await postData(path: "/sync/history", data: wrappedData)
     }
 
+    private static func simklMediaIds(from mediaId: String) throws -> SimklAddIds {
+        if let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: mediaId) {
+            return SimklAddIds(imdb: normalizedIMDbID, tmdb: nil)
+        }
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+            return SimklAddIds(imdb: nil, tmdb: String(tmdbID))
+        }
+        throw SimklError.invalidIMDbID
+    }
+
     // MARK: - Networking
 
     private func get<T: Decodable>(path: String) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SimklError.invalidURL }
+        guard let url = makeURL(path: path) else { throw SimklError.invalidURL }
         let data = try await performAuthenticatedRequest {
             var request = URLRequest(url: url)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -155,7 +175,7 @@ actor SimklSyncService {
     }
 
     private func postData<T: Decodable>(path: String, data body: Data) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SimklError.invalidURL }
+        guard let url = makeURL(path: path) else { throw SimklError.invalidURL }
         let data = try await performAuthenticatedRequest {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -168,14 +188,19 @@ actor SimklSyncService {
     }
 
     private func postForm<T: Decodable>(path: String, parameters: [(String, String)]) async throws -> T {
-        guard let url = URL(string: baseURL + path) else { throw SimklError.invalidURL }
+        guard let url = makeURL(path: path) else { throw SimklError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue(self.clientId, forHTTPHeaderField: "simkl-api-key")
         request.httpBody = encodedFormBody(parameters)
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw SimklError.httpError(0)
         }
@@ -209,8 +234,13 @@ actor SimklSyncService {
 
         var request = buildRequest()
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        Self.prepareSensitiveRequest(&request)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.syncProvider
+        )
         guard let http = response as? HTTPURLResponse else {
             throw SimklError.httpError(0)
         }
@@ -266,6 +296,45 @@ actor SimklSyncService {
         var components = URLComponents()
         components.queryItems = parameters.map { URLQueryItem(name: $0.0, value: $0.1) }
         return Data((components.percentEncodedQuery ?? "").utf8)
+    }
+
+    private func makeURL(path: String) -> URL? {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty,
+              !trimmedBaseURL.contains("["),
+              !trimmedBaseURL.contains("]"),
+              var baseComponents = URLComponents(string: trimmedBaseURL),
+              let scheme = baseComponents.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"),
+              baseComponents.host?.isEmpty == false
+        else {
+            return nil
+        }
+
+        guard let pathComponents = URLComponents(string: path) else {
+            return nil
+        }
+
+        let basePath = baseComponents.path
+        let suffixPath = pathComponents.path
+        if basePath.isEmpty {
+            baseComponents.path = suffixPath
+        } else if suffixPath.isEmpty {
+            baseComponents.path = basePath
+        } else if basePath.hasSuffix("/") {
+            baseComponents.path = basePath + suffixPath.dropFirst()
+        } else {
+            baseComponents.path = basePath + suffixPath
+        }
+        baseComponents.percentEncodedQuery = pathComponents.percentEncodedQuery
+        return baseComponents.url
+    }
+
+    private nonisolated static func prepareSensitiveRequest(_ request: inout URLRequest) {
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
     }
 
     private func beginAuthorizationSession() -> PendingSimklAuthorizationSession {
@@ -382,7 +451,8 @@ private extension Data {
 // MARK: - Request Models
 
 private struct SimklAddIds: Codable, Sendable {
-    let imdb: String
+    let imdb: String?
+    let tmdb: String?
 }
 
 private struct SimklAddItem: Codable, Sendable {
@@ -469,6 +539,7 @@ extension SimklIds: Decodable {}
 
 enum SimklError: LocalizedError {
     case invalidURL
+    case invalidIMDbID
     case httpError(Int)
     case unauthorized
     case notConnected
@@ -483,6 +554,7 @@ enum SimklError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid Simkl URL"
+        case .invalidIMDbID: return "Invalid IMDb, OMDb, or TMDb ID"
         case .httpError(let code): return "Simkl API error: HTTP \(code)"
         case .unauthorized: return "Simkl authorization expired"
         case .notConnected: return "Not connected to Simkl"

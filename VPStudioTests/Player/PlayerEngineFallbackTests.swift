@@ -52,6 +52,23 @@ struct PlayerEngineFallbackTests {
         #endif
     }
 
+    @Test func selectorAdaptiveModeUsesKSPlayerFirstForLegacyFilenameTokens() {
+        for token in ["xvid", "vc1", "realvideo", "rmvb"] {
+            let stream = makeStream(
+                url: "https://cdn.example.com/movie.mp4",
+                fileName: "Movie.2025.\(token).1080p.mp4",
+                codec: .h264
+            )
+
+            let order = selector.engineOrder(for: stream, strategy: .adaptive)
+            #if os(visionOS)
+            #expect(order == [.avPlayer, .ksPlayer])
+            #else
+            #expect(order == [.ksPlayer, .avPlayer])
+            #endif
+        }
+    }
+
     @Test func selectorPerformanceModeAlwaysPrefersAVPlayer() {
         let stream = makeStream(
             url: "https://cdn.example.com/movie.remux.mkv",
@@ -60,6 +77,27 @@ struct PlayerEngineFallbackTests {
         )
         let order = selector.engineOrder(for: stream, strategy: .performance)
         #expect(order == [.avPlayer, .ksPlayer])
+    }
+
+    @Test func mvHevcStreamsUseOnlyAVPlayerForEveryStrategy() {
+        let stream = makeStream(
+            url: "https://cdn.example.com/spatial.mov",
+            fileName: "Spatial.Movie.MV-HEVC.mov",
+            codec: .h265
+        )
+
+        for strategy in PlayerEngineStrategy.allCases {
+            #expect(selector.engineOrder(for: stream, strategy: strategy) == [.avPlayer])
+        }
+    }
+
+    @Test func strategyLabelsAndSummariesAreStableForSettingsUI() {
+        #expect(PlayerEngineStrategy.adaptive.id == "adaptive")
+        #expect(PlayerEngineStrategy.performance.displayName == "Performance")
+        #expect(PlayerEngineStrategy.compatibility.displayName == "Compatibility")
+        #expect(PlayerEngineStrategy.adaptive.summary.contains("AVPlayer"))
+        #expect(PlayerEngineStrategy.performance.summary.contains("AVPlayer"))
+        #expect(PlayerEngineStrategy.compatibility.summary.contains("KSPlayer"))
     }
 
     @Test func selectorPrefersAVPlayerForSimpleStreams() {
@@ -116,8 +154,49 @@ struct PlayerEngineFallbackTests {
     }
 
     @MainActor
+    @Test func avPlayerReadinessRejectsNonPositiveTimeout() async {
+        let item = AVPlayerItem(url: URL(string: "https://cdn.example.com/movie.mp4")!)
+        let player = AVPlayer(playerItem: item)
+
+        do {
+            try await AVPlayerEngine.waitUntilReady(player: player, timeout: 0)
+            Issue.record("Expected non-positive readiness timeout to fail.")
+        } catch PlayerEngineError.initializationFailed(let kind, let message) {
+            #expect(kind == .avPlayer)
+            #expect(message.contains("Invalid readiness timeout"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @MainActor
+    @Test func avPlayerReadinessTimesOutForItemThatNeverStartsPlaying() async throws {
+        let mediaURL = try makeSilentWAVFile()
+        defer { try? FileManager.default.removeItem(at: mediaURL) }
+
+        let item = AVPlayerItem(url: mediaURL)
+        let player = AVPlayer(playerItem: item)
+        var states: [PlayerPlaybackState] = []
+
+        do {
+            try await AVPlayerEngine.waitUntilReady(
+                player: player,
+                timeout: 0.2,
+                pollInterval: .milliseconds(5),
+                onState: { state, _ in states.append(state) }
+            )
+            Issue.record("Expected readiness wait to time out.")
+        } catch PlayerEngineError.startupTimeout(let kind) {
+            #expect(kind == .avPlayer)
+            #expect(states.contains(.preparing) || states.contains(.buffering))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @MainActor
     @Test func avPlayerEnginePrepareReturnsAVSession() async throws {
-        let engine = AVPlayerEngine()
+        let engine = AVPlayerEngine(resolveStream: { $0 })
         let stream = makeStream(
             url: "https://cdn.example.com/movie.mp4",
             fileName: "Movie.2025.1080p.mp4",
@@ -129,6 +208,100 @@ struct PlayerEngineFallbackTests {
         #expect(prepared.avPlayer != nil)
         #expect(prepared.avPlayer?.automaticallyWaitsToMinimizeStalling == false)
         #expect(prepared.avPlayer?.currentItem?.preferredForwardBufferDuration == 1.5)
+    }
+
+    @MainActor
+    @Test func avPlayerEnginePrepareUsesLongerBufferForDemandingStreams() async throws {
+        let engine = AVPlayerEngine(resolveStream: { $0 })
+        let stream = makeStream(
+            url: "https://cdn.example.com/movie.mp4",
+            fileName: "Movie.2025.2160p.DV.mp4",
+            codec: .h265,
+            hdr: .dolbyVision
+        )
+
+        let prepared = try await engine.prepare(stream: stream)
+
+        #expect(engine.canHandle(stream: stream))
+        #expect(prepared.engineKind == .avPlayer)
+        #expect(prepared.ksPlayerCoordinator == nil)
+        #expect(prepared.ksOptions == nil)
+        #expect(prepared.avPlayer?.currentItem?.preferredForwardBufferDuration == 3.0)
+    }
+
+    @MainActor
+    @Test func avPlayerEnginePrepareUsesLongerBufferForUHDAndHDR10Plus() async throws {
+        let engine = AVPlayerEngine(resolveStream: { $0 })
+        let uhdStream = StreamInfo(
+            streamURL: URL(string: "https://cdn.example.com/movie-uhd.mp4")!,
+            quality: .uhd4k,
+            codec: .h265,
+            audio: .aac,
+            source: .webDL,
+            hdr: .sdr,
+            fileName: "Movie.2025.2160p.mp4",
+            sizeBytes: 1_000,
+            debridService: DebridServiceType.realDebrid.rawValue
+        )
+        let hdr10PlusStream = makeStream(
+            url: "https://cdn.example.com/movie-hdr10plus.mp4",
+            fileName: "Movie.2025.1080p.HDR10Plus.mp4",
+            codec: .h265,
+            hdr: .hdr10Plus
+        )
+
+        let uhdPrepared = try await engine.prepare(stream: uhdStream)
+        let hdrPrepared = try await engine.prepare(stream: hdr10PlusStream)
+
+        #expect(uhdPrepared.avPlayer?.currentItem?.preferredForwardBufferDuration == 3.0)
+        #expect(hdrPrepared.avPlayer?.currentItem?.preferredForwardBufferDuration == 3.0)
+    }
+
+    @Test func streamFailoverPlannerReturnsNextStreamOnlyWhenAvailable() {
+        let first = makeStream(url: "https://cdn.example.com/one.mp4", fileName: "one.mp4", codec: .h264)
+        let second = makeStream(url: "https://cdn.example.com/two.mp4", fileName: "two.mp4", codec: .h264)
+        let missing = makeStream(url: "https://cdn.example.com/missing.mp4", fileName: "missing.mp4", codec: .h264)
+
+        #expect(PlayerStreamFailoverPlanner.nextStream(after: first, in: [first, second])?.id == second.id)
+        #expect(PlayerStreamFailoverPlanner.nextStream(after: second, in: [first, second]) == nil)
+        #expect(PlayerStreamFailoverPlanner.nextStream(after: missing, in: [first, second]) == nil)
+    }
+
+    private func makeSilentWAVFile() throws -> URL {
+        let sampleRate: UInt32 = 8_000
+        let channels: UInt16 = 1
+        let bitsPerSample: UInt16 = 16
+        let sampleCount = 800
+        let dataSize = UInt32(sampleCount * Int(channels) * Int(bitsPerSample / 8))
+        let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
+        let blockAlign = channels * (bitsPerSample / 8)
+
+        var data = Data()
+        data.append(contentsOf: "RIFF".utf8)
+        appendLittleEndian(UInt32(36) + dataSize, to: &data)
+        data.append(contentsOf: "WAVE".utf8)
+        data.append(contentsOf: "fmt ".utf8)
+        appendLittleEndian(UInt32(16), to: &data)
+        appendLittleEndian(UInt16(1), to: &data)
+        appendLittleEndian(channels, to: &data)
+        appendLittleEndian(sampleRate, to: &data)
+        appendLittleEndian(byteRate, to: &data)
+        appendLittleEndian(blockAlign, to: &data)
+        appendLittleEndian(bitsPerSample, to: &data)
+        data.append(contentsOf: "data".utf8)
+        appendLittleEndian(dataSize, to: &data)
+        data.append(Data(repeating: 0, count: Int(dataSize)))
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    private func appendLittleEndian<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+        var littleEndian = value.littleEndian
+        withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
     }
 
     private func makeStream(

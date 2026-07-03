@@ -47,6 +47,11 @@ struct PlayerLoadingStatusTests {
         #expect(phase.statusMessage == "Playback failed")
     }
 
+    @Test func failedPhaseWithWhitespaceMessageUsesProvidedMessage() {
+        let phase = PlayerLoadingPhase.failed("   ")
+        #expect(phase.statusMessage == "   ")
+    }
+
     // MARK: - Failover Explanation
 
     @Test func switchingEngineHasFailoverExplanation() {

@@ -1,5 +1,7 @@
 import SwiftUI
 
+// MARK: - Subtitle Settings Policy
+
 // MARK: - Subtitle Settings
 
 struct SubtitleSettingsView: View {
@@ -9,6 +11,7 @@ struct SubtitleSettingsView: View {
     @State private var preferredAudioLanguage = "en"
     @State private var autoSearch = true
     @State private var fontSize: Double = 24
+    @State private var subtitleOffsetMilliseconds = 0
     @State private var openSubsSaveTask: Task<Void, Never>?
     @State private var surfaceError: AppError?
 
@@ -41,6 +44,9 @@ struct SubtitleSettingsView: View {
         .onChange(of: fontSize) { _, newValue in
             Task { await persistStringSetting(key: SettingsKeys.subtitleFontSize, value: String(Int(newValue))) }
         }
+        .onChange(of: subtitleOffsetMilliseconds) { _, newValue in
+            Task { await persistStringSetting(key: SettingsKeys.subtitleOffsetMilliseconds, value: String(newValue)) }
+        }
     }
 
     // MARK: - Sections
@@ -56,9 +62,14 @@ struct SubtitleSettingsView: View {
                     .accessibilityLabel("Paste OpenSubtitles API key from clipboard")
                     .accessibilityHint("Pastes the OpenSubtitles API key into the field.")
             }
-            Text("Get a key at opensubtitles.com")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("Used for OpenSubtitles search and downloads.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Link("Create API Key", destination: URL(string: "https://www.opensubtitles.com/consumers")!)
+                    .font(.caption.weight(.semibold))
+            }
         }
     }
 
@@ -100,6 +111,24 @@ struct SubtitleSettingsView: View {
                 .accessibilityLabel("Subtitle font size")
                 .accessibilityValue("\(Int(fontSize)) points")
                 .accessibilityHint("Adjusts the subtitle font size between 16 and 48 points.")
+
+            HStack {
+                Text("Sync Offset")
+                Spacer()
+                Text(SubtitleSettingsPolicy.formattedOffset(subtitleOffsetMilliseconds))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(subtitleOffsetMilliseconds) },
+                    set: { subtitleOffsetMilliseconds = Int($0.rounded()) }
+                ),
+                in: Double(SubtitleSettingsPolicy.minOffsetMilliseconds)...Double(SubtitleSettingsPolicy.maxOffsetMilliseconds),
+                step: 250
+            )
+            .accessibilityLabel("Subtitle sync offset")
+            .accessibilityValue(SubtitleSettingsPolicy.formattedOffset(subtitleOffsetMilliseconds))
+            .accessibilityHint("Moves subtitle timing earlier or later by up to five seconds.")
         }
     }
 
@@ -116,33 +145,50 @@ struct SubtitleSettingsView: View {
         }
 
         do {
-            preferredSubtitleLanguage = (try await appState.settingsManager.getString(key: SettingsKeys.subtitleLanguage)) ?? "en"
+            preferredSubtitleLanguage = SubtitleSettingsPolicy.resolvedLanguage(
+                try await appState.settingsManager.getString(key: SettingsKeys.subtitleLanguage)
+            )
         } catch {
             firstError = firstError ?? AppError(error)
-            preferredSubtitleLanguage = "en"
+            preferredSubtitleLanguage = SubtitleSettingsPolicy.defaultLanguage
         }
 
         do {
-            preferredAudioLanguage = (try await appState.settingsManager.getString(key: SettingsKeys.audioLanguage)) ?? "en"
+            preferredAudioLanguage = SubtitleSettingsPolicy.resolvedLanguage(
+                try await appState.settingsManager.getString(key: SettingsKeys.audioLanguage)
+            )
         } catch {
             firstError = firstError ?? AppError(error)
-            preferredAudioLanguage = "en"
+            preferredAudioLanguage = SubtitleSettingsPolicy.defaultLanguage
         }
 
         do {
-            autoSearch = try await appState.settingsManager.getBool(key: SettingsKeys.subtitleAutoSearch, default: true)
+            let storedAutoSearch = try await appState.settingsManager.getBool(
+                key: SettingsKeys.subtitleAutoSearch,
+                default: SubtitleSettingsPolicy.defaultAutoSearch
+            )
+            autoSearch = SubtitleSettingsPolicy.resolvedAutoSearch(storedAutoSearch)
         } catch {
             firstError = firstError ?? AppError(error)
-            autoSearch = true
+            autoSearch = SubtitleSettingsPolicy.defaultAutoSearch
         }
 
         do {
-            if let storedSize = try await appState.settingsManager.getString(key: SettingsKeys.subtitleFontSize),
-               let parsed = Double(storedSize) {
-                fontSize = max(16, min(48, parsed))
-            }
+            fontSize = SubtitleSettingsPolicy.resolvedFontSize(
+                try await appState.settingsManager.getString(key: SettingsKeys.subtitleFontSize)
+            )
         } catch {
             firstError = firstError ?? AppError(error)
+            fontSize = SubtitleSettingsPolicy.defaultFontSize
+        }
+
+        do {
+            subtitleOffsetMilliseconds = SubtitleSettingsPolicy.resolvedOffsetMilliseconds(
+                try await appState.settingsManager.getString(key: SettingsKeys.subtitleOffsetMilliseconds)
+            )
+        } catch {
+            firstError = firstError ?? AppError(error)
+            subtitleOffsetMilliseconds = SubtitleSettingsPolicy.defaultOffsetMilliseconds
         }
 
         surfaceError = firstError

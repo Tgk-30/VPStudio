@@ -37,7 +37,8 @@ actor LocalModelCatalogStore {
                     logger.info("Seeded local model: \(descriptor.displayName)")
                 }
             } catch {
-                logger.error("Failed to seed model \(descriptor.id): \(error.localizedDescription)")
+                let reason = IndexerLogSanitizer.redactedErrorMessage(error)
+                logger.error("Failed to seed model \(descriptor.id): \(reason)")
             }
         }
     }
@@ -65,6 +66,10 @@ actor LocalModelCatalogStore {
             return
         }
         try await database.updateLocalModelStatus(id: id, status: newStatus, localPath: localPath)
+    }
+
+    func updateRevision(id: String, to revision: String) async throws {
+        try await database.updateLocalModelRevision(id: id, revision: revision)
     }
 
     func updateProgress(id: String, progress: Double, downloadedBytes: Int64, totalBytes: Int64) async throws {

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import VPStudio
 
-@Suite struct DownloadButtonStateTests {
+@Suite struct DetailDownloadButtonStateTrackingTests {
 
     // MARK: - Enum values
 

@@ -11,6 +11,36 @@ private enum SeriesDetailQAScrollDebug {
     }
 }
 
+enum DetailHeroArtworkPresentationPolicy {
+    enum HeroArtworkKind: Equatable {
+        case backdrop
+        case posterOnly
+        case none
+    }
+
+    static let posterCardWidth: CGFloat = 132
+    static let posterCardHeight: CGFloat = 198
+    static let posterCardCornerRadius: CGFloat = 14
+
+    static func heroArtworkKind(backdropPath: String?, posterPath: String?) -> HeroArtworkKind {
+        if hasRenderableArtworkPath(backdropPath, legacyTMDBSizePath: "w1280") {
+            return .backdrop
+        }
+        if hasRenderableArtworkPath(posterPath, legacyTMDBSizePath: "w500") {
+            return .posterOnly
+        }
+        return .none
+    }
+
+    static func showsPosterCard(for kind: HeroArtworkKind) -> Bool {
+        kind == .posterOnly
+    }
+
+    private static func hasRenderableArtworkPath(_ value: String?, legacyTMDBSizePath: String) -> Bool {
+        MediaArtworkURLPolicy.url(for: value, legacyTMDBSizePath: legacyTMDBSizePath) != nil
+    }
+}
+
 enum SeriesPrimaryPlayPolicy {
     static let noStreamsMessage = "No streams found for this episode. Try another episode or result."
     static let selectEpisodeLabel = "Select Episode"
@@ -44,7 +74,7 @@ enum SeriesPrimaryPlayPolicy {
         hasSelectedEpisode: Bool
     ) -> String {
         if mediaType == .series && !hasSelectedEpisode {
-            return "Choose an episode before loading streams."
+            return "Moves to episode choices before loading streams."
         }
         return "Searches for streams if needed and opens the first available result."
     }
@@ -97,6 +127,120 @@ enum SeriesSeasonLoadingPresentationPolicy {
     }
 }
 
+enum SeriesDetailPresentationPolicy {
+    static let heroHeight: CGFloat = 244
+    static let overviewMaxWidth: CGFloat = 760
+    static let overviewLineLimit = 3
+    static let bottomContentPadding: CGFloat = 168
+    static let bottomViewportInset: CGFloat = 128
+    static let contentSpacing: CGFloat = 18
+    static let contentTopPadding: CGFloat = 18
+    static let episodesSectionSpacing: CGFloat = 14
+    static let episodesSectionTopPadding: CGFloat = 12
+    static let episodeCardWidth: CGFloat = 220
+    static let episodeCardHeight: CGFloat = 124
+    static let postEpisodeExtrasTopPadding: CGFloat = VPSpace.roomy
+
+    static func seasonCountText(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return "\(count) Season\(count == 1 ? "" : "s")"
+    }
+
+    static func runtimeText(minutes: Int?) -> String? {
+        guard let minutes, minutes > 0 else { return nil }
+        return "\(minutes) min"
+    }
+
+    static func imdbRatingText(_ rating: Double?) -> String? {
+        let text = MediaRatingPolicy.displayText(rating)
+        return text.isEmpty ? nil : "\(text) IMDb"
+    }
+
+    static func episodeContextText(season: Int, episodeNumber: Int) -> String {
+        "S\(season):E\(episodeNumber)"
+    }
+
+    static func episodeRuntimeText(minutes: Int?) -> String? {
+        guard let minutes, minutes > 0 else { return nil }
+        return "• \(minutes)m"
+    }
+
+    static func episodeTitle(_ title: String?, episodeNumber: Int) -> String {
+        guard let title, !title.isEmpty else { return "Episode \(episodeNumber)" }
+        return title
+    }
+
+    static func episodeAccessibilityLabel(episodeNumber: Int, title: String?) -> String {
+        "Episode \(episodeNumber), \(title ?? "Untitled")"
+    }
+
+    static func episodeAccessibilityValue(isWatched: Bool, isSelected: Bool) -> String {
+        switch (isWatched, isSelected) {
+        case (true, true):
+            return "Watched, selected"
+        case (true, false):
+            return "Watched"
+        case (false, true):
+            return "Selected"
+        case (false, false):
+            return "Not watched"
+        }
+    }
+
+    static func episodeWatchLabel(isWatched: Bool) -> String {
+        isWatched ? "Watched" : "Not watched"
+    }
+
+    static func episodeWatchActionTitle(isWatched: Bool) -> String {
+        isWatched ? "Mark Episode as Unwatched" : "Mark Episode as Watched"
+    }
+
+    static func watchStatusIcon(for state: DetailWatchStatusState) -> String {
+        switch state {
+        case .watched:
+            return "checkmark.circle.fill"
+        case .inProgress:
+            return "play.circle.fill"
+        case .notWatched:
+            return "circle"
+        case .selectionRequired:
+            return "rectangle.and.hand.point.up.left.fill"
+        }
+    }
+
+    static func selectedEpisodeWatchState(hasSelectedEpisode: Bool, isSelectedEpisodeCompleted: Bool) -> DetailWatchStatusState {
+        guard hasSelectedEpisode else { return .selectionRequired }
+        return isSelectedEpisodeCompleted ? .watched : .notWatched
+    }
+
+    static func seriesWatchProgressLabel(watchedCount: Int, seasonEpisodeCounts: [Int]) -> String {
+        let totalCount = max(seasonEpisodeCounts.reduce(0, +), watchedCount)
+        guard totalCount > 0 else { return "Series Actions" }
+        return "\(watchedCount)/\(totalCount) watched"
+    }
+}
+
+/// Copy + glyph for the user-facing RATE action (the control that opens the rating sheet).
+///
+/// This is the *interactive* rating affordance — distinct from the read-only IMDb display mark
+/// rendered elsewhere in the metadata row. It carries a visible "Rate" / current-score text label
+/// so it no longer reads as one of N identical monochrome chrome glyphs.
+enum SeriesRateControlPolicy {
+    /// Visible label beside the star glyph. When the user has not rated yet, prompt with "Rate".
+    /// Once a rating exists, surface the formatted summary as-is (e.g. "8/10", "Liked") so the
+    /// control reads as both the current value and the way to edit it — across every scale mode
+    /// (like/dislike, 1-10, 1-100), where a hard-coded "Rated N" prefix would read awkwardly.
+    static func visibleLabel(currentFeedbackSummary: String?) -> String {
+        guard let summary = currentFeedbackSummary, !summary.isEmpty else { return "Rate" }
+        return summary
+    }
+
+    /// SF Symbol for the rate control: a filled star once a rating exists, an outline otherwise.
+    static func glyphName(hasRating: Bool) -> String {
+        hasRating ? "star.fill" : "star"
+    }
+}
+
 /// A series‑detail layout matching the reference screenshot exactly:
 /// – Back arrow top-left, share/list/cast icons top-right
 /// – Hero image with gradient overlay
@@ -110,18 +254,25 @@ enum SeriesSeasonLoadingPresentationPolicy {
 struct SeriesDetailLayout: View {
     let viewModel: DetailViewModel
     let title: String
-    let tmdbApiKey: String
+    let metadataConfiguration: MetadataProviderConfiguration
     let mediaType: MediaType
     let streamResultsAnchor: String
     let shareItem: String
     @Binding var isPlayerOpening: Bool
     @Binding var playerOpeningError: String?
+    /// Which torrent row triggered the in-progress play, so its inline feedback is scoped to that
+    /// row. `nil` (the default / non-row plays) falls back to the shared broadcast behaviour.
+    var openingTorrentID: TorrentResult.ID?
     let onPlayTorrent: (TorrentResult) -> Void
     let onCast: () -> Void
     let onShowRatingSheet: () -> Void
     
     @Environment(\.dismiss) private var dismiss
     @State private var isPlayButtonLoading = false
+    @State private var episodeScrollRequest = 0
+    @State private var heroOverlayFrame: CGRect = .zero
+
+    private let episodesSectionID = "episodes-section"
 
     private var isPrimaryPlayBusy: Bool {
         SeriesPrimaryPlayPolicy.isBusy(
@@ -158,81 +309,110 @@ struct SeriesDetailLayout: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // MARK: - Hero Image
-                heroImage
-                    .frame(height: 380)
-                    .clipped()
-                    .overlay(heroOverlay)
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // MARK: - Hero Image
+                    heroImage
+                        // Bias the fill toward the top so character heads clip less than a
+                        // centered crop would.
+                        .frame(height: SeriesDetailPresentationPolicy.heroHeight, alignment: .top)
+                        .clipped()
+                        .overlay(heroOverlay)
 
-                // MARK: - Main Content
-                VStack(alignment: .leading, spacing: 20) {
-                    // Title & Navigation
-                    titleAndNavRow
+                    // MARK: - Main Content
+                    VStack(alignment: .leading, spacing: SeriesDetailPresentationPolicy.contentSpacing) {
+                        // Title now lives on the hero artwork (see heroOverlay).
+                        // Metadata row
+                        metadataRow
 
-                    // Metadata row
-                    metadataRow
+                        // Play button
+                        playButtonRow
 
-                    // Play button
-                    playButtonRow
+                        if mediaType != .series {
+                            watchStateRow
+                        }
 
-                    if mediaType != .series {
-                        watchStateRow
+                        // Current episode info
+                        currentEpisodeRow
+
+                        // Only surface the press-and-hold hint when episodes are actually
+                        // shown below, so the tip sits near what it describes.
+                        if mediaType == .series, shouldShowEpisodesSection {
+                            seriesTrackingRow
+                        }
+
+                        // Synopsis
+                        if let overview = viewModel.mediaItem?.overview, !overview.isEmpty {
+                            Text(overview)
+                                .font(.body)
+                                .foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(SeriesDetailPresentationPolicy.overviewLineLimit)
+                                .frame(
+                                    maxWidth: SeriesDetailPresentationPolicy.overviewMaxWidth,
+                                    alignment: .leading
+                                )
+                                .padding(.top, 4)
+                        }
+
+                        if mediaType != .series {
+                            DetailAIAnalysis(viewModel: viewModel)
+                                .padding(.top, 16)
+
+                            if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
+                                genrePills(genres)
+                            }
+                        }
+
+                        if let status = viewModel.libraryStatusMessage {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.68))
+                        }
+
+                        // Seasons
+                        if !viewModel.seasons.isEmpty {
+                            seasonsSection
+                        }
+
+                        // Episodes
+                        if shouldShowEpisodesSection {
+                            episodesSection()
+                                .id(episodesSectionID)
+                        }
+
+                        if mediaType == .series {
+                            DetailAIAnalysis(viewModel: viewModel)
+                                .padding(.top, SeriesDetailPresentationPolicy.postEpisodeExtrasTopPadding)
+
+                            if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
+                                genrePills(genres)
+                            }
+                        }
+
+                        // Torrents
+                        if shouldShowTorrentsSection {
+                            torrentsSection
+                        }
+
+                        Spacer(minLength: SeriesDetailPresentationPolicy.bottomContentPadding)
                     }
-
-                    // Current episode info
-                    currentEpisodeRow
-
-                    if mediaType == .series {
-                        seriesTrackingRow
-                    }
-
-                    // Synopsis
-                    if let overview = viewModel.mediaItem?.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.body)
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(4)
-                            .padding(.top, 4)
-                    }
-
-                    // AI Analysis
-                    DetailAIAnalysis(viewModel: viewModel)
-                        .padding(.top, 16)
-
-                    if let genres = viewModel.mediaItem?.genres, !genres.isEmpty {
-                        genrePills(genres)
-                    }
-
-                    if let status = viewModel.libraryStatusMessage {
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.68))
-                    }
-
-                    // Seasons
-                    if !viewModel.seasons.isEmpty {
-                        seasonsSection
-                    }
-
-                    // Episodes
-                    if shouldShowEpisodesSection {
-                        episodesSection()
-                    }
-
-                    // Torrents
-                    if shouldShowTorrentsSection {
-                        torrentsSection
-                    }
-
-                    Spacer(minLength: 60)
+                    .padding(.horizontal, 24)
+                    .padding(.top, SeriesDetailPresentationPolicy.contentTopPadding)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
             }
+            .onChange(of: episodeScrollRequest) { _, _ in
+                guard shouldShowEpisodesSection else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    scrollProxy.scrollTo(episodesSectionID, anchor: .top)
+                }
+            }
+            .defaultScrollAnchor(QARuntimeOptions.scrollAnchorBottom ? .bottom : .top)
         }
         .background(Color.black)
+        .safeAreaInset(edge: .bottom) {
+            VPBottomViewportScrim(height: SeriesDetailPresentationPolicy.bottomViewportInset)
+        }
         .foregroundStyle(.white)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
@@ -244,6 +424,11 @@ struct SeriesDetailLayout: View {
         }
         .onChange(of: viewModel.selectedEpisode?.id) { _, newValue in
             SeriesDetailQAScrollDebug.log("selectedEpisode=\(newValue ?? "nil")")
+        }
+        .onChange(of: viewModel.episodes.count) { _, newValue in
+            SeriesDetailQAScrollDebug.log(
+                "episodesCount=\(newValue) seasons=\(viewModel.seasons.count) showEpisodesSection=\(shouldShowEpisodesSection)"
+            )
         }
         .onChange(of: viewModel.torrentSearch.results.count) { _, newValue in
             SeriesDetailQAScrollDebug.log("torrentResults=\(newValue)")
@@ -260,50 +445,115 @@ struct SeriesDetailLayout: View {
     
     private var heroImage: some View {
         Group {
-            if let backdropURL = viewModel.mediaItem?.backdropURL {
-                AsyncImage(url: backdropURL) { phase in
+            if detailHeroArtworkKind == .backdrop, let detailHeroBackdropURL {
+                AsyncImage(url: detailHeroBackdropURL) { phase in
                     switch phase {
                     case .success(let image):
                         image
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                    default:
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.gray.opacity(0.3), .gray.opacity(0.1)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
+                    case .empty, .failure:
+                        detailHeroPlaceholder
+                    @unknown default:
+                        detailHeroPlaceholder
                     }
                 }
+                .id(detailHeroArtworkLoadID)
             } else {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.gray.opacity(0.3), .gray.opacity(0.1)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                detailHeroPlaceholder
             }
         }
     }
+
+    private var detailHeroArtworkKind: DetailHeroArtworkPresentationPolicy.HeroArtworkKind {
+        DetailHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: viewModel.mediaItem?.backdropPath,
+            posterPath: viewModel.mediaItem?.posterPath
+        )
+    }
+
+    private var detailHeroBackdropURL: URL? {
+        MediaArtworkURLPolicy.url(for: viewModel.mediaItem?.backdropPath, legacyTMDBSizePath: "w1280")
+    }
+
+    private var detailHeroPosterURL: URL? {
+        MediaArtworkURLPolicy.url(for: viewModel.mediaItem?.posterPath, legacyTMDBSizePath: "w500")
+    }
+
+    private var detailHeroArtworkLoadID: String {
+        let mediaID = viewModel.mediaItem?.id ?? "none"
+        return "\(mediaID)-detail-\(detailHeroArtworkKind)-\(detailHeroBackdropURL?.absoluteString ?? detailHeroPosterURL?.absoluteString ?? "none")"
+    }
+
+    private var detailHeroPlaceholder: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [.gray.opacity(0.3), .gray.opacity(0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+    }
     
     private var heroOverlay: some View {
+        // Reads the overlay width without a GeometryReader container: GeometryReader
+        // inside the detail ScrollView triggers repeated layout measurement passes
+        // and scroll thrashing. `onGeometryChange` captures the width into state and
+        // only re-runs the body when the measured width actually changes. The local
+        // `proxy` snapshot keeps the measured-geometry spelling at the call site.
+        let proxy = heroOverlayFrame
+        return heroOverlayBody(availableWidth: proxy.size.width)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.width
+            } action: { newWidth in
+                heroOverlayFrame.size.width = newWidth
+            }
+    }
+
+    private func heroOverlayBody(availableWidth: CGFloat) -> some View {
         ZStack(alignment: .top) {
-            // Gradient fade
+            // Cinematic scrim: subtle darkening up top for the back/utility controls,
+            // strong fade to near-black at the bottom so the title reads on the artwork.
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.7), location: 0.0),
-                    .init(color: .black.opacity(0.3), location: 0.3),
-                    .init(color: .clear, location: 0.6),
+                    .init(color: .black.opacity(0.52), location: 0.0),
+                    .init(color: .black.opacity(0.16), location: 0.26),
+                    .init(color: .black.opacity(0.68), location: 0.58),
+                    .init(color: .black.opacity(0.88), location: 0.78),
+                    .init(color: .black.opacity(0.98), location: 1.0),
                 ],
-                startPoint: .bottom,
-                endPoint: .top
+                startPoint: .top,
+                endPoint: .bottom
             )
-            
+
+            if showsDetailHeroPosterCard(availableWidth: availableWidth),
+               let detailHeroPosterURL {
+                detailHeroPosterCard(url: detailHeroPosterURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 32)
+                    .accessibilityHidden(true)
+            }
+
+            // Title overlaid on the bottom of the artwork (Apple TV+ / Netflix pattern).
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack {
+                    Text(title.uppercased())
+                        .font(.system(size: 56, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                        .shadow(color: .black.opacity(0.6), radius: 10, y: 4)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 24)
+                .padding(.trailing, detailHeroTitleTrailingPadding(availableWidth: availableWidth))
+                .padding(.bottom, 18)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             // Top bar
             HStack {
                 // Back button
@@ -328,15 +578,8 @@ struct SeriesDetailLayout: View {
                     .accessibilityLabel("Share title")
                     .accessibilityHint("Opens the share sheet for this title.")
 
-                    Button {
-                        Task { await viewModel.toggleWatchlist() }
-                    } label: {
-                        utilityGlyph(name: viewModel.isInWatchlist ? "bookmark.fill" : "bookmark")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(viewModel.isInWatchlist ? "Remove from Watchlist" : "Add to Watchlist")
-                    .accessibilityHint("Toggles this title in your watchlist.")
-
+                    // (Watchlist toggle intentionally lives only on the labeled play-row
+                    // "Watchlist" button below — the duplicate top-bar bookmark was removed.)
                     Button(action: onCast) {
                         utilityGlyph(name: "airplayvideo")
                     }
@@ -344,21 +587,20 @@ struct SeriesDetailLayout: View {
                     .accessibilityLabel("Cast")
                     .accessibilityHint("Opens playback destination options.")
 
-                    Button(action: onShowRatingSheet) {
-                        utilityGlyph(name: viewModel.currentFeedbackValue != nil ? "star.fill" : "star")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(viewModel.currentFeedbackValue != nil ? "Edit rating" : "Rate title")
-                    .accessibilityHint("Opens rating controls for this title.")
-                    
-                    // AI button
+                    // NOTE: the RATE action no longer lives in this chrome cluster. It was an
+                    // unlabeled monochrome star here — indistinguishable from the share/cast/AI
+                    // glyphs and easily confused with the read-only gold IMDb mark below. It now
+                    // renders as a clearly-labeled "Rate" pill in the metadata row (see rateControl).
+
+                    // AI button — glass to match the utility cluster, purple glyph keeps the AI brand
                     Button {
                         Task { await viewModel.fetchAIAnalysis() }
                     } label: {
                         Image(systemName: "brain")
                             .font(.system(size: 18))
+                            .foregroundStyle(.purple)
                             .frame(width: 44, height: 44)
-                            .background(Color.purple.opacity(0.8), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Analyze with AI")
@@ -369,153 +611,299 @@ struct SeriesDetailLayout: View {
             .padding(.top, 20)
         }
     }
-    
-    private var titleAndNavRow: some View {
-        HStack(alignment: .top) {
-            Text(title.uppercased())
-                .font(.system(size: 32, weight: .bold, design: .default))
-                .foregroundStyle(.white)
-            
-            Spacer()
+
+    private func showsDetailHeroPosterCard(availableWidth: CGFloat) -> Bool {
+        DetailHeroArtworkPresentationPolicy.showsPosterCard(for: detailHeroArtworkKind) && availableWidth >= 680
+    }
+
+    private func detailHeroTitleTrailingPadding(availableWidth: CGFloat) -> CGFloat {
+        guard showsDetailHeroPosterCard(availableWidth: availableWidth) else { return 24 }
+        return min(204, max(24, availableWidth * 0.30))
+    }
+
+    @ViewBuilder
+    private func detailHeroPosterCard(url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(
+                        width: DetailHeroArtworkPresentationPolicy.posterCardWidth,
+                        height: DetailHeroArtworkPresentationPolicy.posterCardHeight
+                    )
+                    .clipShape(detailHeroPosterCardShape)
+                    .overlay {
+                        detailHeroPosterCardShape
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.38), radius: 18, y: 10)
+            case .empty:
+                detailHeroPosterPlaceholder(showsIcon: false)
+            case .failure:
+                detailHeroPosterPlaceholder(showsIcon: true)
+            @unknown default:
+                detailHeroPosterPlaceholder(showsIcon: true)
+            }
         }
+        .id(detailHeroArtworkLoadID)
+        .allowsHitTesting(false)
+    }
+
+    private func detailHeroPosterPlaceholder(showsIcon: Bool) -> some View {
+        detailHeroPosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: DetailHeroArtworkPresentationPolicy.posterCardWidth,
+                height: DetailHeroArtworkPresentationPolicy.posterCardHeight
+            )
+            .overlay {
+                detailHeroPosterCardShape
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.24), radius: 14, y: 8)
+    }
+
+    private var detailHeroPosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: DetailHeroArtworkPresentationPolicy.posterCardCornerRadius,
+            style: .continuous
+        )
     }
     
     private var metadataRow: some View {
         HStack(spacing: 16) {
+            // Year/season/runtime are secondary context — de-emphasize so the rating reads
+            // as the primary signal in this row.
             if let year = viewModel.mediaItem?.year {
                 Text(String(year))
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
-            }
-            
-            if !viewModel.seasons.isEmpty {
-                let seasonCount = viewModel.seasons.count
-                Text("\(seasonCount) Season\(seasonCount > 1 ? "s" : "")")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.white.opacity(0.76))
             }
 
-            if let runtime = viewModel.mediaItem?.runtime, runtime > 0 {
-                Text("\(runtime) min")
+            if mediaType == .series, !viewModel.seasons.isEmpty {
+                // Series: show seasons + episode count, not a single (misleading) runtime.
+                Text(SeriesDetailPresentationPolicy.seasonCountText(viewModel.seasons.count) ?? "")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
-            }
-            
-            if let rating = viewModel.mediaItem?.imdbRating, rating > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "star.fill")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                    Text(String(format: "%.1f IMDb", rating))
+                    .foregroundStyle(.white.opacity(0.76))
+
+                let episodeTotal = viewModel.seasons.reduce(0) { $0 + $1.episodeCount }
+                if episodeTotal > 0 {
+                    Text("\(episodeTotal) Episodes")
                         .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(.white.opacity(0.76))
                 }
+            } else if let runtimeText = SeriesDetailPresentationPolicy.runtimeText(minutes: viewModel.mediaItem?.runtime) {
+                Text(runtimeText)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.76))
             }
-            
+
+            if let ratingText = SeriesDetailPresentationPolicy.imdbRatingText(viewModel.mediaItem?.imdbRating) {
+                // Read-only IMDb score DISPLAY (not the rate control). Combined into a single
+                // static accessibility element labeled as a rating so VoiceOver users don't
+                // mistake the gold star for the interactive "Rate" action (see rateControl).
+                HStack(spacing: 4) {
+                    // Small gold accent, not a loud badge — shrink to caption2 so it reads
+                    // as a subtle mark beside the weighted rating value.
+                    Image(systemName: "star.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                    Text(ratingText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("IMDb rating \(ratingText)")
+            }
+
+            // Separate the favorite affordance from the rating group so the heart no longer
+            // visually attaches to the IMDb mark.
+            Spacer(minLength: 0)
+
+            // Rate control — the interactive rating action, with a visible "Rate" / current-score
+            // text label so it reads as the way to rate this title (not a bare chrome glyph,
+            // and not the read-only gold IMDb mark on the leading edge of this row).
+            rateControl
+
             // Favorite button
             Button {
                 Task { await viewModel.toggleFavorites() }
             } label: {
                 Image(systemName: viewModel.mediaLibrary.isInFavorites ? "heart.fill" : "heart")
-                    .font(.system(size: 18))
+                    .font(.system(size: 16))
                     .foregroundStyle(viewModel.mediaLibrary.isInFavorites ? .red : .white.opacity(0.85))
+                    .frame(width: 32, height: 32)
+                    .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(viewModel.mediaLibrary.isInFavorites ? "Remove from Favorites" : "Add to Favorites")
             .accessibilityHint("Toggles this title in your Favorites list.")
         }
     }
+
+    /// The interactive RATE affordance: a labeled pill (star glyph + "Rate" / current-score text)
+    /// that opens the rating sheet. Distinct treatment + visible copy keep it from being mistaken
+    /// for the read-only IMDb display mark or for one of the monochrome top-bar chrome glyphs.
+    private var rateControl: some View {
+        let hasRating = viewModel.currentFeedbackValue != nil
+        return Button(action: onShowRatingSheet) {
+            HStack(spacing: 6) {
+                Image(systemName: SeriesRateControlPolicy.glyphName(hasRating: hasRating))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(hasRating ? VPColor.accent : .white.opacity(0.9))
+                Text(SeriesRateControlPolicy.visibleLabel(currentFeedbackSummary: viewModel.currentFeedbackSummary))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(VPColor.accent.opacity(hasRating ? 0.55 : 0.30), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.currentFeedbackValue != nil ? "Edit rating" : "Rate title")
+        .accessibilityHint("Opens rating controls for this title.")
+    }
     
     private var playButtonRow: some View {
-        Button {
-            guard isPrimaryPlayEnabled else { return }
-            playerOpeningError = nil
-            isPlayButtonLoading = true
-            Task {
-                defer { isPlayButtonLoading = false }
-
-                // Ensure we have torrents for the selected episode
-                if viewModel.torrentSearch.results.isEmpty {
-                    await viewModel.searchTorrents()
-                }
-
-                guard let torrent = viewModel.torrentSearch.results.first else {
-                    playerOpeningError = SeriesPrimaryPlayPolicy.noStreamsMessage
+        // Primary play paired with a secondary glass action so the white pill no longer
+        // reads as a lone full-width web-form button.
+        HStack(spacing: 12) {
+            Button {
+                if mediaType == .series, viewModel.selectedEpisode == nil {
+                    episodeScrollRequest += 1
                     return
                 }
 
-                onPlayTorrent(torrent)
-            }
-        } label: {
-            HStack(spacing: 12) {
-                if isPrimaryPlayBusy {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .black))
-                } else {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 22))
-                    Text(
-                        SeriesPrimaryPlayPolicy.title(
-                            mediaType: mediaType,
-                            hasSelectedEpisode: viewModel.selectedEpisode != nil
+                guard isPrimaryPlayEnabled else { return }
+                playerOpeningError = nil
+                isPlayButtonLoading = true
+                Task {
+                    defer { isPlayButtonLoading = false }
+
+                    // Ensure we have torrents for the selected episode
+                    if viewModel.torrentSearch.results.isEmpty {
+                        await viewModel.searchTorrents()
+                    }
+
+                    guard let torrent = viewModel.torrentSearch.results.first else {
+                        playerOpeningError = SeriesPrimaryPlayPolicy.noStreamsMessage
+                        return
+                    }
+
+                    onPlayTorrent(torrent)
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    if isPrimaryPlayBusy {
+                        // Spinner is tinted to match the white pill's near-black glyph.
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: VPColor.void))
+                    } else {
+                        // Icon tracks the label: a stack glyph for the "Select Episode" state,
+                        // a play glyph only when the button actually starts playback.
+                        let needsEpisodeSelection = mediaType == .series && viewModel.selectedEpisode == nil
+                        Image(systemName: needsEpisodeSelection ? "rectangle.stack" : "play.fill")
+                            .font(.system(size: 22))
+                        Text(
+                            SeriesPrimaryPlayPolicy.title(
+                                mediaType: mediaType,
+                                hasSelectedEpisode: viewModel.selectedEpisode != nil
+                            )
                         )
-                    )
+                            .font(.headline)
+                    }
+                }
+                // Fixed-width pill instead of full-bleed so it reads as a focused CTA;
+                // VPButtonStyle(.primary) supplies the white fill, VPColor.void glyph,
+                // VPRadius.control corner, 60pt min height, pressed scale, and 0.45
+                // disabled opacity (the canonical WHITE-primary hero look).
+                .frame(width: 220)
+            }
+            .buttonStyle(VPButtonStyle(kind: .primary))
+            .disabled(isPrimaryPlayBusy)
+            .accessibilityHint(
+                SeriesPrimaryPlayPolicy.accessibilityHint(
+                    mediaType: mediaType,
+                    hasSelectedEpisode: viewModel.selectedEpisode != nil
+                )
+            )
+
+            // Secondary watchlist action in glass to balance the primary CTA.
+            Button {
+                Task { await viewModel.toggleWatchlist() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: viewModel.isInWatchlist ? "checkmark" : "plus")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Watchlist")
                         .font(.headline)
                 }
             }
-            .foregroundStyle(.black)
-            .frame(maxWidth: .infinity)
-            .frame(height: 56)
-            .background(.white, in: RoundedRectangle(cornerRadius: 10))
+            // Canonical glass secondary beside the WHITE primary CTA.
+            .buttonStyle(VPButtonStyle(kind: .secondary))
+            .accessibilityLabel(viewModel.isInWatchlist ? "Remove from Watchlist" : "Add to Watchlist")
+            .accessibilityHint("Toggles this title in your watchlist.")
+
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
         .padding(.top, 8)
-        .disabled(!isPrimaryPlayEnabled)
-        .accessibilityHint(
-            SeriesPrimaryPlayPolicy.accessibilityHint(
-                mediaType: mediaType,
-                hasSelectedEpisode: viewModel.selectedEpisode != nil
-            )
-        )
     }
 
     private var watchStateRow: some View {
         let state = viewModel.currentWatchStatusState
         let actionTitle = state.isWatched ? "Mark Unwatched" : "Mark Watched"
 
-        return Button {
-            Task { await viewModel.toggleCurrentWatchState() }
-        } label: {
-            HStack(alignment: .center, spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: watchStatusIcon(for: state))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(watchStatusColor(for: state))
+        // Only the right-side capsule is the action; the left status (icon + label) is plain
+        // content so the indicator isn't conflated with the tap target.
+        return HStack(alignment: .center, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: watchStatusIcon(for: state))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(watchStatusColor(for: state))
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Watch Status")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.6))
-
-                        Text(state.label)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                    }
-                }
-
-                Spacer()
-
-                Text(actionTitle)
+                Text(state.label)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.92))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityElement(children: .combine)
+
+            Spacer()
+
+            // Right side is the action half of the status-vs-action split: a dense
+            // in-content control, so it targets the >=44 minimum (not the 60 primary floor).
+            Button {
+                Task { await viewModel.toggleCurrentWatchState() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: state.isWatched ? "xmark" : "checkmark")
+                        .font(.caption.weight(.semibold))
+                    Text(actionTitle)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(.white.opacity(0.92))
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(Capsule().fill(.white.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(actionTitle)
+            .accessibilityHint("Updates the watched state for this title.")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(actionTitle)
-        .accessibilityHint("Updates the watched state for this title.")
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: VPRadius.control, style: .continuous))
         .padding(.top, 4)
     }
     
@@ -524,7 +912,10 @@ struct SeriesDetailLayout: View {
         if let episode = viewModel.selectedEpisode {
             HStack(alignment: .center, spacing: 10) {
                 HStack(spacing: 8) {
-                    Text("S\(viewModel.selectedSeason):E\(episode.episodeNumber)")
+                    Text(SeriesDetailPresentationPolicy.episodeContextText(
+                        season: viewModel.selectedSeason,
+                        episodeNumber: episode.episodeNumber
+                    ))
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundStyle(.white.opacity(0.9))
@@ -535,8 +926,8 @@ struct SeriesDetailLayout: View {
                             .foregroundStyle(.white.opacity(0.7))
                     }
 
-                    if let runtime = episode.runtime, runtime > 0 {
-                        Text("• \(runtime)m")
+                    if let runtimeText = SeriesDetailPresentationPolicy.episodeRuntimeText(minutes: episode.runtime) {
+                        Text(runtimeText)
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.6))
                     }
@@ -562,15 +953,11 @@ struct SeriesDetailLayout: View {
 
     private var seriesTrackingRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            if viewModel.selectedEpisode != nil {
-                Label("Press and hold an episode for watch options.", systemImage: "hand.point.up.left.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-            } else {
-                Label("Select an episode, then press and hold it for watched options.", systemImage: "hand.point.up.left.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-            }
+            // currentEpisodeRow already prompts "Select an episode" right above, so show only the
+            // press-and-hold tip here regardless of whether an episode is currently selected.
+            Label("Press and hold an episode for watch options.", systemImage: "hand.point.up.left.fill")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.72))
 
             Spacer()
 
@@ -581,7 +968,9 @@ struct SeriesDetailLayout: View {
                             Task { await viewModel.toggleCurrentWatchState() }
                         } label: {
                             Label(
-                                selectedEpisodeWatchState.isWatched ? "Mark Episode as Unwatched" : "Mark Episode as Watched",
+                                SeriesDetailPresentationPolicy.episodeWatchActionTitle(
+                                    isWatched: selectedEpisodeWatchState.isWatched
+                                ),
                                 systemImage: selectedEpisodeWatchState.isWatched ? "xmark.circle" : "checkmark.circle"
                             )
                         }
@@ -635,7 +1024,7 @@ struct SeriesDetailLayout: View {
     }
     
     private var seasonsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: SeriesDetailPresentationPolicy.episodesSectionSpacing) {
             HStack(alignment: .center, spacing: 12) {
                 Text("Seasons")
                     .font(.headline)
@@ -665,18 +1054,24 @@ struct SeriesDetailLayout: View {
         
         return Button {
             Task {
-                await viewModel.loadSeason(season.seasonNumber, apiKey: tmdbApiKey)
+                await viewModel.loadSeason(season.seasonNumber, configuration: metadataConfiguration)
             }
         } label: {
+            // Season tabs are a selection control (>=44 dense target), so identity reads
+            // through the brand accent — glass fill + thin accent ring + soft glow — not an
+            // opaque white slab (which is reserved for THE primary action). Unselected text
+            // sits at the textTertiary contrast floor.
             Text("\(season.seasonNumber)")
                 .font(.subheadline)
                 .fontWeight(isSelected ? .bold : .medium)
-                .foregroundStyle(isSelected ? .white : .white.opacity(0.85))
+                .foregroundStyle(isSelected ? VPColor.textPrimary : VPColor.textTertiary)
                 .frame(width: 44, height: 44)
-                .background(
-                    isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.white.opacity(0.15)),
-                    in: Circle()
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(
+                    Circle()
+                        .strokeBorder(VPColor.accent, lineWidth: isSelected ? 1.5 : 0)
                 )
+                .shadow(color: isSelected ? VPColor.accent.opacity(0.35) : .clear, radius: 8)
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isLoading(.seasonEpisodes))
@@ -689,6 +1084,9 @@ struct SeriesDetailLayout: View {
                 Text("Episodes")
                     .font(.headline)
                     .foregroundStyle(.white)
+                    .onAppear {
+                        SeriesDetailQAScrollDebug.log("episodesSection mounted, episodes=\(viewModel.episodes.count)")
+                    }
 
                 Spacer()
 
@@ -705,7 +1103,7 @@ struct SeriesDetailLayout: View {
                     .foregroundStyle(.white.opacity(0.65))
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 16) {
+                    LazyHStack(spacing: SeriesDetailPresentationPolicy.episodesSectionSpacing) {
                         ForEach(viewModel.episodes) { episode in
                             episodeCard(episode: episode)
                         }
@@ -714,12 +1112,12 @@ struct SeriesDetailLayout: View {
                 .allowsHitTesting(!viewModel.isLoading(.seasonEpisodes))
             }
         }
-        .padding(.top, 16)
+        .padding(.top, SeriesDetailPresentationPolicy.episodesSectionTopPadding)
     }
     
     private func episodeCard(episode: Episode) -> some View {
         let isSelected = viewModel.selectedEpisode?.id == episode.id
-        let watchState = viewModel.episodeWatchStates[episode.id]
+        let watchState = viewModel.watchHistory(for: episode)
         let isWatched = watchState?.isCompleted == true
         let progress = watchState?.progress ?? 0
         
@@ -745,12 +1143,18 @@ struct SeriesDetailLayout: View {
                                     .fill(.gray.opacity(0.3))
                             }
                         }
-                        .frame(width: 240, height: 135)
+                        .frame(
+                            width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                            height: SeriesDetailPresentationPolicy.episodeCardHeight
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     } else {
                         Rectangle()
                             .fill(.gray.opacity(0.3))
-                            .frame(width: 240, height: 135)
+                            .frame(
+                                width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                                height: SeriesDetailPresentationPolicy.episodeCardHeight
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 
@@ -788,15 +1192,21 @@ struct SeriesDetailLayout: View {
                         .background(.black.opacity(0.6), in: Capsule())
                         .padding(8)
                 }
-                .frame(width: 240, height: 135)
+                .frame(
+                    width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                    height: SeriesDetailPresentationPolicy.episodeCardHeight
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? Color.purple : Color.clear, lineWidth: 2)
+                        .stroke(isSelected ? Color.white : Color.clear, lineWidth: 2)
                 )
             
                 // Episode info
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(episode.title ?? "Episode \(episode.episodeNumber)")
+                    Text(SeriesDetailPresentationPolicy.episodeTitle(
+                        episode.title,
+                        episodeNumber: episode.episodeNumber
+                    ))
                         .font(.subheadline)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)
@@ -811,12 +1221,12 @@ struct SeriesDetailLayout: View {
                     HStack(spacing: 6) {
                         Image(systemName: isWatched ? "checkmark.circle.fill" : "circle")
                             .font(.caption2.weight(.semibold))
-                        Text(isWatched ? "Watched" : "Not watched")
+                        Text(SeriesDetailPresentationPolicy.episodeWatchLabel(isWatched: isWatched))
                             .font(.caption2.weight(.semibold))
                     }
                     .foregroundStyle(isWatched ? .green : .white.opacity(0.62))
                 }
-                .frame(width: 240, alignment: .leading)
+                .frame(width: SeriesDetailPresentationPolicy.episodeCardWidth, alignment: .leading)
             }
         }
         .buttonStyle(.plain)
@@ -825,22 +1235,32 @@ struct SeriesDetailLayout: View {
                 Task { await viewModel.toggleEpisodeWatched(episode) }
             } label: {
                 Label(
-                    isWatched ? "Mark Episode as Unwatched" : "Mark Episode as Watched",
+                    SeriesDetailPresentationPolicy.episodeWatchActionTitle(isWatched: isWatched),
                     systemImage: isWatched ? "xmark.circle" : "checkmark.circle"
                 )
             }
         }
-        .accessibilityLabel("Episode \(episode.episodeNumber), \(episode.title ?? "Untitled")")
-        .accessibilityValue(isWatched ? (isSelected ? "Watched, selected" : "Watched") : (isSelected ? "Selected" : "Not watched"))
+        .accessibilityLabel(SeriesDetailPresentationPolicy.episodeAccessibilityLabel(
+            episodeNumber: episode.episodeNumber,
+            title: episode.title
+        ))
+        .accessibilityValue(SeriesDetailPresentationPolicy.episodeAccessibilityValue(
+            isWatched: isWatched,
+            isSelected: isSelected
+        ))
         .accessibilityHint("Opens this episode and refreshes available streams. Press and hold for watched options.")
     }
     
     private var seasonLoadingEpisodePlaceholders: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 16) {
+            HStack(spacing: SeriesDetailPresentationPolicy.episodesSectionSpacing) {
                 ForEach(0..<3, id: \.self) { _ in
                     VStack(alignment: .leading, spacing: 8) {
-                        SkeletonBlock(width: 240, height: 135, cornerRadius: 8)
+                        SkeletonBlock(
+                            width: SeriesDetailPresentationPolicy.episodeCardWidth,
+                            height: SeriesDetailPresentationPolicy.episodeCardHeight,
+                            cornerRadius: 8
+                        )
                         SkeletonBlock(width: 180, height: 16, cornerRadius: 6)
                         SkeletonBlock(width: 72, height: 12, cornerRadius: 6)
                     }
@@ -858,16 +1278,7 @@ struct SeriesDetailLayout: View {
     }
 
     private func watchStatusIcon(for state: DetailWatchStatusState) -> String {
-        switch state {
-        case .watched:
-            return "checkmark.circle.fill"
-        case .inProgress:
-            return "play.circle.fill"
-        case .notWatched:
-            return "circle"
-        case .selectionRequired:
-            return "rectangle.and.hand.point.up.left.fill"
-        }
+        SeriesDetailPresentationPolicy.watchStatusIcon(for: state)
     }
 
     private func watchStatusColor(for state: DetailWatchStatusState) -> Color {
@@ -885,16 +1296,23 @@ struct SeriesDetailLayout: View {
 
     private var selectedEpisodeWatchState: DetailWatchStatusState {
         guard let selectedEpisode = viewModel.selectedEpisode else {
-            return .selectionRequired
+            return SeriesDetailPresentationPolicy.selectedEpisodeWatchState(
+                hasSelectedEpisode: false,
+                isSelectedEpisodeCompleted: false
+            )
         }
-        return viewModel.episodeWatchStates[selectedEpisode.id]?.isCompleted == true ? .watched : .notWatched
+        return SeriesDetailPresentationPolicy.selectedEpisodeWatchState(
+            hasSelectedEpisode: true,
+            isSelectedEpisodeCompleted: viewModel.isEpisodeWatched(selectedEpisode)
+        )
     }
 
     private var seriesWatchProgressLabel: String {
-        let watchedCount = viewModel.episodeWatchStates.count
-        let totalCount = max(viewModel.seasons.reduce(0) { $0 + $1.episodeCount }, watchedCount)
-        guard totalCount > 0 else { return "Series Actions" }
-        return "\(watchedCount)/\(totalCount) watched"
+        let tally = viewModel.seriesWatchTally
+        return SeriesDetailPresentationPolicy.seriesWatchProgressLabel(
+            watchedCount: tally.watched,
+            seasonEpisodeCounts: [tally.total]
+        )
     }
 
     private func watchStatusBadge(for state: DetailWatchStatusState) -> some View {
@@ -920,7 +1338,7 @@ struct SeriesDetailLayout: View {
                         .foregroundStyle(.white.opacity(0.88))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.12), in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 1))
                 }
             }
         }
@@ -933,6 +1351,7 @@ struct SeriesDetailLayout: View {
             streamResultsAnchor: streamResultsAnchor,
             isPlayerOpening: $isPlayerOpening,
             playerOpeningError: $playerOpeningError,
+            openingTorrentID: openingTorrentID,
             onPlayTorrent: onPlayTorrent
         )
         .padding(.top, 32)

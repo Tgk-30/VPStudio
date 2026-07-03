@@ -31,4 +31,21 @@ struct PlayerCapabilityWarningPolicyTests {
         #expect(message?.count == PlayerCapabilityWarningPolicy.maxInlineCharacters)
         #expect(message?.hasSuffix("…") == true)
     }
+
+    @Test
+    func inlineMessageDoesNotTruncateAtExactCharacterLimit() {
+        let exact = String(repeating: "a", count: PlayerCapabilityWarningPolicy.maxInlineCharacters)
+
+        #expect(PlayerCapabilityWarningPolicy.inlineMessage(for: [exact]) == exact)
+    }
+
+    @Test
+    func inlineMessageTrimsTrailingWhitespaceBeforeEllipsis() {
+        let warning = String(repeating: "a", count: PlayerCapabilityWarningPolicy.maxInlineCharacters - 2) + "  overflow"
+
+        let message = PlayerCapabilityWarningPolicy.inlineMessage(for: [warning])
+
+        #expect(message?.hasSuffix(" …") == false)
+        #expect(message?.hasSuffix("…") == true)
+    }
 }

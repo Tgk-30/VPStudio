@@ -189,8 +189,9 @@ actor TraktSyncOrchestrator {
                         localRefreshTargets: localRefreshTargets
                     )
                 }
-                guard let mediaId = extractMediaId(from: item) else { continue }
+                guard let remoteMediaId = extractMediaId(from: item) else { continue }
                 do {
+                    let mediaId = try await canonicalLocalMediaId(for: remoteMediaId)
                     let exists = try await database.isInLibrary(
                         mediaId: mediaId, listType: .watchlist
                     )
@@ -218,7 +219,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     }
-                    errors.append("Pull watchlist entry \(mediaId): \(error.localizedDescription)")
+                    errors.append(Self.sanitizedSyncError(prefix: "Pull watchlist entry \(remoteMediaId)", error: error))
                 }
             }
         }
@@ -271,17 +272,26 @@ actor TraktSyncOrchestrator {
                         localRefreshTargets: localRefreshTargets
                     )
                 }
-                guard let mediaId = extractRatingMediaId(from: item) else { continue }
+                guard let remoteMediaId = extractRatingMediaId(from: item) else { continue }
                 do {
+                    let mediaId = try await canonicalLocalMediaId(for: remoteMediaId)
                     let existing = try await database.fetchLatestTasteRating(mediaId: mediaId)
+                    let localMediaId = existing?.mediaId ?? mediaId
                     let remoteRating = Double(item.rating)
-                    let localRating = existing?.feedbackValue?.rounded()
                     let remoteRatedAt = parseHistoryDate(item.ratedAt)
+                    // Compare ratings in normalized [0,1] space using the existing event's own
+                    // scale, so e.g. a local 80/100 equals Trakt 8 and isn't mistaken for a change
+                    // (which would write a spurious shadow .oneToTen rating that shadows the real
+                    // one). The write below intentionally still records the canonical remote value.
+                    let remoteNormalized = FeedbackScaleMode.oneToTen.normalizedValue(remoteRating)
+                    let localScale = (existing?.feedbackScale ?? .oneToTen).canonicalMode
+                    let localNormalized = existing?.feedbackValue.map { localScale.normalizedValue($0) }
+                    let ratingsDiffer = localNormalized.map { abs($0 - remoteNormalized) > (0.5 / 9.0) } ?? true
                     let shouldWriteEvent: Bool
 
                     if existing == nil {
                         shouldWriteEvent = true
-                    } else if localRating != remoteRating.rounded() {
+                    } else if ratingsDiffer {
                         shouldWriteEvent = true
                     } else if let existing,
                               let remoteRatedAt,
@@ -295,7 +305,7 @@ actor TraktSyncOrchestrator {
 
                     let event = TasteEvent(
                         userId: "default",
-                        mediaId: mediaId,
+                        mediaId: localMediaId,
                         eventType: .rated,
                         signalStrength: 1.0,
                         feedbackScale: .oneToTen,
@@ -315,7 +325,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     }
-                    errors.append("Pull rating \(mediaId): \(error.localizedDescription)")
+                    errors.append(Self.sanitizedSyncError(prefix: "Pull rating \(remoteMediaId)", error: error))
                 }
             }
         }
@@ -383,15 +393,16 @@ actor TraktSyncOrchestrator {
                             )
                         }
                         guard let identifiers = extractHistoryIdentifiers(from: item) else { continue }
-                        let mediaId = identifiers.mediaId
                         let episodeId = identifiers.episodeId
 
                         do {
+                            let mediaId = try await canonicalLocalMediaId(for: identifiers.mediaId)
                             // Write to WatchHistory table (what the app actually displays)
                             let watchedAt = parseHistoryDate(item.watchedAt) ?? Date()
-                            let existingWatch = try await database.hasCompletedWatchHistoryEntry(
+                            let existingWatch = try await hasCompletedWatchHistoryEntry(
                                 mediaId: mediaId,
                                 episodeId: episodeId,
+                                episodeAliases: identifiers.episodeAliases,
                                 watchedAt: watchedAt
                             )
                             if !existingWatch {
@@ -449,7 +460,7 @@ actor TraktSyncOrchestrator {
                                     localRefreshTargets: localRefreshTargets
                                 )
                             }
-                            errors.append("Pull history entry \(mediaId): \(error.localizedDescription)")
+                            errors.append(Self.sanitizedSyncError(prefix: "Pull history entry \(identifiers.mediaId)", error: error))
                         }
                     }
 
@@ -465,7 +476,7 @@ actor TraktSyncOrchestrator {
                         localRefreshTargets: localRefreshTargets
                     )
                 }
-                errors.append("Pull history (\(mediaType.rawValue)): \(error.localizedDescription)")
+                errors.append(Self.sanitizedSyncError(prefix: "Pull history (\(mediaType.rawValue))", error: error))
             }
         }
 
@@ -487,10 +498,10 @@ actor TraktSyncOrchestrator {
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             }
             let localEntries = try await database.fetchLibraryEntries(listType: .watchlist)
-            let remoteImdbIds: Set<String>
-            switch await fetchRemoteWatchlistImdbIds() {
+            let remoteSyncIds: Set<String>
+            switch await fetchRemoteWatchlistSyncIds() {
             case .success(let ids):
-                remoteImdbIds = ids
+                remoteSyncIds = ids
             case .cancelled:
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             case .failure(let error):
@@ -502,27 +513,25 @@ actor TraktSyncOrchestrator {
                 guard !isCancellationRequested else {
                     return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
                 }
-                let mediaId = entry.mediaId
-                // Only push items that look like IMDb IDs (the format Trakt expects)
-                guard mediaId.hasPrefix("tt") else { continue }
-                guard !remoteImdbIds.contains(mediaId) else { continue }
+                guard let syncId = await localTraktSyncID(for: entry.mediaId) else { continue }
+                guard !remoteSyncIds.contains(syncId) else { continue }
 
                 do {
-                    let mediaType = await resolveMediaType(for: mediaId)
-                    try await traktService.addToWatchlist(imdbId: mediaId, type: mediaType)
+                    let mediaType = await resolveMediaType(for: entry.mediaId)
+                    try await traktService.addToWatchlist(imdbId: syncId, type: mediaType)
                     pushed += 1
                 } catch {
                     if isCancellationError(error) {
                         return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
                     }
-                    errors.append("Push watchlist \(mediaId): \(error.localizedDescription)")
+                    errors.append(Self.sanitizedSyncError(prefix: "Push watchlist \(syncId)", error: error))
                 }
             }
         } catch {
             if isCancellationError(error) {
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             }
-            errors.append("Push watchlist fetch: \(error.localizedDescription)")
+            errors.append(Self.sanitizedSyncError(prefix: "Push watchlist fetch", error: error))
         }
 
         return OperationResult(
@@ -540,10 +549,10 @@ actor TraktSyncOrchestrator {
             guard !isCancellationRequested else {
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             }
-            let remoteRatingsByImdb: [String: TraktRatingItem]
-            switch await fetchRemoteRatingsByImdbId() {
+            let remoteRatingsBySyncId: [String: TraktRatingItem]
+            switch await fetchRemoteRatingsBySyncId() {
             case .success(let ratings):
-                remoteRatingsByImdb = ratings
+                remoteRatingsBySyncId = ratings
             case .cancelled:
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             case .failure(let error):
@@ -568,9 +577,10 @@ actor TraktSyncOrchestrator {
                 if page.isEmpty { break }
 
                 for event in page {
-                    guard let mediaId = event.mediaId, mediaId.hasPrefix("tt") else { continue }
-                    if latestEventsByMediaId[mediaId] == nil {
-                        latestEventsByMediaId[mediaId] = event
+                    guard let mediaId = event.mediaId,
+                          let syncId = await localTraktSyncID(for: mediaId) else { continue }
+                    if latestEventsByMediaId[syncId] == nil {
+                        latestEventsByMediaId[syncId] = event
                     }
                 }
 
@@ -578,21 +588,21 @@ actor TraktSyncOrchestrator {
                 offset += page.count
             }
 
-            for (mediaId, event) in latestEventsByMediaId {
+            for (syncId, event) in latestEventsByMediaId {
                 guard !isCancellationRequested else {
                     return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
                 }
                 guard let clampedRating = traktRating(from: event) else { continue }
 
-                if let remoteRating = remoteRatingsByImdb[mediaId],
+                if let remoteRating = remoteRatingsBySyncId[syncId],
                    remoteRating.rating == clampedRating {
                     continue
                 }
 
                 do {
-                    let mediaType = await resolveMediaType(for: mediaId)
+                    let mediaType = await resolveMediaType(for: event.mediaId ?? syncId)
                     try await traktService.addRating(
-                        imdbId: mediaId,
+                        imdbId: syncId,
                         rating: clampedRating,
                         type: mediaType
                     )
@@ -601,14 +611,14 @@ actor TraktSyncOrchestrator {
                     if isCancellationError(error) {
                         return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
                     }
-                    errors.append("Push rating \(mediaId): \(error.localizedDescription)")
+                    errors.append(Self.sanitizedSyncError(prefix: "Push rating \(syncId)", error: error))
                 }
             }
         } catch {
             if isCancellationError(error) {
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             }
-            errors.append("Push ratings fetch: \(error.localizedDescription)")
+            errors.append(Self.sanitizedSyncError(prefix: "Push ratings fetch", error: error))
         }
 
         return OperationResult(
@@ -653,27 +663,26 @@ actor TraktSyncOrchestrator {
                     guard !isCancellationRequested else {
                         return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
                     }
-                    let mediaId = entry.mediaId
-                    // Only push items that look like IMDb IDs (the format Trakt expects)
-                    guard mediaId.hasPrefix("tt") else { continue }
+                    guard let syncId = await localTraktSyncID(for: entry.mediaId) else { continue }
+                    guard TraktEpisodeIdentifierPolicy.canSyncEpisodeID(entry.episodeId) else { continue }
 
-                    let syncKey = historySyncKey(
-                        mediaId: mediaId,
+                    let syncKeys = historySyncKeys(
+                        mediaId: syncId,
                         episodeId: entry.episodeId,
                         watchedAt: entry.watchedAt
                     )
-                    guard !remoteHistoryKeys.contains(syncKey) else { continue }
+                    guard remoteHistoryKeys.isDisjoint(with: syncKeys) else { continue }
 
                     do {
                         let mediaType: MediaType
                         if entry.episodeId != nil {
                             mediaType = .series
                         } else {
-                            mediaType = await resolveMediaType(for: mediaId)
+                            mediaType = await resolveMediaType(for: entry.mediaId)
                         }
 
                         try await traktService.addToHistory(
-                            imdbId: mediaId,
+                            imdbId: syncId,
                             type: mediaType,
                             episodeId: entry.episodeId,
                             watchedAt: entry.watchedAt
@@ -683,7 +692,7 @@ actor TraktSyncOrchestrator {
                         if isCancellationError(error) {
                             return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
                         }
-                        errors.append("Push history \(mediaId): \(error.localizedDescription)")
+                        errors.append(Self.sanitizedSyncError(prefix: "Push history \(syncId)", error: error))
                     }
                 }
 
@@ -694,7 +703,7 @@ actor TraktSyncOrchestrator {
             if isCancellationError(error) {
                 return OperationResult(count: pushed, errors: errors, localRefreshTargets: [])
             }
-            errors.append("Push history fetch: \(error.localizedDescription)")
+            errors.append(Self.sanitizedSyncError(prefix: "Push history fetch", error: error))
         }
 
         return OperationResult(
@@ -768,15 +777,29 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     } catch {
-                        errors.append("Pull list items \(list.name): \(error.localizedDescription)")
+                        errors.append(Self.sanitizedSyncError(prefix: "Pull list items \(list.name)", error: error))
                     }
                 } else {
                     // New Trakt list — create local folder + mapping
                     do {
-                        let folder = try await database.createLibraryFolder(
+                        var folder = try await database.createLibraryFolder(
                             name: list.name,
                             listType: .watchlist
                         )
+                        // createLibraryFolder dedupes by name, so a Trakt list whose name matches a
+                        // folder already mapped to a DIFFERENT Trakt list would make
+                        // saveTraktListMapping violate the UNIQUE(localFolderId) index and throw —
+                        // silently dropping this list from sync. Disambiguate with a suffixed name
+                        // so one folder maps to exactly one Trakt list.
+                        var disambiguationSuffix = 2
+                        while let collidingMapping = try await database.fetchTraktListMapping(localFolderId: folder.id),
+                              collidingMapping.traktListId != traktId {
+                            folder = try await database.createLibraryFolder(
+                                name: "\(list.name) (\(disambiguationSuffix))",
+                                listType: .watchlist
+                            )
+                            disambiguationSuffix += 1
+                        }
                         localRefreshTargets.insert(.library)
                         let mapping = TraktListMapping(
                             traktListId: traktId,
@@ -803,7 +826,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     } catch {
-                        errors.append("Create folder for Trakt list \(list.name): \(error.localizedDescription)")
+                        errors.append(Self.sanitizedSyncError(prefix: "Create folder for Trakt list \(list.name)", error: error))
                     }
                 }
             }
@@ -816,7 +839,7 @@ actor TraktSyncOrchestrator {
                     localRefreshTargets: localRefreshTargets
                 )
             }
-            errors.append("Fetch Trakt custom lists: \(error.localizedDescription)")
+            errors.append(Self.sanitizedSyncError(prefix: "Fetch Trakt custom lists", error: error))
         }
 
         // --- Push: local folders → Trakt lists ---
@@ -854,7 +877,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     } catch {
-                        errors.append("Push folder items \(folder.name): \(error.localizedDescription)")
+                        errors.append(Self.sanitizedSyncError(prefix: "Push folder items \(folder.name)", error: error))
                     }
                 } else {
                     // New local folder — create Trakt list + mapping
@@ -882,7 +905,7 @@ actor TraktSyncOrchestrator {
                             localRefreshTargets: localRefreshTargets
                         )
                     } catch {
-                        errors.append("Create Trakt list for folder \(folder.name): \(error.localizedDescription)")
+                        errors.append(Self.sanitizedSyncError(prefix: "Create Trakt list for folder \(folder.name)", error: error))
                     }
                 }
             }
@@ -895,7 +918,7 @@ actor TraktSyncOrchestrator {
                     localRefreshTargets: localRefreshTargets
                 )
             }
-            errors.append("Fetch local folders: \(error.localizedDescription)")
+            errors.append(Self.sanitizedSyncError(prefix: "Fetch local folders", error: error))
         }
 
         return FolderSyncResult(
@@ -918,25 +941,21 @@ actor TraktSyncOrchestrator {
         var removed = 0
         var didMutateLibrary = false
 
-        var remoteMediaIds = Set<String>()
+        var remoteIdentityKeys = Set<String>()
+        var localIdentityKeys = Set<String>()
+        let initialLocalEntries = try await database.fetchLibraryEntries(listType: listType, folderId: localFolderId)
+        for entry in initialLocalEntries {
+            localIdentityKeys.formUnion(await syncIdentities(for: entry.mediaId))
+        }
 
         for item in items {
             try Task.checkCancellation()
-            let mediaId: String?
-            if let imdb = item.movie?.ids.imdb, !imdb.isEmpty { mediaId = imdb }
-            else if let imdb = item.show?.ids.imdb, !imdb.isEmpty { mediaId = imdb }
-            else if let tmdb = item.movie?.ids.tmdb { mediaId = "tmdb-\(tmdb)" }
-            else if let tmdb = item.show?.ids.tmdb { mediaId = "tmdb-\(tmdb)" }
-            else { mediaId = nil }
+            let mediaIDs = Self.mediaIDCandidates(from: item)
+            guard let mediaId = mediaIDs.first else { continue }
+            let remoteIdentities = await syncIdentities(for: mediaIDs)
+            remoteIdentityKeys.formUnion(remoteIdentities)
 
-            guard let mediaId else { continue }
-            remoteMediaIds.insert(mediaId)
-
-            let existsInFolder = try await database.isInLibrary(
-                mediaId: mediaId,
-                listType: listType,
-                folderId: localFolderId
-            )
+            let existsInFolder = !localIdentityKeys.isDisjoint(with: remoteIdentities)
             if !existsInFolder {
                 let entry = UserLibraryEntry(
                     id: "\(mediaId)-\(listType.rawValue)-\(localFolderId)",
@@ -946,6 +965,7 @@ actor TraktSyncOrchestrator {
                     addedAt: Date()
                 )
                 try await database.addToLibrary(entry)
+                localIdentityKeys.formUnion(remoteIdentities)
                 created += 1
                 didMutateLibrary = true
             }
@@ -961,8 +981,10 @@ actor TraktSyncOrchestrator {
 
         // Delete local entries that were removed from the remote list.
         let localEntries = try await database.fetchLibraryEntries(listType: listType, folderId: localFolderId)
-        for entry in localEntries where !remoteMediaIds.contains(entry.mediaId) {
+        for entry in localEntries {
             try Task.checkCancellation()
+            let localIdentities = await syncIdentities(for: entry.mediaId)
+            guard remoteIdentityKeys.isDisjoint(with: localIdentities) else { continue }
             try await database.removeFromLibrary(
                 mediaId: entry.mediaId,
                 listType: listType,
@@ -989,25 +1011,57 @@ actor TraktSyncOrchestrator {
 
         // Get existing items on the Trakt list for dedup and removals.
         let remoteItems = try await traktService.getListItems(listId: traktListId)
-        var remoteByImdbId: [String: MediaType] = [:]
+        var remoteBySyncId: [String: MediaType] = [:]
+        var remoteIdentitiesBySyncId: [String: Set<String>] = [:]
+        var remoteIdentityKeys = Set<String>()
         for item in remoteItems {
-            if let imdb = item.movie?.ids.imdb, !imdb.isEmpty {
-                remoteByImdbId[imdb] = .movie
+            let movieCandidates = Self.mediaIDCandidates(from: item.movie?.ids, type: .movie)
+            let showCandidates = Self.mediaIDCandidates(from: item.show?.ids, type: .series)
+            let mediaIDs = movieCandidates + showCandidates
+            let identities = await syncIdentities(for: mediaIDs)
+            remoteIdentityKeys.formUnion(identities)
+
+            if let movieSyncId = Self.preferredSyncID(from: movieCandidates) {
+                remoteBySyncId[movieSyncId] = .movie
+                remoteIdentitiesBySyncId[movieSyncId, default: []].formUnion(identities)
             }
-            if let imdb = item.show?.ids.imdb, !imdb.isEmpty {
-                remoteByImdbId[imdb] = .series
+            if let showSyncId = Self.preferredSyncID(from: showCandidates) {
+                remoteBySyncId[showSyncId] = .series
+                remoteIdentitiesBySyncId[showSyncId, default: []].formUnion(identities)
             }
         }
 
-        let localImdbIds = Set(entries.map(\.mediaId).filter { $0.hasPrefix("tt") })
-        let remoteImdbIds = Set(remoteByImdbId.keys)
+        var localIdentitiesBySyncId: [String: Set<String>] = [:]
+        var localMediaTypeBySyncId: [String: MediaType] = [:]
+        var localIdentityKeys = Set<String>()
+        for entry in entries {
+            try Task.checkCancellation()
+            let identities = await syncIdentities(for: entry.mediaId)
+            localIdentityKeys.formUnion(identities)
+            if let syncID = await localTraktSyncID(for: entry.mediaId) {
+                localIdentitiesBySyncId[syncID, default: []].formUnion(identities)
+                if localMediaTypeBySyncId[syncID] == nil {
+                    localMediaTypeBySyncId[syncID] = await resolveMediaType(for: entry.mediaId)
+                }
+            }
+        }
+        let remoteSyncIds = Set(remoteBySyncId.keys)
 
         // Collect additions.
         var toAdd: [(id: String, type: MediaType)] = []
-        for imdbId in localImdbIds.subtracting(remoteImdbIds) {
+        for (syncId, localIdentities) in localIdentitiesBySyncId {
             try Task.checkCancellation()
-            let mediaType = await resolveMediaType(for: imdbId)
-            toAdd.append((id: imdbId, type: mediaType))
+            guard !remoteSyncIds.contains(syncId),
+                  remoteIdentityKeys.isDisjoint(with: localIdentities) else {
+                continue
+            }
+            let mediaType: MediaType
+            if let hintedType = localMediaTypeBySyncId[syncId] {
+                mediaType = hintedType
+            } else {
+                mediaType = await resolveMediaType(for: syncId)
+            }
+            toAdd.append((id: syncId, type: mediaType))
         }
 
         if !toAdd.isEmpty {
@@ -1016,9 +1070,11 @@ actor TraktSyncOrchestrator {
         }
 
         // Collect removals.
-        let toRemove = remoteImdbIds.subtracting(localImdbIds).compactMap { imdbId -> (id: String, type: MediaType)? in
-            guard let mediaType = remoteByImdbId[imdbId] else { return nil }
-            return (id: imdbId, type: mediaType)
+        let toRemove = remoteSyncIds.compactMap { syncId -> (id: String, type: MediaType)? in
+            guard let mediaType = remoteBySyncId[syncId] else { return nil }
+            let remoteIdentities = remoteIdentitiesBySyncId[syncId] ?? [syncId]
+            guard localIdentityKeys.isDisjoint(with: remoteIdentities) else { return nil }
+            return (id: syncId, type: mediaType)
         }
         if !toRemove.isEmpty {
             try Task.checkCancellation()
@@ -1030,26 +1086,35 @@ actor TraktSyncOrchestrator {
 
     // MARK: - Helpers
 
-    /// Extracts the IMDb ID from a TraktItem, preferring the IMDb ID, falling back to tmdb-prefixed.
+    /// Extracts a local media ID from a TraktItem, preferring typed OMDb/IMDb IDs and falling back to TMDb.
     private func extractMediaId(from item: TraktItem) -> String? {
-        if let imdb = item.movie?.ids.imdb, !imdb.isEmpty { return imdb }
-        if let imdb = item.show?.ids.imdb, !imdb.isEmpty { return imdb }
-        if let tmdb = item.movie?.ids.tmdb { return "tmdb-\(tmdb)" }
-        if let tmdb = item.show?.ids.tmdb { return "tmdb-\(tmdb)" }
+        if let imdb = IMDbIdentifierPolicy.normalizedID(from: item.movie?.ids.imdb) {
+            return Self.omdbMediaID(imdb: imdb, type: .movie)
+        }
+        if let imdb = IMDbIdentifierPolicy.normalizedID(from: item.show?.ids.imdb) {
+            return Self.omdbMediaID(imdb: imdb, type: .series)
+        }
+        if let tmdb = item.movie?.ids.tmdb { return Self.tmdbMediaID(tmdb: tmdb, type: .movie) }
+        if let tmdb = item.show?.ids.tmdb { return Self.tmdbMediaID(tmdb: tmdb, type: .series) }
         return nil
     }
 
     private func extractRatingMediaId(from item: TraktRatingItem) -> String? {
-        if let imdb = item.movie?.ids.imdb, !imdb.isEmpty { return imdb }
-        if let imdb = item.show?.ids.imdb, !imdb.isEmpty { return imdb }
-        if let tmdb = item.movie?.ids.tmdb { return "tmdb-\(tmdb)" }
-        if let tmdb = item.show?.ids.tmdb { return "tmdb-\(tmdb)" }
+        if let imdb = IMDbIdentifierPolicy.normalizedID(from: item.movie?.ids.imdb) {
+            return Self.omdbMediaID(imdb: imdb, type: .movie)
+        }
+        if let imdb = IMDbIdentifierPolicy.normalizedID(from: item.show?.ids.imdb) {
+            return Self.omdbMediaID(imdb: imdb, type: .series)
+        }
+        if let tmdb = item.movie?.ids.tmdb { return Self.tmdbMediaID(tmdb: tmdb, type: .movie) }
+        if let tmdb = item.show?.ids.tmdb { return Self.tmdbMediaID(tmdb: tmdb, type: .series) }
         return nil
     }
 
     private struct HistoryIdentifiers {
         let mediaId: String
         let episodeId: String?
+        let episodeAliases: Set<String>
     }
 
     private enum RemotePageCollection<T> {
@@ -1092,51 +1157,105 @@ actor TraktSyncOrchestrator {
                 if isCancellationError(error) {
                     return .cancelled
                 }
-                return .failure(
-                    "\(resource) page \(page) failed during deduplication: \(error.localizedDescription)"
-                )
+                return .failure(Self.sanitizedSyncError(
+                    prefix: "\(resource) page \(page) failed during deduplication",
+                    error: error
+                ))
             }
         }
 
         return .success(itemsByPage)
     }
 
+    static func sanitizedSyncError(prefix: String, error: Error) -> String {
+        "\(prefix): \(IndexerLogSanitizer.redactedErrorMessage(error))"
+    }
+
     private func extractHistoryIdentifiers(from item: TraktHistoryItem) -> HistoryIdentifiers? {
-        if let imdb = item.movie?.ids.imdb, !imdb.isEmpty {
-            return HistoryIdentifiers(mediaId: imdb, episodeId: nil)
+        if let imdb = IMDbIdentifierPolicy.normalizedID(from: item.movie?.ids.imdb) {
+            return HistoryIdentifiers(
+                mediaId: Self.omdbMediaID(imdb: imdb, type: .movie),
+                episodeId: nil,
+                episodeAliases: []
+            )
         }
         if let tmdb = item.movie?.ids.tmdb {
-            return HistoryIdentifiers(mediaId: "tmdb-\(tmdb)", episodeId: nil)
+            return HistoryIdentifiers(
+                mediaId: Self.tmdbMediaID(tmdb: tmdb, type: .movie),
+                episodeId: nil,
+                episodeAliases: []
+            )
         }
 
         let mediaId: String?
-        if let imdb = item.show?.ids.imdb, !imdb.isEmpty {
-            mediaId = imdb
+        if let imdb = IMDbIdentifierPolicy.normalizedID(from: item.show?.ids.imdb) {
+            mediaId = Self.omdbMediaID(imdb: imdb, type: .series)
         } else if let tmdb = item.show?.ids.tmdb {
-            mediaId = "tmdb-\(tmdb)"
+            mediaId = Self.tmdbMediaID(tmdb: tmdb, type: .series)
         } else {
             mediaId = nil
         }
 
         guard let mediaId else { return nil }
 
+        var episodeAliases = Set<String>()
+        let seasonEpisodeID: String?
+        if let season = item.episode?.season,
+           let number = item.episode?.number {
+            let resolvedEpisodeID = String(format: "s%02de%02d", season, number)
+            seasonEpisodeID = resolvedEpisodeID
+            episodeAliases.insert(resolvedEpisodeID)
+        } else {
+            seasonEpisodeID = nil
+        }
+
+        let episodeIMDbID = IMDbIdentifierPolicy.episodeScopedID(in: item.episode?.ids?.imdb)
+        if let episodeIMDbID {
+            episodeAliases.insert(episodeIMDbID)
+        }
+
+        let episodeTMDBID = item.episode?.ids?.tmdb.map { "tmdb-episode-\($0)" }
+        if let episodeTMDBID {
+            episodeAliases.insert(episodeTMDBID)
+        }
+
         let episodeId: String?
-        if let episodeImdb = item.episode?.ids?.imdb, !episodeImdb.isEmpty {
-            episodeId = episodeImdb
-        } else if let season = item.episode?.season,
-                  let number = item.episode?.number {
-            episodeId = String(format: "s%02de%02d", season, number)
-        } else if let episodeTMDB = item.episode?.ids?.tmdb {
-            episodeId = "tmdb-episode-\(episodeTMDB)"
+        if let seasonEpisodeID {
+            episodeId = seasonEpisodeID
+        } else if let episodeIMDbID {
+            episodeId = episodeIMDbID
+        } else if let episodeTMDBID {
+            episodeId = episodeTMDBID
         } else {
             episodeId = nil
         }
 
-        return HistoryIdentifiers(mediaId: mediaId, episodeId: episodeId)
+        return HistoryIdentifiers(
+            mediaId: mediaId,
+            episodeId: episodeId,
+            episodeAliases: episodeAliases
+        )
     }
 
-    /// Fetches all IMDb IDs in the remote Trakt watchlist for deduplication during push.
-    private func fetchRemoteWatchlistImdbIds() async -> RemotePageCollection<Set<String>> {
+    private static func omdbMediaID(imdb: String, type: MediaType) -> String {
+        switch type {
+        case .movie:
+            return "movie-omdb-\(imdb)"
+        case .series:
+            return "series-omdb-\(imdb)"
+        }
+    }
+
+    private static func tmdbMediaID(tmdb: Int, type: MediaType) -> String {
+        "\(type.rawValue)-tmdb-\(tmdb)"
+    }
+
+    private func canonicalLocalMediaId(for mediaId: String) async throws -> String {
+        try await database.fetchMediaItemResolvingAliases(id: mediaId)?.id ?? mediaId
+    }
+
+    /// Fetches all usable IMDb/TMDb identities in the remote Trakt watchlist for deduplication during push.
+    private func fetchRemoteWatchlistSyncIds() async -> RemotePageCollection<Set<String>> {
         var ids = Set<String>()
         for mediaType in [MediaType.movie, MediaType.series] {
             if isCancellationRequested {
@@ -1161,16 +1280,18 @@ actor TraktSyncOrchestrator {
                 if isCancellationRequested {
                     return .cancelled
                 }
-                if let imdb = item.movie?.ids.imdb ?? item.show?.ids.imdb {
-                    ids.insert(imdb)
-                }
+                let candidates = Self.mediaIDCandidates(
+                    from: item.movie?.ids ?? item.show?.ids,
+                    type: mediaType
+                )
+                ids.formUnion(await syncIdentities(for: candidates))
             }
         }
         return .success(ids)
     }
 
-    /// Fetches latest Trakt ratings keyed by IMDb ID.
-    private func fetchRemoteRatingsByImdbId() async -> RemotePageCollection<[String: TraktRatingItem]> {
+    /// Fetches latest Trakt ratings keyed by every usable IMDb/TMDb identity Trakt returns.
+    private func fetchRemoteRatingsBySyncId() async -> RemotePageCollection<[String: TraktRatingItem]> {
         var ratings: [String: TraktRatingItem] = [:]
 
         for mediaType in [MediaType.movie, MediaType.series] {
@@ -1196,10 +1317,11 @@ actor TraktSyncOrchestrator {
                 if isCancellationRequested {
                     return .cancelled
                 }
-                guard let imdb = item.movie?.ids.imdb ?? item.show?.ids.imdb,
-                      !imdb.isEmpty else { continue }
-                if ratings[imdb] == nil {
-                    ratings[imdb] = item
+                let identities = await syncIdentities(for: Self.ratingMediaIDCandidates(from: item))
+                for identity in identities {
+                    if ratings[identity] == nil {
+                        ratings[identity] = item
+                    }
                 }
             }
         }
@@ -1236,13 +1358,16 @@ actor TraktSyncOrchestrator {
                 }
                 guard let identifiers = extractHistoryIdentifiers(from: item) else { continue }
                 let watchedAt = parseHistoryDate(item.watchedAt)
-                keys.insert(
-                    historySyncKey(
-                        mediaId: identifiers.mediaId,
-                        episodeId: identifiers.episodeId,
-                        watchedAt: watchedAt
+                let mediaIdentities = await syncIdentities(for: identifiers.mediaId)
+                for identity in mediaIdentities {
+                    keys.formUnion(
+                        historySyncKeys(
+                            mediaId: identity,
+                            episodeAliases: identifiers.episodeAliases,
+                            watchedAt: watchedAt
+                        )
                     )
-                )
+                }
             }
         }
         return .success(keys)
@@ -1268,9 +1393,9 @@ actor TraktSyncOrchestrator {
     }
 
     /// Creates a stub MediaItem from Trakt data if one doesn't already exist locally.
-    /// This ensures LibraryView can display the entry even before TMDB metadata is fetched.
+    /// This ensures LibraryView can display the entry even before full metadata is fetched.
     private func ensureMediaItem(from item: TraktItem, mediaId: String) async throws -> Bool {
-        if (try? await database.fetchMediaItem(id: mediaId)) != nil { return false }
+        if (try? await database.fetchMediaItemResolvingAliases(id: mediaId)) != nil { return false }
         let title = item.movie?.title ?? item.show?.title ?? "Unknown"
         let year = item.movie?.year ?? item.show?.year
         let type: MediaType = item.show != nil ? .series : .movie
@@ -1294,14 +1419,77 @@ actor TraktSyncOrchestrator {
         return true
     }
 
-    private func historySyncKey(mediaId: String, episodeId: String?, watchedAt: Date? = nil) -> String {
-        let normalizedEpisode = episodeId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let timestampComponent = watchedAt.map { String(Int($0.timeIntervalSince1970.rounded())) } ?? "unknown"
-        if let normalizedEpisode,
-           !normalizedEpisode.isEmpty {
-            return "\(mediaId)#\(normalizedEpisode)#\(timestampComponent)"
+    private func hasCompletedWatchHistoryEntry(
+        mediaId: String,
+        episodeId: String?,
+        episodeAliases: Set<String>,
+        watchedAt: Date
+    ) async throws -> Bool {
+        if try await database.hasCompletedWatchHistoryEntry(
+            mediaId: mediaId,
+            episodeId: episodeId,
+            watchedAt: watchedAt
+        ) {
+            return true
         }
-        return "\(mediaId)#movie#\(timestampComponent)"
+
+        guard !episodeAliases.isEmpty else { return false }
+        let candidates = try await database.fetchCompletedWatchHistory(
+            mediaId: mediaId,
+            watchedAt: watchedAt
+        )
+        return candidates.contains { candidate in
+            !Self.historyEpisodeAliases(from: candidate.episodeId).isDisjoint(with: episodeAliases)
+        }
+    }
+
+    private func historySyncKey(mediaId: String, episodeId: String?, watchedAt: Date? = nil) -> String {
+        historySyncKeys(mediaId: mediaId, episodeId: episodeId, watchedAt: watchedAt)
+            .sorted()
+            .first ?? "\(mediaId)#movie#unknown"
+    }
+
+    private func historySyncKeys(
+        mediaId: String,
+        episodeId: String?,
+        watchedAt: Date? = nil
+    ) -> Set<String> {
+        historySyncKeys(
+            mediaId: mediaId,
+            episodeAliases: Self.historyEpisodeAliases(from: episodeId),
+            watchedAt: watchedAt
+        )
+    }
+
+    private func historySyncKeys(
+        mediaId: String,
+        episodeAliases: Set<String>,
+        watchedAt: Date? = nil
+    ) -> Set<String> {
+        let timestampComponent = watchedAt.map { String(Int($0.timeIntervalSince1970.rounded())) } ?? "unknown"
+        if episodeAliases.isEmpty {
+            return ["\(mediaId)#movie#\(timestampComponent)"]
+        }
+        return Set(episodeAliases.map { "\(mediaId)#\($0)#\(timestampComponent)" })
+    }
+
+    private static func historyEpisodeAliases(from episodeId: String?) -> Set<String> {
+        guard let trimmed = episodeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return []
+        }
+
+        var aliases = Set<String>()
+        if let imdbID = IMDbIdentifierPolicy.episodeScopedID(in: trimmed) {
+            aliases.insert(imdbID)
+        }
+        if let context = TraktEpisodeIdentifierPolicy.seasonEpisode(from: trimmed) {
+            aliases.insert(String(format: "s%02de%02d", context.season, context.episode))
+        }
+        if aliases.isEmpty {
+            aliases.insert(trimmed.lowercased())
+        }
+        return aliases
     }
 
     private func traktRating(from event: TasteEvent) -> Int? {
@@ -1319,8 +1507,12 @@ actor TraktSyncOrchestrator {
     /// 2) Existing episode watch-state evidence (series)
     /// 3) Conservative fallback to movie (legacy behavior)
     private func resolveMediaType(for mediaId: String) async -> MediaType {
-        if let item = try? await database.fetchMediaItem(id: mediaId) {
+        if let item = try? await database.fetchMediaItemResolvingAliases(id: mediaId) {
             return item.type
+        }
+
+        if let hintedType = Self.mediaTypeHint(from: mediaId) {
+            return hintedType
         }
 
         if let episodeStates = try? await database.fetchEpisodeWatchStates(mediaId: mediaId),
@@ -1329,6 +1521,17 @@ actor TraktSyncOrchestrator {
         }
 
         return .movie
+    }
+
+    private static func mediaTypeHint(from mediaId: String) -> MediaType? {
+        let normalized = mediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("series-") {
+            return .series
+        }
+        if normalized.hasPrefix("movie-") {
+            return .movie
+        }
+        return nil
     }
 
     private var isCancellationRequested: Bool {
@@ -1393,5 +1596,150 @@ extension TraktSyncOrchestrator {
         var shouldAdvanceLastSyncDate: Bool {
             count > 0 || errors.isEmpty
         }
+    }
+
+    private static func localIMDbID(from mediaId: String) -> String? {
+        IMDbIdentifierPolicy.appScopedID(in: mediaId)
+    }
+
+    private func localIMDbID(for mediaId: String) async -> String? {
+        if let direct = Self.localIMDbID(from: mediaId) {
+            return direct
+        }
+
+        let requestedTMDBID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId)
+        let hintedType = Self.mediaTypeHint(from: mediaId)
+        guard let item = try? await database.fetchMediaItemResolvingAliases(id: mediaId) else {
+            guard let requestedTMDBID else { return nil }
+            return await localIMDbID(forTMDBID: requestedTMDBID, mediaType: hintedType)
+        }
+
+        if let hintedType, item.type != hintedType {
+            guard let requestedTMDBID else { return nil }
+            return await localIMDbID(forTMDBID: requestedTMDBID, mediaType: hintedType)
+        }
+        if let imdbID = Self.localIMDbID(from: item.id) {
+            return imdbID
+        }
+        guard let tmdbID = item.tmdbId ?? requestedTMDBID else {
+            return nil
+        }
+        return await localIMDbID(forTMDBID: tmdbID, mediaType: hintedType ?? item.type)
+    }
+
+    private func localIMDbID(forTMDBID tmdbID: Int, mediaType: MediaType?) async -> String? {
+        guard let items = try? await database.fetchMediaItems(tmdbId: tmdbID) else {
+            return nil
+        }
+        return items
+            .filter { item in
+                guard let mediaType else { return true }
+                return item.type == mediaType
+            }
+            .compactMap { Self.localIMDbID(from: $0.id) }
+            .sorted()
+            .first
+    }
+
+    private static func syncIdentity(for mediaId: String) -> String {
+        if let imdbID = localIMDbID(from: mediaId) {
+            return imdbID
+        }
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+            if let type = mediaTypeHint(from: mediaId) {
+                return tmdbMediaID(tmdb: tmdbID, type: type)
+            }
+            return "tmdb-\(tmdbID)"
+        }
+        return mediaId
+    }
+
+    private func localTraktSyncID(for mediaId: String) async -> String? {
+        if let imdbID = await localIMDbID(for: mediaId) {
+            return imdbID
+        }
+        return Self.preferredSyncID(from: [mediaId])
+    }
+
+    private static func preferredSyncID(from mediaIds: [String]) -> String? {
+        for mediaId in mediaIds {
+            if let imdbID = localIMDbID(from: mediaId) {
+                return imdbID
+            }
+        }
+        for mediaId in mediaIds {
+            if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+                if let type = mediaTypeHint(from: mediaId) {
+                    return tmdbMediaID(tmdb: tmdbID, type: type)
+                }
+                return "tmdb-\(tmdbID)"
+            }
+        }
+        return nil
+    }
+
+    private static func mediaIDCandidates(from item: TraktListItem) -> [String] {
+        if let movieIDs = item.movie?.ids {
+            return mediaIDCandidates(from: movieIDs, type: .movie)
+        }
+        if let showIDs = item.show?.ids {
+            return mediaIDCandidates(from: showIDs, type: .series)
+        }
+        return []
+    }
+
+    private static func mediaIDCandidates(from ids: TraktIds?, type: MediaType? = nil) -> [String] {
+        guard let ids else { return [] }
+        var candidates: [String] = []
+        if let imdbID = IMDbIdentifierPolicy.normalizedID(from: ids.imdb) {
+            candidates.append(imdbID)
+        }
+        if let tmdbID = ids.tmdb {
+            candidates.append(type.map { tmdbMediaID(tmdb: tmdbID, type: $0) } ?? "tmdb-\(tmdbID)")
+        }
+        return candidates
+    }
+
+    private static func ratingMediaIDCandidates(from item: TraktRatingItem) -> [String] {
+        if let movieIDs = item.movie?.ids {
+            return mediaIDCandidates(from: movieIDs, type: .movie)
+        }
+        if let showIDs = item.show?.ids {
+            return mediaIDCandidates(from: showIDs, type: .series)
+        }
+        return []
+    }
+
+    private func syncIdentity(for mediaId: String) async -> String {
+        if let imdbID = await localIMDbID(for: mediaId) {
+            return imdbID
+        }
+        return Self.syncIdentity(for: mediaId)
+    }
+
+    private func syncIdentities(for mediaId: String) async -> Set<String> {
+        let trimmed = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var identities: Set<String> = [Self.syncIdentity(for: trimmed)]
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: trimmed) {
+            if let type = Self.mediaTypeHint(from: trimmed) {
+                identities.insert(Self.tmdbMediaID(tmdb: tmdbID, type: type))
+            } else {
+                identities.insert("tmdb-\(tmdbID)")
+            }
+        }
+        if let imdbID = await localIMDbID(for: trimmed) {
+            identities.insert(imdbID)
+        }
+        return identities
+    }
+
+    private func syncIdentities(for mediaIds: [String]) async -> Set<String> {
+        var identities = Set<String>()
+        for mediaId in mediaIds {
+            identities.formUnion(await syncIdentities(for: mediaId))
+        }
+        return identities
     }
 }

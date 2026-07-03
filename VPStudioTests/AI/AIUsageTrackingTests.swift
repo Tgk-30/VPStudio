@@ -119,8 +119,7 @@ struct AIUsageTrackingDatabaseTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent("usage-test.sqlite")
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "usage-test-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }

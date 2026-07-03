@@ -4,7 +4,29 @@ import Testing
 
 @Suite("Detail Feedback", .serialized)
 struct DetailFeedbackTests {
-    private func makePreview(id: String = "preview-\(UUID().uuidString)", title: String = "Rating Candidate") -> MediaPreview {
+    private final class NotificationFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func markPosted() {
+            lock.lock()
+            value = true
+            lock.unlock()
+        }
+
+        func didPost() -> Bool {
+            lock.lock()
+            let posted = value
+            lock.unlock()
+            return posted
+        }
+    }
+
+    private func makePreview(
+        id: String = "preview-\(UUID().uuidString)",
+        title: String = "Rating Candidate",
+        tmdbId: Int? = nil
+    ) -> MediaPreview {
         MediaPreview(
             id: id,
             type: .movie,
@@ -12,15 +34,14 @@ struct DetailFeedbackTests {
             year: 2026,
             posterPath: nil,
             imdbRating: nil,
-            tmdbId: nil
+            tmdbId: tmdbId
         )
     }
 
     @MainActor private func makeIsolatedAppState() throws -> (AppState, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("feedback-test.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "feedback-test-\(UUID().uuidString)")
         let appState = AppState(database: database)
         return (appState, tempDir)
     }
@@ -46,6 +67,81 @@ struct DetailFeedbackTests {
         #expect(latest?.feedbackScale?.canonicalMode == .oneToTen)
         #expect(latest?.feedbackValue == 8)
         #expect(viewModel.currentFeedbackSummary == "8/10")
+    }
+
+    @MainActor
+    @Test func submitFeedbackPersistsOMDbIMDbIdentifierForSync() async throws {
+        let (appState, tempDir) = try makeIsolatedAppState()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await appState.database.migrate()
+        try await appState.settingsManager.setString(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+
+        let preview = makePreview(id: "tt1160419", title: "Dune")
+        let viewModel = DetailViewModel(appState: appState)
+        viewModel.setPreviewContext(preview)
+
+        await viewModel.submitFeedback(value: 9)
+
+        let latest = try await appState.database.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest?.mediaId == "movie-omdb-tt1160419")
+        #expect(latest?.metadata["title"] == "Dune")
+        #expect(viewModel.currentFeedbackSummary == "9/10")
+    }
+
+    @MainActor
+    @Test func submitFeedbackNormalizesCompositeIMDbIdentifierForSync() async throws {
+        let (appState, tempDir) = try makeIsolatedAppState()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await appState.database.migrate()
+        try await appState.settingsManager.setString(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+
+        let preview = makePreview(id: "movie-imdb-TT1160419", title: "Dune")
+        let viewModel = DetailViewModel(appState: appState)
+        viewModel.setPreviewContext(preview)
+
+        await viewModel.submitFeedback(value: 9)
+
+        let latest = try await appState.database.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest?.mediaId == "movie-omdb-tt1160419")
+        #expect(try await appState.database.fetchLatestTasteRating(mediaId: "movie-imdb-tt1160419")?.id == latest?.id)
+    }
+
+    @MainActor
+    @Test func submitFeedbackUsesProviderAliasInsteadOfLocalFetchedItemID() async throws {
+        let (appState, tempDir) = try makeIsolatedAppState()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await appState.database.migrate()
+        try await appState.settingsManager.setString(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+
+        let preview = makePreview(
+            id: "local-library-dune",
+            title: "Dune",
+            tmdbId: 438_631
+        )
+        let viewModel = DetailViewModel(appState: appState)
+        viewModel.setPreviewContext(preview)
+        viewModel.mediaItem = MediaItem(
+            id: "local-library-dune",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438_631
+        )
+
+        await viewModel.submitFeedback(value: 9)
+
+        let latest = try await appState.database.fetchLatestTasteRating(mediaId: "movie-tmdb-438631")
+        #expect(latest?.mediaId == "movie-tmdb-438631")
+        #expect(latest?.feedbackValue == 9)
     }
 
     @MainActor
@@ -220,13 +316,13 @@ struct DetailFeedbackTests {
 
         await viewModel.submitFeedback(value: 6)
 
-        var notificationReceived = false
+        let notificationReceived = NotificationFlag()
         let token = NotificationCenter.default.addObserver(
             forName: .tasteProfileDidChange,
             object: nil,
             queue: .main
         ) { _ in
-            notificationReceived = true
+            notificationReceived.markPosted()
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
@@ -234,7 +330,7 @@ struct DetailFeedbackTests {
 
         // Allow notification delivery
         try await Task.sleep(for: .milliseconds(50))
-        #expect(notificationReceived)
+        #expect(notificationReceived.didPost())
     }
 }
 
@@ -246,8 +342,7 @@ struct DatabaseDeleteLatestTasteRatingTests {
     @MainActor private func makeIsolatedDB() throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("delete-rating-test.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "delete-rating-test-\(UUID().uuidString)")
         return (database, tempDir)
     }
 
@@ -320,6 +415,51 @@ struct DatabaseDeleteLatestTasteRatingTests {
         let remaining = try await db.fetchLatestTasteRating(mediaId: mediaId)
         #expect(remaining != nil)
         #expect(remaining?.feedbackValue == 3)
+    }
+
+    @MainActor
+    @Test func fetchLatestTasteRatingResolvesBareAndCompositeIMDbAliases() async throws {
+        let (db, tempDir) = try makeIsolatedDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await db.migrate()
+
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "tt1160419",
+                eventType: .rated,
+                signalStrength: 0.9,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .automatic
+            )
+        )
+
+        let latest = try await db.fetchLatestTasteRating(mediaId: "movie-imdb-tt1160419")
+        #expect(latest?.mediaId == "tt1160419")
+        #expect(latest?.feedbackValue == 9)
+    }
+
+    @MainActor
+    @Test func deleteLatestTasteRatingRemovesAliasedBareIMDbRating() async throws {
+        let (db, tempDir) = try makeIsolatedDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try await db.migrate()
+
+        try await db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "tt1160419",
+                eventType: .rated,
+                signalStrength: 0.9,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .automatic
+            )
+        )
+
+        try await db.deleteLatestTasteRating(mediaId: "movie-imdb-tt1160419")
+
+        let latest = try await db.fetchLatestTasteRating(mediaId: "tt1160419")
+        #expect(latest == nil)
     }
 
     @MainActor

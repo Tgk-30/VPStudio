@@ -5,7 +5,7 @@ import Foundation
 // MARK: - VideoQuality Parse Tests
 
 @Suite("VideoQuality - parse")
-struct VideoQualityParseTests {
+struct VideoQualityParseTestsMediatypeparsingtests {
 
     @Test func parses2160p() {
         #expect(VideoQuality.parse(from: "Movie.2024.2160p.BluRay.x265") == .uhd4k)
@@ -413,7 +413,7 @@ struct HDRFormatParseTests {
 // MARK: - MediaType Tests
 
 @Suite("MediaType")
-struct MediaTypeTests {
+struct MediaTypeTestsMediatypeparsingtests {
 
     @Test func movieDisplayName() {
         #expect(MediaType.movie.displayName == "Movie")
@@ -440,7 +440,7 @@ struct MediaTypeTests {
 // MARK: - HDRPreference Tests
 
 @Suite("HDRPreference")
-struct HDRPreferenceTests {
+struct HDRPreferenceTestsMediatypeparsingtests {
 
     @Test func displayNames() {
         #expect(HDRPreference.auto.displayName == "Auto")

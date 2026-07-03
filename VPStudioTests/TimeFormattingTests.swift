@@ -3,7 +3,7 @@ import Foundation
 @testable import VPStudio
 
 @Suite("TimeInterval.formattedDuration")
-struct TimeFormattingTests {
+struct TimeFormattingTestsTimeformattingtests {
 
     // MARK: - Basic Values
 

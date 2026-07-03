@@ -2,6 +2,10 @@ import Foundation
 
 /// Parses subtitle files into timed cue arrays for rendering
 struct SubtitleParser {
+    static let maximumInputBytes = 5 * 1024 * 1024
+    static let maximumCueCount = 10_000
+    static let maximumCueTextCharacters = 4_000
+    private static let maximumParsedLineCount = 120_000
 
     struct SubtitleCue: Sendable, Identifiable {
         let id: Int
@@ -13,7 +17,7 @@ struct SubtitleParser {
     // MARK: - Parse by Format
 
     static func parse(content: String, format: SubtitleFormat) -> [SubtitleCue] {
-        let normalizedContent = normalizeNewlines(content)
+        guard let normalizedContent = boundedNormalizedContent(content) else { return [] }
         switch format {
         case .srt: return parseSRT(normalizedContent)
         case .vtt: return parseVTT(normalizedContent)
@@ -30,29 +34,55 @@ struct SubtitleParser {
     // MARK: - SRT Parser
 
     static func parseSRT(_ content: String) -> [SubtitleCue] {
-        let normalizedContent = normalizeNewlines(content)
+        guard let normalizedContent = boundedNormalizedContent(content) else { return [] }
         var cues: [SubtitleCue] = []
-        let blocks = normalizedContent.components(separatedBy: "\n\n")
+        var block: [String] = []
 
-        for block in blocks {
-            let lines = block.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n")
-            guard lines.count >= 3 else { continue }
+        func parseBlock(_ lines: [String]) {
+            guard cues.count < maximumCueCount else { return }
+            guard lines.count >= 2 else { return }
 
-            // Line 0: index
-            guard let index = Int(lines[0].trimmingCharacters(in: .whitespaces)) else { continue }
+            let indexLine = lines[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let timeLine = lines[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !indexLine.isEmpty,
+                  let index = Int(indexLine) else {
+                return
+            }
 
             // Line 1: timestamp
-            let timeParts = lines[1].components(separatedBy: " --> ")
+            let timeParts = timeLine.components(separatedBy: " --> ")
             guard timeParts.count == 2,
                   let start = parseSRTTime(timeParts[0].trimmingCharacters(in: .whitespaces)),
-                  let end = parseSRTTime(timeParts[1].trimmingCharacters(in: .whitespaces)) else { continue }
+                  let end = parseSRTTime(timeParts[1].trimmingCharacters(in: .whitespaces)) else {
+                return
+            }
+            let (orderedStart, orderedEnd) = orderedTimes(start: start, end: end)
 
-            // Lines 2+: text
-            let text = lines[2...].joined(separator: "\n")
-                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression) // Strip HTML tags
+            // Lines 2+: text (including empty/whitespace-only lines).
+            let text = lines.dropFirst(2).joined(separator: "\n")
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
 
-            cues.append(SubtitleCue(id: index, startTime: start, endTime: end, text: text))
+            cues.append(SubtitleCue(
+                id: index,
+                startTime: orderedStart,
+                endTime: orderedEnd,
+                text: boundedCueText(text)
+            ))
         }
+
+        let lines = normalizedContent.components(separatedBy: "\n")
+        for line in lines.prefix(maximumParsedLineCount) {
+            guard cues.count < maximumCueCount else { break }
+            // Treat a whitespace-only line as a block separator too — a stray space/tab between
+            // cues (common in re-encoded SRTs) otherwise merges two cues into one.
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                parseBlock(block)
+                block.removeAll(keepingCapacity: true)
+            } else {
+                block.append(line)
+            }
+        }
+        parseBlock(block)
 
         return cues
     }
@@ -60,7 +90,7 @@ struct SubtitleParser {
     // MARK: - VTT Parser
 
     static func parseVTT(_ content: String) -> [SubtitleCue] {
-        let normalizedContent = normalizeNewlines(content)
+        guard let normalizedContent = boundedNormalizedContent(content) else { return [] }
         var cues: [SubtitleCue] = []
         // Skip WEBVTT header
         let stripped = normalizedContent.replacingOccurrences(of: "^WEBVTT[^\n]*\n", with: "", options: .regularExpression)
@@ -68,6 +98,7 @@ struct SubtitleParser {
         var index = 0
 
         for block in blocks {
+            guard cues.count < maximumCueCount else { break }
             let lines = block.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n")
             guard lines.count >= 2 else { continue }
 
@@ -78,13 +109,18 @@ struct SubtitleParser {
             guard timeParts.count == 2,
                   let start = parseVTTTime(timeParts[0].trimmingCharacters(in: .whitespaces)),
                   let end = parseVTTTime(timeParts[1].components(separatedBy: " ").first?.trimmingCharacters(in: .whitespaces) ?? "") else { continue }
+            let (orderedStart, orderedEnd) = orderedTimes(start: start, end: end)
 
             let textLines = lines[(timeLineIdx + 1)...]
-            let text = textLines.joined(separator: "\n")
-                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            let text = stripVTTMarkup(from: textLines.joined(separator: "\n"))
 
             index += 1
-            cues.append(SubtitleCue(id: index, startTime: start, endTime: end, text: text))
+            cues.append(SubtitleCue(
+                id: index,
+                startTime: orderedStart,
+                endTime: orderedEnd,
+                text: boundedCueText(text)
+            ))
         }
 
         return cues
@@ -93,11 +129,13 @@ struct SubtitleParser {
     // MARK: - ASS/SSA Parser
 
     static func parseASS(_ content: String) -> [SubtitleCue] {
+        guard let content = boundedNormalizedContent(content) else { return [] }
         var cues: [SubtitleCue] = []
         var index = 0
         let lines = content.components(separatedBy: "\n")
 
-        for line in lines {
+        for line in lines.prefix(maximumParsedLineCount) {
+            guard cues.count < maximumCueCount else { break }
             guard line.hasPrefix("Dialogue:") else { continue }
             let parts = line.dropFirst("Dialogue:".count)
                 .trimmingCharacters(in: .whitespaces)
@@ -106,6 +144,7 @@ struct SubtitleParser {
 
             guard let start = parseASSTime(parts[1].trimmingCharacters(in: .whitespaces)),
                   let end = parseASSTime(parts[2].trimmingCharacters(in: .whitespaces)) else { continue }
+            let (orderedStart, orderedEnd) = orderedTimes(start: start, end: end)
 
             // Text is everything from field 9 onwards (may contain commas)
             let text = parts[9...].joined(separator: ",")
@@ -114,7 +153,12 @@ struct SubtitleParser {
                 .replacingOccurrences(of: "\\n", with: "\n")
 
             index += 1
-            cues.append(SubtitleCue(id: index, startTime: start, endTime: end, text: text))
+            cues.append(SubtitleCue(
+                id: index,
+                startTime: orderedStart,
+                endTime: orderedEnd,
+                text: boundedCueText(text)
+            ))
         }
 
         return cues.sorted { $0.startTime < $1.startTime }
@@ -141,24 +185,91 @@ struct SubtitleParser {
     private static func parseColonTime(_ str: String) -> TimeInterval? {
         let parts = str.components(separatedBy: ":")
         guard parts.count >= 2 else { return nil }
+        guard parts.allSatisfy({ !$0.hasPrefix("-") }) else { return nil }
 
         if parts.count == 3 {
             guard let h = Double(parts[0]),
                   let m = Double(parts[1]),
-                  let s = Double(parts[2]) else { return nil }
+                  let s = Double(parts[2]),
+                  h >= 0,
+                  m >= 0,
+                  s >= 0 else { return nil }
             return h * 3600 + m * 60 + s
         } else {
             guard let m = Double(parts[0]),
-                  let s = Double(parts[1]) else { return nil }
+                  let s = Double(parts[1]),
+                  m >= 0,
+                  s >= 0 else { return nil }
             return m * 60 + s
         }
     }
 
+    private static func orderedTimes(start: TimeInterval, end: TimeInterval) -> (TimeInterval, TimeInterval) {
+        guard end < start else { return (start, end) }
+        return (end, start)
+    }
+
+    private static func stripVTTMarkup(from text: String) -> String {
+        var result = ""
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            guard text[index] == "<" else {
+                result.append(text[index])
+                index = text.index(after: index)
+                continue
+            }
+
+            let afterOpenBracket = text.index(after: index)
+            let closingRange = text[afterOpenBracket..<text.endIndex].range(of: ">")
+            guard let closingRange else {
+                result.append("<")
+                index = afterOpenBracket
+                continue
+            }
+
+            let tag = String(text[afterOpenBracket..<closingRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if tag.hasPrefix("/") {
+                index = closingRange.upperBound
+                continue
+            }
+
+            if tag.hasPrefix("v") {
+                let speaker = String(tag.dropFirst())
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !speaker.isEmpty {
+                    result.append(speaker)
+                }
+            }
+
+            index = closingRange.upperBound
+        }
+
+        return result
+    }
+
     private static func normalizeNewlines(_ value: String) -> String {
-        value
+        let normalized = value
             .trimmingPrefixBOM()
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
+
+        if !normalized.hasPrefix("\u{FEFF}") && normalized.contains("\u{FEFF}") {
+            return "\u{FEFF}" + normalized
+        }
+
+        return normalized
+    }
+
+    private static func boundedNormalizedContent(_ value: String) -> String? {
+        guard value.utf8.count <= maximumInputBytes else { return nil }
+        return normalizeNewlines(value)
+    }
+
+    private static func boundedCueText(_ value: String) -> String {
+        guard value.count > maximumCueTextCharacters else { return value }
+        return String(value.prefix(maximumCueTextCharacters))
     }
 }
 

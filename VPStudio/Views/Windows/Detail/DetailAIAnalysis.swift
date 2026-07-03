@@ -87,10 +87,22 @@ struct DetailAIAnalysis: View {
                 Button {
                     Task { await viewModel.fetchAIAnalysis() }
                 } label: {
-                    Label("Would I Like This?", systemImage: "sparkles")
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(.purple)
+                        Text("Would I Like This?")
+                            .foregroundStyle(.primary)
+                    }
+                    .font(.subheadline)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(Color.purple.opacity(0.4), lineWidth: 1)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .tint(.purple)
+                .buttonStyle(.plain)
                 #if os(visionOS)
                 .hoverEffect(.lift)
                 #endif

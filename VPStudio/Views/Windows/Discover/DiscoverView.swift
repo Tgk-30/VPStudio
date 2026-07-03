@@ -1,5 +1,22 @@
 import SwiftUI
 
+enum DiscoverInitialLoadPolicy {
+    static func shouldStart(hasPerformedInitialLoad: Bool) -> Bool {
+        !hasPerformedInitialLoad
+    }
+
+    /// Retained for completeness, but the initial-load latch is now set STICKY — synchronously,
+    /// before the awaited metadata/AI fetch — so this is no longer consulted after the await. (See the
+    /// `.task` in `DiscoverView`.) ContentView hosts tabs via a `switch`, so leaving Discover tears
+    /// the view down and cancels its `.task`; latching before the await means a mid-flight tab leave
+    /// cannot undo it, and the view model — held as ContentView `@State` — keeps the cache across the
+    /// teardown/recreation round trip. A cancellation-gated mark (the old behavior) re-fired the slow
+    /// metadata + AI load on every tab switch, which was BUG 5.
+    static func shouldMarkCompleted(isCancelled: Bool) -> Bool {
+        !isCancelled
+    }
+}
+
 struct DiscoverMediaRowSpec: Identifiable, Equatable {
     let id: String
     let title: String
@@ -35,6 +52,39 @@ enum DiscoverHeroPresentationPolicy {
     }
 }
 
+enum DiscoverHeroArtworkPresentationPolicy {
+    enum HeroArtworkKind: Equatable {
+        case backdrop
+        case posterOnly
+        case none
+    }
+
+    static let posterCardWidth: CGFloat = 184
+    static let posterCardHeight: CGFloat = 276
+    static let posterCardCornerRadius: CGFloat = 18
+    static let aiPosterCardWidth: CGFloat = 92
+    static let aiPosterCardHeight: CGFloat = 138
+    static let aiPosterCardCornerRadius: CGFloat = 12
+
+    static func heroArtworkKind(backdropPath: String?, posterPath: String?) -> HeroArtworkKind {
+        if hasRenderableArtworkPath(backdropPath, legacyTMDBSizePath: "w1280") {
+            return .backdrop
+        }
+        if hasRenderableArtworkPath(posterPath, legacyTMDBSizePath: "w500") {
+            return .posterOnly
+        }
+        return .none
+    }
+
+    static func showsPosterCard(for kind: HeroArtworkKind) -> Bool {
+        kind == .posterOnly
+    }
+
+    private static func hasRenderableArtworkPath(_ value: String?, legacyTMDBSizePath: String) -> Bool {
+        MediaArtworkURLPolicy.url(for: value, legacyTMDBSizePath: legacyTMDBSizePath) != nil
+    }
+}
+
 enum DiscoverHierarchyPolicy {
     static let continueWatchingDelay = 0.02
     static let firstCatalogDelay = 0.05
@@ -53,24 +103,25 @@ enum DiscoverHierarchyPolicy {
         trendingShows: [MediaPreview],
         popularMovies: [MediaPreview],
         topRatedMovies: [MediaPreview],
-        nowPlayingMovies: [MediaPreview]
+        nowPlayingMovies: [MediaPreview],
+        enabledCatalogs: Set<DiscoverCatalogKind> = DiscoverCatalogPreferencesPolicy.defaultKinds
     ) -> [DiscoverMediaRowSpec] {
-        let candidates: [(id: String, title: String, symbol: String, items: [MediaPreview])] = [
-            ("trending-movies", "Trending Now", "flame", trendingMovies),
-            ("trending-shows", "Trending TV Shows", "tv", trendingShows),
-            ("popular-movies", "Popular", "star", popularMovies),
-            ("top-rated-movies", "Top Rated", "trophy", topRatedMovies),
-            ("now-playing-movies", "Now Playing", "film", nowPlayingMovies),
+        let candidates: [(kind: DiscoverCatalogKind, items: [MediaPreview])] = [
+            (.trendingMovies, trendingMovies),
+            (.trendingShows, trendingShows),
+            (.popularMovies, popularMovies),
+            (.topRatedMovies, topRatedMovies),
+            (.nowPlayingMovies, nowPlayingMovies),
         ]
 
         return candidates
-            .filter { !$0.items.isEmpty }
+            .filter { enabledCatalogs.contains($0.kind) && !$0.items.isEmpty }
             .enumerated()
             .map { index, row in
                 DiscoverMediaRowSpec(
-                    id: row.id,
-                    title: row.title,
-                    symbol: row.symbol,
+                    id: row.kind.rowID,
+                    title: row.kind.title,
+                    symbol: row.kind.symbol,
                     items: row.items,
                     animationDelay: animationDelay(forVisibleCatalogIndex: index)
                 )
@@ -148,6 +199,45 @@ enum DiscoverLoadingPresentationPolicy {
     }
 }
 
+struct DiscoverErrorPresentation: Equatable {
+    let isSetupError: Bool
+    let artworkName: String
+    let tagText: String
+    let tagSymbol: String
+    let headline: String
+    let message: String
+    let retryTitle: String
+}
+
+enum DiscoverErrorPresentationPolicy {
+    static let setupInlineMessage = "Add an OMDb key in Settings, then come back here for metadata, posters, ratings, and Discover rows. Library and Downloads keep working in the meantime."
+
+    static func presentation(for error: AppError) -> DiscoverErrorPresentation {
+        let isSetupError = error.requiresMetadataSetupAction
+        return DiscoverErrorPresentation(
+            isSetupError: isSetupError,
+            artworkName: isSetupError ? "genre-art-new" : "genre-art-deep",
+            tagText: isSetupError ? "Setup needed" : "Discover needs attention",
+            tagSymbol: isSetupError ? "sparkles" : "arrow.clockwise",
+            headline: isSetupError ? "Finish setup to unlock Discover" : (error.errorDescription ?? "Discover hit a snag"),
+            message: inlineMessage(for: error, isSetupError: isSetupError),
+            retryTitle: isSetupError ? "Retry Later" : "Retry"
+        )
+    }
+
+    private static func inlineMessage(for error: AppError, isSetupError: Bool) -> String {
+        if isSetupError {
+            return setupInlineMessage
+        }
+
+        if let suggestion = error.recoverySuggestion, !suggestion.isEmpty {
+            return suggestion
+        }
+
+        return error.errorDescription ?? "Something went wrong."
+    }
+}
+
 struct DiscoverDetailRoute: Identifiable, Hashable {
     let preview: MediaPreview
     let initialAction: DetailInitialAction
@@ -161,6 +251,49 @@ struct DiscoverDetailRoute: Identifiable, Hashable {
     }
 }
 
+private struct DiscoverLockedPreviewTile: View {
+    let index: Int
+
+    private var accent: Color {
+        switch index % 5 {
+        case 0: return .yellow
+        case 1: return .pink
+        case 2: return .teal
+        case 3: return .purple
+        default: return .orange
+        }
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        accent.opacity(0.16),
+                        Color.white.opacity(0.08),
+                        Color.white.opacity(0.03),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay {
+                Image(systemName: index.isMultiple(of: 2) ? "play.rectangle" : "film")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.34))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        .white.opacity(0.22),
+                        style: StrokeStyle(lineWidth: 1, dash: [6, 5])
+                    )
+            }
+            .frame(width: 112, height: 132)
+            .opacity(0.86)
+    }
+}
+
 enum DiscoverNavigationPolicy {
     static func browseRoute(for preview: MediaPreview) -> DiscoverDetailRoute {
         DiscoverDetailRoute(preview: preview, initialAction: .none)
@@ -171,16 +304,37 @@ enum DiscoverNavigationPolicy {
     }
 }
 
+enum ContinueWatchingArtworkPolicy {
+    static func lastFrameURL(from path: String?, fileManager: FileManager = .default) -> URL? {
+        FrameCaptureService.storedFrameURL(from: path, fileManager: fileManager)
+    }
+}
+
 struct DiscoverView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityVoiceOverEnabled) private var accessibilityVoiceOverEnabled
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openURL) private var openURL
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
+    @AppStorage(DiscoverCatalogPreferencesPolicy.storageKey) private var enabledCatalogIDs = DiscoverCatalogPreferencesPolicy.defaultStorageValue
     @Bindable var viewModel: DiscoverViewModel
-    @State private var selectedRoute: DiscoverDetailRoute?
+    /// When the first-run Quick Start prompt is on screen, suppress Discover's own setup panel so
+    /// the user isn't shown two competing "finish setup" surfaces at once.
+    var suppressSetupSurface: Bool = false
+    /// Pushed detail route for the Discover tab, hoisted to AppState so it survives the player
+    /// dismissing/re-opening the main window (see `AppState.discoverDetailRoute`).
+    private var discoverRoute: Binding<DiscoverDetailRoute?> {
+        Binding(get: { appState.discoverDetailRoute }, set: { appState.discoverDetailRoute = $0 })
+    }
     @State private var currentHeroIndex = 0
-    @State private var tmdbReloadTask: Task<Void, Never>?
+    @State private var metadataReloadTask: Task<Void, Never>?
     @State private var userRatingsReloadTask: Task<Void, Never>?
     @State private var recommendationsFilterTask: Task<Void, Never>?
     @State private var userRatings: [String: TasteEvent] = [:]
+    /// The Continue Watching item currently being resolved for direct resume (drives the tile
+    /// spinner and prevents duplicate taps while debrid re-resolves the stored source).
+    @State private var resumingItemID: String?
+    @State private var continueWatchingResumeTask: Task<Void, Never>?
 
     private var catalogRows: [DiscoverMediaRowSpec] {
         DiscoverHierarchyPolicy.visibleCatalogRows(
@@ -188,8 +342,13 @@ struct DiscoverView: View {
             trendingShows: viewModel.trendingShows,
             popularMovies: viewModel.popularMovies,
             topRatedMovies: viewModel.topRatedMovies,
-            nowPlayingMovies: viewModel.nowPlayingMovies
+            nowPlayingMovies: viewModel.nowPlayingMovies,
+            enabledCatalogs: enabledCatalogs
         )
+    }
+
+    private var enabledCatalogs: Set<DiscoverCatalogKind> {
+        DiscoverCatalogPreferencesPolicy.enabledKinds(from: enabledCatalogIDs)
     }
 
     private var aiCuratedSectionState: DiscoverAICuratedSectionState? {
@@ -223,11 +382,26 @@ struct DiscoverView: View {
         )
     }
 
+    private var suppressedSetupBackdropPresentation: DiscoverErrorPresentation? {
+        guard suppressSetupSurface, let error = viewModel.error else { return nil }
+        let presentation = DiscoverErrorPresentationPolicy.presentation(for: error)
+        guard DiscoverSetupSurfacePolicy.showsSuppressedSetupBackdrop(
+            suppressSetupSurface: suppressSetupSurface,
+            isSetupError: presentation.isSetupError
+        ) else { return nil }
+        return presentation
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 36) {
-                if let error = viewModel.error {
+                if let error = viewModel.error, !suppressSetupSurface {
                     discoverStatePanel(error: error)
+                    if DiscoverErrorPresentationPolicy.presentation(for: error).isSetupError {
+                        discoverLockedPreviewRows
+                    }
+                } else if let presentation = suppressedSetupBackdropPresentation {
+                    discoverSuppressedSetupBackdrop(presentation: presentation)
                 }
 
                 if discoverLoadingPresentation == .blockingSkeleton {
@@ -245,15 +419,30 @@ struct DiscoverView: View {
                         TabView(selection: $currentHeroIndex) {
                             ForEach(Array(heroItems.enumerated()), id: \.element.id) { index, featured in
                                 FeaturedHeroView(item: featured) {
-                                    selectedRoute = DiscoverNavigationPolicy.browseRoute(for: featured)
+                                    appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: featured)
                                 }
                                 .tag(index)
                             }
                         }
                         #if !os(macOS)
-                        .tabViewStyle(.page(indexDisplayMode: .always))
+                        .tabViewStyle(.page(indexDisplayMode: .never))
                         #endif
-                        .frame(height: 440)
+                        .frame(height: DiscoverLayoutPolicy.heroHeight)
+                        // Premium bar-style page indicator (Apple TV+ feel) instead of the
+                        // default UIPageControl dots.
+                        .overlay(alignment: .bottom) {
+                            if heroItems.count > 1 {
+                                HStack(spacing: 6) {
+                                    ForEach(heroItems.indices, id: \.self) { idx in
+                                        Capsule()
+                                            .fill(idx == currentHeroIndex ? VPColor.accent : Color.white.opacity(0.32))
+                                            .frame(width: idx == currentHeroIndex ? 22 : 6, height: 6)
+                                    }
+                                }
+                                .padding(.bottom, 20)
+                                .animation(.easeInOut(duration: 0.25), value: currentHeroIndex)
+                            }
+                        }
                         .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
@@ -263,9 +452,12 @@ struct DiscoverView: View {
                             symbol: "play.circle",
                             items: viewModel.continueWatching.map(\.preview),
                             userRatings: userRatings,
-                            animationDelay: DiscoverHierarchyPolicy.continueWatchingDelay
+                            animationDelay: DiscoverHierarchyPolicy.continueWatchingDelay,
+                            progressByItemID: continueWatchingProgress,
+                            lastFrameByItemID: continueWatchingFrames,
+                            resumingItemID: resumingItemID
                         ) { item in
-                            selectedRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: item)
+                            handleContinueWatchingTap(item)
                         }
                     }
 
@@ -279,33 +471,46 @@ struct DiscoverView: View {
                             userRatings: userRatings,
                             animationDelay: row.animationDelay
                         ) { item in
-                            selectedRoute = DiscoverNavigationPolicy.browseRoute(for: item)
+                            appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: item)
                         }
                     }
                 }
             }
             .animation(.easeOut(duration: 0.25), value: discoverLoadingPresentation)
             .padding(.horizontal, 4)
-            .padding(.bottom, 24)
+            .padding(.bottom, DiscoverLayoutPolicy.bottomContentPadding(for: appState.navigationLayout))
+        }
+        .safeAreaInset(edge: .bottom) {
+            VPBottomViewportScrim(height: DiscoverLayoutPolicy.bottomViewportInset)
         }
         .background {
-            VPMenuBackground()
-                .ignoresSafeArea()
+            if useObsidianGlass {
+                VPBackground()
+            } else {
+                VPMenuBackground()
+                    .ignoresSafeArea()
+            }
         }
         #if !os(macOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         #endif
-        .navigationDestination(item: $selectedRoute) { route in
+        .navigationDestination(item: discoverRoute) { route in
             DetailView(preview: route.preview, initialAction: route.initialAction)
         }
         .refreshable {
             await viewModel.refresh()
         }
         .task {
-            guard !viewModel.hasPerformedInitialLoad else { return }
+            guard DiscoverInitialLoadPolicy.shouldStart(
+                hasPerformedInitialLoad: viewModel.hasPerformedInitialLoad
+            ) else { return }
+            // Latch BEFORE the await so leaving the Discover tab (which cancels this `.task`)
+            // mid-fetch cannot undo it and re-fire the slow metadata + AI load on the next tab switch.
+            // The view model lives on ContentView as `@State`, so the latch — and the cache it
+            // guards — persists across the view teardown/recreation.
             viewModel.hasPerformedInitialLoad = true
-            await reloadDiscoverForLatestTMDBKey()
+            await reloadDiscoverForLatestMetadataKey()
         }
         .task(id: accessibilityVoiceOverEnabled) {
             guard !accessibilityVoiceOverEnabled else { return }
@@ -323,9 +528,9 @@ struct DiscoverView: View {
                 currentHeroIndex = 0
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tmdbApiKeyDidChange)) { _ in
-            tmdbReloadTask?.cancel()
-            tmdbReloadTask = Task { await reloadDiscoverForLatestTMDBKey() }
+        .onReceive(NotificationCenter.default.publisher(for: .metadataApiKeyDidChange)) { _ in
+            metadataReloadTask?.cancel()
+            metadataReloadTask = Task { await reloadDiscoverForLatestMetadataKey() }
         }
         .task {
             await loadUserRatings()
@@ -368,26 +573,130 @@ struct DiscoverView: View {
             }
         }
         .onDisappear {
-            tmdbReloadTask?.cancel()
+            metadataReloadTask?.cancel()
             userRatingsReloadTask?.cancel()
             recommendationsFilterTask?.cancel()
+            continueWatchingResumeTask?.cancel()
+            continueWatchingResumeTask = nil
+            resumingItemID = nil
         }
+    }
+
+    private var secondarySetupActionTint: Color {
+        .white.opacity(0.95)
+    }
+
+    private var secondarySetupActionForeground: Color {
+        .white.opacity(0.9)
+    }
+
+    private var discoverLockedPreviewRows: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(0 ..< DiscoverSetupSurfacePolicy.lockedPreviewRowCount, id: \.self) { row in
+                VStack(alignment: .leading, spacing: 12) {
+                    GlassTag(
+                        text: row == 0 ? "Preview locked" : "Popular preview",
+                        tintColor: .white.opacity(0.48),
+                        symbol: row == 0 ? "lock.fill" : "star",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.92)
+                    )
+                    HStack(spacing: 14) {
+                        ForEach(0 ..< 5, id: \.self) { index in
+                            DiscoverLockedPreviewTile(index: row * 5 + index)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func discoverSuppressedSetupBackdrop(presentation: DiscoverErrorPresentation) -> some View {
+        CinematicStateCard(
+            accent: .yellow,
+            artworkName: presentation.artworkName,
+            minHeight: 360
+        ) {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 16) {
+                    Image(systemName: "sparkles.tv.fill")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 64, height: 64)
+                        .background(.yellow.opacity(0.26), in: Circle())
+                        .overlay {
+                            Circle()
+                                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+                        }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        GlassTag(
+                            text: "Ready when you are",
+                            tintColor: .yellow.opacity(0.34),
+                            symbol: "sparkles",
+                            weight: .semibold,
+                            foregroundColor: .white.opacity(0.92)
+                        )
+                        Text(presentation.headline)
+                            .font(.largeTitle.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.76)
+                        Text(presentation.message)
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                FlowLayout(spacing: 10) {
+                    GlassTag(
+                        text: "Trending rows",
+                        tintColor: .white.opacity(0.36),
+                        symbol: "rectangle.grid.1x2",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.88)
+                    )
+                    GlassTag(
+                        text: "Hero artwork",
+                        tintColor: .white.opacity(0.36),
+                        symbol: "photo.on.rectangle.angled",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.88)
+                    )
+                    GlassTag(
+                        text: "Search and streams",
+                        tintColor: .white.opacity(0.36),
+                        symbol: "play.rectangle.on.rectangle",
+                        weight: .semibold,
+                        foregroundColor: .white.opacity(0.88)
+                    )
+                }
+            }
+        }
+        .padding(.top, 72)
+        .padding(.horizontal, 8)
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     @ViewBuilder
     private func discoverStatePanel(error: AppError) -> some View {
-        let setupError = error.requiresTMDBSetupAction
-        let artworkName = setupError ? "genre-art-new" : "genre-art-deep"
-        let accent: Color = setupError ? .yellow : .orange
+        let presentation = DiscoverErrorPresentationPolicy.presentation(for: error)
+        let accent: Color = presentation.isSetupError ? .yellow : .orange
 
         CinematicStateCard(
             accent: accent,
-            artworkName: artworkName,
-            minHeight: 228
+            artworkName: presentation.isSetupError ? nil : presentation.artworkName,
+            minHeight: presentation.isSetupError ? 340 : 228
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: setupError ? "sparkles.rectangle.stack.fill" : "exclamationmark.triangle.fill")
+                    Image(systemName: presentation.isSetupError ? "sparkles.rectangle.stack.fill" : "exclamationmark.triangle.fill")
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(width: 50, height: 50)
@@ -399,15 +708,16 @@ struct DiscoverView: View {
 
                     VStack(alignment: .leading, spacing: 6) {
                         GlassTag(
-                            text: setupError ? "Setup needed" : "Discover needs attention",
+                            text: presentation.tagText,
                             tintColor: accent.opacity(0.22),
-                            symbol: setupError ? "sparkles" : "arrow.clockwise"
+                            symbol: presentation.tagSymbol
                         )
-                        Text(setupError ? "Finish setup to unlock Discover" : (error.errorDescription ?? "Discover hit a snag"))
+                        Text(presentation.headline)
                             .font(.title3.weight(.semibold))
-                        Text(discoverInlineMessage(for: error, setupError: setupError))
+                            .foregroundStyle(.white)
+                        Text(presentation.message)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(presentation.isSetupError ? .white.opacity(0.82) : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -418,57 +728,50 @@ struct DiscoverView: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title3)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(presentation.isSetupError ? .white.opacity(0.78) : .secondary)
+                            .frame(width: 32, height: 32)
+                            .background(.white.opacity(0.08), in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                            }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(presentation.isSetupError ? "Dismiss setup message" : "Dismiss error message")
                 }
 
                 FlowLayout(spacing: 10) {
-                    if setupError {
+                    if presentation.isSetupError {
                         SpatialButton(title: "Open Settings", icon: "gearshape.fill", tint: .yellow) {
                             appState.selectedTab = .settings
                             viewModel.error = nil
                         }
                     }
 
-                    Button {
-                        Task { await viewModel.refresh() }
-                        viewModel.error = nil
-                    } label: {
-                        GlassTag(text: setupError ? "Retry Later" : "Retry", tintColor: .white.opacity(0.18), symbol: "arrow.clockwise")
+                    if !presentation.isSetupError {
+                        Button {
+                            if DiscoverErrorActionPolicy.retryBehavior(isSetupError: presentation.isSetupError) == .refreshAndDismiss {
+                                Task { await viewModel.refresh() }
+                            }
+                            viewModel.error = nil
+                        } label: {
+                            GlassTag(
+                                text: presentation.retryTitle,
+                                tintColor: secondarySetupActionTint,
+                                symbol: "arrow.clockwise",
+                                foregroundColor: secondarySetupActionForeground
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        appState.selectedTab = .library
-                        viewModel.error = nil
-                    } label: {
-                        GlassTag(text: "Go to Library", tintColor: .white.opacity(0.18), symbol: "books.vertical")
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        appState.selectedTab = .downloads
-                        viewModel.error = nil
-                    } label: {
-                        GlassTag(text: "Open Downloads", tintColor: .white.opacity(0.18), symbol: "arrow.down.circle")
-                    }
-                    .buttonStyle(.plain)
                 }
             }
+            .frame(
+                maxWidth: .infinity,
+                minHeight: presentation.isSetupError ? 220 : 0,
+                alignment: .leading
+            )
         }
-    }
-
-    private func discoverInlineMessage(for error: AppError, setupError: Bool) -> String {
-        if setupError {
-            return "Add your TMDB key in Settings, then come back here for live trending rows and hero art. Library and Downloads keep working in the meantime."
-        }
-
-        if let suggestion = error.recoverySuggestion, !suggestion.isEmpty {
-            return suggestion
-        }
-
-        return error.errorDescription ?? "Something went wrong."
     }
 
     // MARK: - AI Curated Section
@@ -548,7 +851,7 @@ struct DiscoverView: View {
                             preview: primaryPreview,
                             recommendation: primaryRecommendation
                         ) {
-                            selectedRoute = DiscoverNavigationPolicy.browseRoute(for: primaryPreview)
+                            appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: primaryPreview)
                         }
 
                         if !state.supportingRecommendations.isEmpty {
@@ -556,7 +859,7 @@ struct DiscoverView: View {
                                 ForEach(state.supportingRecommendations) { recommendation in
                                     let recommendationPreview = viewModel.aiPreview(for: recommendation)
                                     AICuratedSupportingRow(recommendation: recommendation) {
-                                        selectedRoute = DiscoverNavigationPolicy.browseRoute(for: recommendationPreview)
+                                        appState.discoverDetailRoute = DiscoverNavigationPolicy.browseRoute(for: recommendationPreview)
                                     }
                                 }
                             }
@@ -596,27 +899,111 @@ struct DiscoverView: View {
 
     @MainActor
     private func loadUserRatings() async {
-        let events = (try? await appState.database.fetchTasteEvents(eventType: .rated, limit: 500)) ?? []
-        var dict: [String: TasteEvent] = [:]
-        for event in events {
-            if let mediaId = event.mediaId {
-                dict[mediaId] = event
-            }
-        }
-        userRatings = dict
+        async let eventsLoad = appState.database.fetchTasteEvents(eventType: .rated, limit: 500)
+        async let aliasItemsLoad = appState.database.fetchMediaItemsForTasteRatingAliases()
+        let events = (try? await eventsLoad) ?? []
+        let aliasItems = (try? await aliasItemsLoad) ?? []
+        userRatings = TasteRatingLookupPolicy.lookup(from: events, mediaItems: aliasItems)
     }
 
     @MainActor
-    private func reloadDiscoverForLatestTMDBKey() async {
-        let key = (try? await appState.settingsManager.getString(key: SettingsKeys.tmdbApiKey)) ?? ""
+    private func reloadDiscoverForLatestMetadataKey() async {
+        let configuration = (try? await appState.settingsManager.getMetadataProviderConfiguration()) ?? MetadataProviderConfiguration()
         viewModel.configure(database: appState.database)
         currentHeroIndex = 0
-        await viewModel.load(apiKey: key)
+        await viewModel.load(configuration: configuration)
         await viewModel.refreshResolvedAIPreviewsIfNeeded()
         await viewModel.loadAIRecommendationsIfNeeded(
             aiManager: appState.aiAssistantManager,
             settingsManager: appState.settingsManager
         )
+    }
+
+    /// Per-item watch progress (0...1) for Continue Watching tiles, keyed by preview id.
+    private var continueWatchingProgress: [String: Double] {
+        var result: [String: Double] = [:]
+        for entry in viewModel.continueWatching {
+            result[entry.preview.continueWatchingRowID] = entry.history.progressPercent
+        }
+        return result
+    }
+
+    /// Per-item last-frame artwork file URLs for Continue Watching tiles, keyed by row id.
+    private var continueWatchingFrames: [String: URL] {
+        var result: [String: URL] = [:]
+        for entry in viewModel.continueWatching {
+            if let url = ContinueWatchingArtworkPolicy.lastFrameURL(from: entry.history.lastFrameImagePath) {
+                result[entry.preview.continueWatchingRowID] = url
+            }
+        }
+        return result
+    }
+
+    /// Continue Watching tap: resume playback directly at the saved position instead of opening
+    /// the detail page. Tries the stored stream reference (fast, no indexer search); if that is
+    /// unavailable or fails, falls back to the detail route which performs a fresh search.
+    private func handleContinueWatchingTap(_ preview: MediaPreview) {
+        // If something is already playing, defer to the detail route (it shows the
+        // "already playing" toast and avoids opening a second player window).
+        guard appState.activePlayerSession == nil else {
+            appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+            return
+        }
+        // Ignore repeat taps while a resume is already resolving.
+        guard resumingItemID == nil else { return }
+        guard let entry = viewModel.continueWatching.first(where: {
+            $0.preview.continueWatchingRowID == preview.continueWatchingRowID
+        }) else {
+            appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+            return
+        }
+
+        resumingItemID = preview.continueWatchingRowID
+        continueWatchingResumeTask?.cancel()
+        let resumeItemID = preview.continueWatchingRowID
+        continueWatchingResumeTask = Task { @MainActor in
+            if let request = await appState.resolveContinueWatchingSession(
+                history: entry.history,
+                preview: entry.preview
+            ) {
+                guard !Task.isCancelled else { return }
+                // Another entry point may have claimed the player during the resolve await; rather
+                // than dead-end, route through the detail page (which shows the "already playing"
+                // toast or resumes once the slot frees).
+                guard appState.activePlayerSession == nil else {
+                    clearContinueWatchingResumeState(for: resumeItemID)
+                    appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+                    return
+                }
+                // Honor the user's external-player preference before opening the embedded
+                // player — same as Detail.openPlayer. Falls back to embedded if the external
+                // app declines/isn't installed.
+                let preference = await ExternalPlayerSettings.loadPreference(from: appState.settingsManager)
+                guard !Task.isCancelled else { return }
+                clearContinueWatchingResumeState(for: resumeItemID)
+                if let launchURL = ExternalPlayerRouting.launchURL(for: request.stream.streamURL, preference: preference) {
+                    let accepted = await withCheckedContinuation { continuation in
+                        openURL(launchURL) { continuation.resume(returning: $0) }
+                    }
+                    guard !Task.isCancelled else { return }
+                    if accepted { return }
+                }
+                appState.beginEmbeddedPlayerSession(request)
+                openWindow(id: "player", value: request)
+            } else {
+                guard !Task.isCancelled else { return }
+                clearContinueWatchingResumeState(for: resumeItemID)
+                // No usable stored source — fall back to the normal search→resolve→play path.
+                appState.discoverDetailRoute = DiscoverNavigationPolicy.continueWatchingRoute(for: preview)
+            }
+        }
+    }
+
+    private func clearContinueWatchingResumeState(for itemID: String) {
+        if resumingItemID == itemID {
+            resumingItemID = nil
+        }
+        continueWatchingResumeTask = nil
     }
 }
 
@@ -629,102 +1016,8 @@ struct AICuratedHeroCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: preview.backdropURL ?? preview.posterURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    default:
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.12, green: 0.08, blue: 0.22),
-                                Color(red: 0.05, green: 0.04, blue: 0.09),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 236)
-                .clipped()
-
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .black.opacity(0.2), location: 0.32),
-                        .init(color: .black.opacity(0.78), location: 0.68),
-                        .init(color: .black.opacity(0.96), location: 1.0),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
-                        GlassTag(text: "AI PICK", tintColor: .purple.opacity(0.24), symbol: "sparkles")
-
-                        if let score = recommendation.score {
-                            GlassTag(
-                                text: String(format: "%.0f%% match", score * 100),
-                                tintColor: .purple.opacity(0.18),
-                                weight: .bold
-                            )
-                        }
-                    }
-
-                    Text(recommendation.title)
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    HStack(spacing: 10) {
-                        Text(recommendation.type.displayName.uppercased())
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.82))
-
-                        if let year = recommendation.year {
-                            Circle()
-                                .fill(.white.opacity(0.4))
-                                .frame(width: 4, height: 4)
-
-                            Text(String(year))
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.74))
-                        }
-
-                        if let rating = preview.imdbRating, rating > 0 {
-                            Circle()
-                                .fill(.white.opacity(0.4))
-                                .frame(width: 4, height: 4)
-
-                            HStack(spacing: 3) {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.yellow)
-                                Text(String(format: "%.1f", rating))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.82))
-                            }
-                        }
-                    }
-
-                    Text(recommendation.reason)
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.84))
-                        .lineLimit(3)
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle")
-                            .font(.caption.weight(.semibold))
-                        Text("Open details")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .foregroundStyle(.white.opacity(0.82))
-                }
-                .padding(22)
+            GeometryReader { proxy in
+                aiBody(availableWidth: proxy.size.width)
             }
             .frame(maxWidth: .infinity)
             .frame(height: 236)
@@ -739,6 +1032,219 @@ struct AICuratedHeroCard: View {
         #if os(visionOS)
         .hoverEffect(.lift)
         #endif
+    }
+
+    private func aiBody(availableWidth: CGFloat) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            aiBackdropLayer
+                .frame(maxWidth: .infinity)
+                .frame(height: 236)
+                .clipped()
+
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black.opacity(0.2), location: 0.32),
+                    .init(color: .black.opacity(0.78), location: 0.68),
+                    .init(color: .black.opacity(0.96), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            if showsAIPosterCard(availableWidth: availableWidth),
+               let posterURL {
+                aiPosterCard(url: posterURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 24)
+                    .accessibilityHidden(true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    GlassTag(text: "AI PICK", tintColor: .purple.opacity(0.24), symbol: "sparkles")
+
+                    if let score = recommendation.score {
+                        GlassTag(
+                            text: String(format: "%.0f%% match", score * 100),
+                            tintColor: .purple.opacity(0.18),
+                            weight: .bold
+                        )
+                    }
+                }
+
+                Text(recommendation.title)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                HStack(spacing: 10) {
+                    Text(recommendation.type.displayName.uppercased())
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+
+                    if let year = recommendation.year {
+                        Circle()
+                            .fill(.white.opacity(0.4))
+                            .frame(width: 4, height: 4)
+
+                        Text(String(year))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.74))
+                    }
+
+                    let ratingText = preview.ratingString
+                    if !ratingText.isEmpty {
+                        Circle()
+                            .fill(.white.opacity(0.4))
+                            .frame(width: 4, height: 4)
+
+                        HStack(spacing: 3) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text(ratingText)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.82))
+                        }
+                    }
+                }
+
+                Text(recommendation.reason)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.84))
+                    .lineLimit(3)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .font(.caption.weight(.semibold))
+                    Text("Open details")
+                        .font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(.white.opacity(0.82))
+            }
+            .padding(.leading, 22)
+            .padding(.trailing, aiContentTrailingPadding(availableWidth: availableWidth))
+            .padding(.vertical, 22)
+        }
+    }
+
+    private var heroArtworkKind: DiscoverHeroArtworkPresentationPolicy.HeroArtworkKind {
+        DiscoverHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: preview.backdropPath,
+            posterPath: preview.posterPath
+        )
+    }
+
+    private var backdropURL: URL? {
+        MediaArtworkURLPolicy.url(for: preview.backdropPath, legacyTMDBSizePath: "w1280")
+    }
+
+    private var posterURL: URL? {
+        MediaArtworkURLPolicy.url(for: preview.posterPath, legacyTMDBSizePath: "w500")
+    }
+
+    private var aiArtworkLoadID: String {
+        "\(preview.id)-ai-\(heroArtworkKind)-\(backdropURL?.absoluteString ?? posterURL?.absoluteString ?? "none")"
+    }
+
+    private func showsAIPosterCard(availableWidth: CGFloat) -> Bool {
+        DiscoverHeroArtworkPresentationPolicy.showsPosterCard(for: heroArtworkKind) && availableWidth >= 520
+    }
+
+    private func aiContentTrailingPadding(availableWidth: CGFloat) -> CGFloat {
+        guard showsAIPosterCard(availableWidth: availableWidth) else { return 22 }
+        return min(146, max(22, availableWidth * 0.28))
+    }
+
+    @ViewBuilder
+    private var aiBackdropLayer: some View {
+        if heroArtworkKind == .backdrop, let backdropURL {
+            AsyncImage(url: backdropURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                case .empty, .failure:
+                    aiArtworkPlaceholder
+                @unknown default:
+                    aiArtworkPlaceholder
+                }
+            }
+            .id(aiArtworkLoadID)
+        } else {
+            aiArtworkPlaceholder
+        }
+    }
+
+    private var aiArtworkPlaceholder: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.12, green: 0.08, blue: 0.22),
+                Color(red: 0.05, green: 0.04, blue: 0.09),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    @ViewBuilder
+    private func aiPosterCard(url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(
+                        width: DiscoverHeroArtworkPresentationPolicy.aiPosterCardWidth,
+                        height: DiscoverHeroArtworkPresentationPolicy.aiPosterCardHeight
+                    )
+                    .clipShape(aiPosterCardShape)
+                    .overlay {
+                        aiPosterCardShape
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 16, y: 8)
+            case .empty:
+                aiPosterPlaceholder(showsIcon: false)
+            case .failure:
+                aiPosterPlaceholder(showsIcon: true)
+            @unknown default:
+                aiPosterPlaceholder(showsIcon: true)
+            }
+        }
+        .id(aiArtworkLoadID)
+        .allowsHitTesting(false)
+    }
+
+    private func aiPosterPlaceholder(showsIcon: Bool) -> some View {
+        aiPosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: DiscoverHeroArtworkPresentationPolicy.aiPosterCardWidth,
+                height: DiscoverHeroArtworkPresentationPolicy.aiPosterCardHeight
+            )
+            .overlay {
+                aiPosterCardShape
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
+    }
+
+    private var aiPosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: DiscoverHeroArtworkPresentationPolicy.aiPosterCardCornerRadius,
+            style: .continuous
+        )
     }
 }
 
@@ -812,159 +1318,13 @@ struct FeaturedHeroView: View {
     @State private var isHovered = false
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            // Background image — edge-to-edge.
-            // Using .id(item.id) on the content prevents SwiftUI from destroying and
-            // re-fetching the image every time TabView auto-advances to the next hero card.
-            AsyncImage(url: backdropURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(16 / 9, contentMode: .fill)
-                        .scaleEffect(isHovered ? 1.03 : 1.0)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isHovered)
-                default:
-                    Rectangle().fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.08, green: 0.06, blue: 0.14),
-                                Color(red: 0.04, green: 0.03, blue: 0.08),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                }
-            }
-            .id(item.id)
-            .frame(height: 440)
-            .clipped()
-
-            // Cinematic gradient fade to dark at bottom
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: .black.opacity(0.25), location: 0.35),
-                    .init(color: .black.opacity(0.7), location: 0.65),
-                    .init(color: .black.opacity(0.95), location: 1.0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            // Content overlay
-            VStack(alignment: .leading, spacing: 14) {
-                // Title with red/white gradient fill — large, bold, italic
-                Text(item.title.uppercased())
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .italic()
-                    .foregroundStyle(.linearGradient(
-                        colors: [.white, .vpRed, .vpRedLight],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ))
-                    .shadow(color: .vpRed.opacity(0.4), radius: 16, y: 4)
-                    .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
-
-                // Metadata row
-                HStack(spacing: 12) {
-                    Text(item.type.displayName.uppercased())
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white.opacity(0.8))
-
-                    Circle()
-                        .fill(.white.opacity(0.4))
-                        .frame(width: 4, height: 4)
-
-                    if let year = item.year {
-                        Text(String(year))
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
-
-                    if let rating = item.imdbRating, rating > 0 {
-                        Circle()
-                            .fill(.white.opacity(0.4))
-                            .frame(width: 4, height: 4)
-
-                        HStack(spacing: 3) {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.yellow)
-                            Text(String(format: "%.1f", rating))
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                    }
-
-                    // HDR badge
-                    GlassTag(text: "HDR", symbol: "sparkles", weight: .bold)
-                }
-
-                // Action buttons
-                HStack(spacing: 12) {
-                    // Primary details button — red pill
-                    Button(action: onTap) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "info.circle.fill")
-                                .font(.system(size: 14))
-                            Text("View Details")
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 12)
-                        .background(
-                            Capsule().fill(.linearGradient(
-                                colors: [.vpRed, .vpRedLight],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ))
-                        )
-                        .shadow(color: .vpRed.opacity(0.5), radius: 16, y: 4)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("View details for \(item.title)")
-                    #if os(visionOS)
-                    .hoverEffect(.lift)
-                    #endif
-
-                    // Secondary: More info
-                    Button(action: onTap) {
-                        Image(systemName: "info")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.8))
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .overlay {
-                                Circle().strokeBorder(
-                                    LinearGradient(
-                                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: 1
-                                )
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("More details for \(item.title)")
-                    #if os(visionOS)
-                    .hoverEffect(.highlight)
-                    #endif
-                }
-                .padding(.top, 6)
-            }
-            .padding(32)
+        GeometryReader { proxy in
+            heroBody(availableWidth: proxy.size.width)
         }
-        .frame(height: 440)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .frame(height: DiscoverLayoutPolicy.heroHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 28))
         .overlay(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 28)
                 .strokeBorder(
                     LinearGradient(
                         colors: [
@@ -989,14 +1349,281 @@ struct FeaturedHeroView: View {
         #endif
     }
 
+    private func heroBody(availableWidth: CGFloat) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            heroBackdropLayer
+                .frame(height: DiscoverLayoutPolicy.heroHeight)
+                .clipped()
+
+            // Cinematic gradient fade to dark at bottom
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black.opacity(0.25), location: 0.35),
+                    .init(color: .black.opacity(0.7), location: 0.65),
+                    .init(color: .black.opacity(0.95), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            if showsPosterCard(availableWidth: availableWidth),
+               let posterURL {
+                heroPosterCard(url: posterURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 58)
+                    .accessibilityHidden(true)
+            }
+
+            // Content overlay
+            VStack(alignment: .leading, spacing: 14) {
+                // Clean, confident title — the artwork carries the drama (Netflix/Apple TV style).
+                Text(item.title)
+                    .font(.system(size: 52, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.55)
+                    .shadow(color: .black.opacity(0.6), radius: 12, y: 4)
+
+                // Metadata row
+                HStack(spacing: 12) {
+                    Text(item.type.displayName.uppercased())
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white.opacity(0.8))
+
+                    Circle()
+                        .fill(.white.opacity(0.4))
+                        .frame(width: 4, height: 4)
+
+                    if let year = item.year {
+                        Text(String(year))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+
+                    let ratingText = item.ratingString
+                    if !ratingText.isEmpty {
+                        Circle()
+                            .fill(.white.opacity(0.4))
+                            .frame(width: 4, height: 4)
+
+                        HStack(spacing: 3) {
+                            Text("IMDb")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.6))
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text(ratingText)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+
+                    // HDR — rendered as plain meta text (matches the row) rather than a lone glass pill.
+                    Circle()
+                        .fill(.white.opacity(0.4))
+                        .frame(width: 4, height: 4)
+
+                    Text("HDR")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+
+                // Action buttons — Apple TV+ / Netflix language: solid light primary + glass secondary.
+                HStack(spacing: 14) {
+                    // Primary — solid white "Play"
+                    Button(action: onTap) {
+                        HStack(spacing: 9) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 17, weight: .bold))
+                            Text("Play")
+                                .font(.system(size: 18, weight: .semibold))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 30)
+                        .padding(.vertical, 15)
+                        .background(Capsule().fill(.white))
+                        .shadow(color: .black.opacity(0.28), radius: 14, y: 5)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Play \(item.title)")
+                    #if os(visionOS)
+                    .hoverEffect(.lift)
+                    #endif
+
+                    // Secondary — glass "More Info"
+                    Button(action: onTap) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("More Info")
+                                .font(.system(size: 17, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 15)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay {
+                            Capsule().strokeBorder(
+                                LinearGradient(
+                                    colors: [.white.opacity(0.30), .white.opacity(0.08)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("More info about \(item.title)")
+                    #if os(visionOS)
+                    .hoverEffect(.lift)
+                    #endif
+                }
+                .padding(.top, 10)
+            }
+            .padding(.leading, 36)
+            .padding(.trailing, contentTrailingPadding(availableWidth: availableWidth))
+            .padding(.vertical, 36)
+        }
+    }
+
+    private var heroArtworkKind: DiscoverHeroArtworkPresentationPolicy.HeroArtworkKind {
+        DiscoverHeroArtworkPresentationPolicy.heroArtworkKind(
+            backdropPath: item.backdropPath,
+            posterPath: item.posterPath
+        )
+    }
+
     private var backdropURL: URL? {
-        // Prefer landscape backdrop for cinematic hero; fall back to poster if unavailable
-        guard let path = item.backdropPath ?? item.posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+        MediaArtworkURLPolicy.url(for: item.backdropPath, legacyTMDBSizePath: "w1280")
+    }
+
+    private var posterURL: URL? {
+        MediaArtworkURLPolicy.url(for: item.posterPath, legacyTMDBSizePath: "w500")
+    }
+
+    private var heroArtworkLoadID: String {
+        "\(item.id)-\(heroArtworkKind)-\(backdropURL?.absoluteString ?? posterURL?.absoluteString ?? "none")"
+    }
+
+    private func showsPosterCard(availableWidth: CGFloat) -> Bool {
+        DiscoverHeroArtworkPresentationPolicy.showsPosterCard(for: heroArtworkKind) && availableWidth >= 760
+    }
+
+    private func contentTrailingPadding(availableWidth: CGFloat) -> CGFloat {
+        guard showsPosterCard(availableWidth: availableWidth) else { return 36 }
+        return min(280, max(36, availableWidth * 0.34))
+    }
+
+    @ViewBuilder
+    private var heroBackdropLayer: some View {
+        if heroArtworkKind == .backdrop, let backdropURL {
+            // Using a stable artwork id prevents stale hero art when metadata changes in place.
+            AsyncImage(url: backdropURL, transaction: Transaction(animation: .easeOut(duration: 0.45))) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(16 / 9, contentMode: .fill)
+                        .scaleEffect(isHovered ? 1.04 : 1.0)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isHovered)
+                        .transition(.opacity)
+                case .empty, .failure:
+                    heroArtworkPlaceholder
+                @unknown default:
+                    heroArtworkPlaceholder
+                }
+            }
+            .id(heroArtworkLoadID)
+        } else {
+            heroArtworkPlaceholder
+        }
+    }
+
+    private var heroArtworkPlaceholder: some View {
+        Rectangle().fill(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.06, blue: 0.14),
+                    Color(red: 0.04, green: 0.03, blue: 0.08),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    @ViewBuilder
+    private func heroPosterCard(url: URL) -> some View {
+        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(
+                        width: DiscoverHeroArtworkPresentationPolicy.posterCardWidth,
+                        height: DiscoverHeroArtworkPresentationPolicy.posterCardHeight
+                    )
+                    .clipShape(heroPosterCardShape)
+                    .overlay {
+                        heroPosterCardShape
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.42), radius: 26, y: 14)
+                    .transition(.opacity)
+            case .empty:
+                heroPosterPlaceholder(showsIcon: false)
+            case .failure:
+                heroPosterPlaceholder(showsIcon: true)
+            @unknown default:
+                heroPosterPlaceholder(showsIcon: true)
+            }
+        }
+        .id(heroArtworkLoadID)
+        .allowsHitTesting(false)
+    }
+
+    private func heroPosterPlaceholder(showsIcon: Bool) -> some View {
+        heroPosterCardShape
+            .fill(.white.opacity(0.08))
+            .frame(
+                width: DiscoverHeroArtworkPresentationPolicy.posterCardWidth,
+                height: DiscoverHeroArtworkPresentationPolicy.posterCardHeight
+            )
+            .overlay {
+                heroPosterCardShape
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .overlay {
+                if showsIcon {
+                    Image(systemName: "photo")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+            .shadow(color: .black.opacity(0.24), radius: 18, y: 10)
+    }
+
+    private var heroPosterCardShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: DiscoverHeroArtworkPresentationPolicy.posterCardCornerRadius,
+            style: .continuous
+        )
     }
 }
 
 // MARK: - MediaRow
+
+enum MediaRowScrollCuePolicy {
+    static let trailingFadeStart = 0.98
+    static let trailingFadeEnd = 1.0
+}
 
 struct MediaRow: View {
     let title: String
@@ -1004,30 +1631,72 @@ struct MediaRow: View {
     let items: [MediaPreview]
     var userRatings: [String: TasteEvent] = [:]
     var animationDelay: Double = 0
+    /// Continue Watching only: per-item watch progress (0...1) and last-frame artwork, plus the
+    /// item currently resolving a direct resume. Empty/nil for normal browse rows.
+    var progressByItemID: [String: Double] = [:]
+    var lastFrameByItemID: [String: URL] = [:]
+    var resumingItemID: String? = nil
     let onSelect: (MediaPreview) -> Void
 
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
     @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // Section header
-            HStack(spacing: 8) {
-                if !symbol.isEmpty {
-                    Image(systemName: symbol)
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
+            if useObsidianGlass {
+                // Clean, confident section header — the artwork carries the weight, not chrome.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 23, weight: .bold))
+                        .foregroundStyle(VPColor.textPrimary)
+
+                    Spacer(minLength: 0)
+
+                    // Scroll cue: signals the row continues past the right edge.
+                    // Non-interactive on purpose — there is no dedicated "See All"
+                    // destination yet, so this must not read or behave as a tappable control.
+                    HStack(spacing: 3) {
+                        Text("See All")
+                            .font(.subheadline.weight(.semibold))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(VPColor.textSecondary)
+                    .accessibilityHidden(true)
                 }
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .accessibilityAddTraits(.isHeader)
+            } else {
+                HStack(spacing: 8) {
+                    if !symbol.isEmpty {
+                        Image(systemName: symbol)
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 8)
             }
-            .padding(.horizontal, 8)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
-                    ForEach(items) { item in
+                    ForEach(items, id: \.continueWatchingRowID) { item in
                         Button { onSelect(item) } label: {
-                            MediaCardView(item: item, userRating: userRatings[item.id])
+                            MediaCardView(
+                                item: item,
+                                userRating: TasteRatingLookupPolicy.rating(
+                                    in: userRatings,
+                                    mediaId: item.id,
+                                    type: item.type,
+                                    tmdbId: item.tmdbId
+                                ),
+                                progressPercent: progressByItemID[item.continueWatchingRowID],
+                                lastFrameURL: lastFrameByItemID[item.continueWatchingRowID],
+                                isResuming: resumingItemID == item.continueWatchingRowID
+                            )
                         }
                         .buttonStyle(.plain)
                     }
@@ -1035,6 +1704,19 @@ struct MediaRow: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
+            // Right-edge fade so the trailing tile dissolves into the background instead of
+            // hard-clipping, reinforcing that the row scrolls horizontally.
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0.0),
+                        .init(color: .black, location: MediaRowScrollCuePolicy.trailingFadeStart),
+                        .init(color: .clear, location: MediaRowScrollCuePolicy.trailingFadeEnd),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
         }
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 18)

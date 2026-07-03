@@ -44,6 +44,90 @@ struct DiscoverViewModelAITests {
         }
     }
 
+    /// An AIProvider whose `complete(...)` blocks until released, so a test can deterministically
+    /// suspend the in-flight LLM fetch, cancel the calling task (simulating the Discover tab being
+    /// torn down), and then assert the cache latch survived. Cancellation-aware: cancelling the
+    /// caller throws `CancellationError` out of `complete`, mirroring a real cancelled `.task`.
+    private actor GatedAIProvider: AIProvider {
+        let providerKind: AIProviderKind
+        private let jsonResponse: String
+        private(set) var completeCallCount = 0
+        private var startedContinuations: [CheckedContinuation<Void, Never>] = []
+        private var hasStarted = false
+        private var releaseContinuation: CheckedContinuation<Void, Never>?
+        private var isReleased = false
+
+        init(providerKind: AIProviderKind = .anthropic, jsonResponse: String) {
+            self.providerKind = providerKind
+            self.jsonResponse = jsonResponse
+        }
+
+        func complete(system: String, userMessage: String) async throws -> AIProviderResponse {
+            completeCallCount += 1
+            markStarted()
+
+            try await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    if isReleased {
+                        continuation.resume()
+                    } else {
+                        releaseContinuation = continuation
+                    }
+                }
+                try Task.checkCancellation()
+            } onCancel: {
+                Task { await self.release() }
+            }
+
+            return AIProviderResponse(
+                provider: providerKind,
+                content: jsonResponse,
+                model: "test",
+                inputTokens: 0,
+                outputTokens: 0
+            )
+        }
+
+        /// Suspends until `complete(...)` has been entered (i.e. the synchronous latch in
+        /// `loadAIRecommendationsIfNeeded` has already run and we're parked on the await).
+        func waitUntilStarted() async {
+            if hasStarted { return }
+            await withCheckedContinuation { continuation in
+                startedContinuations.append(continuation)
+            }
+        }
+
+        func release() {
+            isReleased = true
+            releaseContinuation?.resume()
+            releaseContinuation = nil
+        }
+
+        func callCount() -> Int { completeCallCount }
+
+        private func markStarted() {
+            hasStarted = true
+            let waiters = startedContinuations
+            startedContinuations.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+
+    private static func makeGatedDependencies(
+        jsonResponse: String = """
+        [{"title":"Gated Movie","year":2024,"type":"movie","reason":"Great","tmdbId":555}]
+        """
+    ) async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager, provider: GatedAIProvider) {
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-gated-tests-\(UUID().uuidString)")
+        try await db.migrate()
+        let secretStore = TestSecretStore()
+        let settings = SettingsManager(database: db, secretStore: secretStore)
+        let aiManager = AIAssistantManager(database: db)
+        let provider = GatedAIProvider(jsonResponse: jsonResponse)
+        await aiManager.registerProvider(kind: .anthropic, provider: provider)
+        return (db, settings, aiManager, provider)
+    }
+
     // MARK: - Helpers
 
     /// Builds an in-memory database, settings manager, and AI manager with a registered stub provider.
@@ -52,10 +136,7 @@ struct DiscoverViewModelAITests {
         [{"title":"Test Movie","year":2024,"type":"movie","reason":"Great","tmdbId":123}]
         """
     ) async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager) {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpstudio-discover-ai-tests-\(UUID().uuidString).sqlite")
-            .path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-tests-\(UUID().uuidString)")
         try await db.migrate()
         let secretStore = TestSecretStore()
         let settings = SettingsManager(database: db, secretStore: secretStore)
@@ -77,10 +158,7 @@ struct DiscoverViewModelAITests {
     private static func makeSequencedDependencies(
         jsonResponses: [String]
     ) async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager, provider: SequencedAIProvider) {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpstudio-discover-ai-sequenced-tests-\(UUID().uuidString).sqlite")
-            .path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-sequenced-tests-\(UUID().uuidString)")
         try await db.migrate()
         let secretStore = TestSecretStore()
         let settings = SettingsManager(database: db, secretStore: secretStore)
@@ -93,10 +171,7 @@ struct DiscoverViewModelAITests {
     private static func makeUnconfiguredDependencies()
         async throws -> (db: DatabaseManager, settings: SettingsManager, aiManager: AIAssistantManager)
     {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpstudio-discover-ai-unconfigured-tests-\(UUID().uuidString).sqlite")
-            .path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "vpstudio-discover-ai-unconfigured-tests-\(UUID().uuidString)")
         try await db.migrate()
         let secretStore = TestSecretStore()
         let settings = SettingsManager(database: db, secretStore: secretStore)
@@ -116,9 +191,31 @@ struct DiscoverViewModelAITests {
         year: Int? = 2024,
         type: MediaType = .movie,
         reason: String = "Great",
+        imdbId: String? = nil,
         tmdbId: Int? = 123
     ) -> AIMovieRecommendation {
-        AIMovieRecommendation(title: title, year: year, type: type, reason: reason, tmdbId: tmdbId)
+        AIMovieRecommendation(
+            title: title,
+            year: year,
+            type: type,
+            reason: reason,
+            imdbId: imdbId,
+            tmdbId: tmdbId
+        )
+    }
+
+    @Test
+    func getRecommendationsNormalizesEmbeddedIMDbIDsFromProviderOutput() async throws {
+        let deps = try await Self.makeDependencies(jsonResponse: """
+        [{"title":"Dune","year":2021,"type":"movie","reason":"Epic scale","imdbId":"https://www.imdb.com/title/TT1160419/","tmdbId":438631}]
+        """)
+
+        let recommendations = try await deps.aiManager.getRecommendations(context: AssistantContext())
+
+        let recommendation = try #require(recommendations.first)
+        #expect(recommendation.imdbId == "tt1160419")
+        #expect(recommendation.tmdbId == nil)
+        #expect(recommendation.id == "movie-omdb-tt1160419")
     }
 
     // MARK: - Initial State
@@ -410,6 +507,39 @@ struct DiscoverViewModelAITests {
 
     @Test
     @MainActor
+    func filterRemovesOMDbLibraryItemByResolvedIMDbCacheTitle() async throws {
+        let json = """
+        [{"title":"The Matrix","year":1999,"type":"movie","reason":"Essential sci-fi"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt0133093",
+                type: .movie,
+                title: "The Matrix",
+                year: 1999
+            )
+        )
+        try await deps.db.addToLibrary(
+            UserLibraryEntry(
+                id: "matrix-omdb-watchlist",
+                mediaId: "movie-omdb-tt0133093",
+                folderId: "",
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Resolved OMDb/IMDb title should filter library items")
+    }
+
+    @Test
+    @MainActor
     func filterKeepsItemsNotInLibrary() async throws {
         let json = """
         [{"title":"Arrival","year":2016,"type":"movie","reason":"Thoughtful","tmdbId":329865},
@@ -492,6 +622,109 @@ struct DiscoverViewModelAITests {
 
         #expect(vm.aiRecommendations.count == 1, "Only Movie C should survive filtering")
         #expect(vm.aiRecommendations.first?.title == "Movie C")
+    }
+
+    @Test
+    @MainActor
+    func filterRemovesIMDbRecommendationWhenLegacyTMDBRatingResolvesThroughCache() async throws {
+        let json = """
+        [{"title":"Dune","year":2021,"type":"movie","reason":"Epic scale","imdbId":"tt1160419"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438631
+            )
+        )
+        try await deps.db.saveTasteEvent(
+            TasteEvent(
+                mediaId: "movie-tmdb-438631",
+                eventType: .rated,
+                feedbackScale: .oneToTen,
+                feedbackValue: 8
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Legacy TMDb ratings should suppress IMDb/OMDb recommendations for the same cached item")
+    }
+
+    @Test
+    @MainActor
+    func filterRemovesIMDbRecommendationWhenLegacyTMDBLibraryEntryResolvesThroughCache() async throws {
+        let json = """
+        [{"title":"Dune: Part One","year":2021,"type":"movie","reason":"Epic scale","imdbId":"tt1160419"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438631
+            )
+        )
+        try await deps.db.addToLibrary(
+            UserLibraryEntry(
+                id: "dune-legacy-watchlist",
+                mediaId: "movie-tmdb-438631",
+                folderId: "",
+                listType: .watchlist,
+                addedAt: Date()
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Legacy TMDb library entries should suppress IMDb/OMDb recommendations for the same cached item")
+    }
+
+    @Test
+    @MainActor
+    func filterRemovesIMDbRecommendationWhenLegacyTMDBWatchHistoryResolvesThroughCache() async throws {
+        let json = """
+        [{"title":"Dune: Part One","year":2021,"type":"movie","reason":"Epic scale","imdbId":"tt1160419"}]
+        """
+        let deps = try await Self.makeDependencies(jsonResponse: json)
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.db.saveMediaItem(
+            MediaItem(
+                id: "tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                tmdbId: 438631
+            )
+        )
+        try await deps.db.saveWatchHistory(
+            WatchHistory(
+                id: "dune-legacy-watch",
+                mediaId: "movie-tmdb-438631",
+                title: "Legacy Cached Title",
+                progress: 7200,
+                duration: 7200,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        )
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        #expect(vm.aiRecommendations.isEmpty, "Legacy TMDb watch history should suppress IMDb/OMDb recommendations for the same cached item")
     }
 
     @Test
@@ -730,5 +963,133 @@ struct DiscoverViewModelAITests {
         // Verify it also cached the result
         let cachedJSON = try await deps.settings.getString(key: SettingsKeys.aiCachedRecommendations)
         #expect(cachedJSON != nil, "Auto-generate on should also cache recommendations")
+    }
+
+    // MARK: - Sticky Cache Latch (BUG 5: re-fetch on every Discover tab switch)
+
+    @Test
+    @MainActor
+    func loadAIRecommendationsIfNeededLatchesSynchronouslyBeforeAwait() async throws {
+        // The latch must be set BEFORE the awaited fetch. Even though the fetch hasn't completed
+        // (the gated provider is still suspended), a concurrent second call must already see the
+        // latch and bail — this is what makes the cache survive a tab-leave that cancels the task
+        // mid-flight.
+        let deps = try await Self.makeGatedDependencies()
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+
+        let firstCall = Task { @MainActor in
+            await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+        }
+
+        // Wait until we're parked inside the provider — at this point the synchronous latch ran.
+        await deps.provider.waitUntilStarted()
+
+        // A second call while the first is still in-flight must be a no-op (latch already set).
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        // Let the first fetch finish and settle.
+        await deps.provider.release()
+        await firstCall.value
+
+        let callCount = await deps.provider.callCount()
+        #expect(callCount == 1, "Provider must be invoked exactly once — the second call should short-circuit on the latch")
+        #expect(vm.aiRecommendations.first?.title == "Gated Movie")
+    }
+
+    @Test
+    @MainActor
+    func cancellingInFlightLoadDoesNotUndoLatchOrRefetchOnReentry() async throws {
+        // Simulates the BUG 5 scenario: the Discover tab is left mid-fetch (ContentView's
+        // switch-based host tears DiscoverView down and cancels its `.task`). The latch was set
+        // synchronously before the await, so it must survive cancellation — re-entering on the
+        // next tab tap must NOT re-fire the slow LLM request.
+        let deps = try await Self.makeGatedDependencies()
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+
+        let inFlight = Task { @MainActor in
+            await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+        }
+
+        // Parked inside the provider await — the latch has already been set synchronously.
+        await deps.provider.waitUntilStarted()
+
+        // Tab teardown: cancel the in-flight task.
+        inFlight.cancel()
+        await inFlight.value
+
+        // The cancelled fetch produced no recommendations…
+        #expect(vm.aiRecommendations.isEmpty, "Cancelled fetch should not have populated recommendations")
+
+        // …but re-entering (next tab tap) must be a no-op: the latch stuck through cancellation.
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+
+        let callCount = await deps.provider.callCount()
+        #expect(callCount == 1, "Re-entry after a cancelled load must not re-fire the LLM request — latch is sticky")
+        #expect(vm.aiRecommendations.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func reloadAIRecommendationSettingsStillResetsLatchOnRealConfigChange() async throws {
+        // Sticky latch must not block a deliberate re-fetch on a real config change.
+        let deps = try await Self.makeDependencies()
+        let vm = Self.makeViewModel(database: deps.db)
+
+        try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+        #expect(!vm.aiRecommendations.isEmpty)
+
+        // Clear manually to detect a re-fetch.
+        vm.aiRecommendations = []
+
+        // A real settings change resets the latch and re-fetches.
+        await vm.reloadAIRecommendationSettings(aiManager: deps.aiManager, settingsManager: deps.settings)
+        #expect(!vm.aiRecommendations.isEmpty, "Config-change path must reset the sticky latch and reload")
+
+        // And after that reload, the load-once guard is sticky again.
+        vm.aiRecommendations = []
+        await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+        #expect(vm.aiRecommendations.isEmpty, "After a config-change reload, loadIfNeeded should be a no-op again")
+    }
+
+    // MARK: - Initial-Load Latch Policy (sticky across tab teardown)
+
+    @Test
+    func initialLoadPolicyStartsWhenNotYetLoaded() {
+        #expect(DiscoverInitialLoadPolicy.shouldStart(hasPerformedInitialLoad: false))
+        #expect(!DiscoverInitialLoadPolicy.shouldStart(hasPerformedInitialLoad: true))
+    }
+
+    @Test
+    @MainActor
+    func initialLoadLatchSetBeforeFetchSurvivesTabTeardown() async throws {
+        // The fix sets `hasPerformedInitialLoad` synchronously BEFORE the awaited fetch (in the
+        // DiscoverView `.task`). Model the latch+guard semantics directly: once latched, the
+        // start-policy refuses to restart even though a cancelled `.task` never completed its fetch.
+        let deps = try await Self.makeGatedDependencies()
+        let vm = Self.makeViewModel(database: deps.db)
+
+        #expect(DiscoverInitialLoadPolicy.shouldStart(hasPerformedInitialLoad: vm.hasPerformedInitialLoad))
+
+        // Mirror the `.task`: latch first, then start the (cancellable) fetch.
+        vm.hasPerformedInitialLoad = true
+        let inFlight = Task { @MainActor in
+            try await deps.settings.setBool(key: SettingsKeys.discoverAIRecommendationsEnabled, value: true)
+            await vm.loadAIRecommendationsIfNeeded(aiManager: deps.aiManager, settingsManager: deps.settings)
+        }
+        await deps.provider.waitUntilStarted()
+        inFlight.cancel()
+        try? await inFlight.value
+
+        // Tab returns: the start-policy must NOT restart the slow initial load.
+        #expect(
+            !DiscoverInitialLoadPolicy.shouldStart(hasPerformedInitialLoad: vm.hasPerformedInitialLoad),
+            "A tab-leave that cancelled the .task mid-fetch must not re-arm the initial load"
+        )
     }
 }

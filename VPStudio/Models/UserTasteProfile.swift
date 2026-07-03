@@ -166,6 +166,209 @@ struct TasteEvent: Codable, Sendable, Identifiable, Equatable, FetchableRecord, 
     }
 }
 
+enum TasteRatingLookupPolicy {
+    static func lookup(from events: [TasteEvent]) -> [String: TasteEvent] {
+        var ratingsByKey: [String: TasteEvent] = [:]
+        for event in events where event.eventType == .rated {
+            guard let mediaId = normalizedLookupKey(event.mediaId) else { continue }
+            let keys = lookupKeys(for: mediaId)
+            for key in keys {
+                if shouldReplace(existing: ratingsByKey[key], with: event) {
+                    ratingsByKey[key] = event
+                }
+            }
+        }
+        return ratingsByKey
+    }
+
+    static func lookup(from events: [TasteEvent], mediaItems: [MediaItem]) -> [String: TasteEvent] {
+        let mediaItemsByID = mediaItems.reduce(into: [String: MediaItem]()) { partial, item in
+            partial[item.id] = item
+        }
+        let mediaItemsByTMDBID = Dictionary(grouping: mediaItems.compactMap { item -> (Int, MediaItem)? in
+            guard let tmdbId = item.tmdbId else { return nil }
+            return (tmdbId, item)
+        }, by: \.0).mapValues { pairs in pairs.map(\.1) }
+        let mediaItemsByIMDbID = Dictionary(grouping: mediaItems.compactMap { item -> (String, MediaItem)? in
+            guard let imdbID = IMDbIdentifierPolicy.appScopedID(in: item.id) else { return nil }
+            return (imdbID, item)
+        }, by: \.0).mapValues { pairs in pairs.map(\.1) }
+
+        var ratingsByKey = lookup(from: events)
+        for event in events where event.eventType == .rated {
+            guard let mediaId = normalizedLookupKey(event.mediaId) else { continue }
+            var aliasItems: [MediaItem] = []
+            if let item = mediaItemsByID[mediaId] {
+                aliasItems.append(item)
+            }
+            if let tmdbId = MetadataProviderIdentifierPolicy.tmdbID(from: mediaId) {
+                aliasItems.append(
+                    contentsOf: (mediaItemsByTMDBID[tmdbId] ?? [])
+                        .filter { aliasExpansionIsCompatible(mediaId: mediaId, item: $0) }
+                )
+            }
+            if let imdbID = IMDbIdentifierPolicy.appScopedID(in: mediaId) {
+                aliasItems.append(
+                    contentsOf: (mediaItemsByIMDbID[imdbID] ?? [])
+                        .filter { aliasExpansionIsCompatible(mediaId: mediaId, item: $0) }
+                )
+            }
+
+            var seenItemIDs = Set<String>()
+            for item in aliasItems where seenItemIDs.insert(item.id).inserted {
+                let keys = lookupKeys(
+                    mediaId: mediaId,
+                    type: item.type,
+                    tmdbId: item.tmdbId,
+                    resolvedMediaId: item.id
+                )
+                for key in keys {
+                    if shouldReplace(existing: ratingsByKey[key], with: event) {
+                        ratingsByKey[key] = event
+                    }
+                }
+            }
+        }
+        return ratingsByKey
+    }
+
+    static func lookupKeys(for mediaId: String) -> Set<String> {
+        guard let normalizedMediaId = normalizedLookupKey(mediaId) else { return [] }
+        var keys = Set([normalizedMediaId])
+
+        if let imdbID = IMDbIdentifierPolicy.appScopedID(in: normalizedMediaId) {
+            keys.formUnion([
+                imdbID,
+                "imdb-\(imdbID)",
+                "omdb-\(imdbID)",
+                "movie-imdb-\(imdbID)",
+                "series-imdb-\(imdbID)",
+                "movie-omdb-\(imdbID)",
+                "series-omdb-\(imdbID)",
+            ])
+        }
+
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: normalizedMediaId) {
+            if let declaredType = declaredTMDBMediaType(from: normalizedMediaId) {
+                keys.insert("\(declaredType.rawValue)-tmdb-\(tmdbID)")
+            } else {
+                keys.formUnion([
+                    "tmdb-\(tmdbID)",
+                    "movie-tmdb-\(tmdbID)",
+                    "series-tmdb-\(tmdbID)",
+                ])
+            }
+        }
+
+        return keys
+    }
+
+    static func lookupKeys(
+        mediaId: String?,
+        type: MediaType?,
+        tmdbId: Int?,
+        resolvedMediaId: String? = nil
+    ) -> Set<String> {
+        var keys = Set<String>()
+        for id in [mediaId, resolvedMediaId] {
+            guard let id else { continue }
+            keys.formUnion(lookupKeys(for: id, constrainedTo: type))
+        }
+        if let tmdbId {
+            keys.insert("tmdb-\(tmdbId)")
+            if let type {
+                keys.insert("\(type.rawValue)-tmdb-\(tmdbId)")
+            } else {
+                keys.formUnion([
+                    "movie-tmdb-\(tmdbId)",
+                    "series-tmdb-\(tmdbId)",
+                ])
+            }
+        }
+        return keys
+    }
+
+    static func rating(
+        in ratingsByKey: [String: TasteEvent],
+        mediaId: String?,
+        type: MediaType?,
+        tmdbId: Int?,
+        resolvedMediaId: String? = nil
+    ) -> TasteEvent? {
+        var best: TasteEvent?
+        for key in lookupKeys(mediaId: mediaId, type: type, tmdbId: tmdbId, resolvedMediaId: resolvedMediaId) {
+            guard let event = ratingsByKey[key] else { continue }
+            if shouldReplace(existing: best, with: event) {
+                best = event
+            }
+        }
+        return best
+    }
+
+    private static func normalizedLookupKey(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func lookupKeys(for mediaId: String, constrainedTo type: MediaType?) -> Set<String> {
+        guard let normalizedMediaId = normalizedLookupKey(mediaId) else { return [] }
+
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: normalizedMediaId) {
+            var keys = Set<String>()
+            let declaredType = declaredTMDBMediaType(from: normalizedMediaId)
+            if declaredType == nil || declaredType == type || type == nil {
+                keys.insert(normalizedMediaId)
+            }
+
+            keys.insert("tmdb-\(tmdbID)")
+            if let type {
+                keys.insert("\(type.rawValue)-tmdb-\(tmdbID)")
+            } else if let declaredType {
+                keys.insert("\(declaredType.rawValue)-tmdb-\(tmdbID)")
+            } else {
+                keys.formUnion([
+                    "movie-tmdb-\(tmdbID)",
+                    "series-tmdb-\(tmdbID)",
+                ])
+            }
+            return keys
+        }
+
+        return lookupKeys(for: normalizedMediaId)
+    }
+
+    private static func aliasExpansionIsCompatible(mediaId: String, item: MediaItem) -> Bool {
+        guard let declaredType = declaredMediaType(from: mediaId) else { return true }
+        return declaredType == item.type
+    }
+
+    private static func declaredMediaType(from mediaId: String) -> MediaType? {
+        let normalized = mediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for type in MediaType.allCases {
+            for provider in ["tmdb", "imdb", "omdb"] where normalized.hasPrefix("\(type.rawValue)-\(provider)-") {
+                return type
+            }
+        }
+        return nil
+    }
+
+    private static func declaredTMDBMediaType(from mediaId: String) -> MediaType? {
+        let normalized = mediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for type in MediaType.allCases where normalized.hasPrefix("\(type.rawValue)-tmdb-") {
+            return type
+        }
+        return nil
+    }
+
+    private static func shouldReplace(existing: TasteEvent?, with candidate: TasteEvent) -> Bool {
+        guard let existing else { return true }
+        if candidate.createdAt != existing.createdAt {
+            return candidate.createdAt > existing.createdAt
+        }
+        return candidate.id > existing.id
+    }
+}
+
 enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
     case likeDislike = "like_dislike"
     case oneToTen = "one_to_ten"
@@ -198,43 +401,35 @@ enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
     }
 
     var displayName: String {
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return "Like / Dislike"
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return "1-10"
         case .oneToHundred:
             return "1-100"
-        case .fiveStar, .tenPoint:
-            return "1-10"
         }
     }
 
     var minimumValue: Double {
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return 0
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return 1
         case .oneToHundred:
-            return 1
-        case .fiveStar, .tenPoint:
             return 1
         }
     }
 
     var maximumValue: Double {
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return 1
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return 10
         case .oneToHundred:
             return 100
-        case .fiveStar:
-            return 5
-        case .tenPoint:
-            return 10
         }
     }
 
@@ -244,33 +439,25 @@ enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
 
     func normalizedValue(_ value: Double) -> Double {
         let clamped = clamp(value)
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return clamped >= 0.5 ? 1.0 : 0.0
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return (clamped - 1.0) / 9.0
         case .oneToHundred:
             return (clamped - 1.0) / 99.0
-        case .fiveStar:
-            return (clamped - 1.0) / 4.0
-        case .tenPoint:
-            return (clamped - 1.0) / 9.0
         }
     }
 
     func value(fromNormalized normalized: Double) -> Double {
         let bounded = min(max(normalized, 0.0), 1.0)
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return bounded >= 0.5 ? 1.0 : 0.0
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return round((bounded * 9.0) + 1.0)
         case .oneToHundred:
             return round((bounded * 99.0) + 1.0)
-        case .fiveStar:
-            return round((bounded * 4.0) + 1.0)
-        case .tenPoint:
-            return round((bounded * 9.0) + 1.0)
         }
     }
 
@@ -287,17 +474,13 @@ enum FeedbackScaleMode: String, Codable, Sendable, CaseIterable {
 
     func format(_ value: Double) -> String {
         let clamped = clamp(value)
-        switch canonicalMode {
+        switch self {
         case .likeDislike:
             return clamped >= 0.5 ? "Liked" : "Disliked"
-        case .oneToTen:
+        case .oneToTen, .fiveStar, .tenPoint:
             return "\(Int(clamped))/10"
         case .oneToHundred:
             return "\(Int(clamped))/100"
-        case .fiveStar:
-            return "\(Int(clamped))/5"
-        case .tenPoint:
-            return "\(Int(clamped))/10"
         }
     }
 }

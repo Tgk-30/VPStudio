@@ -10,8 +10,19 @@ struct SearchViewModelExplorePhaseTests {
     // MARK: - Test Stubs
 
     private actor PhaseTestMetadataStub: MetadataProvider {
+        struct SearchCall: Sendable, Equatable {
+            let query: String
+            let type: MediaType?
+            let page: Int
+            let year: Int?
+            let language: String?
+        }
+
+        var searchQueries: [String] = []
+        var searchCalls: [SearchCall] = []
         var searchResultByPage: [Int: MetadataSearchResult] = [:]
         var discoverResultByPage: [Int: MetadataSearchResult] = [:]
+        var genresByType: [MediaType: [Genre]] = [:]
 
         func setSearchResults(_ results: [Int: MetadataSearchResult]) {
             searchResultByPage = results
@@ -21,8 +32,34 @@ struct SearchViewModelExplorePhaseTests {
             discoverResultByPage = results
         }
 
+        func setGenres(_ genres: [MediaType: [Genre]]) {
+            genresByType = genres
+        }
+
+        func getSearchQueries() -> [String] {
+            searchQueries
+        }
+
+        func getSearchCalls() -> [SearchCall] {
+            searchCalls
+        }
+
         func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
-            searchResultByPage[page] ?? MetadataSearchResult(items: [], page: page, totalPages: page, totalResults: 0)
+            searchQueries.append(query)
+            searchCalls.append(SearchCall(query: query, type: type, page: page, year: nil, language: nil))
+            return searchResultByPage[page] ?? MetadataSearchResult(items: [], page: page, totalPages: page, totalResults: 0)
+        }
+
+        func search(
+            query: String,
+            type: MediaType?,
+            page: Int,
+            year: Int?,
+            language: String?
+        ) async throws -> MetadataSearchResult {
+            searchQueries.append(query)
+            searchCalls.append(SearchCall(query: query, type: type, page: page, year: year, language: language))
+            return searchResultByPage[page] ?? MetadataSearchResult(items: [], page: page, totalPages: page, totalResults: 0)
         }
 
         func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
@@ -32,10 +69,54 @@ struct SearchViewModelExplorePhaseTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func getGenres(type: MediaType) async throws -> [Genre] { [] }
+        func getGenres(type: MediaType) async throws -> [Genre] {
+            genresByType[type] ?? []
+        }
         func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
         func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { [] }
         func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { ExternalIds(imdbId: nil, tvdbId: nil) }
+    }
+
+    private actor FailingSettingsManager: SearchSettingsStorage {
+        enum SettingsManagerFailure: Error {
+            case readFailure
+            case writeFailure
+        }
+
+        private let readValue: String?
+        private let shouldFailRead: Bool
+        private let shouldFailWrite: Bool
+        private var readCalls = 0
+        private var writeCalls = 0
+
+        init(readValue: String?, shouldFailRead: Bool = false, shouldFailWrite: Bool = false) {
+            self.readValue = readValue
+            self.shouldFailRead = shouldFailRead
+            self.shouldFailWrite = shouldFailWrite
+        }
+
+        func getString(key: String) async throws -> String? {
+            readCalls += 1
+            if shouldFailRead {
+                throw SettingsManagerFailure.readFailure
+            }
+            return readValue
+        }
+
+        func setString(key: String, value: String?) async throws {
+            writeCalls += 1
+            if shouldFailWrite {
+                throw SettingsManagerFailure.writeFailure
+            }
+        }
+
+        func getReadCallCount() -> Int {
+            readCalls
+        }
+
+        func getWriteCallCount() -> Int {
+            writeCalls
+        }
     }
 
     /// Polls until `condition` returns true, yielding between checks. Fails after `timeout`.
@@ -52,6 +133,27 @@ struct SearchViewModelExplorePhaseTests {
             await Task.yield()
             try await Task.sleep(for: .milliseconds(50))
         }
+    }
+
+    private static func waitUntil(
+        timeout: Duration = .milliseconds(5000),
+        _ condition: @MainActor () async -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while await !condition() {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("waitUntil timed out after \(timeout)")
+                return
+            }
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    private static func makeRecentSearchSettingsManager() async throws -> SettingsManager {
+        let database = try DatabaseManager(inMemoryNamed: UUID().uuidString)
+        try await database.migrate()
+        return SettingsManager(database: database, secretStore: TestSecretStore())
     }
 
     // MARK: - ExplorePhase Enum Cases
@@ -279,6 +381,12 @@ struct SearchViewModelExplorePhaseTests {
         #expect(viewModel.explorePhase == .idle)
     }
 
+    @Test func phaseIsIdleWhenQueryIsNewlineOnly() {
+        let viewModel = SearchViewModel(metadataService: PhaseTestMetadataStub())
+        viewModel.query = "\n"
+        #expect(viewModel.explorePhase == .idle)
+    }
+
     @Test func phaseIsEmptyAfterSubmittedSearchReturnsNoResults() async throws {
         let viewModel = SearchViewModel(metadataService: PhaseTestMetadataStub())
         viewModel.query = "no match query"
@@ -288,6 +396,27 @@ struct SearchViewModelExplorePhaseTests {
         #expect(viewModel.explorePhase == .empty)
     }
 
+    @Test func explicitSearchRunsWhenQueryAlreadyInRecentSearches() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "cid-season-2")], page: 1, totalPages: 1, totalResults: 1)
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.addRecentSearch("CID season 2")
+        viewModel.query = "CID season 2"
+
+        viewModel.search()
+
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        #expect(await stub.getSearchQueries() == ["CID season 2"])
+        #expect(viewModel.submittedQuery == "CID season 2")
+        #expect(viewModel.query == "CID season 2")
+        #expect(viewModel.results.isEmpty == false)
+        #expect(viewModel.explorePhase == .results)
+        #expect(viewModel.explorePhase != .idle)
+    }
+
     @Test func phaseIsErrorAfterSearchAttemptWithoutConfiguration() {
         let viewModel = SearchViewModel()
         viewModel.query = "no key query"
@@ -295,7 +424,7 @@ struct SearchViewModelExplorePhaseTests {
 
         #expect(viewModel.hasAttemptedTextSearch == true)
         #expect(viewModel.submittedQuery == "no key query")
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.explorePhase == .error)
     }
 
@@ -420,6 +549,12 @@ struct SearchViewModelExplorePhaseTests {
         #expect(viewModel.recentSearches.isEmpty)
     }
 
+    @Test func addRecentSearchIgnoresNewlineOnlyWhitespace() {
+        let viewModel = SearchViewModel()
+        viewModel.addRecentSearch("\n")
+        #expect(viewModel.recentSearches.isEmpty)
+    }
+
     @Test func addRecentSearchDeduplicatesCaseInsensitive() {
         let viewModel = SearchViewModel()
         viewModel.addRecentSearch("inception")
@@ -494,6 +629,218 @@ struct SearchViewModelExplorePhaseTests {
         let viewModel = SearchViewModel()
         viewModel.clearRecentSearches()
         #expect(viewModel.recentSearches.isEmpty)
+    }
+
+    // MARK: - Recent Searches: Load
+
+    @Test func loadRecentSearchesTrimsWhitespaceAndDeduplicatesPersistedValues() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let savedSearches = [
+            "  Dune  ",
+            "   ",
+            "\n",
+            "Inception",
+            "\t",
+            "dune",
+            "  Interstellar ",
+            "",
+            "Interstellar",
+            "Blade Runner  "
+        ]
+        let json = String(data: try JSONEncoder().encode(savedSearches), encoding: .utf8)!
+        try await settingsManager.setString(key: SettingsKeys.recentSearches, value: json)
+
+        let viewModel = SearchViewModel()
+        await viewModel.loadRecentSearchesAndAwait(from: settingsManager)
+
+        #expect(viewModel.recentSearches == ["Dune", "Inception", "Interstellar", "Blade Runner"])
+    }
+
+    @Test func loadRecentSearchesCapsToTwentyEntries() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let savedSearches = (1...25).map { " Search \($0) " }
+        let json = String(data: try JSONEncoder().encode(savedSearches), encoding: .utf8)!
+        try await settingsManager.setString(key: SettingsKeys.recentSearches, value: json)
+
+        let viewModel = SearchViewModel()
+        await viewModel.loadRecentSearchesAndAwait(from: settingsManager)
+
+        #expect(viewModel.recentSearches.count == 20)
+        #expect(viewModel.recentSearches == (1...20).map { "Search \($0)" })
+    }
+
+    @Test func loadRecentSearchesAndAwaitWithNoStoredValueClearsList() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let viewModel = SearchViewModel()
+        viewModel.recentSearches = ["stale"]
+
+        await viewModel.loadRecentSearchesAndAwait(from: settingsManager)
+
+        #expect(viewModel.recentSearches.isEmpty)
+    }
+
+    @Test func loadRecentSearchesAndAwaitWithMalformedJSONFallsBackToEmpty() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        try await settingsManager.setString(key: SettingsKeys.recentSearches, value: "1234")
+
+        let viewModel = SearchViewModel()
+        viewModel.recentSearches = ["stale"]
+
+        await viewModel.loadRecentSearchesAndAwait(from: settingsManager)
+
+        #expect(viewModel.recentSearches.isEmpty)
+    }
+
+    @Test func loadRecentSearchesHandlesMalformedStoredJSON() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        try await settingsManager.setString(key: SettingsKeys.recentSearches, value: "not-json")
+
+        let viewModel = SearchViewModel()
+        await viewModel.loadRecentSearchesAndAwait(from: settingsManager)
+
+        #expect(viewModel.recentSearches.isEmpty)
+    }
+
+    @Test func loadRecentSearchesAndAwaitWithSettingsReadFailureClearsExistingRecentSearches() async throws {
+        let settingsManager = FailingSettingsManager(
+            readValue: "[\"Interstellar\", \"Dune\"]",
+            shouldFailRead: true
+        )
+        let viewModel = SearchViewModel()
+        viewModel.recentSearches = ["stale", "legacy"]
+
+        await viewModel.loadRecentSearchesAndAwait(from: settingsManager)
+
+        #expect(viewModel.recentSearches.isEmpty)
+        #expect(await settingsManager.getReadCallCount() == 1)
+    }
+
+    @Test func loadRecentSearchesFromManagerWithSettingsReadFailureEmitsEmptyList() async throws {
+        let settingsManager = FailingSettingsManager(
+            readValue: "[\"Interstellar\", \"Dune\"]",
+            shouldFailRead: true
+        )
+        let viewModel = SearchViewModel()
+        viewModel.recentSearches = ["stale"]
+
+        viewModel.loadRecentSearches(from: settingsManager)
+
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(viewModel.recentSearches.isEmpty)
+        #expect(await settingsManager.getReadCallCount() == 1)
+    }
+
+    @Test func loadRecentSearchesFromManagerIsAsyncAndNormalizesTerms() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let savedSearches = ["  dune  ", "\n", "Inception", "DUNE", "blade runner ", "  "]
+        let json = String(data: try JSONEncoder().encode(savedSearches), encoding: .utf8)!
+        try await settingsManager.setString(key: SettingsKeys.recentSearches, value: json)
+
+        let viewModel = SearchViewModel()
+        viewModel.recentSearches = ["stale"]
+
+        viewModel.loadRecentSearches(from: settingsManager)
+
+        #expect(viewModel.recentSearches == ["stale"])
+
+        try await Self.waitUntil { viewModel.recentSearches == ["dune", "Inception", "blade runner"] }
+    }
+
+    @Test func loadRecentSearchesFromManagerOnlyEmptyTermsClearsList() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let savedSearches = ["   ", "", "\n", "\t", ""]
+        let json = String(data: try JSONEncoder().encode(savedSearches), encoding: .utf8)!
+        try await settingsManager.setString(key: SettingsKeys.recentSearches, value: json)
+
+        let viewModel = SearchViewModel()
+        viewModel.recentSearches = ["stale", "legacy"]
+
+        viewModel.loadRecentSearches(from: settingsManager)
+        #expect(viewModel.recentSearches == ["stale", "legacy"])
+
+        try await Self.waitUntil { viewModel.recentSearches.isEmpty }
+        #expect(viewModel.recentSearches.isEmpty)
+    }
+
+    @Test func saveRecentSearchesPersistsNormalizedListToSettingsManager() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let viewModel = SearchViewModel()
+
+        viewModel.addRecentSearch("  Inception  ")
+        viewModel.addRecentSearch("Dune")
+        viewModel.saveRecentSearches(to: settingsManager)
+
+        var restored: [String] = []
+        for _ in 0..<20 {
+            if let json = try await settingsManager.getString(key: SettingsKeys.recentSearches),
+               let decoded = try? JSONDecoder().decode([String].self, from: json.data(using: .utf8)!) {
+                restored = decoded
+                if !restored.isEmpty {
+                    break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(restored == ["Dune", "Inception"])
+    }
+
+    @Test func saveRecentSearchesCapturesStateAtCallTime() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let viewModel = SearchViewModel()
+
+        viewModel.recentSearches = ["first", "second"]
+        viewModel.saveRecentSearches(to: settingsManager)
+        viewModel.recentSearches = ["changed"]
+
+        var restored: [String] = []
+        for _ in 0..<20 {
+            if let json = try await settingsManager.getString(key: SettingsKeys.recentSearches),
+               let decoded = try? JSONDecoder().decode([String].self, from: json.data(using: .utf8)!) {
+                restored = decoded
+                if !restored.isEmpty {
+                    break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(restored == ["first", "second"])
+    }
+
+    @Test func saveRecentSearchesWithSettingsWriteFailurePreservesInMemoryState() async throws {
+        let settingsManager = FailingSettingsManager(readValue: nil, shouldFailWrite: true)
+        let viewModel = SearchViewModel()
+
+        viewModel.addRecentSearch("  Inception  ")
+        viewModel.saveRecentSearches(to: settingsManager)
+
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(viewModel.recentSearches == ["Inception"])
+        #expect(await settingsManager.getWriteCallCount() == 1)
+    }
+
+    @Test func saveRecentSearchesPersistsClearedListAsEmptyArray() async throws {
+        let settingsManager = try await Self.makeRecentSearchSettingsManager()
+        let viewModel = SearchViewModel()
+
+        viewModel.recentSearches = ["first", "second"]
+        viewModel.clearRecentSearches()
+        viewModel.saveRecentSearches(to: settingsManager)
+
+        var restored: [String]?
+        for _ in 0..<20 {
+            if let json = try await settingsManager.getString(key: SettingsKeys.recentSearches),
+               let decoded = try? JSONDecoder().decode([String].self, from: json.data(using: .utf8)!) {
+                restored = decoded
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(restored == [])
     }
 
     // MARK: - hasMore Computed Property
@@ -672,10 +1019,302 @@ struct SearchViewModelExplorePhaseTests {
         #expect(viewModel.primaryLanguage == "ja-JP")
     }
 
+    @Test func applyLanguageFiltersFiltersOutEmptyValuesAndRequeriesSearch() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "dune"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        let initialSearchCalls = await stub.getSearchQueries().count
+
+        viewModel.applyLanguageFilters(["", "fr-FR"])
+        let expectedSearchCalls = initialSearchCalls + 1
+        for _ in 0..<100 {
+            if await stub.getSearchQueries().count == expectedSearchCalls {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(viewModel.languageFilters == ["fr-FR"])
+        #expect(viewModel.primaryLanguage == "fr-FR")
+        #expect(await stub.getSearchQueries().count == expectedSearchCalls)
+    }
+
+    @Test func applyLanguageFiltersDoesNotRequeryWhenSelectionUnchanged() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.languageFilters = ["en-US", "fr-FR"]
+        viewModel.query = "dune"
+        viewModel.search()
+
+        for _ in 0..<100 {
+            if await stub.getSearchQueries().count > 0 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let initialSearchCalls = await stub.getSearchQueries().count
+
+        viewModel.applyLanguageFilters(["fr-FR", "en-US", "", "fr-FR"])
+        for _ in 0..<100 {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await stub.getSearchQueries().count == initialSearchCalls)
+    }
+
     @Test func applyLanguageFiltersToEmptySet() {
         let viewModel = SearchViewModel(metadataService: PhaseTestMetadataStub())
         viewModel.applyLanguageFilters([])
-        #expect(viewModel.languageFilters.isEmpty)
+        #expect(viewModel.languageFilters == ["en-US"])
         #expect(viewModel.primaryLanguage == nil)
+    }
+
+    @Test func applySortOptionTriggersRequeryForActiveSearch() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "initial")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+        viewModel.search()
+        try await Self.waitUntil { (await stub.getSearchQueries()).count > 0 }
+
+        let callsBefore = (await stub.getSearchQueries()).count
+        viewModel.applySortOption(.releaseDateDesc)
+        try await Self.waitUntil { (await stub.getSearchQueries()).count == callsBefore + 1 }
+
+        #expect(viewModel.sortOption == .releaseDateDesc)
+    }
+
+    @Test func applyYearFilterLocallyFiltersResultsWhenTypeIsNil() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "match", year: 2024),
+                    Fixtures.mediaPreview(id: "nomatch", year: 2023)
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 2
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+        viewModel.search()
+        try await Self.waitUntil { viewModel.results.count == 2 }
+
+        viewModel.applyYearFilter(2024)
+        try await Self.waitUntil { viewModel.results.count == 1 }
+
+        #expect(viewModel.yearFilter == 2024)
+        #expect(viewModel.results.map(\.id) == ["match"])
+    }
+
+    @Test func applyYearRangePresetUsesStartYearHintAndLocallyFiltersRange() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "twenties", year: 2022),
+                    Fixtures.mediaPreview(id: "nineties", year: 1994)
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 2
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "classic"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        let callsBefore = (await stub.getSearchQueries()).count
+
+        viewModel.applyYearRangePreset(.classic)
+        try await Self.waitUntil { (await stub.getSearchQueries()).count == callsBefore + 1 }
+        let searchCalls = await stub.getSearchCalls()
+        #expect(viewModel.yearRangePreset == .classic)
+        #expect(viewModel.yearFilter == 1900)
+        #expect(searchCalls.last?.year == 1900)
+        #expect(viewModel.results.map(\.id) == ["nineties"])
+    }
+
+    @Test func toggleLanguageCodeSwitchesDefaultAndPreservesNonDefaultSelection() {
+        let viewModel = SearchViewModel()
+
+        viewModel.toggleLanguage("en-US")
+        #expect(viewModel.languageFilters.isEmpty)
+
+        viewModel.toggleLanguage("en-US")
+        #expect(viewModel.languageFilters == ["en-US"])
+
+        viewModel.toggleLanguage("fr-FR")
+        #expect(viewModel.languageFilters == ["fr-FR"])
+
+        viewModel.toggleLanguage("fr-FR")
+        #expect(viewModel.languageFilters == ["en-US"])
+    }
+
+    @Test func applyFilterDraftWithGenreChangesSelection() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setDiscoverResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.selectedGenre = Genre(id: 10, name: "Old")
+        let draft = SearchFilterDraft(
+            sortOption: .releaseDateDesc,
+            selectedYear: nil,
+            selectedLanguages: ["en-US"],
+            selectedGenre: Genre(id: 18, name: "Drama")
+        )
+
+        viewModel.applyFilterDraft(draft)
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        #expect(viewModel.selectedGenre?.id == 18)
+        #expect(viewModel.sortOption == .releaseDateDesc)
+        #expect(viewModel.results.first?.id == "genre-result")
+    }
+
+    @Test func clearAllFiltersWithoutGenreAndActiveQueryRequeriesSearch() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "fresh")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "dune"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        let queriesBefore = (await stub.getSearchQueries()).count
+        viewModel.clearAllFilters()
+
+        let expectedQueries = queriesBefore + 1
+        try await Self.waitUntil { (await stub.getSearchQueries()).count == expectedQueries }
+        #expect(viewModel.sortOption == .popularityDesc)
+        #expect(viewModel.yearFilter == nil)
+        #expect(viewModel.yearRangePreset == nil)
+        #expect(viewModel.languageFilters == ["en-US"])
+    }
+
+    @Test func handleSelectedTypeChangeWithoutGenreCacheClearsSelectionForEmptyQuery() {
+        let viewModel = SearchViewModel(metadataService: PhaseTestMetadataStub())
+        viewModel.selectedGenre = Genre(id: 18, name: "Drama")
+        viewModel.selectedType = .movie
+        viewModel.results = [Fixtures.mediaPreview(id: "stale")]
+
+        viewModel.handleSelectedTypeChange()
+
+        #expect(viewModel.selectedGenre == nil)
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.error == nil)
+    }
+
+    @Test func handleSelectedTypeChangeUsesCachedGenreRemap() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setDiscoverResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "remapped-browse-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+        await stub.setGenres([
+            .movie: [Genre(id: 28, name: "Movie Action")],
+            .series: [Genre(id: 28, name: "Series Action"), Genre(id: 18, name: "Drama")]
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.selectedType = .movie
+        viewModel.loadGenres()
+        try await Task.sleep(for: .milliseconds(20))
+
+        viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        viewModel.selectedType = .series
+        viewModel.loadGenres()
+        try await Task.sleep(for: .milliseconds(20))
+
+        viewModel.handleSelectedTypeChange()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        #expect(viewModel.selectedGenre?.name == "Series Action")
+        #expect(viewModel.results.first?.id == "remapped-browse-result")
+    }
+
+    @Test func clearAllFiltersWithActiveGenreRequeriesTextSearchIfQueryPresent() async throws {
+        let stub = PhaseTestMetadataStub()
+        await stub.setSearchResults([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-requery")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        viewModel.query = "dune"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        let queryCallsBefore = (await stub.getSearchQueries()).count
+
+        viewModel.clearAllFilters()
+        try await Self.waitUntil { (await stub.getSearchQueries()).count == queryCallsBefore + 1 }
+
+        #expect(viewModel.selectedGenre == nil)
+    }
+
+    @Test func shouldTriggerPaginationUsesTailWindow() {
+        let viewModel = SearchViewModel()
+        viewModel.currentPage = 1
+        viewModel.totalPages = 3
+        viewModel.results = (0..<10).map { Fixtures.mediaPreview(id: "item-\($0)") }
+
+        #expect(viewModel.hasMore == true)
+        #expect(viewModel.shouldTriggerPagination(for: "item-8") == true)
+        #expect(viewModel.shouldTriggerPagination(for: "item-4") == false)
     }
 }

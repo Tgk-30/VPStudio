@@ -27,6 +27,24 @@ struct ExternalPlayerRoutingTests {
     }
 
     @Test
+    func appLabelsAndSummariesAreStableForSettingsUI() {
+        let expectedNames: [ExternalPlayerApp: String] = [
+            .builtIn: "Built-In Player",
+            .infuse: "Infuse",
+            .skybox: "Skybox",
+            .moonPlayer: "MoonPlayer",
+            .vlc: "VLC",
+            .custom: "Custom URL Scheme",
+        ]
+
+        for app in ExternalPlayerApp.allCases {
+            #expect(app.id == app.rawValue)
+            #expect(app.displayName == expectedNames[app])
+            #expect(app.summary.isEmpty == false)
+        }
+    }
+
+    @Test
     func builtInPlayerDoesNotGenerateLaunchURL() {
         let url = ExternalPlayerRouting.launchURL(for: streamURL, app: .builtIn)
         #expect(url == nil)
@@ -66,11 +84,25 @@ struct ExternalPlayerRoutingTests {
     }
 
     @Test
+    func customTemplateWithoutPlaceholderAddsURLQueryItem() {
+        let template = "myplayer://open?mode=stream"
+        let url = ExternalPlayerRouting.launchURL(for: streamURL, app: .custom, customURLTemplate: template)
+
+        let components = URLComponents(url: try! #require(url), resolvingAgainstBaseURL: false)
+        #expect(components?.scheme == "myplayer")
+        #expect(components?.host == "open")
+        #expect(components?.queryItems?.contains(URLQueryItem(name: "mode", value: "stream")) == true)
+        #expect(components?.queryItems?.contains(URLQueryItem(name: "url", value: streamURL.absoluteString)) == true)
+    }
+
+    @Test
     func customTemplateRequiresNonEmptyValue() {
         let nilTemplate = ExternalPlayerRouting.launchURL(for: streamURL, app: .custom, customURLTemplate: nil)
         let emptyTemplate = ExternalPlayerRouting.launchURL(for: streamURL, app: .custom, customURLTemplate: "   ")
         #expect(nilTemplate == nil)
         #expect(emptyTemplate == nil)
+        #expect(ExternalPlayerRouting.validationResult(forCustomTemplate: nil) == .empty)
+        #expect(ExternalPlayerRouting.validationResult(forCustomTemplate: " \n\t ") == .empty)
     }
 
     @Test
@@ -84,6 +116,14 @@ struct ExternalPlayerRoutingTests {
         #expect(
             ExternalPlayerRouting.validationResult(forCustomTemplate: "myplayer://open?source={token}")
                 == .invalid("Unsupported placeholder {token}. Use {url}.")
+        )
+    }
+
+    @Test
+    func customTemplateReportsAllUnsupportedPlaceholders() {
+        #expect(
+            ExternalPlayerRouting.validationResult(forCustomTemplate: "myplayer://open?source={token}&name={name}")
+            == .invalid("Unsupported placeholder {token}, {name}. Use {url}.")
         )
     }
 
@@ -102,13 +142,24 @@ struct ExternalPlayerRoutingTests {
     }
 
     @Test
+    func preferenceInitializerNormalizesTemplatesAndUsageFlag() {
+        let builtIn = ExternalPlayerPreference(app: .builtIn, customURLTemplate: " player://open?url={raw_url} ")
+        let custom = ExternalPlayerPreference(storedApp: " custom ", customURLTemplate: " player://open?url={raw_url} ")
+
+        #expect(builtIn.usesExternalPlayer == false)
+        #expect(builtIn.customURLTemplate == "player://open?url={url}")
+        #expect(custom.app == .custom)
+        #expect(custom.usesExternalPlayer)
+        #expect(custom.customURLTemplate == "player://open?url={url}")
+    }
+
+    @Test
     func settingsLoaderReadsExternalPlayerValues() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let dbPath = tempDir.appendingPathComponent("external-player-settings.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "external-player-settings-\(UUID().uuidString)")
         try await database.migrate()
 
         let settings = SettingsManager(database: database, secretStore: TestSecretStore())
@@ -121,6 +172,23 @@ struct ExternalPlayerRoutingTests {
         let preference = await ExternalPlayerSettings.loadPreference(from: settings)
         #expect(preference.app == .vlc)
         #expect(preference.customURLTemplate == "custom://play?url={url}")
+    }
+
+    @Test
+    func settingsLoaderDefaultsToBuiltInWhenValuesAreMissing() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let database = try DatabaseManager(inMemoryNamed: "external-player-empty-settings-\(UUID().uuidString)")
+        try await database.migrate()
+
+        let settings = SettingsManager(database: database, secretStore: TestSecretStore())
+
+        let preference = await ExternalPlayerSettings.loadPreference(from: settings)
+        #expect(preference.app == .builtIn)
+        #expect(preference.customURLTemplate == nil)
+        #expect(preference.usesExternalPlayer == false)
     }
 
     private func encoded(_ value: String) -> String {

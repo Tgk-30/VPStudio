@@ -14,7 +14,8 @@ struct SettingsDestinationStatus: Equatable, Sendable {
 struct SettingsStatusSnapshot: Equatable, Sendable {
     var activeDebridCount = 0
     var activeIndexerCount = 0
-    var hasTMDBKey = false
+    var hasMetadataKey = false
+    var metadataProviderSummary: String?
     var hasOpenSubtitlesKey = false
     var environmentAssetCount = 0
     var aiProvider: AIProviderKind = .anthropic
@@ -23,6 +24,8 @@ struct SettingsStatusSnapshot: Equatable, Sendable {
     var hasGeminiKey = false
     var hasOllamaEndpoint = true
     var hasOpenRouterKey = false
+    var hasMistralKey = false
+    var hasMiniMaxKey = false
     var isLocalAIEnabled = false
     var hasUsableLocalModel = false
     var hasTraktCredentials = false
@@ -46,6 +49,12 @@ enum SettingsStatusFormatter {
             }
             return SettingsDestinationStatus(message: "Not configured", kind: .warning)
 
+        case .debridCloud:
+            if snapshot.activeDebridCount > 0 {
+                return SettingsDestinationStatus(message: "Ready to refresh", kind: .neutral)
+            }
+            return SettingsDestinationStatus(message: "No providers", kind: .neutral)
+
         case .indexers:
             if snapshot.activeIndexerCount > 0 {
                 let suffix = snapshot.activeIndexerCount == 1 ? "indexer" : "indexers"
@@ -57,10 +66,10 @@ enum SettingsStatusFormatter {
             return SettingsDestinationStatus(message: "No active indexers", kind: .warning)
 
         case .metadata:
-            if snapshot.hasTMDBKey {
-                return SettingsDestinationStatus(message: "API key configured", kind: .positive)
+            if snapshot.hasMetadataKey {
+                return SettingsDestinationStatus(message: snapshot.metadataProviderSummary ?? "Metadata configured", kind: .positive)
             }
-            return SettingsDestinationStatus(message: "API key required", kind: .warning)
+            return SettingsDestinationStatus(message: "OMDb key required", kind: .warning)
 
         case .ai:
             let availableProviders = availableAIProviders(for: snapshot)
@@ -88,12 +97,12 @@ enum SettingsStatusFormatter {
                 let message = snapshot.isLocalAIEnabled
                     ? "\(provider) needs a downloaded model"
                     : "\(provider) is disabled"
-                return SettingsDestinationStatus(message: message, kind: .warning)
+                return SettingsDestinationStatus(message: message, kind: .neutral)
             }
 
             return SettingsDestinationStatus(
-                message: "\(snapshot.aiProvider.displayName) needs credentials",
-                kind: .warning
+                message: "\(snapshot.aiProvider.displayName) not set",
+                kind: .neutral
             )
 
         case .trakt:
@@ -103,7 +112,7 @@ enum SettingsStatusFormatter {
             if snapshot.hasTraktCredentials {
                 return SettingsDestinationStatus(message: "Ready to connect", kind: .neutral)
             }
-            return SettingsDestinationStatus(message: "Not connected", kind: .warning)
+            return SettingsDestinationStatus(message: "Optional", kind: .neutral)
 
         case .simkl:
             if snapshot.hasSimklCredentials {
@@ -131,7 +140,7 @@ enum SettingsStatusFormatter {
                     kind: .positive
                 )
             }
-            return SettingsDestinationStatus(message: "No environments added", kind: .warning)
+            return SettingsDestinationStatus(message: "Apple Environment available", kind: .neutral)
 
         case .library:
             return SettingsDestinationStatus(message: "Browse your library", kind: .neutral)
@@ -143,16 +152,21 @@ enum SettingsStatusFormatter {
             return SettingsDestinationStatus(message: "Erase all app data", kind: .neutral)
 
         case .testMode:
-            return SettingsDestinationStatus(message: "9 screens to preview", kind: .neutral)
+            return SettingsDestinationStatus(message: "10 screens to preview", kind: .neutral)
         }
     }
 
     private static func availableAIProviders(for snapshot: SettingsStatusSnapshot) -> [AIProviderKind] {
-        var cloudProviders: [AIProviderKind] = []
-        if snapshot.hasAnthropicKey { cloudProviders.append(.anthropic) }
-        if snapshot.hasOpenAIKey { cloudProviders.append(.openAI) }
-        if snapshot.hasGeminiKey { cloudProviders.append(.gemini) }
-        if snapshot.hasOpenRouterKey { cloudProviders.append(.openRouter) }
+        let cloudProviders = AISettingsPolicy.enabledCloudProviders(
+            candidates: [
+                (.anthropic, snapshot.hasAnthropicKey ? "configured" : ""),
+                (.openAI, snapshot.hasOpenAIKey ? "configured" : ""),
+                (.gemini, snapshot.hasGeminiKey ? "configured" : ""),
+                (.openRouter, snapshot.hasOpenRouterKey ? "configured" : ""),
+                (.mistral, snapshot.hasMistralKey ? "configured" : ""),
+                (.minimax, snapshot.hasMiniMaxKey ? "configured" : ""),
+            ]
+        )
 
         return AIAssistantManager.availableDefaultProviders(
             configuredCloudProviders: cloudProviders,

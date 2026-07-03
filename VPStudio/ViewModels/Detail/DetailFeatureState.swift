@@ -20,20 +20,30 @@ enum ViewState: Sendable, Equatable {
 @Observable
 @MainActor
 final class TorrentSearchState {
+    private var rawResults: [TorrentResult] = []
     private var allResults: [TorrentResult] = []
     private var visibleResults: [TorrentResult] = []
+    private var sourceFilterOptions: SourceFilterOptions = .default
 
     // `results` remains writable for compatibility with older call-sites/tests.
     // Direct assignment intentionally publishes all provided results at once.
     var results: [TorrentResult] {
         get { visibleResults }
         set {
-            allResults = newValue
-            visibleResults = newValue
+            rawResults = newValue
+            allResults = SourceFilterPolicy.filtered(newValue, options: sourceFilterOptions)
+            visibleResults = allResults
         }
     }
 
-    var allHashes: [String] { allResults.map(\.infoHash) }
+    var allHashes: [String] {
+        rawResults.compactMap { $0.requiresDebridResolution ? $0.infoHash : nil }
+    }
+
+    /// The full ranked result set including those beyond the visible batch. Used
+    /// for best-cached selection so a confirmed-cached source ranked outside the
+    /// initial visible window is still eligible for one-tap play.
+    var allResultsSnapshot: [TorrentResult] { allResults }
     var remainingResultCount: Int { max(allResults.count - visibleResults.count, 0) }
     var canLoadMoreResults: Bool { remainingResultCount > 0 }
 
@@ -41,9 +51,15 @@ final class TorrentSearchState {
     var lastSearchEpisodeId: String?
     var lastSearchContextKey: String?
 
+    func setSourceFilterOptions(_ options: SourceFilterOptions) {
+        sourceFilterOptions = options
+        reapplySourceFilter(preservingVisibleCount: visibleResults.count)
+    }
+
     func setSearchResults(_ newResults: [TorrentResult], initialBatchSize: Int) {
-        allResults = newResults
-        visibleResults = Array(newResults.prefix(max(0, initialBatchSize)))
+        rawResults = newResults
+        allResults = SourceFilterPolicy.filtered(newResults, options: sourceFilterOptions)
+        visibleResults = Array(allResults.prefix(max(0, initialBatchSize)))
     }
 
     @discardableResult
@@ -60,18 +76,36 @@ final class TorrentSearchState {
 
     func updateCacheStatus(_ cacheResults: [String: (CacheStatus, DebridServiceType)]) {
         guard !cacheResults.isEmpty else { return }
-        var visibleChanged = false
         let visibleCount = visibleResults.count
-        for i in allResults.indices {
-            let hash = allResults[i].infoHash
-            if let (status, serviceType) = cacheResults[hash], case .cached = status, !allResults[i].isCached {
-                allResults[i].isCached = true
-                allResults[i].cachedOnService = serviceType.rawValue
-                if i < visibleCount { visibleChanged = true }
+        var resultsChanged = false
+        for i in rawResults.indices {
+            // `checkCacheAcrossServices` keys its result dictionary by the
+            // canonical normalized info-hash (lowercase 40-hex, base32 decoded),
+            // so look up by the same normalization — a raw uppercase or base32
+            // `infoHash` would otherwise miss and stay stuck at `.unknown`.
+            let hash = DebridHashValidator.normalizedInfoHash(rawResults[i].infoHash)
+                ?? rawResults[i].infoHash
+            guard let (status, serviceType) = cacheResults[hash] else { continue }
+
+            switch status {
+            case .cached:
+                // Only the cached transition records the resolving service.
+                guard rawResults[i].cacheAvailability != .cached else { continue }
+                rawResults[i].cacheAvailability = .cached
+                rawResults[i].cachedOnService = serviceType.rawValue
+                resultsChanged = true
+            case .notCached:
+                // Confirmed-uncached: distinguish must-download from not-yet-checked.
+                // Never downgrade a previously-confirmed cached hit.
+                guard rawResults[i].cacheAvailability == .unknown else { continue }
+                rawResults[i].cacheAvailability = .notCached
+                resultsChanged = true
+            case .unknown:
+                continue
             }
         }
-        guard visibleChanged else { return }
-        visibleResults = Array(allResults.prefix(visibleCount))
+        guard resultsChanged else { return }
+        reapplySourceFilter(preservingVisibleCount: visibleCount)
     }
 
     func markCompletedSearch(episodeId: String?, contextKey: String) {
@@ -81,8 +115,14 @@ final class TorrentSearchState {
     }
 
     func invalidateForEpisodeChange() {
+        rawResults = []
         allResults = []
         visibleResults = []
+    }
+
+    private func reapplySourceFilter(preservingVisibleCount visibleCount: Int) {
+        allResults = SourceFilterPolicy.filtered(rawResults, options: sourceFilterOptions)
+        visibleResults = Array(allResults.prefix(max(0, visibleCount)))
     }
 }
 

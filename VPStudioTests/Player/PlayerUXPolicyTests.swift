@@ -2,6 +2,147 @@ import Foundation
 import Testing
 @testable import VPStudio
 
+// MARK: - PlayerArtworkPresentationPolicy Tests
+
+@Suite("PlayerArtworkPresentationPolicy")
+struct PlayerArtworkPresentationPolicyTests {
+    @Test func posterCardGeometryIsStableAcrossLoadingStates() {
+        #expect(PlayerArtworkPresentationPolicy.posterCardWidth == 112)
+        #expect(PlayerArtworkPresentationPolicy.posterCardHeight == 168)
+        #expect(PlayerArtworkPresentationPolicy.posterCardCornerRadius == 12)
+    }
+
+    @Test func fallbackArtworkStaysVisibleWithoutMasqueradingAsVideo() {
+        #expect(PlayerArtworkPresentationPolicy.backdropFallbackOverlayOpacity == 0.55)
+        #expect(PlayerArtworkPresentationPolicy.backdropFallbackBlurRadius == 28)
+        #expect(PlayerArtworkPresentationPolicy.posterFallbackOverlayOpacity == 0.58)
+        #expect(PlayerArtworkPresentationPolicy.posterFallbackBlurRadius == 30)
+        #expect(PlayerArtworkPresentationPolicy.bundledFallbackOverlayOpacity == 0.44)
+        #expect(PlayerArtworkPresentationPolicy.bundledFallbackBlurRadius == 18)
+        #expect(PlayerArtworkPresentationPolicy.bundledFallbackSaturation == 0.68)
+    }
+
+    @Test func appleEnvironmentFallbackArtworkStaysAbstractWithoutReadingAsBlackSlabOrFakeVideo() {
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentBackdropFallbackOverlayOpacity == 0.38)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentBackdropFallbackBlurRadius == 18)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentPosterFallbackOverlayOpacity == 0.42)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentPosterFallbackBlurRadius == 20)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentBundledFallbackOverlayOpacity == 0.36)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentBundledFallbackBlurRadius == 34)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentBundledFallbackSaturation == 0.24)
+        #expect(PlayerArtworkPresentationPolicy.appleEnvironmentBundledFallbackVignetteOpacity == 0.16)
+
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedBackdropFallbackOverlayOpacity(usesAppleEnvironmentMode: true)
+                < PlayerArtworkPresentationPolicy.resolvedBackdropFallbackOverlayOpacity(usesAppleEnvironmentMode: false)
+        )
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedBackdropFallbackBlurRadius(usesAppleEnvironmentMode: true)
+                < PlayerArtworkPresentationPolicy.resolvedBackdropFallbackBlurRadius(usesAppleEnvironmentMode: false)
+        )
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedPosterFallbackOverlayOpacity(usesAppleEnvironmentMode: true)
+                < PlayerArtworkPresentationPolicy.resolvedPosterFallbackOverlayOpacity(usesAppleEnvironmentMode: false)
+        )
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedPosterFallbackBlurRadius(usesAppleEnvironmentMode: true)
+                < PlayerArtworkPresentationPolicy.resolvedPosterFallbackBlurRadius(usesAppleEnvironmentMode: false)
+        )
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedBundledFallbackOverlayOpacity(usesAppleEnvironmentMode: true)
+                < PlayerArtworkPresentationPolicy.resolvedBundledFallbackOverlayOpacity(usesAppleEnvironmentMode: false)
+        )
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedBundledFallbackBlurRadius(usesAppleEnvironmentMode: true)
+                > PlayerArtworkPresentationPolicy.resolvedBundledFallbackBlurRadius(usesAppleEnvironmentMode: false)
+        )
+        #expect(PlayerArtworkPresentationPolicy.resolvedBundledFallbackBlurRadius(usesAppleEnvironmentMode: true) >= 32)
+        #expect(
+            PlayerArtworkPresentationPolicy.resolvedBundledFallbackSaturation(usesAppleEnvironmentMode: true)
+                < PlayerArtworkPresentationPolicy.resolvedBundledFallbackSaturation(usesAppleEnvironmentMode: false)
+        )
+        #expect(PlayerArtworkPresentationPolicy.resolvedBundledFallbackSaturation(usesAppleEnvironmentMode: true) <= 0.25)
+        #expect(PlayerArtworkPresentationPolicy.resolvedBundledFallbackVignetteOpacity(usesAppleEnvironmentMode: true) == 0.16)
+        #expect(PlayerArtworkPresentationPolicy.resolvedBundledFallbackVignetteOpacity(usesAppleEnvironmentMode: false) == 0)
+    }
+
+    @Test func appleEnvironmentStartsWithRoomDimmingOffWhenUserHasNoSavedPreference() {
+        #expect(PlayerViewPolicy.defaultDimPassthrough(usesAppleEnvironmentMode: true) == false)
+        #expect(PlayerViewPolicy.defaultDimPassthrough(usesAppleEnvironmentMode: false) == true)
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: nil, usesAppleEnvironmentMode: true) == false)
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: "   ", usesAppleEnvironmentMode: true) == false)
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: nil, usesAppleEnvironmentMode: false) == true)
+    }
+
+    @Test func savedDimPreferenceWinsOverAppleEnvironmentDefault() {
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: "1", usesAppleEnvironmentMode: true))
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: "true", usesAppleEnvironmentMode: true))
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: "0", usesAppleEnvironmentMode: false) == false)
+        #expect(PlayerViewPolicy.resolvedDimPassthrough(storedValue: "false", usesAppleEnvironmentMode: false) == false)
+    }
+
+    @Test func backdropArtworkWinsOverPosterArtwork() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: "/backdrop.jpg",
+            posterPath: "/poster.jpg"
+        )
+
+        #expect(kind == .backdrop)
+        #expect(!PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+
+    @Test func posterOnlyArtworkUsesPosterCardPresentation() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: nil,
+            posterPath: "https://m.media-amazon.com/images/M/poster.jpg"
+        )
+
+        #expect(kind == .posterOnly)
+        #expect(PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+
+    @Test func stageStatusBadgeOnlyAppearsForStartupStatesUnlessFallbackIsElevated() {
+        #expect(PlayerArtworkPresentationPolicy.showsStageStatusBadge(for: .preparing))
+        #expect(PlayerArtworkPresentationPolicy.showsStageStatusBadge(for: .buffering))
+        #expect(!PlayerArtworkPresentationPolicy.showsStageStatusBadge(for: .playing))
+        #expect(!PlayerArtworkPresentationPolicy.showsStageStatusBadge(for: .failed))
+        #expect(PlayerArtworkPresentationPolicy.showsStageStatusBadge(for: .playing, isElevatedFallback: true))
+        #expect(!PlayerArtworkPresentationPolicy.showsStageStatusBadge(for: .failed, isElevatedFallback: true))
+    }
+
+    @Test func elevatedStageFallbackUsesWaitingForVideoTitle() {
+        #expect(PlayerViewPolicy.playbackStateTitle(for: .playing) == "Playing")
+        #expect(PlayerViewPolicy.playbackStateTitle(for: .playing, isElevatedStageFallback: false) == "Playing")
+        #expect(PlayerViewPolicy.playbackStateTitle(for: .playing, isElevatedStageFallback: true) == "Waiting for Video")
+        #expect(PlayerViewPolicy.playbackStateTitle(for: .buffering, isElevatedStageFallback: true) == "Buffering")
+    }
+
+    @Test func elevatedStageFallbackUsesMissingVideoIcon() {
+        #expect(PlayerArtworkPresentationPolicy.stageStatusBadgeIconName(isElevatedFallback: false) == "play.rectangle.fill")
+        #expect(PlayerArtworkPresentationPolicy.stageStatusBadgeIconName(isElevatedFallback: true) == "video.slash.fill")
+    }
+
+    @Test func blankArtworkPathsAreIgnored() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: " \n ",
+            posterPath: "  "
+        )
+
+        #expect(kind == .none)
+        #expect(!PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+
+    @Test func unrenderableArtworkPathsAreIgnored() {
+        let kind = PlayerArtworkPresentationPolicy.stageArtworkKind(
+            backdropPath: "javascript:alert(1)",
+            posterPath: "//m.media-amazon.com/images/M/poster.jpg"
+        )
+
+        #expect(kind == .none)
+        #expect(!PlayerArtworkPresentationPolicy.showsPosterCard(for: kind))
+    }
+}
+
 // MARK: - PlayerScrubPolicy Tests
 
 @Suite("PlayerScrubPolicy")
@@ -253,7 +394,7 @@ struct PlayerBufferingPolicyTests {
 
     @Test func rebufferTextWithFullBuffer() {
         let text = PlayerBufferingPolicy.rebufferText(bufferedPercent: 1.0)
-        #expect(text == "Rebuffering\u{2026}")
+        #expect(text == "Buffer ready")
     }
 
     @Test func rebufferTextWithSmallPercent() {
@@ -262,8 +403,8 @@ struct PlayerBufferingPolicyTests {
     }
 
     @Test func rebufferTextRoundsDown() {
-        let text = PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.999)
-        #expect(text == "Buffering... 99%")
+        let text = PlayerBufferingPolicy.rebufferText(bufferedPercent: 0.979)
+        #expect(text == "Buffering... 97%")
     }
 
     // MARK: Quality Change Message

@@ -13,12 +13,19 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
     var quality: String?
     var debridService: String?
     var streamURL: String?
+    /// Local file path (in caches) of the last video frame shown when the player closed.
+    /// Used as the Continue Watching tile artwork. May be evicted by the OS — always have a fallback.
+    var lastFrameImagePath: String?
+    /// JSON-encoded `StreamRecoveryContext` so a Continue Watching tap can re-resolve the stream
+    /// via debrid without re-searching the indexer. Nil when no recoverable source is known.
+    var recoveryContextJSON: String?
     var watchedAt: Date
     var isCompleted: Bool
+    var hasFiniteNumericValues: Bool = true
 
     var progressPercent: Double {
-        guard duration > 0 else { return 0 }
-        return min(progress / duration, 1.0)
+        guard duration.isFinite, duration > 0, progress.isFinite else { return 0 }
+        return min(max(0, progress / duration), 1.0)
     }
 
     var progressString: String {
@@ -36,6 +43,7 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
     enum Columns: String, ColumnExpression {
         case id, mediaId, episodeId, title, progress, duration
         case quality, debridService, streamURL, watchedAt, isCompleted
+        case lastFrameImagePath, recoveryContextJSON
     }
 
     init(
@@ -48,6 +56,8 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
         quality: String? = nil,
         debridService: String? = nil,
         streamURL: String? = nil,
+        lastFrameImagePath: String? = nil,
+        recoveryContextJSON: String? = nil,
         watchedAt: Date,
         isCompleted: Bool
     ) {
@@ -63,24 +73,31 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
         self.quality = Self.normalizedOptionalString(quality)
         self.debridService = Self.normalizedOptionalString(debridService)
         self.streamURL = Self.normalizedOptionalString(streamURL)
+        self.lastFrameImagePath = Self.normalizedOptionalString(lastFrameImagePath)
+        self.recoveryContextJSON = Self.normalizedOptionalString(recoveryContextJSON)
         self.watchedAt = watchedAt
         self.isCompleted = isCompleted
+        self.hasFiniteNumericValues = progress.isFinite && duration.isFinite
     }
 
     init(row: Row) {
         let decodedDuration = (row[Columns.duration] as Double?) ?? 0
+        let decodedProgress = (row[Columns.progress] as Double?) ?? 0
 
         id = (row[Columns.id] as String?) ?? UUID().uuidString
         mediaId = (row[Columns.mediaId] as String?) ?? ""
         episodeId = row[Columns.episodeId]
         title = (row[Columns.title] as String?) ?? ""
         duration = Self.normalizedDuration(decodedDuration)
-        progress = Self.normalizedProgress((row[Columns.progress] as Double?) ?? 0, duration: duration)
+        progress = Self.normalizedProgress(decodedProgress, duration: duration)
         quality = Self.normalizedOptionalString(row[Columns.quality] as String?)
         debridService = Self.normalizedOptionalString(row[Columns.debridService] as String?)
         streamURL = Self.normalizedOptionalString(row[Columns.streamURL] as String?)
-        watchedAt = (row[Columns.watchedAt] as Date?) ?? Date()
-        isCompleted = (row[Columns.isCompleted] as Bool?) ?? false
+        lastFrameImagePath = Self.normalizedOptionalString(row[Columns.lastFrameImagePath] as String?)
+        recoveryContextJSON = Self.normalizedOptionalString(row[Columns.recoveryContextJSON] as String?)
+        watchedAt = Self.valueAsDate(row[Columns.watchedAt.rawValue])
+        isCompleted = Self.valueAsBool(row[Columns.isCompleted.rawValue])
+        hasFiniteNumericValues = decodedDuration.isFinite && decodedProgress.isFinite
     }
 
     func encode(to container: inout PersistenceContainer) {
@@ -94,6 +111,8 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
         container[Columns.quality] = normalized.quality
         container[Columns.debridService] = normalized.debridService
         container[Columns.streamURL] = normalized.streamURL
+        container[Columns.lastFrameImagePath] = normalized.lastFrameImagePath
+        container[Columns.recoveryContextJSON] = normalized.recoveryContextJSON
         container[Columns.watchedAt] = normalized.watchedAt
         container[Columns.isCompleted] = normalized.isCompleted
     }
@@ -109,16 +128,20 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
             quality: quality,
             debridService: debridService,
             streamURL: streamURL,
+            lastFrameImagePath: lastFrameImagePath,
+            recoveryContextJSON: recoveryContextJSON,
             watchedAt: watchedAt,
             isCompleted: isCompleted
         )
     }
 
     private static func normalizedDuration(_ duration: Double) -> Double {
-        max(duration, 0)
+        guard duration.isFinite else { return 0 }
+        return max(duration, 0)
     }
 
     private static func normalizedProgress(_ progress: Double, duration: Double) -> Double {
+        guard progress.isFinite else { return 0 }
         let normalizedProgress = max(progress, 0)
         guard duration > 0 else { return normalizedProgress }
         return min(normalizedProgress, duration)
@@ -130,5 +153,15 @@ struct WatchHistory: Codable, Sendable, Identifiable, Equatable, FetchableRecord
             return nil
         }
         return trimmed
+    }
+
+    private static func valueAsDate(_ value: (any DatabaseValueConvertible)?) -> Date {
+        guard let value else { return Date() }
+        return Date.fromDatabaseValue(value.databaseValue) ?? Date()
+    }
+
+    private static func valueAsBool(_ value: (any DatabaseValueConvertible)?) -> Bool {
+        guard let value else { return false }
+        return Bool.fromDatabaseValue(value.databaseValue) ?? false
     }
 }

@@ -3,6 +3,74 @@ import UniformTypeIdentifiers
 
 // MARK: - Trakt Settings
 
+enum TraktSettingsPolicy {
+    static let connectedStatusMessage = "Connected to Trakt."
+    static let authorizationTimedOutMessage = "Authorization timed out. Please try again."
+    static let cannotSyncMissingCredentialsMessage = "Cannot sync: Trakt credentials are missing."
+    static let missingCredentialsHelpMessage =
+        "Enter your Trakt Client ID and Secret in the Advanced section below to enable login."
+
+    static func shouldShowMissingCredentialsHelp(
+        hasCredentials: Bool,
+        hasBundledCredentials: Bool
+    ) -> Bool {
+        !hasCredentials && !hasBundledCredentials
+    }
+
+    static func advancedCredentialsDescription(hasBundledCredentials: Bool) -> String {
+        hasBundledCredentials
+            ? "Optional: override the built-in Trakt API credentials with your own."
+            : "Register an app at trakt.tv/oauth/applications to get these. Use `urn:ietf:wg:oauth:2.0:oob` as the redirect URI."
+    }
+
+    static func initialPollInterval(_ interval: Int) -> Int {
+        max(interval, 1)
+    }
+
+    enum DevicePollDecision: Equatable {
+        case continuePolling(nextInterval: Int)
+        case authorized(access: String, refresh: String?)
+    }
+
+    static func devicePollDecision(
+        for result: DevicePollResult,
+        currentInterval: Int
+    ) -> DevicePollDecision {
+        switch result {
+        case .pending:
+            return .continuePolling(nextInterval: currentInterval)
+        case .slowDown:
+            return .continuePolling(nextInterval: currentInterval + 1)
+        case .success(let access, let refresh):
+            return .authorized(access: access, refresh: refresh)
+        }
+    }
+
+    static func formattedSyncDate(
+        _ isoString: String,
+        now: Date = Date()
+    ) -> String {
+        let formatter = ISO8601DateFormatter()
+        let date =
+            formatter.date(from: isoString)
+            ?? {
+                let fractional = ISO8601DateFormatter()
+                fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                return fractional.date(from: isoString)
+            }()
+        guard let date else { return isoString }
+        let relative = RelativeDateTimeFormatter()
+        relative.unitsStyle = .abbreviated
+        return relative.localizedString(for: date, relativeTo: now)
+    }
+}
+
+enum SyncSettingsErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
+    }
+}
+
 struct TraktSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openURL) private var openURL
@@ -30,7 +98,47 @@ struct TraktSettingsView: View {
     @State private var clientSecret = ""
     @State private var clientIdSaveTask: Task<Void, Never>?
     @State private var clientSecretSaveTask: Task<Void, Never>?
+    @State private var isReloadingPersistedState = false
     @State private var confirmDisconnect = false
+    private let disablesAutomaticReload: Bool
+
+    init(
+        initialIsConnected: Bool = false,
+        initialStatusMessage: String? = nil,
+        initialAutoScrobble: Bool = true,
+        initialSyncWatchlist: Bool = true,
+        initialSyncHistory: Bool = true,
+        initialSyncRatings: Bool = true,
+        initialSyncFolders: Bool = false,
+        initialIsSyncing: Bool = false,
+        initialLastSyncDate: String? = nil,
+        initialSyncResultMessage: String? = nil,
+        initialIsAuthenticating: Bool = false,
+        initialDeviceUserCode: String? = nil,
+        initialDeviceVerificationURL: String? = nil,
+        initialShowAdvanced: Bool = false,
+        initialClientId: String = "",
+        initialClientSecret: String = "",
+        disablesAutomaticReload: Bool = false
+    ) {
+        _isConnected = State(initialValue: initialIsConnected)
+        _statusMessage = State(initialValue: initialStatusMessage)
+        _autoScrobble = State(initialValue: initialAutoScrobble)
+        _syncWatchlist = State(initialValue: initialSyncWatchlist)
+        _syncHistory = State(initialValue: initialSyncHistory)
+        _syncRatings = State(initialValue: initialSyncRatings)
+        _syncFolders = State(initialValue: initialSyncFolders)
+        _isSyncing = State(initialValue: initialIsSyncing)
+        _lastSyncDate = State(initialValue: initialLastSyncDate)
+        _syncResultMessage = State(initialValue: initialSyncResultMessage)
+        _isAuthenticating = State(initialValue: initialIsAuthenticating)
+        _deviceUserCode = State(initialValue: initialDeviceUserCode)
+        _deviceVerificationURL = State(initialValue: initialDeviceVerificationURL)
+        _showAdvanced = State(initialValue: initialShowAdvanced)
+        _clientId = State(initialValue: initialClientId)
+        _clientSecret = State(initialValue: initialClientSecret)
+        self.disablesAutomaticReload = disablesAutomaticReload
+    }
 
     var body: some View {
         Form {
@@ -43,32 +151,41 @@ struct TraktSettingsView: View {
         }
         .navigationTitle("Trakt")
         .task {
+            guard !disablesAutomaticReload else { return }
             await reloadPersistedState()
         }
         .onReceive(NotificationCenter.default.publisher(for: .settingsDidChange)) { _ in
+            guard !disablesAutomaticReload else { return }
             Task { await reloadPersistedState() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .appDidResetAllData)) { _ in
+            guard !disablesAutomaticReload else { return }
             Task { await reloadPersistedState() }
         }
         .onDisappear {
             pollTask?.cancel()
             pollTask = nil
+            guard !disablesAutomaticReload else { return }
             flushPendingClientCredentialSaves()
         }
         .onChange(of: autoScrobble) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             Task { await persistBool(newValue, key: SettingsKeys.traktAutoScrobble) }
         }
         .onChange(of: syncWatchlist) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             Task { await persistBool(newValue, key: SettingsKeys.traktSyncWatchlist) }
         }
         .onChange(of: syncHistory) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             Task { await persistBool(newValue, key: SettingsKeys.traktSyncHistory) }
         }
         .onChange(of: syncRatings) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             Task { await persistBool(newValue, key: SettingsKeys.traktSyncRatings) }
         }
         .onChange(of: syncFolders) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             Task { await persistBool(newValue, key: SettingsKeys.traktSyncFolders) }
         }
         .alert(
@@ -103,7 +220,7 @@ struct TraktSettingsView: View {
         Section {
             if isConnected {
                 Label("Connected", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(VPColor.success)
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.caption)
@@ -167,11 +284,14 @@ struct TraktSettingsView: View {
                     Label("Login with Trakt", systemImage: "person.crop.circle.badge.checkmark")
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .tint(.white)
                 .disabled(!hasCredentials)
 
-                if !hasCredentials, !TraktDefaults.hasBundledCredentials {
-                    Text("Enter your Trakt Client ID and Secret in the Advanced section below to enable login.")
+                if TraktSettingsPolicy.shouldShowMissingCredentialsHelp(
+                    hasCredentials: hasCredentials,
+                    hasBundledCredentials: TraktDefaults.hasBundledCredentials
+                ) {
+                    Text(TraktSettingsPolicy.missingCredentialsHelpMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -248,14 +368,17 @@ struct TraktSettingsView: View {
                         .accessibilityHint("Pastes the Trakt client secret into the field.")
                 }
 
-                Text(TraktDefaults.hasBundledCredentials
-                    ? "Optional: override the built-in Trakt API credentials with your own."
-                    : "Register an app at trakt.tv/oauth/applications to get these. Use `urn:ietf:wg:oauth:2.0:oob` as the redirect URI.")
+                Text(
+                    TraktSettingsPolicy.advancedCredentialsDescription(
+                        hasBundledCredentials: TraktDefaults.hasBundledCredentials
+                    )
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .onChange(of: clientId) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             clientIdSaveTask?.cancel()
             clientIdSaveTask = Task {
                 try? await Task.sleep(for: .milliseconds(500))
@@ -264,6 +387,7 @@ struct TraktSettingsView: View {
             }
         }
         .onChange(of: clientSecret) { _, newValue in
+            guard !isReloadingPersistedState else { return }
             clientSecretSaveTask?.cancel()
             clientSecretSaveTask = Task {
                 try? await Task.sleep(for: .milliseconds(500))
@@ -316,7 +440,7 @@ struct TraktSettingsView: View {
                 )
             }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
         }
     }
 
@@ -328,7 +452,7 @@ struct TraktSettingsView: View {
         expiresIn: Int
     ) async {
         let deadline = Date().addingTimeInterval(TimeInterval(expiresIn))
-        var pollInterval = max(interval, 1)
+        var pollInterval = TraktSettingsPolicy.initialPollInterval(interval)
 
         while Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .seconds(pollInterval))
@@ -336,13 +460,14 @@ struct TraktSettingsView: View {
 
             do {
                 let result = try await service.pollDeviceToken(deviceCode: deviceCode)
-                switch result {
-                case .pending:
+                switch TraktSettingsPolicy.devicePollDecision(
+                    for: result,
+                    currentInterval: pollInterval
+                ) {
+                case .continuePolling(let nextInterval):
+                    pollInterval = nextInterval
                     continue
-                case .slowDown:
-                    pollInterval += 1
-                    continue
-                case .success(let access, let refresh):
+                case .authorized(let access, let refresh):
                     do {
                         try await appState.settingsManager.setString(key: SettingsKeys.traktAccessToken, value: access)
                         try await appState.settingsManager.setString(key: SettingsKeys.traktRefreshToken, value: refresh)
@@ -352,13 +477,13 @@ struct TraktSettingsView: View {
                         isAuthenticating = false
                         deviceUserCode = nil
                         deviceVerificationURL = nil
-                        statusMessage = "Connected to Trakt."
+                        statusMessage = TraktSettingsPolicy.connectedStatusMessage
                         return
                     } catch {
                         isAuthenticating = false
                         deviceUserCode = nil
                         deviceVerificationURL = nil
-                        errorMessage = error.localizedDescription
+                        errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                         return
                     }
                 }
@@ -367,7 +492,7 @@ struct TraktSettingsView: View {
                     isAuthenticating = false
                     deviceUserCode = nil
                     deviceVerificationURL = nil
-                    errorMessage = error.localizedDescription
+                    errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
                 return
             }
@@ -377,7 +502,7 @@ struct TraktSettingsView: View {
             isAuthenticating = false
             deviceUserCode = nil
             deviceVerificationURL = nil
-            errorMessage = "Authorization timed out. Please try again."
+            errorMessage = TraktSettingsPolicy.authorizationTimedOutMessage
         }
     }
 
@@ -405,7 +530,7 @@ struct TraktSettingsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
+                    errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
                 }
             }
         }
@@ -413,13 +538,16 @@ struct TraktSettingsView: View {
 
     @MainActor
     private func reloadPersistedState() async {
+        isReloadingPersistedState = true
+        defer { isReloadingPersistedState = false }
+
         clientId = (try? await appState.settingsManager.getString(key: SettingsKeys.traktClientId)) ?? ""
         clientSecret = (try? await appState.settingsManager.getString(key: SettingsKeys.traktClientSecret)) ?? ""
 
         if let token = try? await appState.settingsManager.getString(key: SettingsKeys.traktAccessToken),
            !token.isEmpty {
             isConnected = true
-            statusMessage = "Connected to Trakt."
+            statusMessage = TraktSettingsPolicy.connectedStatusMessage
         } else {
             isConnected = false
             statusMessage = nil
@@ -437,16 +565,25 @@ struct TraktSettingsView: View {
     }
 
     private func flushPendingClientCredentialSaves() {
+        let shouldFlushClientId = clientIdSaveTask != nil
+        let shouldFlushClientSecret = clientSecretSaveTask != nil
+
         clientIdSaveTask?.cancel()
         clientIdSaveTask = nil
         clientSecretSaveTask?.cancel()
         clientSecretSaveTask = nil
 
+        guard shouldFlushClientId || shouldFlushClientSecret else { return }
+
         let pendingClientId = clientId
         let pendingClientSecret = clientSecret
         Task {
-            await persistString(pendingClientId, key: SettingsKeys.traktClientId)
-            await persistString(pendingClientSecret, key: SettingsKeys.traktClientSecret)
+            if shouldFlushClientId {
+                await persistString(pendingClientId, key: SettingsKeys.traktClientId)
+            }
+            if shouldFlushClientSecret {
+                await persistString(pendingClientSecret, key: SettingsKeys.traktClientSecret)
+            }
         }
     }
 
@@ -459,7 +596,7 @@ struct TraktSettingsView: View {
         defer { isSyncing = false }
 
         guard let result = await appState.performTraktSyncAndRefreshLocalState() else {
-            syncResultMessage = "Cannot sync: Trakt credentials are missing."
+            syncResultMessage = TraktSettingsPolicy.cannotSyncMissingCredentialsMessage
             return
         }
 
@@ -468,11 +605,7 @@ struct TraktSettingsView: View {
     }
 
     private func formattedSyncDate(_ isoString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: isoString) else { return isoString }
-        let relative = RelativeDateTimeFormatter()
-        relative.unitsStyle = .abbreviated
-        return relative.localizedString(for: date, relativeTo: Date())
+        TraktSettingsPolicy.formattedSyncDate(isoString)
     }
 
     private func persistBool(_ value: Bool, key: String) async {
@@ -484,7 +617,7 @@ struct TraktSettingsView: View {
             NotificationCenter.default.post(name: .settingsDidChange, object: nil)
         } catch {
             await MainActor.run {
-                errorMessage = error.localizedDescription
+                errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
             }
         }
     }
@@ -498,7 +631,7 @@ struct TraktSettingsView: View {
             NotificationCenter.default.post(name: .settingsDidChange, object: nil)
         } catch {
             await MainActor.run {
-                errorMessage = error.localizedDescription
+                errorMessage = SyncSettingsErrorPresentationPolicy.displayMessage(for: error)
             }
         }
     }

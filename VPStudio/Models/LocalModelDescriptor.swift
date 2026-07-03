@@ -71,6 +71,10 @@ extension LocalModelDescriptor {
     static func canTransition(from: LocalModelStatus, to: LocalModelStatus) -> Bool {
         switch (from, to) {
         case (.available, .downloading),
+             // A download can fail at preflight (e.g. insufficient disk) before it ever
+             // reaches .downloading; without this the failure is silently swallowed and the
+             // model stays .available, so the UI never reflects it.
+             (.available, .failed),
              (.downloading, .downloaded),
              (.downloading, .paused),
              (.downloading, .failed),

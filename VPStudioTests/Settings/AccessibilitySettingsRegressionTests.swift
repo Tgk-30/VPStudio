@@ -31,6 +31,7 @@ struct AccessibilitySettingsRegressionTests {
         let subtitleSource = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/SubtitleSettingsView.swift")
         let settingsRootSource = try contents(of: "VPStudio/Views/Windows/Settings/Root/SettingsRootView.swift")
         let testModeSource = try contents(of: "VPStudio/Views/Windows/Settings/Destinations/TestModeView.swift")
+        let playerSource = try contents(of: "VPStudio/Views/Windows/Player/PlayerView.swift")
         let setupWizardSource = try contents(of: "VPStudio/Views/Windows/Settings/Onboarding/SetupWizardView.swift")
 
         #expect(asyncStateSource.contains("@Environment(\\.accessibilityReduceMotion)"))
@@ -39,7 +40,7 @@ struct AccessibilitySettingsRegressionTests {
         #expect(subtitleSource.contains(".accessibilityLabel(\"Preferred subtitle languages\")"))
         #expect(subtitleSource.contains(".accessibilityLabel(\"Subtitle font size\")"))
         #expect(settingsRootSource.contains(".accessibilityLabel(\"Menu background intensity\")"))
-        #expect(testModeSource.contains(".accessibilityLabel(\"Playback position\")"))
+        #expect(playerSource.contains(".accessibilityLabel(\"Playback position\")"))
         #expect(!testModeSource.contains("Button(action: {})"))
     }
 
@@ -62,12 +63,15 @@ struct AccessibilitySettingsRegressionTests {
     }
 
     @Test
-    func setupWizardSourceRequiresTMDBAndSurfacesSaveFailures() throws {
+    func setupWizardSourceRequiresOMDbAndSurfacesSaveFailures() throws {
         let setupWizardSource = try contents(of: "VPStudio/Views/Windows/Settings/Onboarding/SetupWizardView.swift")
 
-        #expect(setupWizardSource.contains("SetupWizardValidationPolicy.requiredTMDBMessage"))
+        #expect(setupWizardSource.contains("SetupWizardValidationPolicy.requiredMetadataKeyMessage"))
+        #expect(!setupWizardSource.contains("SetupWizardValidationPolicy.requiredOMDbMessage"))
         #expect(setupWizardSource.contains("guard stepAfterAdvance > stepBeforeAdvance else { break }"))
-        #expect(setupWizardSource.contains("saveError = error.localizedDescription"))
+        #expect(setupWizardSource.contains("SetupWizardErrorPresentationPolicy.displayMessage(for: error)"))
+        #expect(!setupWizardSource.contains("saveError = error.localizedDescription"))
+        #expect(!setupWizardSource.contains("saveError = (error as? DebridError)?.localizedDescription"))
     }
 
     @Test

@@ -55,6 +55,16 @@ enum IndexerDefaultRanking {
             activeByDefault: true
         ),
         Definition(
+            id: "builtin-mediafusion",
+            name: "Stremio MediaFusion",
+            type: .stremio,
+            baseURL: "https://mediafusion.elfhosted.com",
+            endpointPath: "/manifest.json",
+            providerSubtype: .stremioAddon,
+            apiKeyTransport: .query,
+            activeByDefault: false
+        ),
+        Definition(
             id: "builtin-yts",
             name: "YTS",
             type: .yts,

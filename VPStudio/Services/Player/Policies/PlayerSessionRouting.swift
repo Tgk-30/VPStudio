@@ -9,7 +9,7 @@ enum PlayerSessionRouting {
         routed.append(primary)
         seen.insert(primary.id)
 
-        for stream in available where !seen.contains(stream.id) {
+        for stream in available where !seen.contains(stream.id) && PlayerStreamURLPolicy.isLaunchable(stream) {
             routed.append(stream)
             seen.insert(stream.id)
         }
@@ -72,10 +72,10 @@ enum PlayerSessionRouting {
         switch stream.codec {
         case .h265:
             score += 14
+        case .av1:
+            score += 12
         case .h264:
             score += 10
-        case .av1:
-            score += 8
         case .xvid:
             score += 4
         case .unknown:
@@ -83,7 +83,7 @@ enum PlayerSessionRouting {
         }
 
         if let bytes = stream.sizeBytes {
-            let gigabytes = max(0, Int(bytes / 1_073_741_824))
+            let gigabytes = min(max(0, Int(bytes / 1_000_000_000)), 4)
             score += min(gigabytes * 3, 12)
         }
 

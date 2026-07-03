@@ -2,7 +2,7 @@ import Foundation
 
 struct EZTVIndexer: TorrentIndexer {
     let name = "EZTV"
-    private let baseURL = "https://eztvx.to/api"
+    private let baseURL: String
     private static let requestLimiter = IndexerRequestLimiter()
     private static let defaultSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -13,14 +13,15 @@ struct EZTVIndexer: TorrentIndexer {
 
     private let session: URLSession
 
-    init(session: URLSession? = nil) {
+    init(baseURL: String = "https://eztvx.to/api", session: URLSession? = nil) {
+        self.baseURL = baseURL
         self.session = session ?? Self.defaultSession
     }
 
     func search(imdbId: String, type: MediaType, season: Int?, episode: Int?) async throws -> [TorrentResult] {
         guard type == .series else { return [] }
-        let cleanId = imdbId.replacingOccurrences(of: "tt", with: "")
-        guard !cleanId.isEmpty else { return [] }
+        guard let normalizedIMDbID = IMDbIdentifierPolicy.appScopedID(in: imdbId) else { return [] }
+        let cleanId = String(normalizedIMDbID.dropFirst(2))
 
         var results: [TorrentResult] = []
         let maxPages = 3
@@ -153,12 +154,25 @@ struct EZTVIndexer: TorrentIndexer {
     }
 
     private func buildURL(queryItems: [URLQueryItem]) throws -> URL {
-        guard var components = URLComponents(string: "\(baseURL)/get-torrents") else {
+        guard var components = URLComponents(string: baseURL) else {
             throw URLError(.badURL)
         }
+        let normalizedBasePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let appendPath = "get-torrents".trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        switch (normalizedBasePath.isEmpty, appendPath.isEmpty) {
+        case (true, false):
+            components.path = "/\(appendPath)"
+        case (false, true):
+            components.path = "/\(normalizedBasePath)"
+        case (false, false):
+            components.path = "/\(normalizedBasePath)/\(appendPath)"
+        default:
+            components.path = ""
+        }
         components.queryItems = queryItems
-        guard let url = components.url else {
-            throw URLError(.badURL)
+        guard let url = components.url,
+              IndexerURLSecurityPolicy.permits(url: url) else {
+            throw URLError(.unsupportedURL)
         }
         return url
     }

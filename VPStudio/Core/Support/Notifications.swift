@@ -10,7 +10,8 @@ extension Notification.Name {
     static let openSubtitlesDidChange = Notification.Name("VPStudio.OpenSubtitlesDidChange")
     static let environmentsDidChange = Notification.Name("VPStudio.EnvironmentsDidChange")
     static let indexersDidChange = Notification.Name("VPStudio.IndexersDidChange")
-    static let tmdbApiKeyDidChange = Notification.Name("VPStudio.TMDBApiKeyDidChange")
+    static let metadataApiKeyDidChange = Notification.Name("VPStudio.MetadataApiKeyDidChange")
+    static let metadataProviderDidChange = metadataApiKeyDidChange
     static let appDidResetAllData = Notification.Name("VPStudio.AppDidResetAllData")
     static let localModelsDidChange = Notification.Name("VPStudio.LocalModelsDidChange")
 
@@ -28,4 +29,18 @@ extension Notification.Name {
     static let immersiveControlRequestEnvironmentSwitch = Notification.Name("VPStudio.ImmersiveControl.RequestEnvironmentSwitch")
     static let immersiveControlDismiss = Notification.Name("VPStudio.ImmersiveControl.Dismiss")
     static let immersiveControlCycleScreenSize = Notification.Name("VPStudio.ImmersiveControl.CycleScreenSize")
+    static let playerAutoplayControlPlayNow = Notification.Name("VPStudio.PlayerAutoplayControl.PlayNow")
+    static let playerAutoplayControlCancel = Notification.Name("VPStudio.PlayerAutoplayControl.Cancel")
+    static let playerAutoplayControlProgress = Notification.Name("VPStudio.PlayerAutoplayControl.Progress")
+    static let playerSubtitleControlRefreshCatalog = Notification.Name("VPStudio.PlayerSubtitleControl.RefreshCatalog")
+    static let playerSubtitleControlDownload = Notification.Name("VPStudio.PlayerSubtitleControl.Download")
+    static let libraryCSVImportControlImportFiles = Notification.Name("VPStudio.LibraryCSVImportControl.ImportFiles")
+    static let libraryCSVImportControlImportFolder = Notification.Name("VPStudio.LibraryCSVImportControl.ImportFolder")
+    static let aiSettingsControlPersistCloudCredential = Notification.Name("VPStudio.AISettingsControl.PersistCloudCredential")
+    static let aiSettingsControlDeleteCloudCredential = Notification.Name("VPStudio.AISettingsControl.DeleteCloudCredential")
+    static let aiSettingsControlPersistOllamaEndpoint = Notification.Name("VPStudio.AISettingsControl.PersistOllamaEndpoint")
+    static let aiSettingsControlPersistStringSetting = Notification.Name("VPStudio.AISettingsControl.PersistStringSetting")
+    static let aiSettingsControlPersistBoolSetting = Notification.Name("VPStudio.AISettingsControl.PersistBoolSetting")
+    static let aiSettingsControlScheduleModelPresetSave = Notification.Name("VPStudio.AISettingsControl.ScheduleModelPresetSave")
+    static let aiSettingsControlResetUsageStats = Notification.Name("VPStudio.AISettingsControl.ResetUsageStats")
 }

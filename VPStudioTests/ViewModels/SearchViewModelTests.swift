@@ -12,6 +12,10 @@ struct SearchViewModelTests {
     private actor SearchMetadataStub: MetadataProvider {
         var responseByPage: [Int: MetadataSearchResult] = [:]
         var failingPages: Set<Int> = []
+        private var searchCallCount = 0
+        private var lastSearchQuery: String?
+        private var discoverCallCount = 0
+        private var discoverResult = MetadataSearchResult(items: [], page: 1, totalPages: 1, totalResults: 0)
 
         func setResponses(_ responses: [Int: MetadataSearchResult]) {
             responseByPage = responses
@@ -21,7 +25,25 @@ struct SearchViewModelTests {
             failingPages = pages
         }
 
+        func setDiscoverResult(_ result: MetadataSearchResult) {
+            discoverResult = result
+        }
+
+        func getSearchCallCount() -> Int {
+            searchCallCount
+        }
+
+        func getLastSearchQuery() -> String? {
+            lastSearchQuery
+        }
+
+        func getDiscoverCallCount() -> Int {
+            discoverCallCount
+        }
+
         func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
+            searchCallCount += 1
+            lastSearchQuery = query
             if failingPages.contains(page) {
                 throw SearchStubError.forcedFailure
             }
@@ -31,7 +53,48 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            discoverCallCount += 1
+            return discoverResult
+        }
+        func getGenres(type: MediaType) async throws -> [Genre] { [] }
+        func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
+        func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { [] }
+        func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { ExternalIds(imdbId: nil, tvdbId: nil) }
+    }
+
+    private actor DiscoverRetryMetadataStub: MetadataProvider {
+        private(set) var discoverCallCount = 0
+        private var shouldFailDiscover: Bool
+        private var discoverResult: MetadataSearchResult
+
+        init(shouldFailDiscover: Bool, discoverResult: MetadataSearchResult) {
+            self.shouldFailDiscover = shouldFailDiscover
+            self.discoverResult = discoverResult
+        }
+
+        func setShouldFailDiscover(_ value: Bool) {
+            shouldFailDiscover = value
+        }
+
+        func getDiscoverCallCount() -> Int {
+            discoverCallCount
+        }
+
+        func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
+            MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+        }
+
+        func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
+        func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
+        func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            discoverCallCount += 1
+            if shouldFailDiscover {
+                throw SearchStubError.forcedFailure
+            }
+            return discoverResult
+        }
         func getGenres(type: MediaType) async throws -> [Genre] { [] }
         func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
         func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { [] }
@@ -57,7 +120,14 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-tracking-p\(filters.page)")],
+                page: filters.page,
+                totalPages: 1,
+                totalResults: 1
+            )
+        }
         func getGenres(type: MediaType) async throws -> [Genre] {
             getGenresCallCount += 1
             return genres
@@ -94,11 +164,57 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "slow-genre-p\(filters.page)")],
+                page: filters.page,
+                totalPages: 1,
+                totalResults: 1
+            )
+        }
         func getGenres(type: MediaType) async throws -> [Genre] {
             getGenresCallCount += 1
             // Deliberately ignore cancellation to emulate non-cooperative network code.
             try? await Task.sleep(for: delay)
+            return genresByType[type] ?? []
+        }
+        func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
+        func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { [] }
+        func getExternalIds(tmdbId: Int, type: MediaType) async throws -> ExternalIds { ExternalIds(imdbId: nil, tvdbId: nil) }
+    }
+
+    private actor GenreByTypeCachingMetadataStub: MetadataProvider {
+        private var genresByType: [MediaType: [Genre]]
+        private var genresCallCount: [MediaType: Int] = [:]
+
+        init(genresByType: [MediaType: [Genre]]) {
+            self.genresByType = genresByType
+        }
+
+        func setGenres(_ genres: [Genre], for type: MediaType) {
+            genresByType[type] = genres
+        }
+
+        func getGenresCallCount(for type: MediaType) -> Int {
+            genresCallCount[type] ?? 0
+        }
+
+        func search(query: String, type: MediaType?, page: Int) async throws -> MetadataSearchResult {
+            MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+        }
+
+        func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
+        func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult {
+            MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+        }
+        func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult {
+            MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+        }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(items: [], page: filters.page, totalPages: 1, totalResults: 0)
+        }
+        func getGenres(type: MediaType) async throws -> [Genre] {
+            genresCallCount[type, default: 0] += 1
             return genresByType[type] ?? []
         }
         func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
@@ -125,7 +241,14 @@ struct SearchViewModelTests {
         func getDetail(id: String, type: MediaType) async throws -> MediaItem { fatalError("unused") }
         func getTrending(type: MediaType, timeWindow: TrendingWindow, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
         func getCategory(_ category: MediaCategory, type: MediaType, page: Int) async throws -> MetadataSearchResult { fatalError("unused") }
-        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult { fatalError("unused") }
+        func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "discover-\(marker)-p\(filters.page)")],
+                page: filters.page,
+                totalPages: 1,
+                totalResults: 1
+            )
+        }
         func getGenres(type: MediaType) async throws -> [Genre] { [] }
         func getSeasons(tmdbId: Int) async throws -> [Season] { [] }
         func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { [] }
@@ -148,8 +271,8 @@ struct SearchViewModelTests {
             )
         }
 
-        func unblock(with result: MetadataSearchResult = MetadataSearchResult(items: [], page: 1, totalPages: 1, totalResults: 0)) async {
-            await resumeIfNeeded(returning: result)
+        func unblock(with result: MetadataSearchResult = MetadataSearchResult(items: [], page: 1, totalPages: 1, totalResults: 0)) {
+            resumeIfNeeded(returning: result)
         }
 
         private func resumeIfNeeded(returning result: MetadataSearchResult) {
@@ -226,6 +349,22 @@ struct SearchViewModelTests {
             }
             // Yield first to give pending Tasks a chance to run on the main actor,
             // then sleep to avoid busy-waiting.
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    @MainActor
+    private static func waitUntil(
+        timeout: Duration = .milliseconds(5000),
+        _ condition: @MainActor () async -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !(await condition()) {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("waitUntil timed out after \(timeout)")
+                return
+            }
             await Task.yield()
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -362,6 +501,57 @@ struct SearchViewModelTests {
 
     @Test
     @MainActor
+    func loadMoreRespectsCooldownAndDoesNotOverfetchRapidCalls() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "page-1")],
+                page: 1,
+                totalPages: 3,
+                totalResults: 3
+            ),
+            2: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "page-2")],
+                page: 2,
+                totalPages: 3,
+                totalResults: 3
+            ),
+            3: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "page-3")],
+                page: 3,
+                totalPages: 3,
+                totalResults: 3
+            ),
+        ])
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            paginationCooldown: .milliseconds(120)
+        )
+
+        viewModel.query = "paginate"
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        #expect(await stub.getSearchCallCount() == 1)
+
+        viewModel.loadMore()
+        viewModel.loadMore()
+        try await Self.waitUntil { viewModel.currentPage == 2 }
+        #expect(await stub.getSearchCallCount() == 2)
+
+        viewModel.loadMore()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(viewModel.currentPage == 2)
+        #expect(await stub.getSearchCallCount() == 2)
+
+        try await Task.sleep(for: .milliseconds(140))
+        viewModel.loadMore()
+        try await Self.waitUntil { viewModel.currentPage == 3 }
+        #expect(await stub.getSearchCallCount() == 3)
+        #expect(viewModel.results.map(\.id) == ["page-1", "page-2", "page-3"])
+    }
+
+    @Test
+    @MainActor
     func genreLoadingIsLazyUntilExplicitRequest() async throws {
         let stub = GenreLoadCountingMetadataStub(genres: [
             Genre(id: 28, name: "Action"),
@@ -414,7 +604,330 @@ struct SearchViewModelTests {
         #expect(viewModel.genres.first?.name == "Action")
     }
 
+    @Test
+    @MainActor
+    func loadGenresReusesCachedGenresWhenReturningToPreviouslyLoadedType() async throws {
+        let stub = GenreByTypeCachingMetadataStub(
+            genresByType: [
+                .movie: [
+                    Genre(id: 28, name: "Action"),
+                    Genre(id: 35, name: "Comedy"),
+                ],
+                .series: [
+                    Genre(id: 10759, name: "Action & Adventure"),
+                ],
+            ]
+        )
+        let viewModel = SearchViewModel(metadataService: stub)
+
+        viewModel.loadGenres()
+        var movieCalls = await stub.getGenresCallCount(for: .movie)
+        var attempts = 0
+        while movieCalls == 0 && attempts < 60 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+            movieCalls = await stub.getGenresCallCount(for: .movie)
+        }
+        #expect(movieCalls == 1)
+        #expect(viewModel.genres.map(\.id) == [28, 35])
+
+        viewModel.selectedType = .series
+        viewModel.loadGenres()
+        var seriesCalls = await stub.getGenresCallCount(for: .series)
+        attempts = 0
+        while seriesCalls == 0 && attempts < 60 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+            seriesCalls = await stub.getGenresCallCount(for: .series)
+        }
+        #expect(seriesCalls == 1)
+        #expect(viewModel.genres.map(\.id) == [10759])
+
+        viewModel.selectedType = .movie
+        viewModel.loadGenres()
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(await stub.getGenresCallCount(for: .movie) == 1)
+        #expect(await stub.getGenresCallCount(for: .series) == 1)
+        #expect(viewModel.genres.map(\.id) == [28, 35])
+    }
+
+    @Test
+    @MainActor
+    func selectGenreNilWithActiveQueryStartsTextSearchAndClearsGenreSelection() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setDiscoverResult(MetadataSearchResult(
+            items: [Fixtures.mediaPreview(id: "genre-page-1")],
+            page: 1,
+            totalPages: 1,
+            totalResults: 1
+        ))
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-page-1")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            ),
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        let genre = Genre(id: 28, name: "Action")
+
+        viewModel.selectGenre(genre)
+        var attempts = 0
+        while viewModel.results.isEmpty && attempts < 80 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(viewModel.results.map(\.id) == ["genre-page-1"])
+
+        let generationBefore = viewModel.searchGeneration
+        viewModel.query = "apollo"
+        viewModel.selectGenre(nil)
+
+        var searchCalls = await stub.getSearchCallCount()
+        attempts = 0
+        while searchCalls == 0 && attempts < 80 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+            searchCalls = await stub.getSearchCallCount()
+        }
+        #expect(searchCalls == 1)
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.selectedGenre == nil)
+        #expect(viewModel.query == "apollo")
+        #expect(viewModel.queryDraft == "apollo")
+
+        attempts = 0
+        while viewModel.results.map(\.id) != ["search-page-1"] && attempts < 80 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(viewModel.results.map(\.id) == ["search-page-1"])
+        #expect(await stub.getDiscoverCallCount() == 1)
+    }
+
+    @Test
+    @MainActor
+    func selectGenreNilWithEmptyQueryClearsGenreAndResetsResults() async throws {
+        let stub = SearchMetadataStub()
+        let viewModel = SearchViewModel(metadataService: stub)
+
+        viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
+        viewModel.results = [Fixtures.mediaPreview(id: "stale")]
+        viewModel.query = ""
+
+        let generationBefore = viewModel.searchGeneration
+        viewModel.selectGenre(nil)
+
+        #expect(viewModel.selectedGenre == nil)
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.currentPage == 1)
+        #expect(viewModel.totalPages == 1)
+        #expect(viewModel.error == nil)
+        #expect(await stub.getSearchCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 1)
+    }
+
+    @Test
+    @MainActor
+    func loadMoreAfterSearchingWithinGenreContextUsesSearchEndpoint() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setDiscoverResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-page-1")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        )
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-page-1")],
+                page: 1,
+                totalPages: 2,
+                totalResults: 2
+            ),
+            2: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-page-2")],
+                page: 2,
+                totalPages: 2,
+                totalResults: 2
+            ),
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+
+        viewModel.selectGenre(Genre(id: 28, name: "Action"))
+        var attempts = 0
+        while viewModel.results.isEmpty && attempts < 80 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(viewModel.results.map(\.id) == ["genre-page-1"])
+        #expect(await stub.getDiscoverCallCount() == 1)
+
+        viewModel.query = "apollo"
+        viewModel.search()
+        attempts = 0
+        while viewModel.results.map(\.id) != ["search-page-1"] && attempts < 80 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(await stub.getSearchCallCount() == 1)
+        #expect(viewModel.results.map(\.id) == ["search-page-1"])
+
+        viewModel.loadMore()
+        attempts = 0
+        while viewModel.currentPage != 2 && attempts < 100 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(viewModel.currentPage == 2)
+        #expect(viewModel.results.map(\.id) == ["search-page-1", "search-page-2"])
+        #expect(await stub.getSearchCallCount() == 2)
+        #expect(await stub.getDiscoverCallCount() == 1)
+    }
+
     // MARK: - Edge cases (P1-T09)
+
+    @Test
+    @MainActor
+    func selectedTypeNilAppliesYearFilterLocallyToSearchResults() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "older", year: 2020),
+                    Fixtures.mediaPreview(id: "target", year: 2024),
+                    Fixtures.mediaPreview(id: "missing-year", year: nil)
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 3
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+        viewModel.yearFilter = 2024
+        viewModel.selectedType = nil
+
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        #expect(viewModel.results.count == 1)
+        #expect(viewModel.results.first?.id == "target")
+    }
+
+    @Test
+    @MainActor
+    func selectedTypeNilAppliesYearRangePresetLocallyToSearchResults() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "lower-bound", year: 2020),
+                    Fixtures.mediaPreview(id: "inside-range", year: 2024),
+                    Fixtures.mediaPreview(id: "outside-range", year: 2019),
+                    Fixtures.mediaPreview(id: "missing-year", year: nil)
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 4
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+        viewModel.yearFilter = 2020
+        viewModel.yearRangePreset = .twenties
+        viewModel.selectedType = nil
+
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        #expect(viewModel.results.map(\.id) == ["lower-bound", "inside-range"])
+    }
+
+    @Test
+    @MainActor
+    func selectedTypeSetBypassesLocalYearFilterForSearchResults() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "older", year: 2020),
+                    Fixtures.mediaPreview(id: "target", year: 2024),
+                    Fixtures.mediaPreview(id: "missing-year", year: nil)
+                ],
+                page: 1,
+                totalPages: 1,
+                totalResults: 3
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+        viewModel.yearFilter = 2024
+        viewModel.selectedType = .movie
+
+        viewModel.search()
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        #expect(viewModel.results.count == 3)
+        #expect(viewModel.results.map(\.id).contains("older"))
+        #expect(viewModel.results.map(\.id).contains("target"))
+        #expect(viewModel.results.map(\.id).contains("missing-year"))
+    }
+
+    @Test
+    @MainActor
+    func loadMoreSearchPreservesLocalYearFilterWhenTypeIsNil() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "page-1-match", year: 2024),
+                    Fixtures.mediaPreview(id: "page-1-miss", year: 2023),
+                ],
+                page: 1,
+                totalPages: 2,
+                totalResults: 3
+            ),
+            2: MetadataSearchResult(
+                items: [
+                    Fixtures.mediaPreview(id: "page-2-match", year: 2024),
+                    Fixtures.mediaPreview(id: "page-2-miss", year: 2022),
+                ],
+                page: 2,
+                totalPages: 2,
+                totalResults: 3
+            ),
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "dune"
+        viewModel.selectedType = nil
+        viewModel.yearFilter = 2024
+
+        viewModel.search()
+        try await Self.waitUntil { viewModel.results.count == 1 }
+        #expect(viewModel.results.map(\.id) == ["page-1-match"])
+        #expect(viewModel.results.first?.id == "page-1-match")
+
+        viewModel.loadMore()
+        try await Self.waitUntil { viewModel.currentPage == 2 }
+
+        #expect(viewModel.results.map(\.id) == ["page-1-match", "page-2-match"])
+        #expect(viewModel.results.count == 2)
+    }
 
     @Test
     @MainActor
@@ -457,6 +970,172 @@ struct SearchViewModelTests {
 
     @Test
     @MainActor
+    func debouncedSearchCancelsPreviousAndExecutesLatestQuery() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "debounced-result")], page: 1, totalPages: 1, totalResults: 1)
+        ])
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(60)
+        )
+
+        viewModel.debouncedSearch(queryText: "first")
+        try await Task.sleep(for: .milliseconds(20))
+        viewModel.debouncedSearch(queryText: "second")
+        try await Task.sleep(for: .milliseconds(150))
+
+        #expect(await stub.getSearchCallCount() == 1)
+        #expect(await stub.getLastSearchQuery() == "second")
+        #expect(!viewModel.results.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func debouncedSearchIgnoresWhitespaceOnlyQuery() async throws {
+        let stub = SearchMetadataStub()
+        let viewModel = SearchViewModel(metadataService: stub, debounceInterval: .milliseconds(60))
+
+        viewModel.debouncedSearch(queryText: "   ")
+        try await Task.sleep(for: .milliseconds(130))
+
+        #expect(await stub.getSearchCallCount() == 0)
+        #expect(viewModel.results.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func clearCancelsPendingDebouncedSearch() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "cancelled-result")], page: 1, totalPages: 1, totalResults: 1)
+        ])
+        let viewModel = SearchViewModel(
+            metadataService: stub,
+            debounceInterval: .milliseconds(120)
+        )
+
+        viewModel.debouncedSearch(queryText: "to-cancel")
+        try await Task.sleep(for: .milliseconds(20))
+        viewModel.clear()
+
+        try await Task.sleep(for: .milliseconds(180))
+        #expect(await stub.getSearchCallCount() == 0)
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.query.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func clearingQueryDraftWithSelectedGenreStartsGenreBrowse() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setDiscoverResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-browse-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        )
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.selectedGenre = Genre(id: 18, name: "Drama")
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
+        viewModel.queryDraft = "query"
+        viewModel.queryDraft = ""
+
+        var attempts = 0
+        var discoverCalls = await stub.getDiscoverCallCount()
+        while discoverCalls < 2 && attempts < 80 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(25))
+            discoverCalls = await stub.getDiscoverCallCount()
+        }
+
+        #expect(discoverCalls == 2)
+        #expect(await stub.getSearchCallCount() == 0)
+        #expect(viewModel.results.count == 1)
+        #expect(viewModel.results.first?.id == "genre-browse-result")
+        #expect(viewModel.query.isEmpty)
+        #expect(viewModel.queryDraft.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func retryAfterSearchFailureRequeriesWithSameQuery() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setFailingPages([1])
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "retry-search")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "Dune"
+
+        viewModel.search()
+        try await Self.waitUntil { viewModel.error != nil }
+        #expect(viewModel.results.isEmpty)
+
+        await stub.setFailingPages([])
+        viewModel.retry()
+
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        #expect(viewModel.results.first?.id == "retry-search")
+        #expect(viewModel.error == nil)
+    }
+
+    @Test
+    @MainActor
+    func retryAfterGenreBrowseFailureRequeriesGenreBrowse() async throws {
+        let stub = DiscoverRetryMetadataStub(
+            shouldFailDiscover: true,
+            discoverResult: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "retry-genre")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        )
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        let genre = Genre(id: 28, name: "Action")
+
+        viewModel.selectGenre(genre)
+        try await Self.waitUntil { viewModel.error != nil }
+
+        #expect(await stub.getDiscoverCallCount() == 1)
+        #expect(viewModel.results.isEmpty)
+
+        await stub.setShouldFailDiscover(false)
+        viewModel.retry()
+
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+        #expect(viewModel.results.first?.id == "retry-genre")
+        #expect(viewModel.selectedGenre?.id == 28)
+        #expect(viewModel.error == nil)
+        #expect(await stub.getDiscoverCallCount() == 2)
+    }
+
+    @Test
+    @MainActor
+    func retryClearsErrorWhenNoRequeryState() {
+        let viewModel = SearchViewModel()
+        viewModel.error = .network(.transport("Search failed."))
+
+        viewModel.retry()
+
+        #expect(viewModel.error == nil)
+    }
+
+    @Test
+    @MainActor
     func searchWithLongQueryStillWorks() async throws {
         let stub = SearchMetadataStub()
         let longQuery = String(repeating: "a", count: 500)
@@ -486,10 +1165,87 @@ struct SearchViewModelTests {
         try await Self.waitUntil { viewModel.results.first?.id == "result-key-a-p1" }
         #expect(viewModel.results.first?.id == "result-key-a-p1")
 
+        viewModel.currentPage = 3
+        viewModel.totalPages = 8
+        viewModel.error = .network(.transport("stale provider error"))
         viewModel.configure(apiKey: "key-b")
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.currentPage == 1)
+        #expect(viewModel.totalPages == 1)
+        #expect(viewModel.error == nil)
+
         viewModel.search()
         try await Self.waitUntil { viewModel.results.first?.id == "result-key-b-p1" }
         #expect(viewModel.results.first?.id == "result-key-b-p1")
+    }
+
+    @Test
+    @MainActor
+    func configureWithInjectedMetadataServiceDoesNotSwapService() async throws {
+        let injectedMetadata = KeyedSearchMetadataStub(marker: "injected")
+        let viewModel = SearchViewModel(
+            metadataService: injectedMetadata,
+            metadataServiceFactory: { key in
+                KeyedSearchMetadataStub(marker: "factory-\(key)")
+            }
+        )
+
+        viewModel.configure(apiKey: "configured-key")
+        viewModel.query = "token"
+        viewModel.search()
+
+        try await Self.waitUntil { viewModel.results.first?.id == "result-injected-p1" }
+        #expect(viewModel.results.first?.id == "result-injected-p1")
+    }
+
+    @Test
+    @MainActor
+    func configureWithSameNormalizedKeyDuringInFlightSearchIsNoop() async throws {
+        let stub = BlockingSearchMetadataStub()
+        let viewModel = SearchViewModel(metadataServiceFactory: { _ in
+            stub
+        })
+
+        viewModel.configure(apiKey: "key-alpha")
+        viewModel.query = "  apollo  "
+        let generationBefore = viewModel.searchGeneration
+        viewModel.search()
+
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.isSearching == true)
+        #expect(viewModel.hasAttemptedTextSearch == true)
+
+        viewModel.configure(apiKey: "  key-alpha  ")
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.hasAttemptedTextSearch == true)
+
+        await stub.unblock(with: MetadataSearchResult(
+            items: [Fixtures.mediaPreview(id: "apollo-result")],
+            page: 1,
+            totalPages: 1,
+            totalResults: 1
+        ))
+        try await Self.waitUntil { viewModel.results.first?.id == "apollo-result" }
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.query == "apollo")
+        #expect(viewModel.queryDraft == "apollo")
+    }
+
+    @Test
+    @MainActor
+    func configureWithEmptyApiKeyDoesNotReplaceInjectedService() async throws {
+        let injectedMetadata = KeyedSearchMetadataStub(marker: "injected")
+        let viewModel = SearchViewModel(metadataService: injectedMetadata)
+
+        viewModel.configure(apiKey: "   ")
+        viewModel.query = "persisted"
+        viewModel.search()
+
+        try await Self.waitUntil { viewModel.results.first?.id == "result-injected-p1" }
+        #expect(viewModel.results.first?.id == "result-injected-p1")
+        #expect(viewModel.error == nil)
     }
 
     @Test
@@ -538,7 +1294,7 @@ struct SearchViewModelTests {
         viewModel.search()
 
         #expect(viewModel.results.isEmpty)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
         #expect(viewModel.submittedQuery == "Dune")
     }
 
@@ -551,7 +1307,7 @@ struct SearchViewModelTests {
 
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.selectedGenre?.id == 28)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
     }
 
     @Test
@@ -564,7 +1320,7 @@ struct SearchViewModelTests {
 
         #expect(viewModel.results.isEmpty)
         #expect(viewModel.activeMoodCard?.id == newReleasesCard.id)
-        #expect(viewModel.error == .tmdbSetupRequired(feature: "Search"))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
     }
 
     @Test
@@ -582,6 +1338,11 @@ struct SearchViewModelTests {
         viewModel.selectedGenre = Genre(id: 28, name: "Action")
         viewModel.currentPage = 2
         viewModel.totalPages = 5
+        viewModel.aiRecommendations = [
+            AIMovieRecommendation(title: "Old Rec", year: 2024, type: .movie, reason: "Old", tmdbId: 9)
+        ]
+        viewModel.aiError = "AI failure"
+        viewModel.isLoadingAI = true
 
         viewModel.configure(apiKey: "   ")
 
@@ -591,6 +1352,9 @@ struct SearchViewModelTests {
         #expect(viewModel.totalPages == 1)
         #expect(viewModel.isSearching == false)
         #expect(viewModel.isLoadingMore == false)
+        #expect(viewModel.aiRecommendations.isEmpty)
+        #expect(viewModel.aiError == nil)
+        #expect(viewModel.isLoadingAI == false)
     }
 
     @Test
@@ -598,7 +1362,7 @@ struct SearchViewModelTests {
     func inFlightSearchDoesNotRetainViewModelAfterRelease() async throws {
         let stub = BlockingSearchMetadataStub()
         var viewModel: SearchViewModel? = SearchViewModel(metadataService: stub)
-        weak var weakViewModel = viewModel
+        weak let weakViewModel = viewModel
 
         viewModel?.query = "retention-test"
         viewModel?.search()
@@ -723,5 +1487,307 @@ struct SearchViewModelTests {
         #expect(await stub.currentDiscoverCallCount() > 0)
         #expect(await stub.currentLanguage() == "fr-FR")
         #expect(await stub.currentOriginalLanguage() == nil)
+    }
+
+    @Test
+    @MainActor
+    func clearCancelsInFlightSearchAndPreventsStaleResults() async throws {
+        let stub = BlockingSearchMetadataStub()
+        let viewModel = SearchViewModel(metadataService: stub)
+
+        viewModel.query = "retention-query"
+        viewModel.search()
+
+        try await Task.sleep(for: .milliseconds(20))
+        viewModel.clear()
+
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.query.isEmpty)
+        #expect(viewModel.queryDraft.isEmpty)
+        #expect(viewModel.submittedQuery.isEmpty)
+        #expect(viewModel.hasAttemptedTextSearch == false)
+        #expect(viewModel.selectedGenre == nil)
+        #expect(viewModel.activeMoodCard == nil)
+        #expect(viewModel.error == nil)
+        #expect(viewModel.isSearching == false)
+
+        await stub.unblock(
+            with: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "stale-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        )
+
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(viewModel.results.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func retryTriggersFreshSearchAfterFailure() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(items: [Fixtures.mediaPreview(id: "fresh-result")], page: 1, totalPages: 1, totalResults: 1)
+        ])
+        await stub.setFailingPages([1])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "query to retry"
+        viewModel.search()
+
+        try await Self.waitUntil {
+            viewModel.error != nil && viewModel.results.isEmpty
+        }
+
+        #expect(viewModel.error != nil)
+        #expect(viewModel.submittedQuery == "query to retry")
+
+        await stub.setFailingPages([])
+        viewModel.retry()
+
+        try await Self.waitUntil(
+            timeout: .milliseconds(2_000)
+        ) {
+            viewModel.results.first?.id == "fresh-result"
+        }
+
+        #expect(viewModel.results.first?.id == "fresh-result")
+        #expect(viewModel.error == nil)
+    }
+
+    @Test
+    @MainActor
+    func requeryIsNoopWhenNoSearchOrBrowseContextIsPresent() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "orphan"
+        viewModel.queryDraft = ""
+        viewModel.results = [Fixtures.mediaPreview(id: "existing")]
+
+        let searchCallsBefore = await stub.getSearchCallCount()
+        let discoverCallsBefore = await stub.getDiscoverCallCount()
+        viewModel.requery()
+
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(await stub.getSearchCallCount() == searchCallsBefore)
+        #expect(await stub.getDiscoverCallCount() == discoverCallsBefore)
+        #expect(viewModel.results == [Fixtures.mediaPreview(id: "existing")])
+    }
+
+    @Test
+    @MainActor
+    func requeryReissuesTextSearchWhenOnlyQueryContextIsAvailable() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.query = "  thriller  "
+        viewModel.queryDraft = "  thriller  "
+
+        viewModel.requery()
+        for _ in 0..<40 {
+            if await stub.getSearchCallCount() == 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await stub.getSearchCallCount() == 1)
+        #expect(await stub.getLastSearchQuery() == "thriller")
+        #expect(viewModel.results.first?.id == "search-result")
+        #expect(viewModel.submittedQuery == "thriller")
+        #expect(viewModel.query == "thriller")
+        #expect(viewModel.queryDraft == "thriller")
+    }
+
+    @Test
+    @MainActor
+    func requeryReissuesGenreBrowseWhenGenreIsSelected() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setDiscoverResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "genre-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        )
+
+        let viewModel = SearchViewModel(metadataService: stub)
+        viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() == 1
+        }
+        viewModel.queryDraft = ""
+
+        viewModel.requery()
+        for _ in 0..<40 {
+            if await stub.getDiscoverCallCount() == 2 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await stub.getSearchCallCount() == 0)
+        #expect(await stub.getDiscoverCallCount() == 2)
+        #expect(viewModel.selectedGenre?.id == 28)
+        #expect(viewModel.results.first?.id == "genre-result")
+    }
+
+    @Test
+    @MainActor
+    func requeryPreservesSpecialMoodContextWhenQueryIsEmpty() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setDiscoverResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "mood-result-1")],
+                page: 1,
+                totalPages: 2,
+                totalResults: 2
+            )
+        )
+
+        let newReleasesCard = ExploreGenreCatalog.cards.first(where: { $0.id == "new" })!
+        let viewModel = SearchViewModel(metadataService: stub)
+
+        viewModel.selectMoodCard(newReleasesCard)
+        for _ in 0..<40 {
+            if await stub.getDiscoverCallCount() == 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        let discoverCallsBefore = await stub.getDiscoverCallCount()
+        let searchCallsBefore = await stub.getSearchCallCount()
+
+        viewModel.queryDraft = ""
+        viewModel.query = ""
+        viewModel.requery()
+        for _ in 0..<40 {
+            if await stub.getDiscoverCallCount() == discoverCallsBefore + 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await stub.getSearchCallCount() == searchCallsBefore)
+        #expect(await stub.getDiscoverCallCount() == discoverCallsBefore + 1)
+        #expect(viewModel.activeMoodCard?.id == newReleasesCard.id)
+        #expect(viewModel.sortOption == .releaseDateDesc)
+    }
+
+    @Test
+    @MainActor
+    func requeryPrioritizesSelectedGenreEvenWhenSpecialMoodCardIsAlsoActive() async throws {
+        let stub = SearchMetadataStub()
+        await stub.setDiscoverResult(
+            MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "discover-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        )
+        await stub.setResponses([
+            1: MetadataSearchResult(
+                items: [Fixtures.mediaPreview(id: "search-result")],
+                page: 1,
+                totalPages: 1,
+                totalResults: 1
+            )
+        ])
+
+        let moodCard = ExploreGenreCatalog.cards.first(where: { $0.id == "new" })!
+        let viewModel = SearchViewModel(metadataService: stub)
+
+        viewModel.query = "fallback"
+        viewModel.selectMoodCard(moodCard)
+        try await Self.waitUntil { !viewModel.results.isEmpty }
+
+        viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        viewModel.queryDraft = ""
+        try await Self.waitUntil {
+            await stub.getDiscoverCallCount() >= 2
+                && viewModel.results.first?.id == "discover-result"
+        }
+        let discoverCallsBefore = await stub.getDiscoverCallCount()
+        let searchCallsBefore = await stub.getSearchCallCount()
+
+        viewModel.requery()
+        for _ in 0..<40 {
+            let discoverCalls = await stub.getDiscoverCallCount()
+            let searchCalls = await stub.getSearchCallCount()
+            if discoverCalls == discoverCallsBefore + 1 && searchCalls == searchCallsBefore {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await stub.getSearchCallCount() == searchCallsBefore)
+        #expect(await stub.getDiscoverCallCount() == discoverCallsBefore + 1)
+        #expect(viewModel.selectedGenre?.id == 28)
+        #expect(viewModel.activeMoodCard?.id == moodCard.id)
+        #expect(viewModel.results.first?.id == "discover-result")
+    }
+
+    @Test
+    @MainActor
+    func requeryWithoutMetadataServiceInGenreContextSurfacesSetupError() {
+        let viewModel = SearchViewModel()
+        viewModel.selectedGenre = Genre(id: 28, name: "Action")
+        let generationBefore = viewModel.searchGeneration
+
+        viewModel.requery()
+
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.currentPage == 1)
+        #expect(viewModel.totalPages == 1)
+        #expect(viewModel.isSearching == false)
+    }
+
+    @Test
+    @MainActor
+    func requeryWithoutMetadataServiceInSpecialMoodContextFallsBackToTextSearchPath() async throws {
+        let moodCard = ExploreGenreCatalog.cards.first(where: { $0.id == "new" })!
+        let viewModel = SearchViewModel()
+        viewModel.queryDraft = "  dune  "
+        let generationBefore = viewModel.searchGeneration
+        viewModel.selectMoodCard(moodCard)
+
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
+
+        viewModel.requery()
+
+        #expect(viewModel.error == .metadataSetupRequired(feature: "Search"))
+        #expect(viewModel.searchGeneration == generationBefore + 1)
+        #expect(viewModel.submittedQuery == "dune")
+        #expect(viewModel.query == "dune")
+        #expect(viewModel.queryDraft == "dune")
+        #expect(viewModel.results.isEmpty)
+        #expect(viewModel.selectedGenre == nil)
     }
 }

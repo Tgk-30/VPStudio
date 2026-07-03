@@ -5,6 +5,25 @@ import Testing
 @Suite(.serialized)
 struct LibraryCSVImportServiceTests {
     @Test
+    func importTypesExposeStableDisplayNamesAndDescriptions() {
+        #expect(LibraryCSVImportError.unreadableFile.errorDescription == "Could not read the selected CSV file.")
+        #expect(LibraryCSVImportError.fileTooLarge.errorDescription == "CSV file is too large to import.")
+        #expect(LibraryCSVImportError.unsupportedEncoding.errorDescription == "CSV file encoding is unsupported.")
+        #expect(LibraryCSVImportError.emptyFile.errorDescription == "CSV file is empty.")
+        #expect(LibraryCSVImportError.missingHeader.errorDescription == "CSV file is missing a valid header row or required columns.")
+
+        #expect(LibraryCSVImportDestination.auto.id == "auto")
+        #expect(LibraryCSVImportDestination.auto.displayName == "Auto")
+        #expect(LibraryCSVImportDestination.watchlist.displayName == "Watchlist")
+        #expect(LibraryCSVImportDestination.favorites.displayName == "Favorites")
+        #expect(LibraryCSVImportDestination.history.displayName == "History")
+
+        #expect(LibraryCSVDetectedFormat.imdbWatchlist.displayName == "IMDb Watchlist")
+        #expect(LibraryCSVDetectedFormat.imdbRatings.displayName == "IMDb Ratings")
+        #expect(LibraryCSVDetectedFormat.generic.displayName == "Generic CSV")
+    }
+
+    @Test
     func importsIMDbWatchlistIntoLibraryAndMediaCache() async throws {
         let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-import-watchlist.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -38,6 +57,45 @@ struct LibraryCSVImportServiceTests {
         let show = try await database.fetchMediaItem(id: "tt0903747")
         #expect(movie?.title == "The Good, the Bad and the Ugly")
         #expect(show?.type == .series)
+    }
+
+    @Test
+    func importBackfillsMissingCachedMediaFieldsWithoutOverwritingExistingValues() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-import-backfill-media.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await database.saveMediaItem(
+            MediaItem(
+                id: "tt0120338",
+                type: .movie,
+                title: "   ",
+                year: nil,
+                imdbRating: nil
+            )
+        )
+
+        let csvURL = try writeCSV(
+            """
+            Const,Created,Title,Type,IMDb Rating,Year,URL
+            tt0120338,2024-01-10,Titanic,movie,7.9,1997,https://www.imdb.com/title/tt0120338/
+            """,
+            name: "backfill-watchlist.csv",
+            in: tempDir
+        )
+
+        let service = LibraryCSVImportService(database: database)
+        let summary = try await service.importCSV(
+            from: csvURL,
+            options: LibraryCSVImportOptions(destination: .watchlist, importRatings: false)
+        )
+
+        #expect(summary.mediaItemsCreated == 0)
+        #expect(summary.mediaItemsUpdated == 1)
+
+        let updated = try #require(try await database.fetchMediaItem(id: "tt0120338"))
+        #expect(updated.title == "Titanic")
+        #expect(updated.year == 1997)
+        #expect(updated.imdbRating == 7.9)
     }
 
     @Test
@@ -126,6 +184,100 @@ struct LibraryCSVImportServiceTests {
         #expect(ratings.count == 1)
         #expect(ratings.first?.feedbackScale?.canonicalMode == .oneToHundred)
         #expect(ratings.first?.feedbackValue == 78)
+    }
+
+    @Test
+    func genericRowsWithoutIMDbIDUseFallbackIDsAndBooleanRatings() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-import-fallback-ids.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let csvURL = try writeCSV(
+            """
+            title,year,liked,disliked,type,date
+            My Custom Film,2020,yes,,movie,2026-02-01
+            Another Custom Film,2021,,yes,movie,2026-02-02
+            """,
+            name: "generic-bools.csv",
+            in: tempDir
+        )
+
+        let service = LibraryCSVImportService(database: database)
+        let summary = try await service.importCSV(
+            from: csvURL,
+            options: LibraryCSVImportOptions(
+                destination: .auto,
+                importRatings: true,
+                promoteLikedRatingsToFavorites: true
+            )
+        )
+
+        #expect(summary.detectedFormat == .generic)
+        #expect(summary.rowsImported == 2)
+        #expect(summary.ratingsImported == 2)
+        #expect(summary.favoritesImported == 1)
+        #expect(summary.watchlistImported == 1)
+
+        let likedID = "csv-my-custom-film-2020"
+        let dislikedID = "csv-another-custom-film-2021"
+        let likedItem = try #require(try await database.fetchMediaItem(id: likedID))
+        let dislikedItem = try #require(try await database.fetchMediaItem(id: dislikedID))
+        #expect(likedItem.title == "My Custom Film")
+        #expect(dislikedItem.title == "Another Custom Film")
+
+        let favorites = try await database.fetchLibraryEntries(listType: .favorites)
+        let watchlist = try await database.fetchLibraryEntries(listType: .watchlist)
+        #expect(favorites.map(\.mediaId) == [likedID])
+        #expect(watchlist.map(\.mediaId) == [dislikedID])
+
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 20)
+        #expect(ratings.count == 2)
+        #expect(ratings.allSatisfy { $0.feedbackScale?.canonicalMode == .likeDislike })
+    }
+
+    @Test
+    func importsLatin1EncodedCSV() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-import-latin1.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let content = """
+        imdb_id,title,year,rating,watched_at,type,note
+        tt0211915,Amelie,2001,8,2026-03-01,movie,café
+        """
+        let data = try #require(content.data(using: .isoLatin1))
+        let csvURL = try writeData(data, name: "latin1-history.csv", in: tempDir)
+
+        let service = LibraryCSVImportService(database: database)
+        let summary = try await service.importCSV(
+            from: csvURL,
+            options: LibraryCSVImportOptions(destination: .history, importRatings: true)
+        )
+
+        #expect(summary.rowsImported == 1)
+        let item = try #require(try await database.fetchMediaItem(id: "tt0211915"))
+        #expect(item.title == "Amelie")
+    }
+
+    @Test
+    func importsUTF16EncodedCSV() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-import-utf16.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let content = """
+        imdb_id,title,year,rating,watched_at,type
+        tt0111161,The Shawshank Redemption,1994,10,2026-03-02,movie
+        """
+        let data = try #require(content.data(using: .utf16))
+        let csvURL = try writeData(data, name: "utf16-history.csv", in: tempDir)
+
+        let service = LibraryCSVImportService(database: database)
+        let summary = try await service.importCSV(
+            from: csvURL,
+            options: LibraryCSVImportOptions(destination: .history, importRatings: true)
+        )
+
+        #expect(summary.rowsImported == 1)
+        let item = try #require(try await database.fetchMediaItem(id: "tt0111161"))
+        #expect(item.year == 1994)
     }
 
     @Test(arguments: [
@@ -544,6 +696,43 @@ struct LibraryCSVImportServiceTests {
     }
 
     @Test
+    func importsURLOnlyRowsUsingIMDbIDAsFallbackTitleAndMediaID() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-url-only-fallback.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let csvURL = try writeCSV(
+            """
+            URL,Title Type,Year,Rating,Watched At
+            https://www.imdb.com/title/tt7654321/?ref_=watch,tvEpisode,Released 2025,4/10,11-06-2026
+            """,
+            name: "url-only-history.csv",
+            in: tempDir
+        )
+
+        let service = LibraryCSVImportService(database: database)
+        let summary = try await service.importCSV(
+            from: csvURL,
+            options: LibraryCSVImportOptions(destination: .history, importRatings: true)
+        )
+
+        #expect(summary.rowsRead == 1)
+        #expect(summary.rowsImported == 1)
+        #expect(summary.historyImported == 1)
+        #expect(summary.watchlistImported == 1)
+        #expect(summary.ratingsImported == 1)
+
+        let item = try #require(try await database.fetchMediaItem(id: "tt7654321"))
+        #expect(item.title == "tt7654321")
+        #expect(item.type == .series)
+        #expect(item.year == 2025)
+
+        let ratings = try await database.fetchTasteEvents(eventType: .rated, limit: 20)
+        #expect(ratings.count == 1)
+        #expect(ratings.first?.feedbackValue == 4)
+        #expect(ratings.first?.feedbackScale?.canonicalMode == .oneToTen)
+    }
+
+    @Test
     func throwsWhenFileHasNoRecognizableColumns() async throws {
         let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-no-columns.sqlite")
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -570,6 +759,28 @@ struct LibraryCSVImportServiceTests {
     }
 
     @Test
+    func throwsBeforeReadingOversizedCSVFile() async throws {
+        let (database, tempDir) = try await makeTemporaryDatabase(named: "csv-oversized.sqlite")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let csvURL = tempDir.appendingPathComponent("oversized.csv")
+        #expect(FileManager.default.createFile(atPath: csvURL.path, contents: Data()))
+        let fileHandle = try FileHandle(forWritingTo: csvURL)
+        try fileHandle.truncate(atOffset: UInt64(LibraryCSVImportService.maximumFileSizeBytes + 1))
+        try fileHandle.close()
+
+        let service = LibraryCSVImportService(database: database)
+        do {
+            _ = try await service.importCSV(from: csvURL)
+            Issue.record("Expected fileTooLarge before oversized CSV content is read")
+        } catch let error as LibraryCSVImportError {
+            #expect(error == .fileTooLarge)
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test
     func importServiceStagesWritesInsideSingleDatabaseTransaction() throws {
         let source = try contents(of: "VPStudio/Services/Import/LibraryCSVImportService.swift")
 
@@ -582,8 +793,7 @@ struct LibraryCSVImportServiceTests {
     private func makeTemporaryDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbURL = tempDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, tempDir)
     }
@@ -591,6 +801,12 @@ struct LibraryCSVImportServiceTests {
     private func writeCSV(_ content: String, name: String, in directory: URL) throws -> URL {
         let fileURL = directory.appendingPathComponent(name)
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        return fileURL
+    }
+
+    private func writeData(_ data: Data, name: String, in directory: URL) throws -> URL {
+        let fileURL = directory.appendingPathComponent(name)
+        try data.write(to: fileURL, options: .atomic)
         return fileURL
     }
 

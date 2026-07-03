@@ -1,0 +1,479 @@
+import Foundation
+import Testing
+@testable import VPStudio
+
+// MARK: - AppError Initialization Mapping
+
+@Suite("AppError - Initialization Mapping")
+struct AppErrorInitMappingTestsRootapperrortests {
+
+    @Test func appErrorPassesThroughUnchanged() {
+        let original = AppError.unknown("original")
+        let mapped = AppError(original)
+        #expect(mapped == original)
+    }
+
+    @Test func debridErrorMappedToDebridCase() {
+        let debrid = DebridError.unauthorized
+        let mapped = AppError(debrid)
+        #expect(mapped == .debrid(.unauthorized))
+    }
+
+    @Test func debridErrorInvalidHashMapped() {
+        let debrid = DebridError.invalidHash("abc123")
+        let mapped = AppError(debrid)
+        #expect(mapped == .debrid(.invalidHash("abc123")))
+    }
+
+    @Test func indexerManagerErrorMapped() {
+        let indexerErr = IndexerManagerError.allIndexersFailed("no results")
+        let mapped = AppError(indexerErr)
+        #expect(mapped == .indexer(.allIndexersFailed("no results")))
+    }
+
+    @Test func playerEngineErrorInvalidURLMapped() {
+        let playerErr = PlayerEngineError.invalidStreamURL("bad://url")
+        let mapped = AppError(playerErr)
+        #expect(mapped == .player(.invalidStreamURL("bad://url")))
+    }
+
+    @Test func playerEngineErrorStartupTimeoutMapped() {
+        let playerErr = PlayerEngineError.startupTimeout(.avPlayer)
+        let mapped = AppError(playerErr)
+        #expect(mapped == .player(.startupTimeout(.avPlayer)))
+    }
+
+    @Test func playerEngineErrorInitializationFailedMapped() {
+        let playerErr = PlayerEngineError.initializationFailed(.ksPlayer, "failed to init")
+        let mapped = AppError(playerErr)
+        #expect(mapped == .player(.initializationFailed(.ksPlayer, "failed to init")))
+    }
+
+    @Test func urlErrorTimedOutMapped() {
+        let urlErr = URLError(.timedOut)
+        let mapped = AppError(urlErr)
+        #expect(mapped == .network(.timeout))
+    }
+
+    @Test func urlErrorNotConnectedMapped() {
+        let urlErr = URLError(.notConnectedToInternet)
+        let mapped = AppError(urlErr)
+        #expect(mapped == .network(.offline))
+    }
+
+    @Test func urlErrorNetworkConnectionLostMapped() {
+        let urlErr = URLError(.networkConnectionLost)
+        let mapped = AppError(urlErr)
+        #expect(mapped == .network(.offline))
+    }
+
+    @Test func urlErrorBadURLUsesFailingURLWhenAvailable() {
+        let failingURL = URL(string: "bad://url")!
+        let urlErr = URLError(
+            .badURL,
+            userInfo: [NSURLErrorFailingURLErrorKey: failingURL]
+        )
+        let mapped = AppError(urlErr)
+        #expect(mapped == .network(.invalidURL("bad://url")))
+    }
+
+    @Test func urlErrorBadURLFallsBackToUnknownWhenFailingURLIsUnavailable() {
+        let mapped = AppError(URLError(.badURL))
+        #expect(mapped == .network(.invalidURL("unknown")))
+    }
+
+    @Test func urlErrorOtherCodeMappedToTransport() {
+        let urlErr = URLError(.cannotConnectToHost)
+        let mapped = AppError(urlErr)
+        if case .network(.transport) = mapped { } else {
+            Issue.record("Expected .network(.transport), got \(mapped)")
+        }
+    }
+
+    @Test func decodingErrorMappedToNetworkInvalidResponse() {
+        struct Dummy: Decodable {}
+        let decodingErr = DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "test"))
+        let mapped = AppError(decodingErr)
+        #expect(mapped == .network(.invalidResponse))
+    }
+
+    @Test func tmdbErrorUnauthorizedMapped() {
+        let tmdbErr = TMDBError.unauthorized
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.unauthorized))
+    }
+
+    @Test func tmdbErrorInvalidURLAndInvalidResponseMapped() {
+        #expect(AppError(TMDBError.invalidURL("/bad")) == .network(.invalidURL("/bad")))
+        #expect(AppError(TMDBError.invalidResponse) == .network(.invalidResponse))
+    }
+
+    @Test func tmdbErrorNotFoundMapped() {
+        let tmdbErr = TMDBError.notFound("tt9999")
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.notFound("tt9999")))
+    }
+
+    @Test func tmdbErrorRateLimitedMapped() {
+        let tmdbErr = TMDBError.rateLimited
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.rateLimited))
+    }
+
+    @Test func tmdbErrorHttpError401MappedToUnauthorized() {
+        let tmdbErr = TMDBError.httpError(401, "Unauthorized")
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.unauthorized))
+    }
+
+    @Test func tmdbErrorHttpError404MappedToNotFound() {
+        let tmdbErr = TMDBError.httpError(404, "Not Found")
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.notFound("Not Found")))
+    }
+
+    @Test func tmdbErrorHttpError429MappedToRateLimited() {
+        let tmdbErr = TMDBError.httpError(429, "Too Many Requests")
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.rateLimited))
+    }
+
+    @Test func tmdbErrorHttpErrorOtherMappedToServer() {
+        let tmdbErr = TMDBError.httpError(500, "Internal Server Error")
+        let mapped = AppError(tmdbErr)
+        #expect(mapped == .network(.server(statusCode: 500, message: "Internal Server Error")))
+    }
+
+    @Test func omdbErrorUnauthorizedMapped() {
+        let mapped = AppError(OMDbError.unauthorized)
+        #expect(mapped == .network(.unauthorized))
+    }
+
+    @Test func omdbErrorInvalidURLAndInvalidResponseMapped() {
+        #expect(AppError(OMDbError.invalidURL) == .network(.invalidURL("https://www.omdbapi.com/")))
+        #expect(AppError(OMDbError.invalidResponse) == .network(.invalidResponse))
+    }
+
+    @Test func omdbErrorNotFoundAndRateLimitMapped() {
+        #expect(AppError(OMDbError.notFound) == .network(.notFound("OMDb title")))
+        #expect(AppError(OMDbError.apiError("Request limit reached!")) == .network(.rateLimited))
+    }
+
+    @Test func omdbErrorHttpStatusMapped() {
+        #expect(AppError(OMDbError.httpError(401, "Unauthorized")) == .network(.unauthorized))
+        #expect(AppError(OMDbError.httpError(404, "Missing")) == .network(.notFound("Missing")))
+        #expect(AppError(OMDbError.httpError(429, "Too Many Requests")) == .network(.rateLimited))
+        #expect(AppError(OMDbError.httpError(500, "Internal Server Error")) == .network(.server(statusCode: 500, message: "Internal Server Error")))
+    }
+
+    @Test func omdbUnsupportedErrorStaysReadable() {
+        let mapped = AppError(OMDbError.unsupported("OMDb season lookup requires an IMDb ID."))
+        #expect(mapped == .unknown("OMDb season lookup requires an IMDb ID."))
+    }
+
+    @Test func metadataProviderUnsupportedIdentifierMappedToNotFound() {
+        let mapped = AppError(MetadataProviderError.unsupportedIdentifier("movie-imdb-not-valid"))
+        #expect(mapped == .network(.notFound("movie-imdb-not-valid")))
+    }
+
+    @Test func unknownErrorWithFallbackUsesFallback() {
+        struct Mystery: Error, LocalizedError {
+            var errorDescription: String? { nil }
+        }
+        let fallback = AppError.unknown("custom fallback")
+        let mapped = AppError(Mystery(), fallback: fallback)
+        #expect(mapped == fallback)
+    }
+
+    @Test func unknownErrorWithoutFallbackUsesLocalizedDescription() {
+        struct Mystery: Error {}
+        let mapped = AppError(Mystery())
+        if case .unknown = mapped { } else {
+            Issue.record("Expected .unknown, got \(mapped)")
+        }
+    }
+
+    @Test func unknownErrorWithLocalizedErrorDescription() {
+        struct Named: LocalizedError {
+            var errorDescription: String? { "named error" }
+        }
+        let mapped = AppError(Named())
+        #expect(mapped == .unknown("named error"))
+    }
+
+    @Test func appErrorDescriptionRedactsSensitiveProviderDetails() {
+        let error = AppError.network(
+            .server(
+                statusCode: 500,
+                message: "Failed https://api.example.com/title?apikey=omdb-banner-secret&token=tmdb-banner-secret Authorization: Bearer appErrorBearerSecret123456 clientSecret=app-error-client-secret-1234567890"
+            )
+        )
+        let description = error.errorDescription ?? ""
+
+        #expect(description.contains("REDACTED"))
+        #expect(!description.contains("omdb-banner-secret"))
+        #expect(!description.contains("tmdb-banner-secret"))
+        #expect(!description.contains("appErrorBearerSecret123456"))
+        #expect(!description.contains("app-error-client-secret-1234567890"))
+    }
+
+    @Test func metadataSetupRequiredMarksActionableSetupErrorsOnly() {
+        let setup = AppError.metadataSetupRequired(feature: "Search")
+        let plain = AppError.unknown("Search needs an OMDb API key.")
+        let network = AppError.network(.unauthorized)
+
+        #expect(setup.requiresMetadataSetupAction)
+        #expect(setup.errorDescription?.contains("Search needs an OMDb metadata API key") == true)
+        #expect(!plain.requiresMetadataSetupAction)
+        #expect(!network.requiresMetadataSetupAction)
+    }
+}
+
+// MARK: - NetworkError Descriptions and Suggestions
+
+@Suite("NetworkError - Descriptions")
+struct NetworkErrorDescriptionTestsRootapperrortests {
+
+    @Test func invalidURLDescription() {
+        let err = NetworkError.invalidURL("bad://url")
+        #expect(err.errorDescription?.contains("bad://url") == true)
+    }
+
+    @Test func unauthorizedDescription() {
+        let err = NetworkError.unauthorized
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func notFoundDescription() {
+        let err = NetworkError.notFound("resource-123")
+        #expect(err.errorDescription?.contains("resource-123") == true)
+    }
+
+    @Test func rateLimitedDescription() {
+        let err = NetworkError.rateLimited
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func timeoutDescription() {
+        let err = NetworkError.timeout
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func offlineDescription() {
+        let err = NetworkError.offline
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func invalidResponseDescription() {
+        let err = NetworkError.invalidResponse
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func serverDescription() {
+        let err = NetworkError.server(statusCode: 503, message: "Service Unavailable")
+        #expect(err.errorDescription?.contains("503") == true)
+    }
+
+    @Test func transportDescription() {
+        let err = NetworkError.transport("SSL error")
+        #expect(err.errorDescription?.contains("SSL error") == true)
+    }
+
+    @Test func networkDescriptionsRedactSecretBearingURLsAndTokens() {
+        let secretURL = "https://cdn.example.test/video.mkv?apikey=network-secret&token=stream-secret"
+        let bearer = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"
+
+        #expect(NetworkError.invalidURL(secretURL).errorDescription?.contains("network-secret") == false)
+        #expect(NetworkError.server(statusCode: 500, message: secretURL).errorDescription?.contains("stream-secret") == false)
+        #expect(NetworkError.transport(bearer).errorDescription?.contains("abcdefghijklmnopqrstuvwxyz123456") == false)
+        #expect(NetworkError.transport(bearer).errorDescription?.contains("Bearer REDACTED") == true)
+    }
+
+    @Test func recoverySuggestionsCoverEveryNetworkErrorFamily() {
+        let cases: [NetworkError] = [
+            .invalidURL("bad://url"),
+            .unauthorized,
+            .notFound("movie"),
+            .rateLimited,
+            .timeout,
+            .offline,
+            .invalidResponse,
+            .server(statusCode: 500, message: "down"),
+            .transport("reset"),
+        ]
+
+        for error in cases {
+            #expect(error.recoverySuggestion?.isEmpty == false)
+        }
+    }
+}
+
+// MARK: - IndexerError Descriptions and Suggestions
+
+@Suite("IndexerError - Descriptions")
+struct IndexerErrorDescriptionTestsRootapperrortests {
+
+    @Test func allIndexersFailedDescription() {
+        let err = IndexerError.allIndexersFailed("timeout on all")
+        #expect(err.errorDescription?.contains("timeout on all") == true)
+    }
+
+    @Test func queryFailedDescription() {
+        let err = IndexerError.queryFailed("bad query")
+        #expect(err.errorDescription?.contains("bad query") == true)
+    }
+
+    @Test func indexerDescriptionsRedactSecretBearingDetails() {
+        let err = IndexerError.allIndexersFailed(
+            "failed https://indexer.example.test/api?t=search&apikey=indexer-secret"
+        )
+
+        #expect(err.errorDescription?.contains("indexer-secret") == false)
+        #expect(err.errorDescription?.contains("apikey=REDACTED") == true)
+    }
+
+    @Test func notConfiguredDescription() {
+        let err = IndexerError.notConfigured
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func allIndexersFailedRecoverySuggestion() {
+        let err = IndexerError.allIndexersFailed("x")
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func notConfiguredRecoverySuggestion() {
+        let err = IndexerError.notConfigured
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func queryFailedRecoverySuggestion() {
+        let err = IndexerError.queryFailed("x")
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+}
+
+// MARK: - PlayerError Descriptions and Suggestions
+
+@Suite("PlayerError - Descriptions")
+struct PlayerErrorDescriptionTestsRootapperrortests {
+
+    @Test func invalidStreamURLDescription() {
+        let err = PlayerError.invalidStreamURL("bad://url")
+        #expect(err.errorDescription?.contains("bad://url") == true)
+    }
+
+    @Test func playerDescriptionsRedactSecretBearingURLsAndMessages() {
+        let streamURL = "https://cdn.example.test/movie.mkv?token=player-secret"
+        let playbackError = "playback failed Authorization: Bearer playerbearersecret123456"
+
+        #expect(PlayerError.invalidStreamURL(streamURL).errorDescription?.contains("player-secret") == false)
+        #expect(PlayerError.playbackFailed(playbackError).errorDescription?.contains("playerbearersecret123456") == false)
+        #expect(PlayerError.playbackFailed(playbackError).errorDescription?.contains("Bearer REDACTED") == true)
+    }
+
+    @Test func startupTimeoutDescriptionContainsEngineName() {
+        let err = PlayerError.startupTimeout(.avPlayer)
+        #expect(err.errorDescription?.isEmpty == false)
+    }
+
+    @Test func initializationFailedDescriptionContainsEngineName() {
+        let err = PlayerError.initializationFailed(.ksPlayer, "HEVC error")
+        #expect(err.errorDescription?.contains("HEVC error") == true)
+    }
+
+    @Test func unsupportedFormatDescription() {
+        let err = PlayerError.unsupportedFormat("AV1")
+        #expect(err.errorDescription?.contains("AV1") == true)
+    }
+
+    @Test func playbackFailedDescription() {
+        let err = PlayerError.playbackFailed("stall")
+        #expect(err.errorDescription?.contains("stall") == true)
+    }
+
+    @Test func allCasesHaveRecoverySuggestion() {
+        let cases: [PlayerError] = [
+            .invalidStreamURL("x"),
+            .startupTimeout(.avPlayer),
+            .initializationFailed(.ksPlayer, "x"),
+            .unsupportedFormat("x"),
+            .playbackFailed("x"),
+        ]
+        for err in cases {
+            #expect(err.recoverySuggestion?.isEmpty == false, "Missing suggestion for \(err)")
+        }
+    }
+}
+
+// MARK: - AppError Recovery Suggestions (Debrid)
+
+@Suite("AppError - Debrid Recovery Suggestions")
+struct AppErrorDebridRecoverySuggestionsTestsRootapperrortests {
+
+    @Test func unauthorizedHasSuggestion() {
+        let err = AppError.debrid(.unauthorized)
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func notPremiumHasSuggestion() {
+        let err = AppError.debrid(.notPremium)
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func invalidHashHasSuggestion() {
+        let err = AppError.debrid(.invalidHash("abc"))
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func torrentNotFoundHasSuggestion() {
+        let err = AppError.debrid(.torrentNotFound("id"))
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func fileNotReadyHasSuggestion() {
+        let err = AppError.debrid(.fileNotReady("processing"))
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func rateLimitedHasSuggestion() {
+        let err = AppError.debrid(.rateLimited)
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func unavailableForLegalReasonsHasSuggestion() {
+        let err = AppError.debrid(.unavailableForLegalReasons("restricted by provider"))
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func httpErrorHasSuggestion() {
+        let err = AppError.debrid(.httpError(503, "Service Unavailable"))
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func networkErrorHasSuggestion() {
+        let err = AppError.debrid(.networkError("timeout"))
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func timeoutHasSuggestion() {
+        let err = AppError.debrid(.timeout)
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+}
+
+// MARK: - AppError unknown recovery suggestion
+
+@Suite("AppError - Unknown Recovery Suggestion")
+struct AppErrorUnknownTestsRootapperrortests {
+
+    @Test func unknownHasRecoverySuggestion() {
+        let err = AppError.unknown("something went wrong")
+        #expect(err.recoverySuggestion?.isEmpty == false)
+    }
+
+    @Test func unknownErrorDescriptionIsMessage() {
+        let err = AppError.unknown("custom message")
+        #expect(err.errorDescription == "custom message")
+    }
+}

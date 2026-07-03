@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import VPStudio
 
@@ -209,6 +210,52 @@ struct ExploreUIPolishTests {
         ]
         let actualIds = Set(ExploreGenreCatalog.cards.map(\.id))
         #expect(actualIds == expectedIds)
+    }
+
+    @Test func genreTilePolicyUsesRawArtworkNamesWhenAvailable() {
+        for card in ExploreGenreCatalog.cards {
+            #expect(ExploreGenreTilePolicy.imageName(for: card) == card.artImageName)
+            #expect(!ExploreGenreTilePolicy.imageName(for: card).hasPrefix("genre-ref-"))
+            #expect(ExploreGenreTilePolicy.accessibilityLabel(for: card) == "\(card.title), \(card.subtitle)")
+        }
+        #expect(abs(ExploreGenreTilePolicy.artworkOverscanScale - 1.0) < 0.0001)
+    }
+
+    @Test func catalogDoesNotUseWideReferenceContextAssetsAsTiles() {
+        let catalogIDs = Set(ExploreGenreCatalog.cards.map(\.id))
+        #expect(!catalogIDs.contains("grid"))
+        #expect(!catalogIDs.contains("grid-context"))
+    }
+
+    @Test func genreTilePolicyKeepsScreenshotGeometryStable() {
+        #expect(ExploreGenreTilePolicy.columns == 7)
+        #expect(ExploreGenreTilePolicy.tileWidth == 128)
+        #expect(ExploreGenreTilePolicy.columnSpacing == 14)
+        #expect(ExploreGenreTilePolicy.rowSpacing == 14)
+        #expect(ExploreGenreTilePolicy.cornerRadius == VPRadius.control)
+        #expect(abs(Double(ExploreGenreTilePolicy.referenceAspectRatio) - (128.0 / 142.0)) < 0.000_001)
+        #expect(abs(Double(ExploreGenreTilePolicy.tileHeight) - (128.0 / (128.0 / 142.0))) < 0.000_001)
+        #expect(ExploreGenreTilePolicy.gridColumns().count == 1)
+        #expect(ExploreGenreTilePolicy.rowCount(for: ExploreGenreCatalog.cards.count) == 2)
+    }
+
+    @Test func starterTitlePolicyProvidesStableSearchShortcuts() {
+        let titles = ExploreStarterTitlePolicy.titles
+
+        #expect(titles.count == 6)
+        #expect(Set(titles.map(\.id)).count == titles.count)
+        #expect(ExploreStarterTitlePolicy.gridColumns().count == 1)
+        #expect(ExploreStarterTitlePolicy.chipMinWidth >= 140)
+        #expect(ExploreStarterTitlePolicy.chipMaxWidth > ExploreStarterTitlePolicy.chipMinWidth)
+        #expect(ExploreStarterTitlePolicy.chipMinHeight >= 44)
+        #expect(ExploreStarterTitlePolicy.titleMinimumScale >= 0.8)
+
+        for title in titles {
+            #expect(!title.title.isEmpty)
+            #expect(!title.query.isEmpty)
+            #expect(!title.symbol.isEmpty)
+            #expect(ExploreStarterTitlePolicy.accessibilityLabel(for: title) == "Search for \(title.title)")
+        }
     }
 
     // MARK: - SearchLanguageOption

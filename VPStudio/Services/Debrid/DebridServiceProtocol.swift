@@ -20,6 +20,7 @@ protocol DebridServiceProtocol: Sendable {
     func getAccountInfo() async throws -> DebridAccountInfo
     func checkCache(hashes: [String]) async throws -> [String: CacheStatus]
     func addMagnet(hash: String) async throws -> String
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String
     func selectFiles(torrentId: String, fileIds: [Int]) async throws
     func selectMatchingEpisodeFile(
         torrentId: String,
@@ -34,6 +35,10 @@ protocol DebridServiceProtocol: Sendable {
 }
 
 extension DebridServiceProtocol {
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        try await addMagnet(hash: hash)
+    }
+
     func selectMatchingEpisodeFile(
         torrentId: String,
         seasonNumber: Int,
@@ -54,11 +59,103 @@ extension DebridServiceProtocol {
     }
 }
 
+enum DebridStreamMetadata {
+    static func quality(from candidates: [String?]) -> VideoQuality {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: VideoQuality.parse(from:))
+    }
+
+    static func codec(from candidates: [String?]) -> VideoCodec {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: VideoCodec.parse(from:))
+    }
+
+    static func audio(from candidates: [String?]) -> AudioFormat {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: AudioFormat.parse(from:))
+    }
+
+    static func source(from candidates: [String?]) -> SourceType {
+        firstNonDefault(in: candidates, defaultValue: .unknown, parse: SourceType.parse(from:))
+    }
+
+    static func hdr(from candidates: [String?]) -> HDRFormat {
+        firstNonDefault(in: candidates, defaultValue: .sdr, parse: HDRFormat.parse(from:))
+    }
+
+    private static func firstNonDefault<T: Equatable>(
+        in candidates: [String?],
+        defaultValue: T,
+        parse: (String) -> T
+    ) -> T {
+        for candidate in candidates {
+            guard let candidate = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !candidate.isEmpty else {
+                continue
+            }
+            let parsed = parse(candidate)
+            if parsed != defaultValue {
+                return parsed
+            }
+        }
+        return defaultValue
+    }
+}
+
+enum DebridMagnetInput {
+    static func preferredMagnetURI(hash: String, suppliedMagnetURI: String?) throws -> String {
+        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
+        guard let candidate = suppliedMagnetURI?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !candidate.isEmpty else {
+            return bareMagnetURI(for: normalizedHash)
+        }
+
+        // Only forward the supplied value when it is a genuine `magnet:` URI whose
+        // btih matches the requested hash — that is the only case where forwarding
+        // adds value (it preserves the tracker list). Anything else (an http(s)
+        // URL, a bare path, a mismatched hash) is rebuilt as a bare magnet from the
+        // validated hash, so a compromised indexer can never smuggle an arbitrary
+        // URL into a debrid provider's "add magnet" endpoint (server-side SSRF).
+        guard let components = URLComponents(string: candidate),
+              components.scheme?.lowercased() == "magnet" else {
+            return bareMagnetURI(for: normalizedHash)
+        }
+
+        let xtItems = components.queryItems?.filter { $0.name.lowercased() == "xt" } ?? []
+        for item in xtItems {
+            guard let value = item.value,
+                  value.lowercased().hasPrefix("urn:btih:") else {
+                continue
+            }
+
+            let rawCandidateHash = String(value.dropFirst("urn:btih:".count))
+            // Normalize both sides (handles hex/base32 mismatch) so a magnet
+            // whose btih is base32 still matches and keeps its tracker list.
+            if DebridHashValidator.normalizedInfoHash(rawCandidateHash) == normalizedHash {
+                return candidate
+            }
+        }
+
+        return bareMagnetURI(for: normalizedHash)
+    }
+
+    static func bareMagnetURI(for normalizedHash: String) -> String {
+        "magnet:?xt=urn:btih:\(normalizedHash)"
+    }
+}
+
 enum DebridHashValidator {
     private static let hexCharacters = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
 
     static func normalizedInfoHash(_ hash: String) -> String? {
         let trimmed = hash.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // BitTorrent v1 info-hashes are sometimes published in 32-character RFC 4648
+        // base32 form (some Torznab/indexer feeds emit `urn:btih:` this way). Decode
+        // to the canonical 40-char hex so these torrents aren't rejected as invalid —
+        // and so a supplied magnet that uses a base32 btih still matches the requested
+        // hash and keeps its tracker list instead of being rebuilt as a bare magnet.
+        if trimmed.count == 32, let hex = hexFromBase32(trimmed) {
+            return hex
+        }
+
         guard trimmed.count == 40 || trimmed.count == 64 else {
             return nil
         }
@@ -70,6 +167,41 @@ enum DebridHashValidator {
         return trimmed.lowercased()
     }
 
+    /// Decodes a 32-character RFC 4648 base32 string (the canonical encoding of a
+    /// 20-byte BitTorrent v1 info-hash) to its 40-character lowercase hex form.
+    /// Returns nil if the input is not exactly 32 valid base32 characters.
+    private static func hexFromBase32(_ input: String) -> String? {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(20)
+        var accumulator = 0
+        var bitsPending = 0
+
+        for scalar in input.unicodeScalars {
+            guard let value = base32Value(scalar) else { return nil }
+            accumulator = (accumulator << 5) | value
+            bitsPending += 5
+            if bitsPending >= 8 {
+                bitsPending -= 8
+                bytes.append(UInt8((accumulator >> bitsPending) & 0xFF))
+                accumulator &= (1 << bitsPending) - 1
+            }
+        }
+
+        // A valid info-hash is exactly 20 bytes; the 32-char input leaves no
+        // partial-byte remainder (32 × 5 = 160 bits = 20 bytes).
+        guard bytes.count == 20 else { return nil }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func base32Value(_ scalar: Unicode.Scalar) -> Int? {
+        switch scalar {
+        case "A"..."Z": return Int(scalar.value - Unicode.Scalar("A").value)
+        case "a"..."z": return Int(scalar.value - Unicode.Scalar("a").value)
+        case "2"..."7": return Int(scalar.value - Unicode.Scalar("2").value) + 26
+        default: return nil
+        }
+    }
+
     static func validatedInfoHash(_ hash: String) throws -> String {
         guard let normalized = normalizedInfoHash(hash) else {
             throw DebridError.invalidHash(hash)
@@ -78,13 +210,14 @@ enum DebridHashValidator {
     }
 }
 
-enum DebridError: LocalizedError, Equatable {
+enum DebridError: LocalizedError, Equatable, Sendable {
     case unauthorized
     case notPremium
     case invalidHash(String)
     case torrentNotFound(String)
     case fileNotReady(String)
     case rateLimited
+    case unavailableForLegalReasons(String)
     case httpError(Int, String)
     case networkError(String)
     case timeout
@@ -97,10 +230,25 @@ enum DebridError: LocalizedError, Equatable {
         case .torrentNotFound(let id): return "Torrent not found: \(id)"
         case .fileNotReady(let msg): return "File not ready: \(msg)"
         case .rateLimited: return "Rate limited. Try again shortly."
+        case .unavailableForLegalReasons(let msg): return "Unavailable for legal or regional reasons: \(msg)"
         case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
         case .networkError(let msg): return "Network error: \(msg)"
         case .timeout: return "Request timed out"
         }
+    }
+}
+
+enum DebridRemoteStreamURLPolicy {
+    static func validatedURL(from rawValue: String, errorMessage: String) throws -> URL {
+        guard let normalized = TorrentResult.normalizedDirectStreamURLString(rawValue),
+              let url = URL(string: normalized) else {
+            throw DebridError.networkError(errorMessage)
+        }
+        return url
+    }
+
+    static func validatedURL(_ url: URL, errorMessage: String) throws -> URL {
+        try validatedURL(from: url.absoluteString, errorMessage: errorMessage)
     }
 }
 
@@ -135,9 +283,17 @@ enum DebridHTTPExecutor {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            (data, response) = try await BoundedHTTPResponseLoader.data(
+                for: request,
+                session: session,
+                maximumBytes: HTTPResponseBudget.debridProvider
+            )
+            try Task.checkCancellation()
         } catch is CancellationError {
             throw CancellationError()
+        } catch is BoundedHTTPResponseError {
+            throw DebridError.networkError("Provider response exceeded the local response-size budget.")
         } catch let urlError as URLError where shouldRetry(urlError: urlError) {
             guard attempt < maxAttempts - 1 else {
                 throw mapTransportError(urlError)
@@ -148,6 +304,9 @@ enum DebridHTTPExecutor {
             )
             return try await dataWithRetry(for: request, session: session, attempt: attempt + 1)
         } catch let urlError as URLError {
+            if urlError.code == .cancelled {
+                throw CancellationError()
+            }
             throw mapTransportError(urlError)
         } catch {
             throw DebridError.networkError(error.localizedDescription)
@@ -188,7 +347,10 @@ enum DebridHTTPExecutor {
 
         let trimmed = retryAfter.trimmingCharacters(in: .whitespacesAndNewlines)
         if let retryAfterSeconds = TimeInterval(trimmed), retryAfterSeconds > 0 {
-            let retryAfterDelay = UInt64((retryAfterSeconds * 1_000_000_000).rounded())
+            // Cap in Double space BEFORE converting — a hostile `Retry-After: 1e12` makes
+            // UInt64(1e21) trap before the min() clamp can run.
+            let cappedSeconds = min(retryAfterSeconds, Double(maximumRetryAfterNanoseconds) / 1_000_000_000)
+            let retryAfterDelay = UInt64((cappedSeconds * 1_000_000_000).rounded())
             return min(maximumRetryAfterNanoseconds, max(exponentialDelay, retryAfterDelay))
         }
 
@@ -201,7 +363,9 @@ enum DebridHTTPExecutor {
             return exponentialDelay
         }
 
-        let retryAfterDelay = UInt64((retryAfterSeconds * 1_000_000_000).rounded())
+        // Cap in Double space BEFORE converting (a far-future date would overflow UInt64).
+        let cappedSeconds = min(retryAfterSeconds, Double(maximumRetryAfterNanoseconds) / 1_000_000_000)
+        let retryAfterDelay = UInt64((cappedSeconds * 1_000_000_000).rounded())
         return min(maximumRetryAfterNanoseconds, max(exponentialDelay, retryAfterDelay))
     }
 
@@ -212,6 +376,9 @@ enum DebridHTTPExecutor {
     private static func mapTransportError(_ error: URLError) -> DebridError {
         if error.code == .timedOut {
             return .timeout
+        }
+        if error.code == .networkConnectionLost {
+            return .networkError("network connection was lost")
         }
         return .networkError(error.localizedDescription)
     }

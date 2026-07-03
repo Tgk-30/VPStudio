@@ -8,7 +8,7 @@ enum SettingsAccessibilityPolicy {
 
     /// Accessibility label for a settings row, optionally including status text.
     ///
-    /// - Returns: e.g. `"Real-Debrid, Connected"` or `"TMDB API Key"`.
+    /// - Returns: e.g. `"Real-Debrid, Connected"` or `"OMDb API Key"`.
     static func rowLabel(title: String, status: String?) -> String {
         if let status, !status.isEmpty {
             return "\(title), \(status)"

@@ -5,6 +5,8 @@ enum AIProviderKind: String, Codable, CaseIterable, Sendable, Identifiable, Hash
     case ollama = "ollama"
     case gemini = "gemini"
     case openRouter = "openrouter"
+    case mistral = "mistral"
+    case minimax = "minimax"
     case local = "local"
 
     var id: String { rawValue }
@@ -16,13 +18,24 @@ enum AIProviderKind: String, Codable, CaseIterable, Sendable, Identifiable, Hash
         case .ollama: return "Ollama"
         case .gemini: return "Google Gemini"
         case .openRouter: return "OpenRouter"
+        case .mistral: return "Mistral"
+        case .minimax: return "MiniMax"
         case .local: return "On-Device (Local)"
         }
     }
 }
 
 struct AIMovieRecommendation: Codable, Sendable, Equatable, Identifiable {
+    var canonicalIMDbID: String? {
+        IMDbIdentifierPolicy.appScopedID(in: imdbId)
+    }
+
+    var canonicalOMDbMediaID: String? {
+        canonicalIMDbID.map { "\(type.rawValue)-omdb-\($0)" }
+    }
+
     var id: String {
+        if let omdbMediaID = canonicalOMDbMediaID { return omdbMediaID }
         if let tmdbId { return "\(type.rawValue)-tmdb-\(tmdbId)" }
         return "\(title.lowercased())-\(year ?? 0)-\(type.rawValue)"
     }
@@ -31,6 +44,7 @@ struct AIMovieRecommendation: Codable, Sendable, Equatable, Identifiable {
     var year: Int?
     var type: MediaType
     var reason: String
+    var imdbId: String?
     var tmdbId: Int?
     var score: Double?
 }
@@ -52,10 +66,16 @@ struct AICompareResult: Sendable {
 extension AIMovieRecommendation {
     func toMediaPreview() -> MediaPreview {
         let id: String
-        if let tmdbId {
+        let resolvedTMDBID: Int?
+        if let imdbId = canonicalIMDbID {
+            id = imdbId
+            resolvedTMDBID = nil
+        } else if let tmdbId {
             id = "\(type.rawValue)-tmdb-\(tmdbId)"
+            resolvedTMDBID = tmdbId
         } else {
             id = "\(title.lowercased().replacingOccurrences(of: " ", with: "-"))-\(year ?? 0)-\(type.rawValue)"
+            resolvedTMDBID = nil
         }
         return MediaPreview(
             id: id,
@@ -64,7 +84,7 @@ extension AIMovieRecommendation {
             year: year,
             posterPath: nil,
             imdbRating: nil,
-            tmdbId: tmdbId
+            tmdbId: resolvedTMDBID
         )
     }
 }

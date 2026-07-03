@@ -9,8 +9,7 @@ struct DetailLifecycleBehaviorTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("detail-lifecycle.sqlite").path
-        let database = try DatabaseManager(path: dbPath)
+        let database = try DatabaseManager(inMemoryNamed: "detail-lifecycle-\(UUID().uuidString)")
         try await database.migrate()
         let secretStore = TestSecretStore()
         let settingsManager = SettingsManager(database: database, secretStore: secretStore)
@@ -82,6 +81,154 @@ struct DetailLifecycleBehaviorTests {
         #expect(viewModel.torrentSearch.results.count == 4)
         #expect(viewModel.remainingTorrentCount == 0)
         #expect(viewModel.canLoadMoreTorrents == false)
+    }
+
+    @Test
+    @MainActor
+    func searchUsesPreviewIMDbAliasWhenLoadedDetailItemKeepsLegacyTMDbID() async {
+        let appState = AppState()
+        let indexer = FixedDetailIndexerManager(results: makeTorrentResults(count: 1))
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(id: "series-tmdb-77", type: .series, title: "Alias Show", tmdbId: 77),
+            seasonsResult: [
+                Season(id: 1, seasonNumber: 1, name: "Season 1", overview: nil, posterPath: nil, episodeCount: 1, airDate: nil)
+            ],
+            episodesBySeason: [
+                1: [
+                    Episode(
+                        id: "77-s1e1",
+                        mediaId: "series-tmdb-77",
+                        seasonNumber: 1,
+                        episodeNumber: 1,
+                        title: "Pilot",
+                        overview: nil,
+                        airDate: nil,
+                        stillPath: nil,
+                        runtime: nil
+                    )
+                ]
+            ]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataProviderFactory: { _ in metadata },
+            indexerManager: indexer,
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "series-imdb-tt2300101",
+            type: .series,
+            title: "Alias Show",
+            tmdbId: 77
+        )
+
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
+        viewModel.selectedSeason = 1
+        viewModel.selectedEpisode = Episode(
+            id: "77-s1e1",
+            mediaId: "series-tmdb-77",
+            seasonNumber: 1,
+            episodeNumber: 1,
+            title: "Pilot",
+            overview: nil,
+            airDate: nil,
+            stillPath: nil,
+            runtime: nil
+        )
+
+        await viewModel.searchTorrents()
+
+        #expect(viewModel.torrentSearch.results.count == 1)
+        #expect(viewModel.lastSearchContextKey == "tt2300101-s1e1")
+        #expect(viewModel.requiresFreshEpisodeSearch == false)
+    }
+
+    @Test
+    @MainActor
+    func omdbDetailPreservesPreviewTMDbAliasForExistingRatings() async throws {
+        let database = try DatabaseManager(inMemoryNamed: "detail-omdb-rating-alias-\(UUID().uuidString)")
+        try await database.migrate()
+        let appState = AppState(database: database)
+        // The rating was captured on the 1–10 scale; surface it on the same scale
+        // so the preserved value round-trips to 9 instead of being re-projected onto
+        // the default like/dislike display scale.
+        try await database.setSetting(
+            key: SettingsKeys.feedbackScaleMode,
+            value: FeedbackScaleMode.oneToTen.rawValue
+        )
+        try await database.saveTasteEvent(
+            TasteEvent(
+                mediaId: "movie-tmdb-438631",
+                eventType: .rated,
+                signalStrength: 0.9,
+                feedbackScale: .oneToTen,
+                feedbackValue: 9,
+                source: .manual,
+                metadata: ["title": "Dune"]
+            )
+        )
+
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(id: "tt1160419", type: .movie, title: "Dune", tmdbId: nil),
+            seasonsResult: [],
+            episodesBySeason: [:]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataProviderFactory: { _ in metadata },
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438_631
+        )
+
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
+
+        #expect(viewModel.mediaItem?.id == "tt1160419")
+        #expect(viewModel.mediaItem?.tmdbId == 438_631)
+        #expect(viewModel.currentFeedbackValue == 9)
+        #expect(try await database.fetchLatestTasteRating(mediaId: "tt1160419")?.mediaId == "movie-tmdb-438631")
+    }
+
+    @Test
+    @MainActor
+    func loadDetailRejectsLegacyTMDbOnlyConfiguration() async {
+        let appState = AppState()
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(id: "tmdb-438631", type: .movie, title: "Dune: Part Two", tmdbId: 438_631),
+            seasonsResult: [],
+            episodesBySeason: [:]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataConfigurationProviderFactory: { _ in metadata },
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune: Part Two",
+            year: 2024,
+            tmdbId: 438_631
+        )
+
+        await viewModel.loadDetail(
+            preview: preview,
+            configuration: MetadataProviderConfiguration(tmdbApiKey: "legacy-tmdb")
+        )
+
+        #expect(viewModel.mediaItem == nil)
+        #expect(viewModel.error == .metadataSetupRequired(feature: DetailMetadataConfigurationPolicy.setupRequiredFeature))
+        #expect(viewModel.isLoadingDetail == false)
     }
 
     @Test
@@ -177,7 +324,7 @@ struct DetailLifecycleBehaviorTests {
             episodeId: "123-s2e5"
         )
 
-        await viewModel.loadDetail(preview: preview, apiKey: "")
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
 
         #expect(viewModel.selectedSeason == 2)
         #expect(viewModel.selectedEpisode?.episodeNumber == 5)
@@ -250,8 +397,313 @@ struct DetailLifecycleBehaviorTests {
         _ = await viewModel.resolveStream(torrent: torrent)
 
         #expect(await debrid.lastResolvedHash == "young-pope-pack")
+        #expect(await debrid.lastResolvedMagnetURI == torrent.magnetURI)
         #expect(await debrid.lastResolvedSeasonNumber == 1)
         #expect(await debrid.lastResolvedEpisodeNumber == 5)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamUsesDirectStremioURLWithoutDebridRoundTrip() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttdirect", type: .movie, title: "Direct")
+
+        var torrent = Fixtures.torrent(
+            hash: "abcdef1234567890abcdef1234567890abcdef12",
+            title: "Direct.2026.1080p.WEB-DL.mkv",
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://cdn.example.com/direct/Direct.2026.1080p.WEB-DL.mkv?token=abc"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.debridService == "Stremio Torrentio")
+        #expect(stream?.recoveryContext?.infoHash == torrent.infoHash)
+        #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
+        #expect(await debrid.lastResolvedHash == nil)
+        #expect(viewModel.debridResolver.streams.first == stream)
+    }
+
+    @Test
+    @MainActor
+    func loadDetailSkipsEmptySpecialsSeasonForDefaultSelection() async {
+        let appState = AppState()
+        let metadata = TestDetailMetadataProvider(
+            detailResult: MediaItem(
+                id: "tt34809853",
+                type: .series,
+                title: "Teach You a Lesson",
+                tmdbId: 276161
+            ),
+            seasonsResult: [
+                Season(id: 0, seasonNumber: 0, name: "Specials", overview: nil, posterPath: nil, episodeCount: 0, airDate: nil),
+                Season(id: 1, seasonNumber: 1, name: "Season 1", overview: nil, posterPath: nil, episodeCount: 10, airDate: nil),
+            ],
+            episodesBySeason: [
+                1: [
+                    Episode(
+                        id: "276161-s1e1",
+                        mediaId: "tmdb-276161",
+                        seasonNumber: 1,
+                        episodeNumber: 1,
+                        title: "Episode 1",
+                        overview: nil,
+                        airDate: nil,
+                        stillPath: nil,
+                        runtime: nil
+                    ),
+                ],
+            ]
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            metadataProviderFactory: { _ in metadata },
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        let preview = MediaPreview(
+            id: "tt34809853",
+            type: .series,
+            title: "Teach You a Lesson",
+            tmdbId: 276161
+        )
+
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
+
+        #expect(viewModel.selectedSeason == 1)
+        #expect(viewModel.episodes.map(\.episodeNumber) == [1])
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamRefreshesStremioResolverURLThroughLocalDebridWithHash() async {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        await debrid.setResolvedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/generated/Regional.Release.mkv",
+                fileName: "Regional.Release.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttresolver", type: .movie, title: "Resolver")
+
+        var torrent = Fixtures.torrent(
+            hash: hash,
+            title: "Regional.Release.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://torrentio.strem.fun/resolve/rd/\(hash)/Regional.Release.mkv"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == "https://rd.example.com/generated/Regional.Release.mkv")
+        #expect(stream?.debridService == DebridServiceType.realDebrid.rawValue)
+        #expect(stream?.recoveryContext?.infoHash == hash)
+        #expect(await debrid.lastResolvedHash == hash)
+        #expect(await debrid.lastResolvedMagnetURI == torrent.magnetURI)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamUsesStremioRealDebridGeneratedURLDirectlyWithHash() async {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        await debrid.setResolvedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/generated/Regional.Release.mkv",
+                fileName: "Regional.Release.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttrdgenerated", type: .movie, title: "Resolver")
+
+        var torrent = Fixtures.torrent(
+            hash: hash,
+            title: "Regional.Release.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://sea1.download.real-debrid.com/d/abc/Regional.Release.mkv"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.debridService == "Stremio Torrentio")
+        #expect(stream?.recoveryContext?.infoHash == hash)
+        #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
+        #expect(await debrid.lastResolvedHash == nil)
+        #expect(await debrid.lastResolvedMagnetURI == nil)
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamUsesStremioRealDebridGeneratedURLDirectlyWithoutHash() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        await debrid.setUnrestrictedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/refreshed/Regional.Release.mkv",
+                fileName: "Regional.Release.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttrdgenerated-direct", type: .movie, title: "Resolver")
+
+        var torrent = Fixtures.torrent(
+            hash: "direct-regional",
+            title: "Regional.Release.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://sea1.download.real-debrid.com/d/abc/Regional.Release.mkv"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.debridService == "Stremio Torrentio")
+        #expect(stream?.recoveryContext == nil)
+        #expect(await debrid.lastUnrestrictedLink == nil)
+        #expect(await debrid.lastUnrestrictedServiceType == nil)
+        #expect(await debrid.lastResolvedHash == nil)
+    }
+
+    @Test
+    @MainActor
+    func queueDownloadRefreshesStremioResolverURLThroughLocalDebridWithHash() async {
+        let hash = "abcdef1234567890abcdef1234567890abcdef12"
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let downloads = StubDownloadManager()
+        await debrid.setResolvedStream(
+            Fixtures.stream(
+                url: "https://rd.example.com/generated/Regional.Download.mkv",
+                fileName: "Regional.Download.mkv",
+                debridService: DebridServiceType.realDebrid.rawValue
+            )
+        )
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: downloads
+        )
+        viewModel.mediaItem = MediaItem(id: "ttresolver-download", type: .movie, title: "Resolver Download")
+
+        var torrent = Fixtures.torrent(
+            hash: hash,
+            title: "Regional.Download.1080p.WEB-DL.mkv",
+            cached: true,
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://torrentio.strem.fun/resolve/realdebrid/\(hash)/Regional.Download.mkv"
+
+        await viewModel.queueDownload(torrent: torrent)
+
+        let tasks = (try? await downloads.listDownloads()) ?? []
+        #expect(await debrid.lastResolvedHash == hash)
+        #expect(await debrid.lastResolvedMagnetURI == torrent.magnetURI)
+        #expect(tasks.first?.streamURL == "https://rd.example.com/generated/Regional.Download.mkv")
+        #expect(viewModel.downloadState(for: torrent) == .downloading)
+    }
+
+    @Test
+    @MainActor
+    func queueDownloadUsesCanonicalIMDbMediaIdentifierWhenPreviewProvidesAlias() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let downloads = StubDownloadManager()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: downloads
+        )
+        viewModel.mediaItem = MediaItem(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            tmdbId: 438_631
+        )
+        viewModel.setPreviewContext(
+            MediaPreview(
+                id: "movie-imdb-tt1160419",
+                type: .movie,
+                title: "Dune",
+                year: 2021,
+                posterPath: nil,
+                imdbRating: nil,
+                tmdbId: nil
+            )
+        )
+
+        let torrent = Fixtures.torrent(
+            hash: "canonical-download",
+            title: "Dune.2021.1080p.WEB-DL.mkv",
+            cached: true
+        )
+
+        await viewModel.queueDownload(torrent: torrent)
+
+        let tasks = (try? await downloads.listDownloads()) ?? []
+        #expect(tasks.first?.mediaId == "movie-omdb-tt1160419")
+    }
+
+    @Test
+    @MainActor
+    func resolveStreamDoesNotAttachRecoveryContextForSyntheticDirectOnlyResult() async {
+        let appState = AppState()
+        let debrid = StubDebridManager()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: debrid,
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "ttdirect", type: .movie, title: "Direct")
+
+        var torrent = Fixtures.torrent(
+            hash: "direct-abcdef1234567890abcdef1234567890abcdef12",
+            title: "Direct.2026.1080p.WEB-DL.mkv",
+            indexerName: "Stremio Torrentio"
+        )
+        torrent.directStreamURL = "https://cdn.example.com/direct/Direct.2026.1080p.WEB-DL.mkv?token=abc"
+
+        let stream = await viewModel.resolveStream(torrent: torrent)
+
+        #expect(stream?.streamURL.absoluteString == torrent.directStreamURL)
+        #expect(stream?.recoveryContext == nil)
+        #expect(await debrid.lastResolvedHash == nil)
     }
 
     @Test
@@ -286,6 +738,7 @@ struct DetailLifecycleBehaviorTests {
 
         #expect(stream?.recoveryContext?.infoHash == "young-pope-pack")
         #expect(stream?.recoveryContext?.preferredService == .allDebrid)
+        #expect(stream?.recoveryContext?.magnetURI == torrent.magnetURI)
         #expect(stream?.recoveryContext?.seasonNumber == 1)
         #expect(stream?.recoveryContext?.episodeNumber == 5)
         #expect(viewModel.debridResolver.streams.first?.recoveryContext == stream?.recoveryContext)
@@ -294,10 +747,7 @@ struct DetailLifecycleBehaviorTests {
     @Test
     @MainActor
     func loadDetailFallsBackToMostRecentEpisodeHistoryForSeries() async throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let db = try DatabaseManager(path: tempDir.appendingPathComponent("detail-history.sqlite").path)
+        let db = try DatabaseManager(inMemoryNamed: "detail-history-\(UUID().uuidString)")
         try await db.migrate()
 
         let history = WatchHistory(
@@ -340,7 +790,7 @@ struct DetailLifecycleBehaviorTests {
 
         let preview = MediaPreview(id: "ttyoungpope", type: .series, title: "The Young Pope", tmdbId: 123)
 
-        await viewModel.loadDetail(preview: preview, apiKey: "")
+        await viewModel.loadDetail(preview: preview, apiKey: "test-omdb-key")
 
         #expect(viewModel.selectedSeason == 2)
         #expect(viewModel.selectedEpisode?.episodeNumber == 4)
@@ -460,6 +910,92 @@ struct DetailLifecycleBehaviorTests {
         #expect(viewModel.downloadState(for: torrent) == .downloading)
     }
 
+    @Test
+    @MainActor
+    func seriesWatchTallyCountsLoadedOMDbEpisodeIMDbIDs() async {
+        let appState = AppState()
+        let viewModel = DetailViewModel(
+            appState: appState,
+            indexerManager: StubIndexerManager(),
+            debridManager: StubDebridManager(),
+            downloadManager: StubDownloadManager()
+        )
+        viewModel.mediaItem = MediaItem(id: "tt2300999", type: .series, title: "OMDb Series")
+        viewModel.seasons = [
+            Season(id: 1, seasonNumber: 1, name: "Season 1", overview: nil, posterPath: nil, episodeCount: 2, airDate: nil)
+        ]
+        viewModel.episodes = [
+            Episode(
+                id: "tt2301001",
+                mediaId: "tt2300999",
+                seasonNumber: 1,
+                episodeNumber: 1,
+                title: "Pilot",
+                overview: nil,
+                airDate: nil,
+                stillPath: nil,
+                runtime: nil
+            ),
+            Episode(
+                id: "tt2301002",
+                mediaId: "tt2300999",
+                seasonNumber: 1,
+                episodeNumber: 2,
+                title: "Second",
+                overview: nil,
+                airDate: nil,
+                stillPath: nil,
+                runtime: nil
+            )
+        ]
+        viewModel.episodeWatchStates = [
+            "tt2301001": WatchHistory(
+                id: "watch-omdb-episode",
+                mediaId: "tt2300999",
+                episodeId: "tt2301001",
+                title: "Pilot",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            ),
+            "s01e01": WatchHistory(
+                id: "watch-duplicate-synthetic-alias",
+                mediaId: "tt2300999",
+                episodeId: "s01e01",
+                title: "Pilot",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            ),
+            "tt-unloaded-episode": WatchHistory(
+                id: "watch-unloaded-omdb-episode",
+                mediaId: "tt2300999",
+                episodeId: "tt-unloaded-episode",
+                title: "Unknown",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            ),
+            "s01e02": WatchHistory(
+                id: "watch-trakt-synced-episode",
+                mediaId: "tt2300999",
+                episodeId: "s01e02",
+                title: "Second",
+                progress: 1,
+                duration: 1,
+                watchedAt: Date(),
+                isCompleted: true
+            )
+        ]
+
+        let tally = viewModel.seriesWatchTally
+        #expect(tally.watched == 2)
+        #expect(tally.total == 2)
+    }
+
     private func makeTorrentResults(count: Int) -> [TorrentResult] {
         (0..<count).map { index in
             Fixtures.torrent(
@@ -482,6 +1018,8 @@ private actor TestDetailMetadataProvider: DetailMetadataProviding {
     }
 
     func getDetail(id: String, type: MediaType) async throws -> MediaItem { detailResult }
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] { seasonsResult }
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
     func getSeasons(tmdbId: Int) async throws -> [Season] { seasonsResult }
     func getEpisodes(tmdbId: Int, season: Int) async throws -> [Episode] { episodesBySeason[season] ?? [] }
 }
@@ -610,7 +1148,13 @@ private actor RetryableDetailDebridManager: DetailDebridManaging {
         [:]
     }
 
-    func resolveStream(hash: String, preferredService: DebridServiceType?, seasonNumber: Int?, episodeNumber: Int?) async throws -> StreamInfo {
+    func resolveStream(
+        hash: String,
+        preferredService: DebridServiceType?,
+        magnetURI: String?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) async throws -> StreamInfo {
         resolveCalls += 1
         if remainingResolveFailures > 0 {
             remainingResolveFailures -= 1

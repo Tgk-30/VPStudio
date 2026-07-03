@@ -304,12 +304,34 @@ struct VPPlayerEngineTrackSelectionTests {
         #expect(engine.selectedAudioTrack == 7)
     }
 
-    @Test @MainActor func selectSubtitleTrackRejectsInvalidIndex() {
+    @Test @MainActor func loadAudioTracksClearsSelectionWhenTracksAreEmpty() {
         let engine = VPPlayerEngine()
-        // No subtitle tracks loaded, so index 5 is out of bounds
+        let tracks: [VPPlayerEngine.TrackInfo] = [
+            .init(id: 7, name: "Stereo", language: "en", codec: "aac"),
+        ]
+
+        engine.loadAudioTracks(tracks)
+        engine.selectAudioTrack(7)
+        engine.loadAudioTracks([])
+
+        #expect(engine.audioTracks.isEmpty)
+        #expect(engine.selectedAudioTrack == 0)
+    }
+
+    @Test @MainActor func selectSubtitleTrackCanBeDeferredWhenNoTracksLoaded() {
+        let engine = VPPlayerEngine()
+        // With no subtitle tracks loaded, selection is stored for later application.
         engine.selectSubtitleTrack(5)
-        // Should remain unchanged from default (not crash)
-        #expect(engine.selectedSubtitleTrack == -1)
+        #expect(engine.selectedSubtitleTrack == 5)
+        #expect(engine.subtitlesEnabled == false)
+        #expect(engine.currentSubtitleText == nil)
+    }
+
+    @Test @MainActor func selectAudioTrackCanBeDeferredWhenNoTracksLoaded() {
+        let engine = VPPlayerEngine()
+        // With no audio tracks loaded, selection is stored for later application.
+        engine.selectAudioTrack(42)
+        #expect(engine.selectedAudioTrack == 42)
     }
 }
 
@@ -381,6 +403,19 @@ struct VPPlayerEngineChapterTests {
         let engine = VPPlayerEngine()
         engine.currentTime = 50
         #expect(engine.nextChapterTime() == nil)
+    }
+
+    @Test @MainActor func nextChapterTimeJumpsToFirstChapterWhenBeforeTimeline() {
+        let engine = VPPlayerEngine()
+        let delayedChapters: [VPPlayerEngine.ChapterInfo] = [
+            .init(id: 10, title: "Cold Open", startTime: 30, endTime: 120),
+            .init(id: 11, title: "Feature", startTime: 120, endTime: 600),
+        ]
+
+        engine.loadChapters(delayedChapters)
+        engine.currentTime = 5
+
+        #expect(engine.nextChapterTime() == 30)
     }
 
     @Test @MainActor func previousChapterRestartsCurrent() {

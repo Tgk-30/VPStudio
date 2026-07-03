@@ -23,8 +23,29 @@ struct SettingsNavigationInteractionPolicyTests {
         #expect(source.contains("selectedDestination") == false)
     }
 
+    @Test
+    func settingsRootKeepsBottomRowsClearOfVisionWindowChrome() throws {
+        let source = try String(contentsOf: settingsRootURL(), encoding: .utf8)
+        let containerSource = try String(contentsOf: containersURL(), encoding: .utf8)
+
+        #expect(SettingsRootLayoutPolicy.bottomContentPadding == 320)
+        #expect(SettingsRootLayoutPolicy.bottomViewportInset == 260)
+        #expect(source.contains("bottomContentPadding: SettingsRootLayoutPolicy.bottomContentPadding"))
+        #expect(source.contains("bottomViewportInset: SettingsRootLayoutPolicy.bottomViewportInset"))
+        #expect(containerSource.contains("var bottomContentPadding: CGFloat = VPSpace.section"))
+        #expect(containerSource.contains("var bottomViewportInset: CGFloat = 0"))
+        #expect(containerSource.contains(".safeAreaInset(edge: .bottom)"))
+        #expect(containerSource.contains("struct VPBottomViewportScrim: View"))
+        #expect(containerSource.contains("VPBottomViewportScrim(height: bottomViewportInset)"))
+        #expect(containerSource.contains(".allowsHitTesting(false)"))
+    }
+
     private func settingsRootURL() -> URL {
         repoRootURL().appendingPathComponent("VPStudio/Views/Windows/Settings/Root/SettingsRootView.swift")
+    }
+
+    private func containersURL() -> URL {
+        repoRootURL().appendingPathComponent("VPStudio/Design/Components/VPContainers.swift")
     }
 
     private func repoRootURL() -> URL {

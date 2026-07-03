@@ -22,4 +22,9 @@ struct PlayerLifecyclePolicyTests {
         #expect(value == false)
         #endif
     }
+
+    @Test
+    func dismissesCurrentPresentationOnBackIsEnabled() {
+        #expect(PlayerLifecyclePolicy.dismissesCurrentPresentationOnBack == true)
+    }
 }

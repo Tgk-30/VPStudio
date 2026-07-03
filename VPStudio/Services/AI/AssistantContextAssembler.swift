@@ -290,7 +290,7 @@ actor AssistantContextAssembler {
         await withTaskGroup(of: (String, String?).self) { group in
             for mediaID in mediaIDs {
                 group.addTask {
-                    let title = try? await database.fetchMediaItem(id: mediaID)?.title
+                    let title = try? await database.fetchMediaItemResolvingAliases(id: mediaID)?.title
                     return (mediaID, title)
                 }
             }

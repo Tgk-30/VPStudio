@@ -29,6 +29,22 @@ enum DownloadsErrorSurfacePolicy {
     }
 }
 
+enum DownloadsLayoutPolicy {
+    static let bottomContentPadding: CGFloat = 200
+    static let bottomViewportInset: CGFloat = 168
+    static let verticalSectionSpacing: CGFloat = VPSpace.normal
+    static let groupSpacing: CGFloat = VPSpace.normal
+    static let topContentPadding: CGFloat = VPSpace.roomy
+    static let summaryCardPadding: CGFloat = VPSpace.normal
+    static let summaryIconHaloSize: CGFloat = 64
+    static let summaryIconSize: CGFloat = 50
+    static let groupPosterWidth: CGFloat = 84
+    static let groupPosterHeight: CGFloat = 126
+    static let groupHeaderPadding: CGFloat = VPSpace.tight
+    static let taskRowVerticalPadding: CGFloat = VPSpace.micro
+    static let completedSectionTopPadding: CGFloat = VPSpace.roomy
+}
+
 struct DownloadsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openWindow) private var openWindow
@@ -38,6 +54,22 @@ struct DownloadsView: View {
     @State private var confirmDeleteTaskID: String?
     @State private var playbackValidationMessage: String?
     @State private var didPerformQADownloadAction = false
+    @AppStorage(VPDesignFlags.useObsidianGlassKey) private var useObsidianGlass = true
+    private let disablesAutomaticTasks: Bool
+
+    init(
+        viewModel: DownloadsViewModel? = nil,
+        initialConfirmDeleteMediaId: String? = nil,
+        initialConfirmDeleteTaskID: String? = nil,
+        initialPlaybackValidationMessage: String? = nil,
+        disablesAutomaticTasks: Bool = false
+    ) {
+        _viewModel = State(initialValue: viewModel)
+        _confirmDeleteMediaId = State(initialValue: initialConfirmDeleteMediaId)
+        _confirmDeleteTaskID = State(initialValue: initialConfirmDeleteTaskID)
+        _playbackValidationMessage = State(initialValue: initialPlaybackValidationMessage)
+        self.disablesAutomaticTasks = disablesAutomaticTasks
+    }
 
     private var shouldShowRootLoadingSurface: Bool {
         DownloadsLoadingSurfacePolicy.shouldShowRootLoading(
@@ -54,7 +86,7 @@ struct DownloadsView: View {
         )
     }
 
-    var body: some View {
+    private var legacyRoot: some View {
         Group {
             if shouldShowRootLoadingSurface {
                 VStack {
@@ -75,7 +107,17 @@ struct DownloadsView: View {
             VPMenuBackground()
                 .ignoresSafeArea()
         }
-        .navigationTitle("Downloads")
+    }
+
+    var body: some View {
+        Group {
+            if useObsidianGlass {
+                obsidianRoot
+            } else {
+                legacyRoot
+            }
+        }
+        .navigationTitle(useObsidianGlass ? "" : "Downloads")
         .alert(
             "Download Unavailable",
             isPresented: Binding(
@@ -88,6 +130,7 @@ struct DownloadsView: View {
             Text(playbackValidationMessage ?? "The downloaded file is no longer available.")
         }
         .task {
+            guard !disablesAutomaticTasks else { return }
             if viewModel == nil {
                 let vm = DownloadsViewModel(appState: appState)
                 viewModel = vm
@@ -100,6 +143,7 @@ struct DownloadsView: View {
             reloadTask = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .downloadsDidChange)) { _ in
+            guard !disablesAutomaticTasks else { return }
             guard let vm = viewModel else { return }
             reloadTask?.cancel()
             reloadTask = Task {
@@ -107,6 +151,456 @@ struct DownloadsView: View {
                 await performQADownloadActionIfNeeded(vm)
             }
         }
+    }
+
+    // MARK: - Obsidian Glass
+
+    private var obsidianRoot: some View {
+        ZStack {
+            VPBackground()
+            if shouldShowRootLoadingSurface {
+                LoadingOverlay(
+                    title: DownloadsLoadingSurfacePolicy.title,
+                    message: DownloadsLoadingSurfacePolicy.message
+                )
+            } else if let vm = viewModel {
+                obsidianContent(vm)
+            } else {
+                Color.clear
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func obsidianContent(_ vm: DownloadsViewModel) -> some View {
+        switch errorSurfaceMode(for: vm) {
+        case .rootError:
+            if let error = vm.rootError {
+                obsidianStateSurface(
+                    icon: "exclamationmark.triangle",
+                    title: error.errorDescription ?? "Downloads couldn’t load right now.",
+                    message: error.recoverySuggestion,
+                    tint: VPColor.warning,
+                    actionTitle: "Retry"
+                ) { retryRootLoad(vm) }
+            }
+        case .inlineError, .none:
+            if vm.groups.isEmpty {
+                obsidianStateSurface(
+                    icon: "arrow.down.circle",
+                    title: "Build your offline shelf",
+                    message: "Downloaded movies and episodes show up here with progress, retry, and one-tap playback. Grab a title from Discover, then download the stream you want to keep.",
+                    tint: VPColor.info,
+                    actionTitle: "Browse Discover"
+                ) { appState.selectedTab = .discover }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: DownloadsLayoutPolicy.verticalSectionSpacing) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Downloads")
+                                .font(VPFont.title1)
+                                .foregroundStyle(VPColor.textPrimary)
+                                .accessibilityAddTraits(.isHeader)
+                            Spacer()
+                            downloadsMenu(vm)
+                        }
+
+                        if case .inlineError = errorSurfaceMode(for: vm), let error = vm.rootError {
+                            obsidianInlineErrorBanner(error, vm: vm)
+                        }
+
+                        downloadsSummaryCard(vm)
+
+                        if !vm.activeGroups.isEmpty {
+                            downloadsSectionHeader("Active", systemImage: "arrow.down.circle.fill", count: vm.activeTaskCount)
+                            LazyVStack(spacing: DownloadsLayoutPolicy.groupSpacing) {
+                                ForEach(vm.activeGroups) { obsidianGroupCard($0, vm: vm) }
+                            }
+                        }
+
+                        if !vm.completedGroups.isEmpty {
+                            VStack(alignment: .leading, spacing: DownloadsLayoutPolicy.verticalSectionSpacing) {
+                                downloadsSectionHeader("Downloaded", systemImage: "checkmark.circle.fill", count: vm.completedGroups.count)
+                                LazyVStack(spacing: DownloadsLayoutPolicy.groupSpacing) {
+                                    ForEach(vm.completedGroups) { obsidianGroupCard($0, vm: vm) }
+                                }
+                            }
+                            .padding(.top, DownloadsLayoutPolicy.completedSectionTopPadding)
+                        }
+                    }
+                    .padding(.horizontal, VPSpace.roomy)
+                    .padding(.top, DownloadsLayoutPolicy.topContentPadding)
+                    .padding(.bottom, DownloadsLayoutPolicy.bottomContentPadding)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    VPBottomViewportScrim(height: DownloadsLayoutPolicy.bottomViewportInset)
+                }
+                .refreshable { await vm.load() }
+            }
+        }
+    }
+
+    // MARK: Summary + sections + menu
+
+    /// Premium "storage hero": a haloed drive badge, the downloaded-of-total figure, a glowing
+    /// gradient capacity bar, and used / available context. Replaces the flat stat row.
+    private func downloadsSummaryCard(_ vm: DownloadsViewModel) -> some View {
+        let storage = deviceStorage()
+        let used = vm.totalDownloadedBytes
+        let total = max(storage.total, used + storage.available, used, 1)
+        let usedFraction = min(1.0, max(0.02, Double(used) / Double(total)))
+        let heroGradient = LinearGradient(
+            colors: [Color(red: 0.36, green: 0.45, blue: 0.96), Color(red: 0.62, green: 0.36, blue: 0.97)],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        return VPCard(elevation: .raised, padding: DownloadsLayoutPolicy.summaryCardPadding) {
+            HStack(alignment: .center, spacing: VPSpace.normal) {
+                ZStack {
+                    Circle()
+                        .fill(heroGradient)
+                        .opacity(0.22)
+                        .blur(radius: 14)
+                        .frame(
+                            width: DownloadsLayoutPolicy.summaryIconHaloSize,
+                            height: DownloadsLayoutPolicy.summaryIconHaloSize
+                        )
+                    Circle()
+                        .fill(VPColor.contentPlane)
+                        .overlay { Circle().strokeBorder(heroGradient, lineWidth: 1.5) }
+                        .frame(
+                            width: DownloadsLayoutPolicy.summaryIconSize,
+                            height: DownloadsLayoutPolicy.summaryIconSize
+                        )
+                    Image(systemName: "internaldrive")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(VPColor.textPrimary)
+                }
+
+                VStack(alignment: .leading, spacing: VPSpace.tight) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(formatBytes(used))
+                            .font(.system(size: 26, weight: .bold))
+                            .foregroundStyle(VPColor.textPrimary)
+                        Text("of \(formatBytes(total)) used")
+                            .font(VPFont.caption)
+                            .foregroundStyle(VPColor.textSecondary)
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(VPColor.contentPlane)
+                            Capsule().fill(heroGradient)
+                                .frame(width: max(10, geo.size.width * usedFraction))
+                                .shadow(color: Color(red: 0.55, green: 0.36, blue: 0.97).opacity(0.55), radius: 6)
+                        }
+                    }
+                    .frame(height: 8)
+                    HStack(spacing: 6) {
+                        Text("\(Int((usedFraction * 100).rounded()))% used").foregroundStyle(VPColor.textPrimary)
+                        Text("•").foregroundStyle(VPColor.textTertiary)
+                        Text("\(formatBytes(storage.available)) available").foregroundStyle(VPColor.textSecondary)
+                    }
+                    .font(VPFont.caption)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func deviceStorage() -> (total: Int64, available: Int64) {
+        let values = try? URL.documentsDirectory.resourceValues(
+            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
+        )
+        let total = Int64(values?.volumeTotalCapacity ?? 0)
+        let available = values?.volumeAvailableCapacityForImportantUsage ?? 0
+        return (total, available)
+    }
+
+    private func downloadsSectionHeader(_ title: String, systemImage: String, count: Int) -> some View {
+        let gradient = LinearGradient(
+            colors: [Color(red: 0.40, green: 0.48, blue: 0.97), Color(red: 0.64, green: 0.38, blue: 0.98)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        return HStack(spacing: VPSpace.snug) {
+            ZStack {
+                Circle().fill(gradient).opacity(0.16)
+                Circle().strokeBorder(gradient, lineWidth: 1).opacity(0.55)
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(gradient)
+            }
+            .frame(width: 40, height: 40)
+            Text(title)
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(VPColor.textPrimary)
+            VPBadge(text: "\(count)").accessibilityLabel("\(count) \(title)")
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func downloadsMenu(_ vm: DownloadsViewModel) -> some View {
+        Menu {
+            Picker("Sort by", selection: Binding(get: { vm.sortOption }, set: { vm.sortOption = $0 })) {
+                ForEach(DownloadSortOption.allCases) { option in
+                    Label(option.label, systemImage: option.systemImage).tag(option)
+                }
+            }
+            Divider()
+            if vm.hasFailedTasks {
+                Button { Task { await vm.retryAllFailed() } } label: {
+                    Label("Retry All Failed", systemImage: "arrow.clockwise")
+                }
+            }
+            if vm.hasActiveTasks {
+                Button(role: .destructive) { Task { await vm.cancelAllActive() } } label: {
+                    Label("Cancel All Active", systemImage: "xmark")
+                }
+            }
+            if vm.hasCompletedTasks {
+                Button(role: .destructive) { Task { await vm.clearCompleted() } } label: {
+                    Label("Clear Completed", systemImage: "trash")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(VPColor.textSecondary)
+                .frame(width: VPSpace.minTapTarget, height: VPSpace.minTapTarget)
+                .glassSurface(.rest, cornerRadius: VPSpace.minTapTarget / 2)
+                .contentShape(Circle())
+        }
+        .accessibilityLabel("Downloads options")
+    }
+
+    private func obsidianStateSurface(
+        icon: String,
+        title: String,
+        message: String?,
+        tint: Color,
+        actionTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack {
+            Spacer()
+            VPStateCard(systemImage: icon, title: title, message: message, tint: tint, actionTitle: actionTitle, action: action)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(VPSpace.roomy)
+    }
+
+    private func obsidianInlineErrorBanner(_ error: AppError, vm: DownloadsViewModel) -> some View {
+        HStack(spacing: VPSpace.snug) {
+            Image(systemName: "wifi.exclamationmark")
+                .foregroundStyle(VPColor.warning)
+                .accessibilityHidden(true)
+            Text(error.errorDescription ?? "Couldn’t refresh downloads.")
+                .font(VPFont.bodyEmphasis)
+                .foregroundStyle(VPColor.textPrimary)
+            Spacer(minLength: VPSpace.snug)
+            Button { retryRootLoad(vm) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(VPButtonStyle(kind: .secondary))
+        }
+        .padding(VPSpace.normal)
+        .glassSurface(.rest, cornerRadius: VPRadius.control)
+    }
+
+    private func obsidianGroupCard(_ group: DownloadMediaGroup, vm: DownloadsViewModel) -> some View {
+        VPCard(elevation: .raised, padding: VPSpace.tight) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: VPSpace.normal) {
+                    AsyncImage(url: group.posterURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().aspectRatio(2 / 3, contentMode: .fill)
+                        case .empty:
+                            posterPlaceholder(for: group).overlay { ProgressView().controlSize(.small) }
+                        default:
+                            posterPlaceholder(for: group)
+                        }
+                    }
+                    .frame(
+                        width: DownloadsLayoutPolicy.groupPosterWidth,
+                        height: DownloadsLayoutPolicy.groupPosterHeight
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: VPRadius.chip, style: .continuous)
+                            .strokeBorder(.white.opacity(0.10), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
+
+                    VStack(alignment: .leading, spacing: VPSpace.tight) {
+                        Text(group.mediaTitle.isEmpty ? "Unknown Title" : group.mediaTitle)
+                            .font(VPFont.title2)
+                            .foregroundStyle(VPColor.textPrimary)
+                            .lineLimit(2)
+                        HStack(spacing: VPSpace.tight) {
+                            VPBadge(
+                                text: group.mediaType == "series" ? "Series" : "Movie",
+                                tint: group.mediaType == "series" ? VPColor.info : VPColor.accent
+                            )
+                            if let quality = group.tasks.first.flatMap({ downloadQuality(from: $0.fileName) }) {
+                                VPBadge(text: quality, tint: VPColor.info)
+                            }
+                            if group.totalCount > 1 {
+                                Text("\(group.completedCount)/\(group.totalCount) downloaded")
+                                    .font(VPFont.caption)
+                                    .foregroundStyle(VPColor.textSecondary)
+                            }
+                        }
+                        if group.hasActiveDownloads && group.totalCount > 1 {
+                            VPProgressBar(
+                                value: group.overallProgress,
+                                height: 8,
+                                label: "\(Int((group.overallProgress * 100).rounded()))%",
+                                tint: VPColor.info
+                            )
+                            .padding(.top, VPSpace.micro)
+                        }
+                    }
+
+                    Spacer(minLength: VPSpace.tight)
+
+                    if group.totalCount > 1 {
+                        obsidianIconButton("trash", label: "Delete all downloads", tint: VPColor.danger) {
+                            confirmDeleteMediaId = group.mediaId
+                        }
+                        .confirmationDialog(
+                            "Delete All Downloads?",
+                            isPresented: Binding(
+                                get: { confirmDeleteMediaId == group.mediaId },
+                                set: { if !$0 { confirmDeleteMediaId = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete All", role: .destructive) {
+                                Task { await vm.removeAll(mediaId: group.mediaId) }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This will permanently delete all downloaded files for \"\(group.mediaTitle)\" from storage.")
+                        }
+                    }
+                }
+                .padding(DownloadsLayoutPolicy.groupHeaderPadding)
+
+                Divider().overlay(VPColor.specularDim).padding(.horizontal, VPSpace.snug)
+
+                ForEach(group.tasks, id: \.id) { task in
+                    obsidianTaskRow(task, vm: vm, isSeries: group.mediaType == "series", groupTitle: group.mediaTitle)
+                    if task.id != group.tasks.last?.id {
+                        Divider().overlay(VPColor.specularDim).padding(.leading, VPSpace.snug)
+                    }
+                }
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                confirmDeleteMediaId = group.mediaId
+            } label: {
+                Label("Delete \(group.mediaTitle)", systemImage: "trash")
+            }
+        }
+    }
+
+    private func obsidianTaskRow(_ task: DownloadTask, vm: DownloadsViewModel, isSeries: Bool, groupTitle: String) -> some View {
+        HStack(spacing: VPSpace.snug) {
+            VStack(alignment: .leading, spacing: VPSpace.micro) {
+                // Show a distinct title only when it adds information: not when it merely
+                // repeats the group title, and not when displayTitle has fallen back to the
+                // filename (which is already rendered on the line below — avoids a double row).
+                if task.displayTitle != groupTitle && task.displayTitle != task.fileName {
+                    Text(task.displayTitle)
+                        .font(VPFont.bodyEmphasis)
+                        .foregroundStyle(VPColor.textPrimary)
+                        .lineLimit(1)
+                }
+                Text(task.fileName)
+                    .font(VPFont.micro)
+                    .foregroundStyle(VPColor.textTertiary)
+                    .lineLimit(1)
+                HStack(spacing: VPSpace.tight) {
+                    VPBadge(text: task.status.rawValue.capitalized, tint: badgeTint(for: task.status))
+                    if task.status == .completed, let bytes = task.totalBytes, bytes > 0 {
+                        Text(formatBytes(bytes))
+                            .font(VPFont.caption)
+                            .foregroundStyle(VPColor.textTertiary)
+                    }
+                }
+                if task.status == .downloading || task.status == .queued || task.status == .resolving {
+                    VPProgressBar(value: task.progress, height: 8, label: progressText(for: task), tint: statusColor(for: task.status))
+                        .padding(.top, 2)
+                }
+                if let message = task.errorMessage, !message.isEmpty {
+                    Text(message)
+                        .font(VPFont.caption)
+                        .foregroundStyle(VPColor.danger)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: VPSpace.tight)
+
+            HStack(spacing: VPSpace.tight) {
+                if task.status == .completed {
+                    obsidianIconButton("play.fill", label: "Play", tint: VPColor.accent) { playDownload(task, vm: vm) }
+                }
+                if task.status == .downloading || task.status == .queued || task.status == .resolving {
+                    obsidianIconButton("xmark", label: "Cancel download", tint: VPColor.textSecondary) { Task { await vm.cancel(task) } }
+                }
+                if task.status == .failed || task.status == .cancelled {
+                    obsidianIconButton("arrow.clockwise", label: "Retry download", tint: VPColor.info) { Task { await vm.retry(task) } }
+                }
+                obsidianIconButton("trash", label: "Delete download", tint: VPColor.danger) {
+                    confirmDeleteTaskID = task.id
+                }
+                .confirmationDialog(
+                    "Delete Download?",
+                    isPresented: Binding(
+                        get: { confirmDeleteTaskID == task.id },
+                        set: { if !$0 { confirmDeleteTaskID = nil } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete", role: .destructive) {
+                        confirmDeleteTaskID = nil
+                        Task { await vm.remove(task) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This will permanently delete \"\(task.displayTitle)\" from storage.")
+                }
+            }
+        }
+        .padding(.horizontal, VPSpace.snug)
+        .padding(.vertical, DownloadsLayoutPolicy.taskRowVerticalPadding)
+        .frame(minHeight: VPSpace.minTapTarget)
+    }
+
+    private func obsidianIconButton(
+        _ systemName: String,
+        label: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: VPSpace.minTapTarget, height: VPSpace.minTapTarget)
+                .glassSurface(.rest, cornerRadius: VPSpace.minTapTarget / 2)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .vpInteractive()
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder
@@ -134,7 +628,7 @@ struct DownloadsView: View {
                             }
                         }
                         .padding(.horizontal, 24)
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 104)
                     }
                     .refreshable {
                         await vm.load()
@@ -487,16 +981,6 @@ struct DownloadsView: View {
             Task { await vm.load() }
             return
         }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            playbackValidationMessage = "The downloaded file for \"\(task.displayTitle)\" is no longer available on disk."
-            Task { await vm.load() }
-            return
-        }
-
-        #if os(macOS)
-        vm.playFile(task)
-        #else
-        guard appState.activePlayerSession == nil else { return }
         let stream = StreamInfo(
             streamURL: fileURL,
             quality: .unknown,
@@ -508,13 +992,27 @@ struct DownloadsView: View {
             sizeBytes: task.totalBytes,
             debridService: "local"
         )
+        guard PlayerStreamURLPolicy.isLaunchable(stream) else {
+            playbackValidationMessage = "The downloaded file for \"\(task.displayTitle)\" is no longer available on disk."
+            Task { await vm.load() }
+            return
+        }
+
+        #if os(macOS)
+        vm.playFile(task)
+        #else
+        guard appState.activePlayerSession == nil else {
+            playbackValidationMessage = "A video is already playing. Close it before starting another."
+            return
+        }
         let request = PlayerSessionRequest(
             stream: stream,
             mediaTitle: task.displayTitle,
             mediaId: task.mediaId,
+            posterPath: task.posterPath,
             episodeId: task.episodeId
         )
-        appState.activePlayerSession = request
+        appState.beginEmbeddedPlayerSession(request)
         openWindow(id: "player", value: request)
         #endif
     }
@@ -560,6 +1058,12 @@ struct DownloadsView: View {
         }
     }
 
+    /// Tint for the status badge. In-progress downloads use the brand "live" accent so the badge
+    /// reads as a distinct hue from the blue `VPColor.info` quality badge (e.g. "4K").
+    private func badgeTint(for status: DownloadStatus) -> Color {
+        status == .downloading ? VPColor.live : statusColor(for: status)
+    }
+
     private func progressText(for task: DownloadTask) -> String {
         let normalizedProgress = DownloadProgressPolicy.normalizedProgress(
             progress: task.progress,
@@ -572,7 +1076,11 @@ struct DownloadsView: View {
         if let total = task.totalBytes, total > 0 {
             let written = formatBytes(task.bytesWritten)
             let totalText = formatBytes(total)
-            return "\(pct)% \u{2022} \(written) / \(totalText)"
+            var text = "\(pct)% \u{2022} \(written) / \(totalText)"
+            if let eta = downloadETA(for: task) {
+                text += " \u{2022} \(eta)"
+            }
+            return text
         }
 
         if task.bytesWritten > 0 {
@@ -582,10 +1090,41 @@ struct DownloadsView: View {
         return "\(pct)%"
     }
 
+    /// Real quality label parsed from the actual downloaded file name (e.g. "…2160p…" -> "4K").
+    private func downloadQuality(from fileName: String) -> String? {
+        let lower = fileName.lowercased()
+        if lower.contains("2160p") || lower.contains("4k") || lower.contains("uhd") { return "4K" }
+        if lower.contains("1080p") { return "1080p" }
+        if lower.contains("720p") { return "720p" }
+        if lower.contains("480p") { return "480p" }
+        return nil
+    }
+
+    /// Honest ETA from the average download speed since the task started
+    /// (bytesWritten / elapsed). Returns nil when it can't be estimated reliably.
+    private func downloadETA(for task: DownloadTask) -> String? {
+        guard task.status == .downloading,
+              let total = task.totalBytes, total > 0,
+              task.bytesWritten > 0, task.bytesWritten < total else { return nil }
+        let elapsed = Date().timeIntervalSince(task.createdAt)
+        guard elapsed > 2 else { return nil }
+        let bytesPerSec = Double(task.bytesWritten) / elapsed
+        guard bytesPerSec > 0 else { return nil }
+        let remaining = Double(total - task.bytesWritten) / bytesPerSec
+        guard remaining.isFinite, remaining > 0, remaining < 86_400 else { return nil }
+        let secs = Int(remaining.rounded())
+        if secs < 60 { return "~\(secs)s left" }
+        if secs < 3600 { return "~\(Int((Double(secs) / 60).rounded()))m left" }
+        return "~\(String(format: "%.1f", Double(secs) / 3600))h left"
+    }
+
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .file
+        // Emit "0 MB" rather than the spelled-out "Zero KB" (reads like debug text) for
+        // zero/just-started downloads, keeping both sides of "x / y" numeric.
+        formatter.allowsNonnumericFormatting = false
         return formatter
     }()
 

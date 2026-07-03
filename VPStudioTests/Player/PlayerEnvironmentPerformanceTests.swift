@@ -148,9 +148,10 @@ struct EnvironmentPresetCurationTests {
 @Suite("Environment Catalog - Curated Defaults")
 struct EnvironmentCatalogCuratedDefaultsTests {
 
-    @Test func curatedDefaultsIsEmpty() async throws {
-        // No bundled defaults — all environments are imported or downloaded
-        let (database, rootDir) = try await makeDatabase(named: "curated-defaults-empty.sqlite")
+    @Test func curatedDefaultsSeedBundledSkyDome() async throws {
+        // Previously asserted no bundled defaults existed (the empty-catalog state that left
+        // Environments broken on a fresh install). Bootstrap now seeds the bundled SkyDome.
+        let (database, rootDir) = try await makeDatabase(named: "curated-defaults-skydome.sqlite")
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
         let manager = EnvironmentCatalogManager(
@@ -161,14 +162,14 @@ struct EnvironmentCatalogCuratedDefaultsTests {
 
         let assets = try await manager.fetchAssets()
         let bundled = assets.filter { $0.sourceType == .bundled }
-        #expect(bundled.isEmpty, "No bundled defaults should exist")
+        #expect(bundled.contains { $0.id == EnvironmentCatalogManager.bundledSkyDomeID },
+                "Bundled SkyDome should be seeded as a curated default")
     }
 
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }
@@ -236,8 +237,7 @@ struct EnvironmentImmersiveSpaceRoutingTests {
     private func makeDatabase(named fileName: String) async throws -> (DatabaseManager, URL) {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        let dbURL = rootDir.appendingPathComponent(fileName)
-        let database = try DatabaseManager(path: dbURL.path)
+        let database = try DatabaseManager(inMemoryNamed: "\(fileName)-\(UUID().uuidString)")
         try await database.migrate()
         return (database, rootDir)
     }

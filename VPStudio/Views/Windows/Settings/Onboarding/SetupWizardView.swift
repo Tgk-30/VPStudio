@@ -3,22 +3,66 @@ import SwiftUI
 // MARK: - Setup Wizard View
 
 struct SetupWizardView: View {
+    private static let totalStepCount = 5
+
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openURL) private var openURL
     @State private var currentStep = 0
     @State private var debridApiKey = ""
     @State private var selectedService: DebridServiceType = .realDebrid
+    @State private var omdbApiKey = ""
     @State private var tmdbApiKey = ""
+    @State private var omdbPlan: MetadataProviderPlan = .free
+    @State private var tmdbPlan: MetadataProviderPlan = .free
     @State private var selectedAIProvider: AIProviderOption = .none
     @State private var aiApiKey = ""
     @State private var selectedQuality: VideoQuality = .hd1080p
     @State private var selectedSubtitleLanguage: SubtitleLanguageOption = .none
+    @State private var selectedSourceFilterPreset: SourceFilterPreset = .balanced
+    @State private var guestModeEnabled = false
     @State private var saveError: String?
+    @State private var isValidatingKey = false
+    @State private var isProcessingStep = false
+    @State private var seededIndexerSummary: String?
     @State private var appeared = false
     @State private var didRunQAAutoAdvance = false
 
-    private let totalSteps = 5
+    private let totalSteps = Self.totalStepCount
+
+    init(
+        initialStep: Int = 0,
+        initialDebridApiKey: String = "",
+        initialSelectedService: DebridServiceType = .realDebrid,
+        initialOMDbApiKey: String = "",
+        initialTMDbApiKey: String = "",
+        initialOMDbPlan: MetadataProviderPlan = .free,
+        initialTMDbPlan: MetadataProviderPlan = .free,
+        initialSelectedAIProvider: AIProviderOption = .none,
+        initialAIAPIKey: String = "",
+        initialSelectedQuality: VideoQuality = .hd1080p,
+        initialSelectedSubtitleLanguage: SubtitleLanguageOption = .none,
+        initialSourceFilterPreset: SourceFilterPreset = .balanced,
+        initialGuestModeEnabled: Bool = false
+    ) {
+        _currentStep = State(initialValue: SetupWizardNavigationPolicy.clampedStep(
+            initialStep,
+            totalSteps: Self.totalStepCount
+        ))
+        _debridApiKey = State(initialValue: initialDebridApiKey)
+        _selectedService = State(initialValue: initialSelectedService)
+        _omdbApiKey = State(initialValue: initialOMDbApiKey)
+        _tmdbApiKey = State(initialValue: initialTMDbApiKey)
+        _omdbPlan = State(initialValue: initialOMDbPlan)
+        _tmdbPlan = State(initialValue: initialTMDbPlan)
+        _selectedAIProvider = State(initialValue: initialSelectedAIProvider)
+        _aiApiKey = State(initialValue: initialAIAPIKey)
+        _selectedQuality = State(initialValue: initialSelectedQuality)
+        _selectedSubtitleLanguage = State(initialValue: initialSelectedSubtitleLanguage)
+        _selectedSourceFilterPreset = State(initialValue: initialSourceFilterPreset)
+        _guestModeEnabled = State(initialValue: initialGuestModeEnabled)
+    }
+
     private var stepTransition: AnyTransition {
         reduceMotion
             ? .opacity
@@ -26,6 +70,21 @@ struct SetupWizardView: View {
                 insertion: .move(edge: .trailing).combined(with: .opacity),
                 removal: .move(edge: .leading).combined(with: .opacity)
             )
+    }
+
+    private var sourceFilterOnboardingSummary: String {
+        switch selectedSourceFilterPreset {
+        case .balanced:
+            "Clean list, plenty of good choices."
+        case .instant:
+            "Ready-to-play options first."
+        case .cinema:
+            "Polished 1080p+ picks."
+        case .compact:
+            "A shorter list of strong matches."
+        case .custom:
+            "Your saved source-filter preferences."
+        }
     }
 
     var body: some View {
@@ -37,7 +96,7 @@ struct SetupWizardView: View {
                 // ── Step indicator dots ──────────────────────────────────────
                 WizardStepIndicator(currentStep: currentStep, totalSteps: totalSteps)
                     .padding(.top, 28)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 18)
 
                 // ── Step content ─────────────────────────────────────────────
                 ZStack {
@@ -67,8 +126,8 @@ struct SetupWizardView: View {
 
                 // ── Navigation buttons ───────────────────────────────────────
                 wizardNavigation
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 28)
+                    .padding(.horizontal, 56)
+                    .padding(.bottom, 48)
             }
         }
         .frame(minWidth: 640, minHeight: 560)
@@ -81,19 +140,26 @@ struct SetupWizardView: View {
                 }
             }
 
-            guard QARuntimeOptions.setupAutoAdvance else { return }
-            guard !didRunQAAutoAdvance else { return }
+            guard SetupWizardQAAutoAdvancePolicy.shouldStartAutoAdvance(
+                isEnabled: QARuntimeOptions.setupAutoAdvance,
+                didRun: didRunQAAutoAdvance
+            ) else { return }
             didRunQAAutoAdvance = true
 
-            if let tmdbKey = QARuntimeOptions.setupTMDBApiKey {
-                tmdbApiKey = tmdbKey
-            }
-            if let preferredQuality = QARuntimeOptions.setupPreferredQuality {
-                selectedQuality = preferredQuality
-            }
-            if let subtitleLanguage = QARuntimeOptions.setupSubtitleLanguage {
-                selectedSubtitleLanguage = subtitleLanguage
-            }
+            let defaults = SetupWizardQAAutoAdvancePolicy.appliedDefaults(
+                omdbApiKey: omdbApiKey,
+                tmdbApiKey: tmdbApiKey,
+                selectedQuality: selectedQuality,
+                selectedSubtitleLanguage: selectedSubtitleLanguage,
+                overrideOMDbApiKey: QARuntimeOptions.setupOMDbApiKey,
+                overrideTMDbApiKey: QARuntimeOptions.setupTMDbApiKey,
+                overridePreferredQuality: QARuntimeOptions.setupPreferredQuality,
+                overrideSubtitleLanguage: QARuntimeOptions.setupSubtitleLanguage
+            )
+            omdbApiKey = defaults.omdbApiKey
+            tmdbApiKey = defaults.tmdbApiKey
+            selectedQuality = defaults.selectedQuality
+            selectedSubtitleLanguage = defaults.selectedSubtitleLanguage
 
             Task {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -106,7 +172,10 @@ struct SetupWizardView: View {
                     let stepBeforeAdvance = await MainActor.run {
                         currentStep
                     }
-                    guard stepBeforeAdvance > 0 && stepBeforeAdvance < totalSteps - 1 else { break }
+                    guard SetupWizardQAAutoAdvancePolicy.shouldContinueAutoAdvance(
+                        currentStep: stepBeforeAdvance,
+                        totalSteps: totalSteps
+                    ) else { break }
                     try? await Task.sleep(for: .milliseconds(250))
                     await handleNextStep()
                     let stepAfterAdvance = await MainActor.run {
@@ -115,7 +184,12 @@ struct SetupWizardView: View {
                     guard stepAfterAdvance > stepBeforeAdvance else { break }
                 }
 
-                let isCompleteStep = await MainActor.run { currentStep == totalSteps - 1 }
+                let isCompleteStep = await MainActor.run {
+                    SetupWizardQAAutoAdvancePolicy.shouldDismissAfterAutoAdvance(
+                        currentStep: currentStep,
+                        totalSteps: totalSteps
+                    )
+                }
                 guard !Task.isCancelled, isCompleteStep else { return }
                 try? await Task.sleep(for: .milliseconds(250))
                 await MainActor.run {
@@ -301,17 +375,17 @@ struct SetupWizardView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            // ── TMDB API Key Section ─────────────────────────────────────
+            // ── Metadata API Key Section ────────────────────────────────
             VStack(spacing: 10) {
                 Image(systemName: "film")
                     .font(.system(size: 40))
                     .foregroundStyle(LinearGradient.vpAccent)
 
-                Text("TMDB API Key")
+                Text("Metadata API Keys")
                     .font(.title2)
                     .fontWeight(.bold)
 
-                Text("Required for movie and TV show metadata, artwork, and recommendations. Get a free key at themoviedb.org")
+                Text("Enter an OMDb key for metadata, IMDb ratings, poster URLs, and sync identity. TMDb is optional legacy fallback only for older saved items and artwork gaps.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -320,11 +394,11 @@ struct SetupWizardView: View {
 
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
-                    SecureField("TMDB API Key", text: $tmdbApiKey)
+                    SecureField("OMDb API Key", text: $omdbApiKey)
                         .textFieldStyle(.plain)
-                    PasteFieldButton { tmdbApiKey = $0 }
-                        .accessibilityLabel("Paste TMDB API key from clipboard")
-                        .accessibilityHint("Pastes the TMDB API key into the setup field.")
+                    PasteFieldButton { omdbApiKey = $0 }
+                        .accessibilityLabel("Paste OMDb API key from clipboard")
+                        .accessibilityHint("Pastes the OMDb API key into the setup field.")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -334,22 +408,89 @@ struct SetupWizardView: View {
                         .strokeBorder(
                             LinearGradient(
                                 colors: [.white.opacity(0.28), .white.opacity(0.06)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("OMDb Plan")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Picker("OMDb Plan", selection: $omdbPlan) {
+                        Text("Free").tag(MetadataProviderPlan.free)
+                        Text("Paid").tag(MetadataProviderPlan.paid)
                     }
+                    .pickerStyle(.segmented)
+                    Text(MetadataSettingsPolicy.omdbPlanDescription(for: omdbPlan))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 420, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    SecureField("TMDb API Key or Read Token", text: $tmdbApiKey)
+                        .textFieldStyle(.plain)
+                    PasteFieldButton { tmdbApiKey = $0 }
+                        .accessibilityLabel("Paste TMDb API key from clipboard")
+                        .accessibilityHint("Pastes the TMDb API key into the setup field.")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TMDb Plan")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Picker("TMDb Plan", selection: $tmdbPlan) {
+                        Text("Standard").tag(MetadataProviderPlan.free)
+                        Text("Expanded").tag(MetadataProviderPlan.paid)
+                    }
+                    .pickerStyle(.segmented)
+                    Text(MetadataSettingsPolicy.tmdbPlanDescription(for: tmdbPlan))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 420, alignment: .leading)
 
                 Button {
-                    if let url = URL(string: "https://www.themoviedb.org/settings/api") {
-                        openURL(url)
-                    }
+                    openURL(MetadataSettingsPolicy.omdbAPIKeyURL)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.up.right.square")
                             .font(.caption.weight(.semibold))
-                        Text("Get Free Key")
+                        Text("Get OMDb API Key")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundStyle(LinearGradient.vpAccent)
+                }
+                .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
+
+                Button {
+                    openURL(MetadataSettingsPolicy.tmdbAPIKeyURL)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption.weight(.semibold))
+                        Text("Open TMDb API Settings")
                             .font(.caption)
                             .fontWeight(.medium)
                     }
@@ -463,65 +604,91 @@ struct SetupWizardView: View {
     // MARK: - Step 3: Preferences
 
     private var preferencesStep: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        ScrollView {
+            VStack(spacing: 18) {
+                // Header
+                VStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 40, weight: .bold))
+                        .foregroundStyle(LinearGradient.vpAccent)
 
-            // Header
-            VStack(spacing: 10) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 40))
-                    .foregroundStyle(LinearGradient.vpAccent)
+                    Text("Quick Defaults")
+                        .font(.title2)
+                        .fontWeight(.bold)
 
-                Text("Set Your Preferences")
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Text("Quick defaults to get you started. You can customize more in Settings later.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-            }
-
-            // Preference rows
-            VStack(spacing: 14) {
-                // Quality picker
-                WizardPreferenceRow(
-                    icon: "4k.tv",
-                    title: "Preferred Quality"
-                ) {
-                    Picker("", selection: $selectedQuality) {
-                        Text("720p").tag(VideoQuality.hd720p)
-                        Text("1080p").tag(VideoQuality.hd1080p)
-                        Text("4K").tag(VideoQuality.uhd4k)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
-                    .accessibilityLabel("Preferred quality")
-                    .accessibilityHint("Choose the default streaming quality.")
+                    Text("Quick defaults to get you started. You can customize more in Settings later.")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
                 }
 
-                // Subtitle language picker
-                WizardPreferenceRow(
-                    icon: "captions.bubble",
-                    title: "Subtitle Language"
-                ) {
-                    Picker("", selection: $selectedSubtitleLanguage) {
-                        ForEach(SubtitleLanguageOption.allCases) { lang in
-                            Text(lang.displayName).tag(lang)
+                // Preference rows
+                VStack(spacing: 14) {
+                    // Quality picker
+                    WizardPreferenceRow(
+                        icon: "tv",
+                        title: "Preferred Quality"
+                    ) {
+                        WizardQualitySegmentedControl(selection: $selectedQuality)
+                    }
+
+                    // Source filter picker
+                    WizardPreferenceRow(
+                        icon: "line.3.horizontal.decrease",
+                        title: "Source Filters",
+                        subtitle: sourceFilterOnboardingSummary
+                    ) {
+                        Picker("", selection: $selectedSourceFilterPreset) {
+                            ForEach(SourceFilterPreset.allCases) { preset in
+                                Text(preset.displayName).tag(preset)
+                            }
                         }
+                        .pickerStyle(.menu)
+                        .controlSize(.large)
+                        .tint(.white)
+                        .frame(width: 156, height: 44, alignment: .center)
+                        .accessibilityLabel("Source filter preset")
+                        .accessibilityHint("Choose how aggressively VPStudio filters stream sources.")
                     }
-                    .pickerStyle(.menu)
-                    .tint(.white)
-                    .accessibilityLabel("Subtitle language")
-                    .accessibilityHint("Choose the default subtitle language.")
-                }
-            }
-            .frame(maxWidth: 420)
 
-            Spacer()
+                    // Subtitle language picker
+                    WizardPreferenceRow(
+                        icon: "captions.bubble",
+                        title: "Subtitle Language"
+                    ) {
+                        Picker("", selection: $selectedSubtitleLanguage) {
+                            ForEach(SubtitleLanguageOption.allCases) { lang in
+                                Text(lang.displayName).tag(lang)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.large)
+                        .tint(.white)
+                        .frame(minWidth: 132, minHeight: 44, alignment: .center)
+                        .accessibilityLabel("Subtitle language")
+                        .accessibilityHint("Choose the default subtitle language.")
+                    }
+
+                    // Guest mode toggle
+                    WizardPreferenceRow(
+                        icon: "person.crop.circle",
+                        title: "Guest Mode"
+                    ) {
+                        Toggle("", isOn: $guestModeEnabled)
+                            .controlSize(.large)
+                            .tint(Color.vpRed)
+                            .labelsHidden()
+                            .accessibilityLabel("Guest Mode")
+                            .accessibilityHint("Prevents this session from saving watch progress or scrobbling playback.")
+                    }
+                }
+                .frame(maxWidth: 560)
+            }
+            .padding(.horizontal, 32)
+            .padding(.vertical, 12)
         }
-        .padding(.horizontal, 32)
+        .scrollIndicators(.hidden)
     }
 
     // MARK: - Step 4: Completion
@@ -530,10 +697,16 @@ struct SetupWizardView: View {
         WizardCompletionContent(
             selectedService: selectedService,
             debridApiKey: debridApiKey,
+            omdbApiKey: omdbApiKey,
             tmdbApiKey: tmdbApiKey,
+            omdbPlan: omdbPlan,
+            tmdbPlan: tmdbPlan,
             selectedAIProvider: selectedAIProvider,
             selectedQuality: selectedQuality,
-            selectedSubtitleLanguage: selectedSubtitleLanguage
+            selectedSubtitleLanguage: selectedSubtitleLanguage,
+            selectedSourceFilterPreset: selectedSourceFilterPreset,
+            guestModeEnabled: guestModeEnabled,
+            seededIndexerSummary: seededIndexerSummary
         )
     }
 
@@ -541,7 +714,7 @@ struct SetupWizardView: View {
 
     private var wizardNavigation: some View {
         HStack {
-            if currentStep > 0 && currentStep < totalSteps - 1 {
+            if SetupWizardNavigationPolicy.showsBackButton(currentStep: currentStep, totalSteps: totalSteps) {
                 Button {
                     moveToStep(currentStep - 1)
                 } label: {
@@ -551,25 +724,36 @@ struct SetupWizardView: View {
                         Text("Back")
                     }
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white.opacity(0.94))
+                    .frame(minWidth: 74, minHeight: 44, alignment: .center)
+                    .padding(.horizontal, 18)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(.white.opacity(0.16), lineWidth: 0.8)
+                    }
                 }
                 .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
                 .accessibilityHint("Returns to the previous setup step.")
             }
 
             Spacer()
 
-            if currentStep > 0 && currentStep < totalSteps - 1 {
+            if SetupWizardNavigationPolicy.showsContinueButton(currentStep: currentStep, totalSteps: totalSteps) {
                 WizardAccentButton(
                     title: continueButtonTitle,
-                    icon: continueButtonIcon
+                    icon: continueButtonIcon,
+                    isLoading: isValidatingKey,
+                    isDisabled: isValidatingKey
                 ) {
                     Task { await handleNextStep() }
                 }
                 .accessibilityHint("Saves this step and continues.")
-            } else if currentStep == totalSteps - 1 {
+            } else if SetupWizardNavigationPolicy.showsStartExploringButton(currentStep: currentStep, totalSteps: totalSteps) {
                 WizardAccentButton(title: "Start Exploring", icon: "sparkles") {
                     appState.isShowingSetup = false
                 }
@@ -585,105 +769,180 @@ struct SetupWizardView: View {
     }
 
     private func moveToStep(_ nextStep: Int) {
-        let clampedStep = min(max(nextStep, 0), totalSteps - 1)
-        guard clampedStep != currentStep else { return }
-        guard !reduceMotion else {
-            currentStep = clampedStep
+        let transition = SetupWizardTransitionPolicy.transition(
+            currentStep: currentStep,
+            requestedStep: nextStep,
+            totalSteps: totalSteps,
+            reduceMotion: reduceMotion
+        )
+        guard transition.shouldUpdate else { return }
+        guard transition.shouldAnimate else {
+            currentStep = transition.targetStep
             return
         }
         withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
-            currentStep = clampedStep
+            currentStep = transition.targetStep
         }
     }
 
     private func handleNextStep() async {
+        // Reentrancy guard: the Continue button is only disabled during step-1 key validation,
+        // so a rapid double-tap on later steps could otherwise interleave concurrent persistence
+        // tasks. One step advance at a time.
+        guard !isProcessingStep else { return }
+        isProcessingStep = true
+        defer { isProcessingStep = false }
         saveError = nil
-        let normalizedApiKey = debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedApiKey = DebridKeyValidationPolicy.normalize(debridApiKey)
 
-        if currentStep == 1, !normalizedApiKey.isEmpty {
-            let configId = UUID().uuidString
-            let secretKey = SecretKey.debridToken(service: selectedService, configId: configId)
-            let tokenRef = SecretReference.encode(key: secretKey)
+        if currentStep == 1 {
+            let formatResult = DebridKeyValidationPolicy.formatCheck(
+                for: selectedService,
+                key: normalizedApiKey
+            )
+            let decision = SetupWizardStepPolicy.debridStepOutcome(
+                formatResult: formatResult,
+                tokenIsEmpty: normalizedApiKey.isEmpty
+            )
 
-            do {
-                try await appState.secretStore.setSecret(normalizedApiKey, for: secretKey)
-                let config = DebridConfig(
-                    id: configId,
-                    serviceType: selectedService,
-                    apiTokenRef: tokenRef,
-                    isActive: true,
-                    priority: 0,
-                    createdAt: Date(),
-                    updatedAt: Date()
-                )
-                try await appState.database.saveDebridConfig(config)
-                try await appState.debridManager.initialize()
-            } catch {
-                saveError = error.localizedDescription
+            switch decision {
+            case .skip:
+                break // Allow continuing without a debrid service.
+            case .blockFormat(let message):
+                saveError = message
                 return
+            case .validate:
+                // Live-validate the key before persisting anything. This uses the
+                // SAME pattern as DebridSettingsView.validateConnection: build a
+                // transient service and call validateToken(). Only on success do
+                // we persist the secret + config and initialize the manager.
+                isValidatingKey = true
+                defer { isValidatingKey = false }
+
+                let service = makeDebridService(type: selectedService, token: normalizedApiKey)
+                do {
+                    let isValid = try await service.validateToken()
+                    guard isValid else {
+                        saveError = DebridSettingsPolicy.rejectedMessage(for: selectedService)
+                        return
+                    }
+                } catch {
+                    saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
+                    return
+                }
+
+                let configId = UUID().uuidString
+                let secretKey = SecretKey.debridToken(service: selectedService, configId: configId)
+                let tokenRef = SecretReference.encode(key: secretKey)
+
+                do {
+                    try await appState.secretStore.setSecret(normalizedApiKey, for: secretKey)
+                    let config = DebridConfig(
+                        id: configId,
+                        serviceType: selectedService,
+                        apiTokenRef: tokenRef,
+                        isActive: true,
+                        priority: 0,
+                        createdAt: Date(),
+                        updatedAt: Date()
+                    )
+                    try await appState.database.saveDebridConfig(config)
+                    try await appState.debridManager.initialize()
+                } catch {
+                    saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
+                    return
+                }
             }
         }
 
         if currentStep == 2 {
-            let normalizedTmdbKey = tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedAiKey = aiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard SetupWizardValidationPolicy.canContinueFromMetadataStep(tmdbApiKey: normalizedTmdbKey) else {
-                saveError = SetupWizardValidationPolicy.requiredTMDBMessage
+            let plan = SetupWizardPersistencePolicy.metadataSavePlan(
+                omdbApiKey: omdbApiKey,
+                tmdbApiKey: tmdbApiKey,
+                omdbPlan: omdbPlan,
+                tmdbPlan: tmdbPlan,
+                selectedAIProvider: selectedAIProvider,
+                aiApiKey: aiApiKey
+            )
+            guard case .save(let metadata) = plan else {
+                if case .invalid(let message) = plan {
+                    saveError = message
+                }
                 return
             }
 
             do {
                 try await appState.settingsManager.setValue(
-                    normalizedTmdbKey,
+                    metadata.omdbApiKey,
+                    forKey: SettingsKeys.omdbApiKey
+                )
+                try await appState.settingsManager.setValue(
+                    metadata.tmdbApiKey,
                     forKey: SettingsKeys.tmdbApiKey
                 )
-                NotificationCenter.default.post(name: .tmdbApiKeyDidChange, object: nil)
+                try await appState.settingsManager.setValue(
+                    metadata.omdbPlanRawValue,
+                    forKey: SettingsKeys.omdbProviderPlan
+                )
+                try await appState.settingsManager.setValue(
+                    metadata.tmdbPlanRawValue,
+                    forKey: SettingsKeys.tmdbProviderPlan
+                )
+                NotificationCenter.default.post(name: .metadataApiKeyDidChange, object: nil)
 
                 // Save AI provider selection
                 try await appState.settingsManager.setValue(
-                    selectedAIProvider == .none ? nil : selectedAIProvider.rawValue,
+                    metadata.defaultAIProviderRawValue,
                     forKey: SettingsKeys.defaultAIProvider
                 )
 
                 // Save AI key if a provider is selected and key is provided
-                if selectedAIProvider != .none, !normalizedAiKey.isEmpty {
-                    let aiSettingsKey: String = switch selectedAIProvider {
-                    case .openAI: SettingsKeys.openAIApiKey
-                    case .anthropic: SettingsKeys.anthropicApiKey
-                    case .gemini: SettingsKeys.geminiApiKey
-                    case .openRouter: SettingsKeys.openRouterApiKey
-                    case .none: ""
-                    }
-                    if !aiSettingsKey.isEmpty {
-                        try await appState.settingsManager.setValue(
-                            normalizedAiKey,
-                            forKey: aiSettingsKey
-                        )
-                    }
+                if let aiKeyWrite = metadata.aiKeyWrite {
+                    try await appState.settingsManager.setValue(
+                        aiKeyWrite.apiKey,
+                        forKey: aiKeyWrite.settingsKey
+                    )
                 }
                 NotificationCenter.default.post(name: .settingsDidChange, object: nil)
                 NotificationCenter.default.post(name: .discoverAISettingsDidChange, object: nil)
             } catch {
-                saveError = error.localizedDescription
+                saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
                 return
             }
         }
 
         if currentStep == 3 {
+            let plan = SetupWizardPersistencePolicy.preferencesSavePlan(
+                selectedQuality: selectedQuality,
+                selectedSubtitleLanguage: selectedSubtitleLanguage,
+                selectedSourceFilterPreset: selectedSourceFilterPreset,
+                guestModeEnabled: guestModeEnabled
+            )
             do {
                 try await appState.settingsManager.setValue(
-                    selectedQuality.rawValue,
+                    plan.preferredQualityRawValue,
                     forKey: SettingsKeys.preferredQuality
                 )
-                if selectedSubtitleLanguage != .none {
+                try await appState.settingsManager.setValue(
+                    plan.sourceFilterPresetRawValue,
+                    forKey: SettingsKeys.sourceFilterPreset
+                )
+                try await appState.settingsManager.setBool(
+                    key: SettingsKeys.guestModeEnabled,
+                    value: plan.guestModeEnabled
+                )
+                // Only persist an actual subtitle selection. Writing nil for "None" runs a
+                // DELETE, which (because the wizard is re-runnable and its picker defaults to
+                // "None") would silently wipe a previously-configured subtitle language.
+                if let subtitleValue = plan.subtitleLanguageValue {
                     try await appState.settingsManager.setValue(
-                        selectedSubtitleLanguage.rawValue,
+                        subtitleValue,
                         forKey: SettingsKeys.subtitleLanguage
                     )
                 }
+                await seedIndexerDefaultsIfNeeded()
             } catch {
-                saveError = error.localizedDescription
+                saveError = SetupWizardErrorPresentationPolicy.displayMessage(for: error)
                 return
             }
         }
@@ -691,18 +950,41 @@ struct SetupWizardView: View {
         advanceStep()
     }
 
-    private var continueButtonTitle: String {
-        if currentStep == 1, debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Skip for Now"
+    /// Seeds default search providers on the way to the completion step, but only
+    /// when the user has none yet. Failures are non-fatal — onboarding should not
+    /// be blocked by indexer seeding, so we just skip the summary row.
+    private func seedIndexerDefaultsIfNeeded() async {
+        do {
+            let existing = try await appState.database.fetchAllIndexerConfigs()
+            guard let seed = SetupWizardIndexerSeedingPolicy.seedPlan(existingConfigs: existing) else {
+                return
+            }
+            for config in seed {
+                try await appState.database.saveIndexerConfig(config)
+            }
+            seededIndexerSummary = SetupWizardIndexerSeedingPolicy.completionSummary(for: seed)
+        } catch {
+            // Non-fatal: leave the summary unset and continue onboarding.
+            seededIndexerSummary = nil
         }
-        return "Continue"
+    }
+
+    private func makeDebridService(type: DebridServiceType, token: String) -> any DebridServiceProtocol {
+        DebridSettingsPolicy.makeDebridService(type: type, token: token)
+    }
+
+    private var continueButtonTitle: String {
+        SetupWizardValidationPolicy.continueButtonTitle(
+            currentStep: currentStep,
+            debridApiKey: debridApiKey
+        )
     }
 
     private var continueButtonIcon: String {
-        if currentStep == 1, debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "forward"
-        }
-        return "arrow.right"
+        SetupWizardValidationPolicy.continueButtonIcon(
+            currentStep: currentStep,
+            debridApiKey: debridApiKey
+        )
     }
 }
 
@@ -715,7 +997,14 @@ private struct WizardBackgroundView: View {
 
     var body: some View {
         ZStack {
+            #if os(visionOS)
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea()
+                .overlay(Color.black.opacity(0.78).ignoresSafeArea())
+            #else
             Color.black.ignoresSafeArea()
+            #endif
 
             // Animated ambient gradient
             Canvas { context, size in
@@ -798,12 +1087,18 @@ private struct WizardStepIndicator: View {
                         ? AnyShapeStyle(LinearGradient.vpAccent)
                         : AnyShapeStyle(Color.white.opacity(0.2)))
                     .frame(width: index == currentStep ? 28 : 8, height: 8)
+                    .frame(width: 28, height: 8)
                     .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8), value: currentStep)
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Setup progress")
-        .accessibilityValue("Step \(currentStep + 1) of \(totalSteps)")
+        .accessibilityValue(
+            SetupWizardNavigationPolicy.stepIndicatorAccessibilityValue(
+                currentStep: currentStep,
+                totalSteps: totalSteps
+            )
+        )
         .accessibilityHint("The highlighted capsule shows your current setup step.")
     }
 }
@@ -924,9 +1219,62 @@ private struct FeatureHighlightCard: View {
 
 // MARK: - Wizard Preference Row
 
+private struct WizardQualitySegmentedControl: View {
+    @Binding var selection: VideoQuality
+
+    private let options: [VideoQuality] = [.hd720p, .hd1080p, .uhd4k]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.self) { quality in
+                Button {
+                    selection = quality
+                } label: {
+                    Text(quality.rawValue)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                        .frame(width: segmentWidth(for: quality), height: 44)
+                        .background {
+                            Capsule()
+                                .fill(selection == quality ? Color.vpRed.opacity(0.48) : Color.white.opacity(0.14))
+                                .overlay {
+                                    Capsule()
+                                        .strokeBorder(
+                                            selection == quality ? .white.opacity(0.28) : .white.opacity(0.18),
+                                            lineWidth: 0.8
+                                        )
+                                }
+                        }
+                }
+                .buttonStyle(.plain)
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
+                .accessibilityLabel("\(quality.rawValue) preferred quality")
+                .accessibilityValue(selection == quality ? "Selected" : "Not selected")
+            }
+        }
+        .padding(4)
+        .background(Color.black.opacity(0.38), in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(.white.opacity(0.1), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Preferred quality")
+        .accessibilityHint("Choose the default streaming quality.")
+    }
+
+    private func segmentWidth(for quality: VideoQuality) -> CGFloat {
+        quality == .hd1080p ? 96 : 80
+    }
+}
+
 private struct WizardPreferenceRow<Control: View>: View {
     let icon: String
     let title: String
+    var subtitle: String? = nil
     @ViewBuilder let control: () -> Control
 
     var body: some View {
@@ -948,16 +1296,29 @@ private struct WizardPreferenceRow<Control: View>: View {
                         )
                 }
 
-            Text(title)
-                .font(.subheadline)
-                .fontWeight(.medium)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(width: 200, alignment: .leading)
 
             Spacer()
 
             control()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.vertical, 16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
@@ -981,10 +1342,16 @@ private struct WizardCompletionContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let selectedService: DebridServiceType
     let debridApiKey: String
+    let omdbApiKey: String
     let tmdbApiKey: String
+    let omdbPlan: MetadataProviderPlan
+    let tmdbPlan: MetadataProviderPlan
     let selectedAIProvider: AIProviderOption
     let selectedQuality: VideoQuality
     let selectedSubtitleLanguage: SubtitleLanguageOption
+    let selectedSourceFilterPreset: SourceFilterPreset
+    let guestModeEnabled: Bool
+    let seededIndexerSummary: String?
 
     @State private var checkmarkScale: CGFloat = 0
     @State private var glowOpacity: Double = 0
@@ -1036,33 +1403,27 @@ private struct WizardCompletionContent: View {
 
             // Summary
             VStack(spacing: 8) {
-                if !debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    WizardSummaryRow(
-                        icon: "link",
-                        text: "\(selectedService.displayName) connected"
-                    )
+                ForEach(
+                    SetupWizardValidationPolicy.completionSummaryRows(
+                        selectedService: selectedService,
+                        debridApiKey: debridApiKey,
+                        omdbApiKey: omdbApiKey,
+                        tmdbApiKey: tmdbApiKey,
+                        omdbPlan: omdbPlan,
+                        tmdbPlan: tmdbPlan,
+                        selectedAIProvider: selectedAIProvider,
+                        selectedQuality: selectedQuality,
+                        selectedSubtitleLanguage: selectedSubtitleLanguage,
+                        selectedSourceFilterPreset: selectedSourceFilterPreset,
+                        guestModeEnabled: guestModeEnabled
+                    ),
+                    id: \.text
+                ) { row in
+                    WizardSummaryRow(icon: row.icon, text: row.text)
                 }
-                if !tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    WizardSummaryRow(
-                        icon: "film",
-                        text: "TMDB metadata configured"
-                    )
-                }
-                if selectedAIProvider != .none {
-                    WizardSummaryRow(
-                        icon: "brain",
-                        text: "\(selectedAIProvider.displayName) AI enabled"
-                    )
-                }
-                WizardSummaryRow(
-                    icon: "4k.tv",
-                    text: "Quality set to \(selectedQuality.rawValue)"
-                )
-                if selectedSubtitleLanguage != .none {
-                    WizardSummaryRow(
-                        icon: "captions.bubble",
-                        text: "\(selectedSubtitleLanguage.displayName) subtitles"
-                    )
+
+                if let seededIndexerSummary {
+                    WizardSummaryRow(icon: "magnifyingglass", text: seededIndexerSummary)
                 }
             }
             .opacity(summaryOpacity)
@@ -1137,26 +1498,36 @@ private struct WizardSummaryRow: View {
 private struct WizardAccentButton: View {
     let title: String
     let icon: String
+    var isLoading: Bool = false
+    var isDisabled: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Text(title)
                     .fontWeight(.semibold)
-                Image(systemName: icon)
-                    .font(.subheadline.weight(.semibold))
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                } else {
+                    Image(systemName: icon)
+                        .font(.subheadline.weight(.semibold))
+                }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 15)
             .background(
                 LinearGradient.vpAccent,
                 in: Capsule()
             )
-            .shadow(color: .vpRed.opacity(0.4), radius: 12, y: 4)
+            .shadow(color: .vpRed.opacity(0.28), radius: 10, y: 3)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled || isLoading)
+        .opacity(isDisabled || isLoading ? 0.6 : 1)
         .accessibilityLabel(title)
         #if os(visionOS)
         .hoverEffect(.lift)
@@ -1192,15 +1563,353 @@ enum SubtitleLanguageOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum SetupWizardValidationPolicy {
-    static let requiredTMDBMessage = "TMDB API key is required to continue."
-
-    static func canContinueFromMetadataStep(tmdbApiKey: String) -> Bool {
-        !tmdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+enum SetupWizardErrorPresentationPolicy {
+    static func displayMessage(for error: Error) -> String {
+        IndexerLogSanitizer.redactedErrorMessage(error)
     }
 }
 
-// MARK: - AI Provider Option
+enum SetupWizardValidationPolicy {
+    struct SummaryRow: Equatable, Sendable {
+        let icon: String
+        let text: String
+    }
+
+    static let requiredMetadataKeyMessage = "Enter an OMDb API key to continue."
+
+    static func canContinueFromMetadataStep(omdbApiKey: String, tmdbApiKey: String) -> Bool {
+        !omdbApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func trimmedValue(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func continueButtonTitle(currentStep: Int, debridApiKey: String) -> String {
+        currentStep == 1 && trimmedValue(debridApiKey).isEmpty ? "Skip for Now" : "Continue"
+    }
+
+    static func continueButtonIcon(currentStep: Int, debridApiKey: String) -> String {
+        currentStep == 1 && trimmedValue(debridApiKey).isEmpty ? "forward" : "arrow.right"
+    }
+
+    static func settingsKey(for provider: AIProviderOption) -> String? {
+        switch provider {
+        case .openAI: SettingsKeys.openAIApiKey
+        case .anthropic: SettingsKeys.anthropicApiKey
+        case .gemini: SettingsKeys.geminiApiKey
+        case .openRouter: SettingsKeys.openRouterApiKey
+        case .none: nil
+        }
+    }
+
+    static func shouldSaveAIKey(provider: AIProviderOption, apiKey: String) -> Bool {
+        provider != .none && !trimmedValue(apiKey).isEmpty
+    }
+
+    static func storedSubtitleLanguageValue(_ language: SubtitleLanguageOption) -> String? {
+        language == .none ? nil : language.rawValue
+    }
+
+    static func completionSummaryRows(
+        selectedService: DebridServiceType,
+        debridApiKey: String,
+        omdbApiKey: String,
+        tmdbApiKey: String = "",
+        omdbPlan: MetadataProviderPlan = .free,
+        tmdbPlan: MetadataProviderPlan = .free,
+        selectedAIProvider: AIProviderOption,
+        selectedQuality: VideoQuality,
+        selectedSubtitleLanguage: SubtitleLanguageOption,
+        selectedSourceFilterPreset: SourceFilterPreset = .balanced,
+        guestModeEnabled: Bool = false
+    ) -> [SummaryRow] {
+        var rows: [SummaryRow] = []
+        if !trimmedValue(debridApiKey).isEmpty {
+            rows.append(SummaryRow(icon: "link", text: "\(selectedService.displayName) connected"))
+        }
+        let hasOMDb = !trimmedValue(omdbApiKey).isEmpty
+        let hasTMDb = !trimmedValue(tmdbApiKey).isEmpty
+        if hasOMDb {
+            let providerText: String
+            switch (hasOMDb, hasTMDb) {
+            case (true, true): providerText = "OMDb + legacy TMDb fallback"
+            case (true, false): providerText = "OMDb"
+            case (false, true), (false, false): providerText = "Metadata"
+            }
+            rows.append(SummaryRow(icon: "film", text: "\(providerText) metadata configured"))
+            if hasOMDb && omdbPlan.usesPaidResources {
+                rows.append(SummaryRow(icon: "photo.on.rectangle.angled", text: "OMDb paid artwork enabled"))
+            }
+            if hasTMDb && tmdbPlan.usesPaidResources {
+                rows.append(SummaryRow(icon: "photo.stack", text: "TMDb expanded artwork enabled"))
+            }
+        } else if hasTMDb {
+            rows.append(SummaryRow(icon: "film", text: "Legacy TMDb fallback saved; OMDb still required"))
+        }
+        if selectedAIProvider != .none {
+            rows.append(SummaryRow(icon: "brain", text: "\(selectedAIProvider.displayName) AI enabled"))
+        }
+        rows.append(SummaryRow(icon: "4k.tv", text: "Quality set to \(selectedQuality.rawValue)"))
+        rows.append(SummaryRow(icon: "line.3.horizontal.decrease.circle", text: "\(selectedSourceFilterPreset.displayName) source filters"))
+        if selectedSubtitleLanguage != .none {
+            rows.append(SummaryRow(icon: "captions.bubble", text: "\(selectedSubtitleLanguage.displayName) subtitles"))
+        }
+        if guestModeEnabled {
+            rows.append(SummaryRow(icon: "person.crop.circle.badge.clock", text: "Guest Mode enabled"))
+        }
+        return rows
+    }
+}
+
+enum SetupWizardNavigationPolicy {
+    static func clampedStep(_ requestedStep: Int, totalSteps: Int) -> Int {
+        guard totalSteps > 0 else { return 0 }
+        return min(max(requestedStep, 0), totalSteps - 1)
+    }
+
+    static func showsBackButton(currentStep: Int, totalSteps: Int) -> Bool {
+        currentStep > 0 && currentStep < totalSteps - 1
+    }
+
+    static func showsContinueButton(currentStep: Int, totalSteps: Int) -> Bool {
+        currentStep > 0 && currentStep < totalSteps - 1
+    }
+
+    static func showsStartExploringButton(currentStep: Int, totalSteps: Int) -> Bool {
+        totalSteps > 0 && currentStep == totalSteps - 1
+    }
+
+    static func stepIndicatorAccessibilityValue(currentStep: Int, totalSteps: Int) -> String {
+        let displayedTotal = max(totalSteps, 1)
+        let displayedStep = clampedStep(currentStep, totalSteps: displayedTotal) + 1
+        return "Step \(displayedStep) of \(displayedTotal)"
+    }
+}
+
+enum SetupWizardTransitionPolicy {
+    struct StepTransition: Equatable, Sendable {
+        let targetStep: Int
+        let shouldUpdate: Bool
+        let shouldAnimate: Bool
+    }
+
+    static func transition(
+        currentStep: Int,
+        requestedStep: Int,
+        totalSteps: Int,
+        reduceMotion: Bool
+    ) -> StepTransition {
+        let targetStep = SetupWizardNavigationPolicy.clampedStep(requestedStep, totalSteps: totalSteps)
+        let shouldUpdate = targetStep != currentStep
+        return StepTransition(
+            targetStep: targetStep,
+            shouldUpdate: shouldUpdate,
+            shouldAnimate: shouldUpdate && !reduceMotion
+        )
+    }
+
+    static func advancedTransition(
+        currentStep: Int,
+        totalSteps: Int,
+        reduceMotion: Bool
+    ) -> StepTransition {
+        transition(
+            currentStep: currentStep,
+            requestedStep: currentStep + 1,
+            totalSteps: totalSteps,
+            reduceMotion: reduceMotion
+        )
+    }
+}
+
+enum SetupWizardQAAutoAdvancePolicy {
+    struct Defaults: Equatable, Sendable {
+        let omdbApiKey: String
+        let tmdbApiKey: String
+        let selectedQuality: VideoQuality
+        let selectedSubtitleLanguage: SubtitleLanguageOption
+    }
+
+    static func shouldStartAutoAdvance(isEnabled: Bool, didRun: Bool) -> Bool {
+        isEnabled && !didRun
+    }
+
+    static func shouldContinueAutoAdvance(currentStep: Int, totalSteps: Int) -> Bool {
+        currentStep > 0 && currentStep < totalSteps - 1
+    }
+
+    static func shouldDismissAfterAutoAdvance(currentStep: Int, totalSteps: Int) -> Bool {
+        totalSteps > 0 && currentStep == totalSteps - 1
+    }
+
+    static func appliedDefaults(
+        omdbApiKey: String,
+        tmdbApiKey: String,
+        selectedQuality: VideoQuality,
+        selectedSubtitleLanguage: SubtitleLanguageOption,
+        overrideOMDbApiKey: String?,
+        overrideTMDbApiKey: String?,
+        overridePreferredQuality: VideoQuality?,
+        overrideSubtitleLanguage: SubtitleLanguageOption?
+    ) -> Defaults {
+        Defaults(
+            omdbApiKey: overrideOMDbApiKey ?? omdbApiKey,
+            tmdbApiKey: overrideTMDbApiKey ?? tmdbApiKey,
+            selectedQuality: overridePreferredQuality ?? selectedQuality,
+            selectedSubtitleLanguage: overrideSubtitleLanguage ?? selectedSubtitleLanguage
+        )
+    }
+}
+
+enum SetupWizardPersistencePolicy {
+    struct AIKeyWrite: Equatable, Sendable {
+        let settingsKey: String
+        let apiKey: String
+    }
+
+    struct MetadataSavePlan: Equatable, Sendable {
+        let omdbApiKey: String
+        let tmdbApiKey: String
+        let omdbPlanRawValue: String
+        let tmdbPlanRawValue: String
+        let defaultAIProviderRawValue: String?
+        let aiKeyWrite: AIKeyWrite?
+    }
+
+    enum MetadataDecision: Equatable, Sendable {
+        case invalid(message: String)
+        case save(MetadataSavePlan)
+    }
+
+    struct PreferencesSavePlan: Equatable, Sendable {
+        let preferredQualityRawValue: String
+        let subtitleLanguageValue: String?
+        let sourceFilterPresetRawValue: String
+        let guestModeEnabled: Bool
+    }
+
+    static func metadataSavePlan(
+        omdbApiKey: String,
+        tmdbApiKey: String = "",
+        omdbPlan: MetadataProviderPlan = .free,
+        tmdbPlan: MetadataProviderPlan = .free,
+        selectedAIProvider: AIProviderOption,
+        aiApiKey: String
+    ) -> MetadataDecision {
+        let normalizedOMDbKey = SetupWizardValidationPolicy.trimmedValue(omdbApiKey)
+        let normalizedTMDbKey = SetupWizardValidationPolicy.trimmedValue(tmdbApiKey)
+        guard SetupWizardValidationPolicy.canContinueFromMetadataStep(
+            omdbApiKey: normalizedOMDbKey,
+            tmdbApiKey: normalizedTMDbKey
+        ) else {
+            return .invalid(message: SetupWizardValidationPolicy.requiredMetadataKeyMessage)
+        }
+
+        let normalizedAIKey = SetupWizardValidationPolicy.trimmedValue(aiApiKey)
+        let aiKeyWrite: AIKeyWrite?
+        if SetupWizardValidationPolicy.shouldSaveAIKey(provider: selectedAIProvider, apiKey: normalizedAIKey),
+           let settingsKey = SetupWizardValidationPolicy.settingsKey(for: selectedAIProvider) {
+            aiKeyWrite = AIKeyWrite(settingsKey: settingsKey, apiKey: normalizedAIKey)
+        } else {
+            aiKeyWrite = nil
+        }
+
+        return .save(
+            MetadataSavePlan(
+                omdbApiKey: normalizedOMDbKey,
+                tmdbApiKey: normalizedTMDbKey,
+                omdbPlanRawValue: omdbPlan.rawValue,
+                tmdbPlanRawValue: tmdbPlan.rawValue,
+                defaultAIProviderRawValue: selectedAIProvider == .none ? nil : selectedAIProvider.rawValue,
+                aiKeyWrite: aiKeyWrite
+            )
+        )
+    }
+
+    static func preferencesSavePlan(
+        selectedQuality: VideoQuality,
+        selectedSubtitleLanguage: SubtitleLanguageOption,
+        selectedSourceFilterPreset: SourceFilterPreset = .balanced,
+        guestModeEnabled: Bool = false
+    ) -> PreferencesSavePlan {
+        PreferencesSavePlan(
+            preferredQualityRawValue: selectedQuality.rawValue,
+            subtitleLanguageValue: SetupWizardValidationPolicy.storedSubtitleLanguageValue(selectedSubtitleLanguage),
+            sourceFilterPresetRawValue: selectedSourceFilterPreset.rawValue,
+            guestModeEnabled: guestModeEnabled
+        )
+    }
+}
+
+// MARK: - Setup Wizard Step Policy
+
+/// Pure decision for the debrid step of the setup wizard, extracted so the
+/// skip/validate/block branching is unit-testable without async or I/O.
+enum SetupWizardStepPolicy {
+    enum StepDecision: Equatable, Sendable {
+        /// Empty key — allow continuing without a debrid service.
+        case skip
+        /// Plausible key — proceed to a live `validateToken()` check.
+        case validate
+        /// Format check failed — surface `message` and do not advance.
+        case blockFormat(message: String)
+    }
+
+    /// Decides what the wizard should do on the debrid step given the offline
+    /// format-check result and whether the (normalized) token is empty.
+    ///
+    /// An empty token always means `.skip`, even if the format check would have
+    /// returned `.empty`, so the caller has a single unambiguous signal.
+    static func debridStepOutcome(
+        formatResult: DebridKeyValidationPolicy.FormatResult,
+        tokenIsEmpty: Bool
+    ) -> StepDecision {
+        if tokenIsEmpty {
+            return .skip
+        }
+
+        switch formatResult {
+        case .empty:
+            return .skip
+        case .malformed(let reason):
+            return .blockFormat(message: reason)
+        case .plausible:
+            return .validate
+        }
+    }
+}
+
+// MARK: - Setup Wizard Indexer Seeding Policy
+
+/// Pure decision for seeding default search providers (indexers) at the end of
+/// onboarding. Reuses `IndexerDefaultRanking` so the ranking/canonicalization
+/// stays in one place.
+enum SetupWizardIndexerSeedingPolicy {
+    /// Returns the configs that should be persisted when onboarding completes.
+    ///
+    /// - When no indexer configs exist yet, returns the full default set
+    ///   (`IndexerDefaultRanking.defaultConfigs()`).
+    /// - When configs already exist, returns `nil` (no-op) so we never disturb
+    ///   a user who has already customized their providers.
+    static func seedPlan(existingConfigs: [IndexerConfig]) -> [IndexerConfig]? {
+        guard existingConfigs.isEmpty else {
+            return nil
+        }
+        return IndexerDefaultRanking.addingMissingDefaults(to: [])
+    }
+
+    /// One-line completion summary of the seeded providers (active ones first),
+    /// e.g. "Search providers ready: Stremio Torrentio, YTS, APiBay".
+    static func completionSummary(for configs: [IndexerConfig]) -> String? {
+        let activeNames = configs
+            .filter(\.isActive)
+            .sorted { $0.priority < $1.priority }
+            .map(\.name)
+        guard !activeNames.isEmpty else { return nil }
+        return "Search providers ready: \(activeNames.joined(separator: ", "))"
+    }
+}
 
 // MARK: - AI Provider Option
 

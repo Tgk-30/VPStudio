@@ -14,11 +14,11 @@ enum NetworkError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidURL(let value):
-            return "Invalid URL: \(value)"
+            return "Invalid URL: \(Self.redacted(value))"
         case .unauthorized:
             return "Unauthorized request."
         case .notFound(let resource):
-            return "Not found: \(resource)"
+            return "Not found: \(Self.redacted(resource))"
         case .rateLimited:
             return "Request was rate limited."
         case .timeout:
@@ -28,9 +28,9 @@ enum NetworkError: LocalizedError, Equatable, Sendable {
         case .invalidResponse:
             return "Received an invalid response."
         case .server(let statusCode, let message):
-            return "Server error (\(statusCode)): \(message)"
+            return "Server error (\(statusCode)): \(Self.redacted(message))"
         case .transport(let message):
-            return "Network error: \(message)"
+            return "Network error: \(Self.redacted(message))"
         }
     }
 
@@ -50,6 +50,10 @@ enum NetworkError: LocalizedError, Equatable, Sendable {
             return "Retry in a moment. If this persists, verify provider settings."
         }
     }
+
+    private static func redacted(_ value: String) -> String {
+        IndexerLogSanitizer.redactedMessage(value)
+    }
 }
 
 enum IndexerError: LocalizedError, Equatable, Sendable {
@@ -60,9 +64,9 @@ enum IndexerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .allIndexersFailed(let details):
-            return "All indexers failed: \(details)"
+            return "All indexers failed: \(Self.redacted(details))"
         case .queryFailed(let details):
-            return "Torrent search failed: \(details)"
+            return "Torrent search failed: \(Self.redacted(details))"
         case .notConfigured:
             return "No active indexers are configured."
         }
@@ -76,6 +80,10 @@ enum IndexerError: LocalizedError, Equatable, Sendable {
             return "Try a broader query or run the search again."
         }
     }
+
+    private static func redacted(_ value: String) -> String {
+        IndexerLogSanitizer.redactedMessage(value)
+    }
 }
 
 enum PlayerError: LocalizedError, Equatable, Sendable {
@@ -88,15 +96,15 @@ enum PlayerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidStreamURL(let value):
-            return "Invalid stream URL: \(value)"
+            return "Invalid stream URL: \(Self.redacted(value))"
         case .startupTimeout(let engine):
             return "\(engine.displayName) timed out before playback started."
         case .initializationFailed(let engine, let message):
-            return "\(engine.displayName) failed: \(message)"
+            return "\(engine.displayName) failed: \(Self.redacted(message))"
         case .unsupportedFormat(let message):
-            return "Unsupported media format: \(message)"
+            return "Unsupported media format: \(Self.redacted(message))"
         case .playbackFailed(let message):
-            return "Playback failed: \(message)"
+            return "Playback failed: \(Self.redacted(message))"
         }
     }
 
@@ -112,6 +120,10 @@ enum PlayerError: LocalizedError, Equatable, Sendable {
             return "Retry playback, or switch to another stream."
         }
     }
+
+    private static func redacted(_ value: String) -> String {
+        IndexerLogSanitizer.redactedMessage(value)
+    }
 }
 
 enum AppError: LocalizedError, Equatable, Sendable {
@@ -121,7 +133,7 @@ enum AppError: LocalizedError, Equatable, Sendable {
     case player(PlayerError)
     case unknown(String)
 
-    private static let tmdbSetupGuidance = "Open Settings → Movie & TV Metadata (TMDB), add your key, then tap Retry."
+    private static let metadataSetupGuidance = "Open Settings → Movie & TV Metadata, add an OMDb key, then tap Retry."
 
     init(_ error: Error, fallback: AppError? = nil) {
         if let mapped = Self.map(error) {
@@ -137,28 +149,31 @@ enum AppError: LocalizedError, Equatable, Sendable {
         self = .unknown((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
 
-    static func tmdbSetupRequired(feature: String) -> AppError {
-        .unknown("\(feature) needs a TMDB API key. \(tmdbSetupGuidance)")
+    static func metadataSetupRequired(feature: String) -> AppError {
+        .unknown("\(feature) needs an OMDb metadata API key. \(metadataSetupGuidance)")
     }
 
-    var requiresTMDBSetupAction: Bool {
+    var requiresMetadataSetupAction: Bool {
         guard case .unknown(let message) = self else { return false }
-        return message.contains("TMDB API key") && message.contains(Self.tmdbSetupGuidance)
+        return (message.contains("OMDb API key") || message.contains("metadata API key"))
+            && message.contains(Self.metadataSetupGuidance)
     }
 
     var errorDescription: String? {
+        let message: String?
         switch self {
         case .network(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .debrid(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .indexer(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .player(let error):
-            return error.errorDescription
+            message = error.errorDescription
         case .unknown(let message):
-            return message
+            return Self.sanitizedDescription(message)
         }
+        return Self.sanitizedDescription(message)
     }
 
     var recoverySuggestion: String? {
@@ -180,6 +195,9 @@ enum AppError: LocalizedError, Equatable, Sendable {
         if let appError = error as? AppError {
             return appError
         }
+        if let networkError = error as? NetworkError {
+            return .network(networkError)
+        }
         if let debridError = error as? DebridError {
             return .debrid(debridError)
         }
@@ -192,6 +210,12 @@ enum AppError: LocalizedError, Equatable, Sendable {
         if let networkError = error as? URLError {
             return .network(NetworkError(networkError))
         }
+        if let metadataError = error as? MetadataProviderError {
+            return .network(NetworkError(metadataError))
+        }
+        if let omdbError = error as? OMDbError {
+            return AppError(omdbError)
+        }
         if let tmdbError = error as? TMDBError {
             return .network(NetworkError(tmdbError))
         }
@@ -199,6 +223,11 @@ enum AppError: LocalizedError, Equatable, Sendable {
             return .network(.invalidResponse)
         }
         return nil
+    }
+
+    private static func sanitizedDescription(_ value: String?) -> String? {
+        guard let value else { return nil }
+        return IndexerLogSanitizer.redactedMessage(value)
     }
 
     private static func debridRecoverySuggestion(for error: DebridError) -> String {
@@ -215,6 +244,8 @@ enum AppError: LocalizedError, Equatable, Sendable {
             return "The file is still processing. Retry shortly."
         case .rateLimited:
             return "Wait briefly, then retry."
+        case .unavailableForLegalReasons:
+            return "Try another source or switch to another active debrid provider."
         case .httpError:
             return "Verify debrid service availability and API token settings."
         case .networkError, .timeout:
@@ -224,6 +255,46 @@ enum AppError: LocalizedError, Equatable, Sendable {
 }
 
 private extension NetworkError {
+    init(_ error: MetadataProviderError) {
+        switch error {
+        case .unsupportedIdentifier(let id):
+            self = .notFound(id)
+        }
+    }
+
+    init(_ error: OMDbError) {
+        switch error {
+        case .invalidURL:
+            self = .invalidURL("https://www.omdbapi.com/")
+        case .invalidResponse:
+            self = .invalidResponse
+        case .unauthorized:
+            self = .unauthorized
+        case .notFound:
+            self = .notFound("OMDb title")
+        case .apiError(let message):
+            if message.localizedCaseInsensitiveContains("limit")
+                || message.localizedCaseInsensitiveContains("too many") {
+                self = .rateLimited
+            } else {
+                self = .server(statusCode: 200, message: message)
+            }
+        case .httpError(let statusCode, let message):
+            switch statusCode {
+            case 401:
+                self = .unauthorized
+            case 404:
+                self = .notFound(message)
+            case 429:
+                self = .rateLimited
+            default:
+                self = .server(statusCode: statusCode, message: message)
+            }
+        case .unsupported(let message):
+            self = .transport(message)
+        }
+    }
+
     init(_ error: URLError) {
         switch error.code {
         case .timedOut:
@@ -262,6 +333,17 @@ private extension NetworkError {
             default:
                 self = .server(statusCode: statusCode, message: message)
             }
+        }
+    }
+}
+
+private extension AppError {
+    init(_ error: OMDbError) {
+        switch error {
+        case .unsupported(let message):
+            self = .unknown(message)
+        default:
+            self = .network(NetworkError(error))
         }
     }
 }

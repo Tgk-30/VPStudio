@@ -90,11 +90,7 @@ private func makeStubSession(
 }
 
 private func makeTempDatabase() async throws -> DatabaseManager {
-    let tempDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    let dbPath = tempDir.appendingPathComponent("folder-sync-test.sqlite").path
-    let database = try DatabaseManager(path: dbPath)
+    let database = try DatabaseManager(inMemoryNamed: "folder-sync-test-\(UUID().uuidString)")
     try await database.migrate()
     return database
 }
@@ -124,7 +120,8 @@ private func makeFolderSyncStubSession(
     listItems: [Int: String] = [:],
     createListResponse: String? = nil,
     watchlistMovies: String = "[]",
-    watchlistShows: String = "[]"
+    watchlistShows: String = "[]",
+    postRecorder: ((URLRequest) -> Void)? = nil
 ) -> URLSession {
     makeStubSession { request in
         let path = request.url?.path ?? ""
@@ -133,6 +130,7 @@ private func makeFolderSyncStubSession(
 
         // POST endpoints
         if method == "POST" {
+            postRecorder?(request)
             // Create custom list
             if path.hasSuffix("/users/me/lists") && !path.contains("/items") {
                 let body = createListResponse ?? #"{"ids":{"trakt":999,"slug":"new-list"},"name":"New List","privacy":"private"}"#
@@ -489,10 +487,10 @@ struct TraktFolderSyncIntegrationTests {
 
         // Two local entries
         try await db.addToLibrary(UserLibraryEntry(
-            id: "tt1111111-watchlist", mediaId: "tt1111111", folderId: folder.id, listType: .watchlist, addedAt: Date()
+            id: "tt1111111-watchlist", mediaId: "movie-imdb-tt1111111", folderId: folder.id, listType: .watchlist, addedAt: Date()
         ))
         try await db.addToLibrary(UserLibraryEntry(
-            id: "tt2222222-watchlist", mediaId: "tt2222222", folderId: folder.id, listType: .watchlist, addedAt: Date()
+            id: "tt2222222-watchlist", mediaId: "movie-imdb-tt2222222", folderId: folder.id, listType: .watchlist, addedAt: Date()
         ))
 
         // Remote list already has tt1111111
@@ -500,8 +498,22 @@ struct TraktFolderSyncIntegrationTests {
         [{"rank":1,"type":"movie","movie":{"title":"Already There","year":2020,"ids":{"trakt":1,"imdb":"tt1111111","tmdb":100}}}]
         """
 
+        final class PostCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ request: URLRequest) {
+                guard request.url?.path.hasSuffix("/users/me/lists/77/items") == true else { return }
+                lock.lock()
+                bodies.append(request.httpBody ?? Data())
+                lock.unlock()
+            }
+        }
+        let capture = PostCapture()
+
         let session = makeFolderSyncStubSession(
-            listItems: [77: remoteItems]
+            listItems: [77: remoteItems],
+            postRecorder: { capture.record($0) }
         )
         let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
         await service.setTokens(access: "test-token", refresh: nil)
@@ -509,6 +521,336 @@ struct TraktFolderSyncIntegrationTests {
         let result = await orchestrator.sync()
         // Only tt2222222 should be pushed (tt1111111 already exists remotely)
         #expect(result.foldersPushed == 1)
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+        #expect(ids["imdb"] as? String == "tt2222222")
+        #expect(String(data: body, encoding: .utf8)?.contains("tt1111111") == false)
+    }
+
+    @Test("pull matches existing composite IMDb IDs in mapped folders")
+    func pullMatchesExistingCompositeIMDbIDsInMappedFolders() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        let folder = try await db.createLibraryFolder(name: "Sci-Fi", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 55, traktListSlug: "sci-fi", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-arrival-watchlist",
+            mediaId: "movie-imdb-tt2543164",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        let customListsJSON = """
+        [{"ids":{"trakt":55,"slug":"sci-fi"},"name":"Sci-Fi","privacy":"private","item_count":1}]
+        """
+        let listItemsJSON = """
+        [{"rank":1,"type":"movie","movie":{"title":"Arrival","year":2016,"ids":{"trakt":1,"imdb":"tt2543164","tmdb":329865}}}]
+        """
+
+        let session = makeFolderSyncStubSession(
+            customLists: customListsJSON,
+            listItems: [55: listItemsJSON]
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        let entries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: folder.id)
+
+        #expect(result.foldersPulled == 0)
+        #expect(entries.count == 1)
+        #expect(entries.first?.mediaId == "movie-imdb-tt2543164")
+    }
+
+    @Test("pull matches existing composite OMDb IDs in mapped folders")
+    func pullMatchesExistingCompositeOMDbIDsInMappedFolders() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        let folder = try await db.createLibraryFolder(name: "OMDb Picks", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 56, traktListSlug: "omdb-picks", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-dune-omdb-watchlist",
+            mediaId: "movie-omdb-tt1160419",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        let customListsJSON = """
+        [{"ids":{"trakt":56,"slug":"omdb-picks"},"name":"OMDb Picks","privacy":"private","item_count":1}]
+        """
+        let listItemsJSON = """
+        [{"rank":1,"type":"movie","movie":{"title":"Dune","year":2021,"ids":{"trakt":1,"imdb":"tt1160419","tmdb":438631}}}]
+        """
+
+        let session = makeFolderSyncStubSession(
+            customLists: customListsJSON,
+            listItems: [56: listItemsJSON]
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        let entries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: folder.id)
+
+        #expect(result.foldersPulled == 0)
+        #expect(result.foldersPushed == 0)
+        #expect(entries.count == 1)
+        #expect(entries.first?.mediaId == "movie-omdb-tt1160419")
+    }
+
+    @Test("pull preserves existing composite TMDb IDs in mapped folders")
+    func pullPreservesExistingCompositeTMDbIDsInMappedFolders() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        let folder = try await db.createLibraryFolder(name: "Legacy", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 81, traktListSlug: "legacy", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-legacy-watchlist",
+            mediaId: "movie-tmdb-438631",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        let customListsJSON = """
+        [{"ids":{"trakt":81,"slug":"legacy"},"name":"Legacy","privacy":"private","item_count":1}]
+        """
+        let listItemsJSON = """
+        [{"rank":1,"type":"movie","movie":{"title":"Dune","year":2021,"ids":{"trakt":1,"tmdb":438631}}}]
+        """
+
+        let session = makeFolderSyncStubSession(
+            customLists: customListsJSON,
+            listItems: [81: listItemsJSON]
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        let entries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: folder.id)
+
+        #expect(result.foldersPulled == 0)
+        #expect(entries.count == 1)
+        #expect(entries.first?.mediaId == "movie-tmdb-438631")
+    }
+
+    @Test("folder sync matches raw TMDb rows when remote also has IMDb")
+    func folderSyncMatchesRawTMDbRowsWhenRemoteAlsoHasIMDb() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        let folder = try await db.createLibraryFolder(name: "Legacy Raw", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 84, traktListSlug: "legacy-raw", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-raw-tmdb-watchlist",
+            mediaId: "movie-tmdb-438631",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        let customListsJSON = """
+        [{"ids":{"trakt":84,"slug":"legacy-raw"},"name":"Legacy Raw","privacy":"private","item_count":1}]
+        """
+        let listItemsJSON = """
+        [{"rank":1,"type":"movie","movie":{"title":"Dune","year":2021,"ids":{"trakt":1,"imdb":"tt1160419","tmdb":438631}}}]
+        """
+
+        let session = makeFolderSyncStubSession(
+            customLists: customListsJSON,
+            listItems: [84: listItemsJSON]
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        let entries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: folder.id)
+
+        #expect(result.foldersPulled == 0)
+        #expect(result.foldersPushed == 0)
+        #expect(entries.count == 1)
+        #expect(entries.first?.mediaId == "movie-tmdb-438631")
+    }
+
+    @Test("pull matches cached TMDb entries against remote IMDb aliases")
+    func pullMatchesCachedTMDbEntriesAgainstRemoteIMDbAliases() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-imdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+
+        let folder = try await db.createLibraryFolder(name: "Legacy", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 82, traktListSlug: "legacy", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-dune-watchlist",
+            mediaId: "movie-tmdb-438631",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        let customListsJSON = """
+        [{"ids":{"trakt":82,"slug":"legacy"},"name":"Legacy","privacy":"private","item_count":1}]
+        """
+        let listItemsJSON = """
+        [{"rank":1,"type":"movie","movie":{"title":"Dune","year":2021,"ids":{"trakt":1,"imdb":"tt1160419","tmdb":438631}}}]
+        """
+
+        let session = makeFolderSyncStubSession(
+            customLists: customListsJSON,
+            listItems: [82: listItemsJSON]
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        let entries = try await db.fetchLibraryEntries(listType: .watchlist, folderId: folder.id)
+
+        #expect(result.foldersPulled == 0)
+        #expect(entries.count == 1)
+        #expect(entries.first?.mediaId == "movie-tmdb-438631")
+    }
+
+    @Test("push uses cached IMDb alias for TMDb folder entries")
+    func pushUsesCachedIMDbAliasForTMDbFolderEntries() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        try await db.saveMediaItem(MediaItem(
+            id: "movie-imdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438631
+        ))
+
+        let folder = try await db.createLibraryFolder(name: "Legacy Push", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 83, traktListSlug: "legacy-push", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-dune-watchlist",
+            mediaId: "movie-tmdb-438631",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        final class PostCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ request: URLRequest) {
+                guard request.url?.path.hasSuffix("/users/me/lists/83/items") == true else { return }
+                lock.lock()
+                bodies.append(request.httpBody ?? Data())
+                lock.unlock()
+            }
+        }
+        let capture = PostCapture()
+
+        let session = makeFolderSyncStubSession(
+            listItems: [83: "[]"],
+            postRecorder: { capture.record($0) }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        #expect(result.foldersPushed == 1)
+
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+        #expect(ids["imdb"] as? String == "tt1160419")
+        #expect(String(data: body, encoding: .utf8)?.contains("movie-tmdb-438631") == false)
+    }
+
+    @Test("push uses OMDb composite IDs as IMDb IDs for Trakt folders")
+    func pushUsesOMDbCompositeIDsAsIMDbIDsForTraktFolders() async throws {
+        let db = try await makeTempDatabase()
+        let settings = makeSettingsManager(database: db)
+        try await settings.setBool(key: SettingsKeys.traktSyncWatchlist, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncRatings, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncHistory, value: false)
+        try await settings.setBool(key: SettingsKeys.traktSyncFolders, value: true)
+
+        let folder = try await db.createLibraryFolder(name: "OMDb Push", listType: .watchlist)
+        let mapping = TraktListMapping(traktListId: 85, traktListSlug: "omdb-push", localFolderId: folder.id)
+        try await db.saveTraktListMapping(mapping)
+        try await db.addToLibrary(UserLibraryEntry(
+            id: "local-dune-omdb-watchlist",
+            mediaId: "movie-omdb-tt1160419",
+            folderId: folder.id,
+            listType: .watchlist,
+            addedAt: Date()
+        ))
+
+        final class PostCapture: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var bodies: [Data] = []
+
+            func record(_ request: URLRequest) {
+                guard request.url?.path.hasSuffix("/users/me/lists/85/items") == true else { return }
+                lock.lock()
+                bodies.append(request.httpBody ?? Data())
+                lock.unlock()
+            }
+        }
+        let capture = PostCapture()
+
+        let session = makeFolderSyncStubSession(
+            listItems: [85: "[]"],
+            postRecorder: { capture.record($0) }
+        )
+        let (orchestrator, service) = makeOrchestrator(database: db, settingsManager: settings, session: session)
+        await service.setTokens(access: "test-token", refresh: nil)
+
+        let result = await orchestrator.sync()
+        #expect(result.foldersPushed == 1)
+
+        let body = try #require(capture.bodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let movies = try #require(json["movies"] as? [[String: Any]])
+        let movie = try #require(movies.first)
+        let ids = try #require(movie["ids"] as? [String: Any])
+        #expect(ids["imdb"] as? String == "tt1160419")
+        #expect(String(data: body, encoding: .utf8)?.contains("movie-omdb-tt1160419") == false)
     }
 
     @Test("system folders are not pushed")

@@ -36,7 +36,9 @@ struct OllamaProvider: AIProvider, Sendable {
             ]
         ]
 
-        guard let url = URL(string: "\(trimmedBaseURL)/api/chat") else { throw AIError.invalidResponse }
+        guard let url = AIOllamaEndpointPolicy.appendingPath(to: trimmedBaseURL, path: "api/chat") else {
+            throw AIError.invalidResponse
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -46,11 +48,11 @@ struct OllamaProvider: AIProvider, Sendable {
         let (data, http) = try await AIHTTPTransport.perform(request, using: session, sleep: sleep)
 
         guard (200...299).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? ""
+            let msg = AIHTTPTransport.sanitizedHTTPErrorMessage(from: data)
             throw AIError.httpError(http.statusCode, msg)
         }
 
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let json = try Self.parseResponseJSON(from: data)
         let message = json?["message"] as? [String: Any]
         guard let content = message?["content"] as? String, !content.isEmpty else {
             throw AIError.invalidResponse
@@ -63,5 +65,76 @@ struct OllamaProvider: AIProvider, Sendable {
             inputTokens: 0,
             outputTokens: 0
         )
+    }
+
+    private static func parseResponseJSON(from data: Data) throws -> [String: Any]? {
+        do {
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return json
+            }
+        } catch {
+            // Ollama may stream newline-delimited JSON objects even when stream=false.
+            // Fall through and try extracting the first complete object.
+        }
+
+        guard let leadingObjectData = firstJSONObjectData(in: data) else {
+            throw AIError.invalidResponse
+        }
+
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: leadingObjectData) as? [String: Any] else {
+                throw AIError.invalidResponse
+            }
+            return json
+        } catch let error as AIError {
+            throw error
+        } catch {
+            throw AIError.invalidResponse
+        }
+    }
+
+    private static func firstJSONObjectData(in data: Data) -> Data? {
+        guard let string = String(data: data, encoding: .utf8) else { return nil }
+
+        var depth = 0
+        var startIndex: String.Index?
+        var isInsideString = false
+        var isEscaping = false
+
+        for index in string.indices {
+            let character = string[index]
+
+            if isInsideString {
+                if isEscaping {
+                    isEscaping = false
+                } else if character == "\\" {
+                    isEscaping = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+                continue
+            }
+
+            switch character {
+            case "\"":
+                isInsideString = true
+            case "{":
+                if depth == 0 {
+                    startIndex = index
+                }
+                depth += 1
+            case "}":
+                guard depth > 0 else { continue }
+                depth -= 1
+                if depth == 0, let startIndex {
+                    let endIndex = string.index(after: index)
+                    return String(string[startIndex..<endIndex]).data(using: .utf8)
+                }
+            default:
+                continue
+            }
+        }
+
+        return nil
     }
 }

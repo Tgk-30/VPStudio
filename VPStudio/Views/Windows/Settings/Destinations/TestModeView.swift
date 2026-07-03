@@ -120,7 +120,7 @@ private struct TestScreenTile: View {
 
 // MARK: - Test Screen Definitions
 
-private enum TestScreen: String, CaseIterable, Identifiable {
+enum TestScreen: String, CaseIterable, Identifiable, Sendable {
     case discover
     case search
     case searchResults
@@ -128,8 +128,13 @@ private enum TestScreen: String, CaseIterable, Identifiable {
     case detailSeries
     case library
     case downloads
+    case environmentsTab
+    case environmentPicker
+    case environmentSettings
     case player
     case settings
+    case metadataSettings
+    case setupPreferences
 
     var id: String { rawValue }
 
@@ -142,8 +147,13 @@ private enum TestScreen: String, CaseIterable, Identifiable {
         case .detailSeries: return "Series Detail"
         case .library: return "Library"
         case .downloads: return "Downloads"
+        case .environmentsTab: return "Environments Tab"
+        case .environmentPicker: return "Environment Picker"
+        case .environmentSettings: return "Environment Settings"
         case .player: return "Player"
         case .settings: return "Settings"
+        case .metadataSettings: return "Metadata Settings"
+        case .setupPreferences: return "Setup Preferences"
         }
     }
 
@@ -156,8 +166,13 @@ private enum TestScreen: String, CaseIterable, Identifiable {
         case .detailSeries: return "Episodes grid"
         case .library: return "Populated library"
         case .downloads: return "Active downloads"
+        case .environmentsTab: return "Cards + clear state"
+        case .environmentPicker: return "Sheet + imports"
+        case .environmentSettings: return "Presets + playback"
         case .player: return "Controls + overlays"
         case .settings: return "All categories"
+        case .metadataSettings: return "Provider plans"
+        case .setupPreferences: return "Wizard source filters"
         }
     }
 
@@ -170,8 +185,13 @@ private enum TestScreen: String, CaseIterable, Identifiable {
         case .detailSeries: return "film.stack"
         case .library: return "books.vertical"
         case .downloads: return "arrow.down.circle"
+        case .environmentsTab: return "mountain.2"
+        case .environmentPicker: return "rectangle.grid.2x2"
+        case .environmentSettings: return "pano"
         case .player: return "play.circle"
         case .settings: return "gearshape"
+        case .metadataSettings: return "film"
+        case .setupPreferences: return "wand.and.stars"
         }
     }
 
@@ -184,720 +204,434 @@ private enum TestScreen: String, CaseIterable, Identifiable {
         case .detailSeries: return .pink
         case .library: return .green
         case .downloads: return .mint
+        case .environmentsTab: return .teal
+        case .environmentPicker: return .cyan
+        case .environmentSettings: return .mint
         case .player: return .red
         case .settings: return .gray
+        case .metadataSettings: return .green
+        case .setupPreferences: return .indigo
         }
+    }
+}
+
+enum TestScreenLaunchPolicy {
+    static func screen(for rawValue: String?) -> TestScreen? {
+        guard let normalizedValue = rawValue.map(normalized), !normalizedValue.isEmpty else {
+            return nil
+        }
+
+        return TestScreen.allCases.first { screen in
+            normalized(screen.rawValue) == normalizedValue
+                || normalized(screen.title) == normalizedValue
+        }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
     }
 }
 
 // MARK: - Test Screen Sheet
 
-private struct TestScreenSheet: View {
+struct TestScreenSheet: View {
     let screen: TestScreen
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        if screen.usesNativeNavigationContainer {
             screenContent
-                .navigationTitle(screen.title)
-                #if !os(macOS)
-                .navigationBarTitleDisplayMode(.inline)
-                #endif
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { dismiss() }
+        } else {
+            NavigationStack {
+                screenContent
+                    .navigationTitle(screen.title)
+                    #if !os(macOS)
+                    .navigationBarTitleDisplayMode(.inline)
+                    #endif
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { dismiss() }
+                        }
                     }
-                }
+            }
         }
     }
 
-    @ViewBuilder
     private var screenContent: some View {
+        content(for: screen)
+    }
+
+    @ViewBuilder
+    private func content(for screen: TestScreen) -> some View {
         switch screen {
         case .discover:
-            TestDiscoverView()
+            SeededDiscoverPreview()
         case .search:
-            TestSearchView()
+            SeededSearchPreview(showsResults: false)
         case .searchResults:
-            TestSearchResultsView()
+            SeededSearchPreview(showsResults: true)
         case .detailMovie:
-            TestDetailMovieView()
+            SeededDetailPreview(mediaType: .movie)
         case .detailSeries:
-            TestDetailSeriesView()
+            SeededDetailPreview(mediaType: .series)
         case .library:
-            TestLibraryView()
+            SeededLibraryPreview()
         case .downloads:
-            TestDownloadsView()
+            SeededDownloadsPreview()
+        case .environmentsTab:
+            SeededEnvironmentsTabPreview()
+        case .environmentPicker:
+            SeededEnvironmentPickerPreview()
+        case .environmentSettings:
+            SeededEnvironmentSettingsPreview()
         case .player:
-            TestPlayerView()
+            SeededPlayerPreview()
         case .settings:
-            TestSettingsView()
+            SeededSettingsPreview()
+        case .metadataSettings:
+            MetadataSettingsView(
+                initialOMDbApiKey: "preview-omdb-key",
+                initialTMDbApiKey: "preview-tmdb-token",
+                initialOMDbPlan: .paid,
+                initialTMDbPlan: .paid,
+                initialIsSaved: true,
+                disablesAutomaticTasks: true
+            )
+        case .setupPreferences:
+            SetupWizardView(
+                initialStep: 3,
+                initialOMDbApiKey: "preview-omdb-key",
+                initialSelectedQuality: .uhd4k,
+                initialSelectedSubtitleLanguage: .english,
+                initialSourceFilterPreset: .cinema,
+                initialGuestModeEnabled: true
+            )
         }
     }
 }
 
-// MARK: - Discover Test
-
-private struct TestDiscoverView: View {
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                // Hero
-                ZStack(alignment: .bottomLeading) {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.indigo.opacity(0.8), .purple.opacity(0.6)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(height: 300)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Featured")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-                        Text("Dune: Part Two")
-                            .font(.title.bold())
-                            .foregroundStyle(.white)
-                        HStack {
-                            Text("2024 · 8.8 ★")
-                            Text("·")
-                            Text("Sci-Fi")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
-                    }
-                    .padding(20)
-                }
-
-                // Section: Trending
-                discoverSection("Trending Now") {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack {
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.3 + Double(i) * 0.1))
-                                    .frame(width: 120, height: 70)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(["Oppenheimer", "Poor Things", "The Bear", "Shrinking"][i])
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-
-                // Section: New Releases
-                discoverSection("New Releases") {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack {
-                                Rectangle()
-                                    .fill(Color.blue.opacity(0.3 + Double(i) * 0.1))
-                                    .frame(width: 120, height: 70)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(["Rebel Ridge", "A Quiet Place", "Fallout", "Presumed Innocent"][i])
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-
-                // Section: Your Watchlist
-                discoverSection("Your Watchlist") {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack {
-                                Rectangle()
-                                    .fill(Color.green.opacity(0.3 + Double(i) * 0.1))
-                                    .frame(width: 120, height: 70)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(["Killers", "The Holdovers", "Anatomy", "Ad Astra"][i])
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding()
-        }
-    }
-
-    @ViewBuilder
-    private func discoverSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-            content()
+private extension TestScreen {
+    var usesNativeNavigationContainer: Bool {
+        switch self {
+        case .environmentPicker, .player:
+            return true
+        default:
+            return false
         }
     }
 }
 
-// MARK: - Search Test
-
-private struct TestSearchView: View {
-    @State private var query = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Search bar
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Movies, shows, people...", text: $query)
-            }
-            .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .padding()
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .font(.largeTitle)
-                    .foregroundStyle(.tertiary)
-                Text("Search for movies and TV shows")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                Text("Find streams, explore cast, and more")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer()
-        }
-    }
-}
-
-// MARK: - Search Results Test
-
-private struct TestSearchResultsView: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            // Filter bar
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(["Movies", "TV", "Anime", "2024", "8.0+ ★", "HD"], id: \.self) { filter in
-                        Text(filter)
-                            .font(.caption)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background(filter == "Movies" ? AnyShapeStyle(.tint) : AnyShapeStyle(.ultraThinMaterial), in: Capsule())
-                    }
-                    Image(systemName: "slider.horizontal.3")
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .padding(.horizontal)
-            }
-            .padding(.vertical, 8)
-
-            Divider()
-
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(0..<6, id: \.self) { i in
-                        HStack {
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.3))
-                                .frame(width: 60, height: 36)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(["Dune: Part Two", "Dune", "Dune Prophecy", "Messiah: Dune", "Dune: Part Three", "Dune (1984)"][i])
-                                    .font(.subheadline)
-                                Text(["2024 · Sci-Fi", "2021 · Sci-Fi", "2024 · Sci-Fi", "1971 · Sci-Fi", "2030 · Sci-Fi", "1984 · Sci-Fi"][i])
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Text(["8.8", "8.0", "7.1", "7.8", "—", "6.5"][i])
-                                .font(.caption)
-                                .foregroundStyle(.yellow)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-                .padding()
-            }
-        }
-    }
-}
-
-// MARK: - Detail Movie Test
-
-private struct TestDetailMovieView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Hero
-                ZStack(alignment: .bottomLeading) {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.indigo.opacity(0.9), .clear],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .frame(height: 300)
-
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.8)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 200)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("DUNE: PART TWO")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                        HStack(spacing: 12) {
-                            Text("2024")
-                            Text("166 min")
-                            HStack(spacing: 3) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                Text("8.8 IMDb")
-                            }
-                            Image(systemName: "heart.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
-
-                        Text("Science Fiction · Adventure · Drama")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-
-                        Text("Denis Villeneuve")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    .padding(20)
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    // Synopsis
-                    Text("Follow the mythic journey of Paul Atreides as he unites with Chani and the Fremen while on a warpath of revenge against the conspirators who destroyed his family.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-
-                    // Genres
-                    HStack(spacing: 6) {
-                        ForEach(["Sci-Fi", "Adventure", "Drama"], id: \.self) { g in
-                            Text(g)
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .background(.ultraThinMaterial, in: Capsule())
-                        }
-                    }
-
-                    // Streams section
-                    Text("Available Streams")
-                        .font(.headline)
-
-                    ForEach(0..<3, id: \.self) { i in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(["Dune.Part.Two.2024.2160p.WEB", "Dune Part Two 2024 1080p WEB-DL", "Dune.Part.Two.2024.720p.WEB"][i])
-                                    .font(.subheadline)
-                                    .lineLimit(1)
-                                HStack(spacing: 4) {
-                                    Text(["2160p · HDR · Dolby Vision", "1080p · DDP 5.1", "720p · x264"][i])
-                                        .font(.caption2)
-                                    Text("·")
-                                    Text(["342 seeders", "1204 seeders", "567 seeders"][i])
-                                        .font(.caption2)
-                                        .foregroundStyle(.green)
-                                }
-                                .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text("8.5 GB")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "play.circle.fill")
-                                .font(.title3)
-                                .foregroundStyle(.blue)
-                        }
-                        .padding(12)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-                .padding(20)
-            }
-        }
-    }
-}
-
-// MARK: - Detail Series Test
-
-private struct TestDetailSeriesView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Hero
-                ZStack(alignment: .bottomLeading) {
-                    Rectangle()
-                        .fill(LinearGradient(
-                            colors: [.indigo.opacity(0.9), .clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
-                        .frame(height: 300)
-
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.8)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 200)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("SHRINKING")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                        HStack(spacing: 12) {
-                            Text("2023")
-                            Text("35 min")
-                            HStack(spacing: 3) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                Text("8.1 IMDb")
-                            }
-                            Image(systemName: "heart.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
-
-                        Text("Comedy · Drama")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
-
-                        Text("Jason Segel · Harrison Ford")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    .padding(20)
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("A therapist starts breaking the rules with his patients after a tragedy changes everything.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-
-                    // Seasons tabs
-                    HStack(spacing: 8) {
-                        ForEach(["Season 1 · 10 eps", "Season 2 · 10 eps", "Season 3 · 9 eps"], id: \.self) { s in
-                            Text(s)
-                                .font(.caption)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(s.contains("3") ? AnyShapeStyle(.tint) : AnyShapeStyle(.ultraThinMaterial), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-
-                    // Episodes row
-                    Text("Episodes")
-                        .font(.headline)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 14) {
-                            ForEach(0..<6, id: \.self) { i in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ZStack(alignment: .bottomLeading) {
-                                        Rectangle()
-                                            .fill(Color.gray.opacity(0.3 + Double(i) * 0.08))
-                                            .frame(width: 180, height: 100)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                                        HStack(spacing: 4) {
-                                            Text("S03E0\(i+1)")
-                                                .font(.caption2.weight(.semibold))
-                                            Text("·")
-                                            Text("\([35, 34, 36, 37, 35, 38][i])m")
-                                                .font(.caption2)
-                                        }
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(.ultraThinMaterial, in: Capsule())
-                                        .padding(6)
-                                    }
-
-                                    Text(["Fanatics", "The Ghosts", "The Medal", "The River", "The Bowl", "The High Price"][i])
-                                        .font(.caption2)
-                                        .lineLimit(1)
-
-                                    if i == 0 {
-                                        Text("3/6 watched")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(width: 180)
-                            }
-                        }
-                    }
-                }
-                .padding(20)
-            }
-        }
-    }
-}
-
-// MARK: - Library Test
-
-private struct TestLibraryView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Your Library")
-                    .font(.title2.bold())
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], spacing: 14) {
-                    ForEach(0..<6, id: \.self) { i in
-                        VStack(alignment: .leading, spacing: 4) {
-                            ZStack(alignment: .bottomLeading) {
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.3 + Double(i) * 0.08))
-                                    .aspectRatio(2/3, contentMode: .fit)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                                if i % 3 == 0 {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.green)
-                                        .padding(6)
-                                }
-                            }
-
-                            Text(["Oppenheimer", "Poor Things", "The Bear", "Killers", "Slow Horses", "The Holdovers"][i])
-                                .font(.caption2)
-                                .lineLimit(2)
-                        }
-                    }
-                }
-            }
-            .padding()
-        }
-    }
-}
-
-// MARK: - Downloads Test
-
-private struct TestDownloadsView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("Downloads")
-                        .font(.title2.bold())
-                    Spacer()
-                    Text("2 active")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal)
-
-                ForEach(0..<2, id: \.self) { i in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(["Dune.Part.Two.2024.2160p", "Shrinking.S03E01.1080p"][i])
-                                    .font(.subheadline)
-                                    .lineLimit(1)
-                                Text(["73% · 6.2 GB of 8.5 GB", "Completed · 1.9 GB"][i])
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-
-                            if i == 0 {
-                                Image(systemName: "xmark.circle")
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityHidden(true)
-                            } else {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                            }
-                        }
-
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(.ultraThinMaterial)
-                                    .frame(height: 4)
-                                Capsule()
-                                    .fill(i == 0 ? .blue : .green)
-                                    .frame(width: geo.size.width * CGFloat(i == 0 ? 0.73 : 1.0), height: 4)
-                            }
-                        }
-                        .frame(height: 4)
-                    }
-                    .padding(14)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                }
-            }
-            .padding(.vertical)
-        }
-    }
-}
-
-// MARK: - Player Test
-
-private struct TestPlayerView: View {
-    @State private var isShowingControls = true
-
-    var body: some View {
-        ZStack {
-            // Video area
-            Rectangle()
-                .fill(.black)
-
-            VStack {
-                Spacer()
-
-                // Controls overlay
-                if isShowingControls {
-                    VStack(spacing: 16) {
-                        // Top bar
-                        HStack {
-                            Image(systemName: "chevron.left")
-                            Spacer()
-                            Text("Dune: Part Two")
-                                .font(.caption)
-                            Spacer()
-                            Image(systemName: "airplayaudio")
-                        }
-                        .foregroundStyle(.white)
-
-                        Spacer()
-
-                        // Center play/pause
-                        HStack(spacing: 60) {
-                            Image(systemName: "backward.fill")
-                                .font(.title)
-                            Image(systemName: "play.fill")
-                                .font(.largeTitle)
-                            Image(systemName: "forward.fill")
-                                .font(.title)
-                        }
-                        .foregroundStyle(.white)
-
-                        Spacer()
-
-                        // Scrubber
-                        VStack(spacing: 4) {
-                            Slider(value: .constant(0.35), in: 0...1)
-                                .tint(.white)
-                                .accessibilityLabel("Playback position")
-                                .accessibilityValue("35 percent")
-                                .accessibilityHint("Preview-only playback progress in test mode.")
-                            HStack {
-                                Text("58:21")
-                                Spacer()
-                                Text("2:46:00")
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.7))
-                        }
-
-                        // Bottom bar
-                        HStack {
-                            Image(systemName: "speaker.fill")
-                            Slider(value: .constant(0.7), in: 0...1)
-                                .frame(width: 80)
-                                .tint(.white)
-                                .accessibilityLabel("Volume")
-                                .accessibilityValue("70 percent")
-                                .accessibilityHint("Preview-only volume level in test mode.")
-
-                            Spacer()
-
-                            HStack(spacing: 20) {
-                                Image(systemName: "captions.bubble")
-                                Image(systemName: "pip.enter")
-                                Image(systemName: "gear")
-                            }
-                        }
-                        .foregroundStyle(.white)
-                    }
-                    .padding(24)
-                    .background(
-                        LinearGradient(
-                            colors: [.clear, .black.opacity(0.7)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .transition(.opacity)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isShowingControls.toggle()
-            }
-        }
-    }
-}
-
-// MARK: - Settings Test
-
-private struct TestSettingsView: View {
-    private let categories = [
-        ("Connect", "link", "Accounts, providers, and API keys", ["Streaming Providers", "Search Providers", "TMDB API", "AI Recommendations", "Trakt", "Simkl", "IMDb Import"]),
-        ("Watch", "play.circle", "Playback, quality, and subtitles", ["Playback", "Subtitles"]),
-        ("Discover", "sparkles", "Environments and browsing", ["Environments"]),
-        ("Library", "books.vertical", "Downloads and local content", ["Library", "Downloads"]),
-        ("About", "info.circle", "App info, health, and data", ["Reset All Data"]),
+private enum EnvironmentVisualQASeed {
+    static let assets = [
+        EnvironmentAsset(
+            id: "qa-starlight-cinema",
+            name: "Starlight Cinema",
+            sourceType: .bundled,
+            assetPath: "bundle://starlight-cinema.reality",
+            licenseName: "Built-in",
+            environmentTag: "cinema",
+            isActive: true
+        ),
+        EnvironmentAsset(
+            id: "qa-aurora-terrace",
+            name: "Aurora Terrace",
+            sourceType: .imported,
+            assetPath: "/Users/Shared/VPStudio/AuroraTerrace.usdz",
+            sourceAttributionURL: "https://example.com/aurora-terrace",
+            environmentTag: "sci-fi"
+        ),
     ]
 
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 20) {
-                ForEach(categories, id: \.0) { category in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Image(systemName: category.1)
-                                .font(.caption)
-                            Text(category.0)
-                                .font(.headline)
-                        }
-                        .foregroundStyle(.secondary)
+    static var activeAsset: EnvironmentAsset? {
+        assets.first { $0.isActive }
+    }
 
-                        VStack(spacing: 4) {
-                            ForEach(category.3, id: \.self) { item in
-                                HStack {
-                                    Text(item)
-                                        .font(.subheadline)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(14)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                            }
-                        }
-                    }
-                }
+    static var inactiveAssets: [EnvironmentAsset] {
+        assets.map { asset in
+            var inactiveAsset = asset
+            inactiveAsset.isActive = false
+            return inactiveAsset
+        }
+    }
+}
+
+// MARK: - Discover (real surface, seeded)
+
+/// Renders the **production** `DiscoverView` populated with seeded metadata artwork so the actual
+/// hero carousel, rows, and tiles can be visually QA'd without API keys. `AppState` is inherited
+/// from the surrounding app environment.
+private struct SeededDiscoverPreview: View {
+    @State private var viewModel = DiscoverViewModel.seededPreview()
+
+    var body: some View {
+        DiscoverView(viewModel: viewModel)
+    }
+}
+
+// MARK: - Detail (real surface, seeded)
+
+/// Renders the **production** `DetailView` (→ `SeriesDetailLayout`) populated with seeded content so
+/// the actual hero, metadata, genre chips, season picker, and stream sections can be visually QA'd
+/// without API keys or network calls. `AppState` is inherited from the surrounding app environment;
+/// `disablesAutomaticLoading` keeps the seeded view model from being overwritten by metadata refresh.
+private struct SeededDetailPreview: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
+    let mediaType: MediaType
+    @State private var viewModel: DetailViewModel?
+    @State private var didOpenQASamplePlayer = false
+    @State private var appleEnvironmentClearTask: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                DetailView(
+                    preview: DetailPreviewSeed.preview(for: mediaType),
+                    initialViewModel: viewModel,
+                    disablesAutomaticLoading: true
+                )
+            } else {
+                Color.clear
             }
-            .padding()
+        }
+        .task {
+            if viewModel == nil {
+                viewModel = DetailPreviewSeed.seededViewModel(appState: appState, type: mediaType)
+            }
+            if let viewModel {
+                openQASamplePlayerIfRequested(viewModel)
+            }
+        }
+    }
+
+    @MainActor
+    private func openQASamplePlayerIfRequested(_ viewModel: DetailViewModel) {
+        guard QARuntimeOptions.autoPlaySample, !didOpenQASamplePlayer else { return }
+        let preview = DetailPreviewSeed.preview(for: mediaType)
+        guard let sampleStreams = DetailQASamplePolicy.makeSampleStreams(
+            sampleURLs: QARuntimeOptions.sampleURLs,
+            mediaTitle: viewModel.mediaItem?.title ?? preview.title,
+            previewType: preview.type,
+            selectedEpisode: viewModel.selectedEpisode
+        ),
+            let sampleStream = sampleStreams.first
+        else { return }
+
+        let request = viewModel.makePlayerSessionRequest(
+            stream: sampleStream,
+            preview: preview,
+            availableStreams: sampleStreams
+        )
+
+        didOpenQASamplePlayer = true
+        if QARuntimeOptions.playerAppleEnvironmentMode {
+            appleEnvironmentClearTask?.cancel()
+            appleEnvironmentClearTask = Task { @MainActor in
+                await appState.clearEnvironmentSelection()
+                appState.isImmersiveSpaceOpen = false
+                appState.beginEmbeddedPlayerSession(request)
+                openWindow(id: "player", value: request)
+            }
+            return
+        }
+
+        appState.beginEmbeddedPlayerSession(request)
+        openWindow(id: "player", value: request)
+    }
+}
+
+// MARK: - Search (real surface, seeded)
+
+/// Renders the **production** `SearchView` seeded for visual QA. `showsResults == false` shows the
+/// idle Explore grid (genres + recent searches); `true` shows a populated results grid with an
+/// active query and media-type filter. `disablesAutomaticTasks` keeps the seeded view model from
+/// being cleared by the metadata configuration pass that runs without an API key.
+private struct SeededSearchPreview: View {
+    let showsResults: Bool
+    @State private var viewModel: SearchViewModel?
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                SearchView(initialViewModel: viewModel, disablesAutomaticTasks: true)
+            } else {
+                Color.clear
+            }
+        }
+        .task {
+            if viewModel == nil {
+                viewModel = SearchViewModel.seededPreview(showsResults: showsResults)
+            }
+        }
+    }
+}
+
+// MARK: - Library (real surface, seeded)
+
+/// Renders the **production** `LibraryView` seeded with a populated watchlist so the real grid,
+/// folder chips, and `MediaCardView` tiles can be visually QA'd without credentials or database
+/// access. `disablesAutomaticTasks` skips the reload that would otherwise replace seeded content.
+private struct SeededLibraryPreview: View {
+    var body: some View {
+        LibraryView(
+            initialSelectedList: LibraryPreviewSeed.listType,
+            initialEntries: LibraryPreviewSeed.entries,
+            initialFolders: LibraryPreviewSeed.folders,
+            initialMediaItems: LibraryPreviewSeed.mediaItems,
+            initialIsLoadingSelection: false,
+            disablesAutomaticTasks: true
+        )
+    }
+}
+
+// MARK: - Downloads (real surface, seeded)
+
+/// Renders the **production** `DownloadsView` with a seeded view model (two active downloads + one
+/// completed) so the real group cards, progress bars, and status chips can be visually QA'd.
+/// `disablesAutomaticTasks` skips the manager refresh that would clear the seeded groups.
+private struct SeededDownloadsPreview: View {
+    @Environment(AppState.self) private var appState
+    @State private var viewModel: DownloadsViewModel?
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                DownloadsView(viewModel: viewModel, disablesAutomaticTasks: true)
+            } else {
+                Color.clear
+            }
+        }
+        .task {
+            if viewModel == nil {
+                let model = DownloadsViewModel(appState: appState)
+                model.groups = DownloadsPreviewSeed.groups
+                model.tasks = DownloadsPreviewSeed.tasks
+                model.isLoading = false
+                viewModel = model
+            }
+        }
+    }
+}
+
+// MARK: - Environments (real surfaces, seeded)
+
+/// Renders the production Environments tab with a small deterministic asset list so the
+/// Apple Environment clear state and environment cards can be visually QA'd without imports.
+private struct SeededEnvironmentsTabPreview: View {
+    var body: some View {
+        #if os(visionOS)
+        EnvironmentsTabView(
+            initialEnvironments: EnvironmentVisualQASeed.assets,
+            initialIsLoading: false,
+            disablesAutomaticTasks: true
+        )
+        #else
+        EnvironmentsTabView()
+        #endif
+    }
+}
+
+/// Renders the production environment picker sheet with seeded imported/bundled cards.
+private struct SeededEnvironmentPickerPreview: View {
+    var body: some View {
+        #if os(visionOS)
+        EnvironmentPickerSheet(
+            onSelect: { _ in },
+            onDismiss: {},
+            onSelectCinema: {},
+            onClear: {},
+            initialEnvironments: EnvironmentVisualQASeed.assets,
+            disablesAutomaticTasks: true
+        )
+        #else
+        ContentUnavailableView(
+            "Environment Picker",
+            systemImage: "mountain.2",
+            description: Text("Environment picker is available on Vision Pro.")
+        )
+        #endif
+    }
+}
+
+/// Renders the production Environment Settings destination with deterministic assets.
+private struct SeededEnvironmentSettingsPreview: View {
+    var body: some View {
+        EnvironmentSettingsView(
+            initialAssets: EnvironmentVisualQASeed.assets,
+            disablesAutomaticTasks: true
+        )
+    }
+}
+
+// MARK: - Settings (real surface)
+
+/// Renders the **production** `SettingsView` root. Its category list comes from the static
+/// `SettingsNavigationCatalog`, so no seeding is needed; `disablesAutomaticTasks` skips the
+/// per-destination status refresh that would otherwise hit the database / network.
+private struct SeededSettingsPreview: View {
+    var body: some View {
+        SettingsView(disablesAutomaticTasks: true)
+    }
+}
+
+// MARK: - Player (real surface, seeded)
+
+/// Renders the **production** `PlayerView` chrome seeded for visual QA. `disablesAutomaticTasks`
+/// skips `preparePlayback`, so no `AVPlayer` is created and no stream/network is touched — the
+/// playback surface stays a harmless black fill while the real transport dock, top bar, info pills,
+/// scrubber, time labels, and chapter markers render from a pre-seeded `VPPlayerEngine` injected
+/// through the environment (the same way the live "player" window provides its `sharedEngine`).
+/// `initialPlaybackState: .playing` suppresses the startup/"Playback Failed" overlay. The seed is
+/// built in `.task` because `VPPlayerEngine` is `@MainActor` and can't initialize a `@State` default
+/// from the view's nonisolated `init`. See `PlayerPreviewSeed`.
+private struct SeededPlayerPreview: View {
+    @Environment(AppState.self) private var appState
+    @State private var engine: VPPlayerEngine?
+    #if os(visionOS)
+    @State private var cinemaSettings = CinemaSettings()
+    #endif
+    @State private var appleEnvironmentClearTask: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if let engine {
+                let sessionRequest = PlayerPreviewSeed.sessionRequest
+                PlayerView(
+                    stream: PlayerPreviewSeed.stream,
+                    mediaTitle: PlayerPreviewSeed.mediaTitle,
+                    imdbId: sessionRequest.imdbId,
+                    sessionRequest: sessionRequest,
+                    fallbackArtworkAssetName: PlayerPreviewSeed.fallbackArtworkAssetName,
+                    initialPlaybackState: .playing,
+                    initialActiveEngine: PlayerPreviewSeed.activeEngine,
+                    initialEnvironmentAssets: QARuntimeOptions.playerAppleEnvironmentMode
+                        ? EnvironmentVisualQASeed.inactiveAssets
+                        : EnvironmentVisualQASeed.assets,
+                    disablesAutomaticTasks: true
+                )
+                .environment(engine)
+                #if os(visionOS)
+                .environment(cinemaSettings)
+                #endif
+            } else {
+                Color.black
+            }
+        }
+        .task {
+            if QARuntimeOptions.playerAppleEnvironmentMode {
+                appleEnvironmentClearTask?.cancel()
+                appleEnvironmentClearTask = Task { @MainActor in
+                    await appState.clearEnvironmentSelection()
+                }
+            } else if appState.selectedEnvironmentAsset == nil,
+               let activeAsset = EnvironmentVisualQASeed.activeAsset {
+                appState.selectedEnvironmentAsset = activeAsset
+            }
+            if engine == nil {
+                engine = PlayerPreviewSeed.makeSeededEngine()
+            }
         }
     }
 }

@@ -1,0 +1,1036 @@
+import Foundation
+
+private enum OMDbResponseLimits {
+    static let searchItems = 50
+    static let enrichedSearchItems = 50
+    static let seasonEpisodes = 256
+}
+
+actor OMDbService: MetadataProvider {
+    private static let defaultSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 90
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
+        return URLSession(configuration: configuration)
+    }()
+
+    private let apiKey: String
+    private let baseURL = "https://www.omdbapi.com/"
+    private let includesPaidArtwork: Bool
+    private let session: URLSession
+
+    init(apiKey: String, includesPaidArtwork: Bool = false, session: URLSession? = nil) {
+        self.apiKey = apiKey
+        self.includesPaidArtwork = includesPaidArtwork
+        self.session = session ?? Self.defaultSession
+    }
+
+    func search(query: String, type: MediaType?, page: Int = 1) async throws -> MetadataSearchResult {
+        try await search(query: query, type: type, page: page, year: nil, language: nil)
+    }
+
+    func search(
+        query: String,
+        type: MediaType?,
+        page: Int = 1,
+        year: Int? = nil,
+        language: String? = nil
+    ) async throws -> MetadataSearchResult {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            return MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: 0)
+        }
+
+        var params = [
+            "s": trimmedQuery,
+            "page": String(max(1, page)),
+        ]
+        if let type {
+            params["type"] = type.omdbType
+        }
+        if let year {
+            params["y"] = String(year)
+        }
+
+        do {
+            let response: OMDbSearchResponse = try await request(params: params)
+            let totalResults = Int(response.totalResults ?? "") ?? response.search.count
+            let totalPages = max(1, Int(ceil(Double(totalResults) / 10.0)))
+            let items = await enrichedSearchPreviews(
+                from: response.search.prefix(OMDbResponseLimits.enrichedSearchItems).compactMap(\.mediaPreview),
+                fallbackType: type
+            )
+            return MetadataSearchResult(
+                items: items,
+                page: max(1, page),
+                totalPages: totalPages,
+                totalResults: totalResults
+            )
+        } catch OMDbError.notFound {
+            return MetadataSearchResult(items: [], page: max(1, page), totalPages: 1, totalResults: 0)
+        }
+    }
+
+    func getDetail(id: String, type: MediaType) async throws -> MediaItem {
+        let response: OMDbTitleResponse
+        if let imdbID = Self.imdbID(from: id) {
+            response = try await request(params: ["i": imdbID, "plot": "full"])
+        } else {
+            guard let lookup = OMDbTitleLookupPolicy.titleLookup(from: id) else { throw OMDbError.notFound }
+            var params = ["t": lookup.title, "type": type.omdbType, "plot": "full"]
+            if let year = lookup.year {
+                params["y"] = String(year)
+            }
+            response = try await request(params: params)
+        }
+        return response.mediaItem(fallbackType: type, includesPaidArtwork: includesPaidArtwork)
+    }
+
+    func getTrending(type: MediaType, timeWindow: TrendingWindow = .week, page: Int = 1) async throws -> MetadataSearchResult {
+        try await curatedResult(ids: OMDbDiscoveryCatalog.trendingIDs(for: type), type: type, page: page)
+    }
+
+    func getCategory(_ category: MediaCategory, type: MediaType, page: Int = 1) async throws -> MetadataSearchResult {
+        try await curatedResult(ids: OMDbDiscoveryCatalog.ids(for: category, type: type), type: type, page: page)
+    }
+
+    func discover(type: MediaType, filters: DiscoverFilters) async throws -> MetadataSearchResult {
+        let query = OMDbDiscoveryCatalog.query(for: filters.genreId, type: type)
+        let result = try await search(query: query, type: type, page: filters.page, year: filters.year, language: filters.language)
+        let filteredItems = result.items.filter { item in
+            Self.matchesMinimumRating(item, minRating: filters.minRating)
+                && Self.matchesReleaseWindow(
+                    item,
+                    releaseDateGte: filters.releaseDateGte,
+                    releaseDateLte: filters.releaseDateLte
+                )
+        }
+        return MetadataSearchResult(
+            items: MetadataSearchResultSortPolicy.sort(filteredItems, by: filters.sortBy),
+            page: result.page,
+            totalPages: result.totalPages,
+            totalResults: result.totalResults
+        )
+    }
+
+    func getGenres(type: MediaType) async throws -> [Genre] {
+        OMDbDiscoveryCatalog.genres(for: type)
+    }
+
+    private static func matchesMinimumRating(_ item: MediaPreview, minRating: Double?) -> Bool {
+        guard let minRating else { return true }
+        guard let rating = item.imdbRating else { return false }
+        return rating >= minRating
+    }
+
+    private static func matchesReleaseWindow(
+        _ item: MediaPreview,
+        releaseDateGte: String?,
+        releaseDateLte: String?
+    ) -> Bool {
+        let minYear = releaseDateGte.flatMap(Self.yearPrefix)
+        let maxYear = releaseDateLte.flatMap(Self.yearPrefix)
+        guard minYear != nil || maxYear != nil else { return true }
+        guard let itemYear = item.year else { return false }
+        if let minYear, itemYear < minYear { return false }
+        if let maxYear, itemYear > maxYear { return false }
+        return true
+    }
+
+    private static func yearPrefix(from dateString: String) -> Int? {
+        let trimmed = dateString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 4 else { return nil }
+        return Int(trimmed.prefix(4))
+    }
+
+    func getSeasons(id: String, type: MediaType) async throws -> [Season] {
+        guard let detail = try await seriesDetail(for: id, type: type) else { return [] }
+        let totalSeasons = Int(detail.totalSeasons ?? "") ?? 0
+        guard totalSeasons > 0 else { return [] }
+
+        let seriesIMDbID = detail.normalizedIMDbID
+        let episodeCounts = await seasonEpisodeCounts(
+            seriesIMDbID: seriesIMDbID,
+            totalSeasons: totalSeasons
+        )
+        var seasons: [Season] = []
+        for season in 1...totalSeasons {
+            seasons.append(Season(
+                id: season,
+                seasonNumber: season,
+                name: "Season \(season)",
+                overview: nil,
+                posterPath: detail.poster.validOMDbArtworkPath,
+                episodeCount: episodeCounts[season, default: 0],
+                airDate: nil
+            ))
+        }
+        return seasons
+    }
+
+    private func seasonEpisodeCounts(
+        seriesIMDbID: String?,
+        totalSeasons: Int,
+        maxConcurrentRequests: Int = 6
+    ) async -> [Int: Int] {
+        guard let seriesIMDbID, totalSeasons > 0 else { return [:] }
+        let batchSize = max(1, min(maxConcurrentRequests, totalSeasons))
+        let seasons = Array(1...totalSeasons)
+        var counts: [Int: Int] = [:]
+        var startIndex = 0
+
+        while startIndex < seasons.count {
+            let endIndex = min(startIndex + batchSize, seasons.count)
+            let batch = Array(seasons[startIndex..<endIndex])
+            let batchCounts = await withTaskGroup(of: (Int, Int).self) { group in
+                for season in batch {
+                    group.addTask { [self] in
+                        (
+                            season,
+                            await seasonEpisodeCount(
+                                seriesIMDbID: seriesIMDbID,
+                                season: season
+                            )
+                        )
+                    }
+                }
+
+                var results: [Int: Int] = [:]
+                for await result in group {
+                    results[result.0] = result.1
+                }
+                return results
+            }
+            counts.merge(batchCounts) { _, new in new }
+            startIndex = endIndex
+        }
+
+        return counts
+    }
+
+    private func seasonEpisodeCount(seriesIMDbID: String, season: Int) async -> Int {
+        let response: OMDbSeasonResponse? = try? await request(params: [
+            "i": seriesIMDbID,
+            "Season": String(season),
+        ])
+        return response?.episodes.count ?? 0
+    }
+
+    func getEpisodes(id: String, type: MediaType, season: Int) async throws -> [Episode] {
+        guard season > 0 else { return [] }
+        guard let imdbID = try await seriesIMDbID(for: id, type: type) else { return [] }
+        let response: OMDbSeasonResponse = try await request(params: [
+            "i": imdbID,
+            "Season": String(season),
+        ])
+        return response.episodes.compactMap { episode in
+            guard let episodeNumber = Int(episode.episode ?? "") else { return nil }
+            let mediaID = Self.omdbMediaID(imdbID: imdbID, type: .series)
+            let episodeID = episode.imdbID.validIMDbID
+                .map { Self.omdbEpisodeID(imdbID: $0) }
+                ?? Self.omdbSeasonEpisodeID(seriesIMDbID: imdbID, season: season, episode: episodeNumber)
+            return Episode(
+                id: episodeID,
+                mediaId: mediaID,
+                seasonNumber: season,
+                episodeNumber: episodeNumber,
+                title: episode.title.nilIfPlaceholder,
+                overview: nil,
+                airDate: episode.released.nilIfPlaceholder,
+                stillPath: nil,
+                runtime: nil
+            )
+        }
+    }
+
+    private func seriesDetail(for id: String, type: MediaType) async throws -> OMDbTitleResponse? {
+        guard type == .series else { return nil }
+        if let imdbID = Self.imdbID(from: id) {
+            return try await request(params: ["i": imdbID, "plot": "short"])
+        }
+
+        guard let lookup = OMDbTitleLookupPolicy.titleLookup(from: id) else { return nil }
+        var params = [
+            "t": lookup.title,
+            "type": type.omdbType,
+            "plot": "short",
+        ]
+        if let year = lookup.year {
+            params["y"] = String(year)
+        }
+        return try await request(params: params)
+    }
+
+    private func seriesIMDbID(for id: String, type: MediaType) async throws -> String? {
+        guard type == .series else { return nil }
+        if let imdbID = Self.imdbID(from: id) {
+            return imdbID
+        }
+        return try await seriesDetail(for: id, type: type)?.imdbID?.validIMDbID
+    }
+
+    private func curatedResult(ids: [String], type: MediaType, page: Int) async throws -> MetadataSearchResult {
+        guard page <= 1 else {
+            return MetadataSearchResult(items: [], page: page, totalPages: 1, totalResults: ids.count)
+        }
+
+        let maxConcurrentDetailLookups = 4
+        var indexed: [(Int, MediaPreview)] = []
+        indexed.reserveCapacity(ids.count)
+        var startIndex = 0
+
+        while startIndex < ids.count {
+            guard !Task.isCancelled else { break }
+            let endIndex = min(startIndex + maxConcurrentDetailLookups, ids.count)
+            let batchResults = await withTaskGroup(of: (Int, MediaPreview?).self) { group in
+                for index in startIndex..<endIndex {
+                    let id = ids[index]
+                    group.addTask { [self] in
+                        (index, (try? await getDetail(id: id, type: type))?.mediaPreview)
+                    }
+                }
+
+                var results: [(Int, MediaPreview)] = []
+                for await (index, preview) in group {
+                    if let preview {
+                        results.append((index, preview))
+                    }
+                }
+                return results
+            }
+            indexed.append(contentsOf: batchResults)
+            startIndex = endIndex
+        }
+
+        let items = indexed.sorted { $0.0 < $1.0 }.map(\.1)
+        return MetadataSearchResult(items: items, page: 1, totalPages: 1, totalResults: items.count)
+    }
+
+    private func enrichedSearchPreviews(
+        from previews: [MediaPreview],
+        fallbackType: MediaType?
+    ) async -> [MediaPreview] {
+        guard !previews.isEmpty else { return [] }
+
+        let maxConcurrentEnrichments = 6
+        var indexed: [(Int, MediaPreview)] = []
+        indexed.reserveCapacity(previews.count)
+        var startIndex = previews.startIndex
+
+        while startIndex < previews.endIndex {
+            let endIndex = min(startIndex + maxConcurrentEnrichments, previews.endIndex)
+            let batchResults = await withTaskGroup(of: (Int, MediaPreview).self) { group in
+                for index in startIndex..<endIndex {
+                    let preview = previews[index]
+                    group.addTask { [self] in
+                        let enriched = await enrichedSearchPreview(preview, fallbackType: fallbackType)
+                        return (index, enriched)
+                    }
+                }
+
+                var results: [(Int, MediaPreview)] = []
+                results.reserveCapacity(endIndex - startIndex)
+                for await item in group {
+                    results.append(item)
+                }
+                return results
+            }
+            indexed.append(contentsOf: batchResults)
+            startIndex = endIndex
+        }
+
+        return indexed.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    private func enrichedSearchPreview(
+        _ preview: MediaPreview,
+        fallbackType: MediaType?
+    ) async -> MediaPreview {
+        do {
+            let response: OMDbTitleResponse = try await request(params: ["i": preview.id, "plot": "short"])
+            guard response.normalizedIMDbID == preview.id else { return preview }
+            var enriched = response.mediaItem(
+                fallbackType: fallbackType ?? preview.type,
+                includesPaidArtwork: includesPaidArtwork
+            ).mediaPreview
+            if enriched.posterPath == nil {
+                enriched.posterPath = preview.posterPath
+            }
+            if enriched.backdropPath == nil {
+                enriched.backdropPath = preview.backdropPath
+            }
+            return enriched
+        } catch {
+            return preview
+        }
+    }
+
+    /// Session-scoped response memo + in-flight coalescing. OMDb has no batch endpoint
+    /// and free keys are rate-limited, so identical lookups (e.g. the Popular row reusing
+    /// Trending ids, pull-to-refresh, getSeasons re-reading a just-fetched detail) must not
+    /// pay a second network round trip. Only successful, validated payloads are cached;
+    /// errors and "Response": "False" bodies are never cached, so retries stay live.
+    private static let responseCacheTTL: TimeInterval = 10 * 60
+    private static let responseCacheEntryLimit = 256
+    private var cachedResponsesByRequestKey: [String: (data: Data, fetchedAt: Date)] = [:]
+    private var inFlightRequestsByKey: [String: Task<Data, Error>] = [:]
+
+    private func request<T: Decodable & OMDbResponseChecking>(params: [String: String]) async throws -> T {
+        let cacheKey = Self.requestCacheKey(for: params)
+
+        if let cached = cachedResponsesByRequestKey[cacheKey],
+           Date().timeIntervalSince(cached.fetchedAt) < Self.responseCacheTTL {
+            return try validatedResponse(from: cached.data, cacheKey: nil)
+        }
+
+        if let inFlight = inFlightRequestsByKey[cacheKey] {
+            return try validatedResponse(from: try await inFlight.value, cacheKey: cacheKey)
+        }
+
+        let fetch = Task { try await self.fetchResponseData(params: params) }
+        inFlightRequestsByKey[cacheKey] = fetch
+        defer { inFlightRequestsByKey[cacheKey] = nil }
+        return try validatedResponse(from: try await fetch.value, cacheKey: cacheKey)
+    }
+
+    private func validatedResponse<T: Decodable & OMDbResponseChecking>(
+        from data: Data,
+        cacheKey: String?
+    ) throws -> T {
+        let decoded = try JSONDecoder().decode(T.self, from: data)
+        if decoded.isFalseResponse {
+            let message = OMDbErrorRedactionPolicy.sanitized(decoded.errorMessage ?? "OMDb request failed.")
+            if message.localizedCaseInsensitiveContains("not found") {
+                throw OMDbError.notFound
+            }
+            if message.localizedCaseInsensitiveContains("invalid api key") {
+                throw OMDbError.unauthorized
+            }
+            throw OMDbError.apiError(message)
+        }
+        if let cacheKey {
+            if cachedResponsesByRequestKey.count >= Self.responseCacheEntryLimit {
+                cachedResponsesByRequestKey.removeAll(keepingCapacity: true)
+            }
+            cachedResponsesByRequestKey[cacheKey] = (data, Date())
+        }
+        return decoded
+    }
+
+    private func fetchResponseData(params: [String: String]) async throws -> Data {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else { throw OMDbError.unauthorized }
+        guard var components = URLComponents(string: baseURL) else { throw OMDbError.invalidURL }
+
+        var queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
+        queryItems.append(URLQueryItem(name: "apikey", value: trimmedKey))
+        components.queryItems = queryItems
+
+        guard let url = components.url else { throw OMDbError.invalidURL }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+
+        let (data, response) = try await BoundedHTTPResponseLoader.data(
+            for: request,
+            session: session,
+            maximumBytes: HTTPResponseBudget.metadataProvider
+        )
+        guard let http = response as? HTTPURLResponse else { throw OMDbError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw OMDbError.httpError(
+                http.statusCode,
+                OMDbErrorRedactionPolicy.sanitized(String(data: data, encoding: .utf8) ?? "")
+            )
+        }
+        return data
+    }
+
+    private static func requestCacheKey(for params: [String: String]) -> String {
+        params.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
+    }
+
+    private static func imdbID(from id: String) -> String? {
+        IMDbIdentifierPolicy.appScopedID(in: id)
+    }
+
+    private static func omdbMediaID(imdbID: String, type: MediaType) -> String {
+        "\(type.rawValue)-omdb-\(normalizedIMDbID(imdbID))"
+    }
+
+    private static func omdbEpisodeID(imdbID: String) -> String {
+        "episode-omdb-\(normalizedIMDbID(imdbID))"
+    }
+
+    private static func omdbSeasonEpisodeID(seriesIMDbID: String, season: Int, episode: Int) -> String {
+        "\(omdbMediaID(imdbID: seriesIMDbID, type: .series))-\(String(format: "s%02de%02d", season, episode))"
+    }
+
+    private static func normalizedIMDbID(_ imdbID: String) -> String {
+        IMDbIdentifierPolicy.normalizedID(from: imdbID) ?? imdbID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
+enum OMDbTitleLookupPolicy {
+    static func lookupID(title rawTitle: String, year: Int?) -> String {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return title }
+        guard let year, (1000...9999).contains(year) else { return title }
+        if titleLookup(from: title)?.year != nil {
+            return title
+        }
+        return "\(title) (\(year))"
+    }
+
+    static func titleLookup(from id: String) -> (title: String, year: Int?)? {
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty else { return nil }
+
+        if trimmedID.hasSuffix(")"),
+           let openRange = trimmedID.range(of: " (", options: .backwards) {
+            let yearStart = openRange.upperBound
+            let yearEnd = trimmedID.index(before: trimmedID.endIndex)
+            let yearString = String(trimmedID[yearStart..<yearEnd])
+            let title = String(trimmedID[..<openRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if yearString.count == 4, let year = Int(yearString), !title.isEmpty {
+                return (title, year)
+            }
+        }
+
+        return (trimmedID, nil)
+    }
+}
+
+private protocol OMDbResponseChecking {
+    var response: String? { get }
+    var errorMessage: String? { get }
+}
+
+private extension OMDbResponseChecking {
+    var isFalseResponse: Bool { response?.localizedCaseInsensitiveCompare("False") == .orderedSame }
+}
+
+private enum OMDbErrorRedactionPolicy {
+    private static let urlPattern = SensitiveURLQueryPolicy.regularExpression(
+        pattern: #"(https?):\/\/[^\s"']+"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let sensitiveAssignmentPattern = SensitiveURLQueryPolicy.regularExpression(
+        pattern: #"(?i)(?<![A-Za-z0-9_-])(?:"# + SensitiveURLQueryPolicy.assignmentNameAlternationPattern + #")=([^\s&]+)"#,
+        options: []
+    )
+
+    static func sanitized(_ message: String) -> String {
+        let urlRedacted = redactURLs(in: message)
+        let assignmentRedacted = redactSensitiveAssignments(in: urlRedacted)
+        return SensitiveURLQueryPolicy.redactedBearerTokens(in: assignmentRedacted)
+    }
+
+    private static func redactURLs(in message: String) -> String {
+        guard let urlPattern else { return message }
+        let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
+        let matches = urlPattern.matches(in: message, options: [], range: nsRange)
+        guard !matches.isEmpty else { return message }
+
+        var redacted = message
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: redacted) else { continue }
+            let candidate = String(redacted[range])
+            redacted.replaceSubrange(range, with: redactedURLString(candidate))
+        }
+        return redacted
+    }
+
+    private static func redactedURLString(_ value: String) -> String {
+        guard var components = URLComponents(string: value) else { return "<redacted-url>" }
+        if components.user?.isEmpty == false {
+            components.user = "REDACTED"
+        }
+        if components.password?.isEmpty == false {
+            components.password = "REDACTED"
+        }
+        components.queryItems = components.queryItems?.map { item in
+            URLQueryItem(
+                name: item.name,
+                value: SensitiveURLQueryPolicy.isSensitiveName(item.name) ? "REDACTED" : item.value
+            )
+        }
+        components.fragment = nil
+        return components.string ?? "<redacted-url>"
+    }
+
+    private static func redactSensitiveAssignments(in message: String) -> String {
+        guard let sensitiveAssignmentPattern else { return message }
+        let nsRange = NSRange(message.startIndex..<message.endIndex, in: message)
+        let matches = sensitiveAssignmentPattern.matches(in: message, options: [], range: nsRange)
+        guard !matches.isEmpty else { return message }
+
+        var redacted = message
+        for match in matches.reversed() {
+            guard match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: redacted) else {
+                continue
+            }
+            redacted.replaceSubrange(valueRange, with: "REDACTED")
+        }
+        return redacted
+    }
+}
+
+private enum OMDbArtworkURLPolicy {
+    private static let highQualityAmazonTransform = "QL90_UX600_"
+    private static let allowedExactHosts: Set<String> = [
+        "img.omdbapi.com",
+        "ia.media-imdb.com",
+        "images-eu.ssl-images-amazon.com",
+        "images-fe.ssl-images-amazon.com",
+        "images-na.ssl-images-amazon.com",
+        "m.media-amazon.com",
+    ]
+
+    static func isAllowed(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "https",
+              url.port == nil || url.port == 443,
+              let host = url.host?.lowercased(),
+              !host.isEmpty,
+              url.user == nil,
+              url.password == nil,
+              !SensitiveURLQueryPolicy.containsSensitiveQueryItem(in: url) else {
+            return false
+        }
+        return allowedExactHosts.contains(host)
+    }
+
+    static func displayURLString(for url: URL) -> String {
+        guard let host = url.host?.lowercased(),
+              shouldUpgradeAmazonArtwork(host: host),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let upgradedPath = upgradedAmazonArtworkPath(components.percentEncodedPath) else {
+            return url.absoluteString
+        }
+
+        components.percentEncodedPath = upgradedPath
+        return components.url?.absoluteString ?? url.absoluteString
+    }
+
+    private static func shouldUpgradeAmazonArtwork(host: String) -> Bool {
+        host == "m.media-amazon.com"
+            || host == "images-eu.ssl-images-amazon.com"
+            || host == "images-fe.ssl-images-amazon.com"
+            || host == "images-na.ssl-images-amazon.com"
+            || host == "ia.media-imdb.com"
+    }
+
+    private static func upgradedAmazonArtworkPath(_ path: String) -> String? {
+        guard let transformStart = path.range(of: "_V1_")?.upperBound,
+              let extensionRange = path.range(
+                  of: #"\.(jpg|jpeg|png|webp)$"#,
+                  options: [.regularExpression, .caseInsensitive]
+              ) else {
+            return nil
+        }
+
+        return "\(path[..<transformStart])\(highQualityAmazonTransform)\(path[extensionRange.lowerBound...])"
+    }
+}
+
+private struct OMDbSearchResponse: Decodable, OMDbResponseChecking {
+    let search: [OMDbSearchItem]
+    let totalResults: String?
+    let response: String?
+    let errorMessage: String?
+
+    enum CodingKeys: String, CodingKey {
+        case search = "Search"
+        case totalResults
+        case response = "Response"
+        case errorMessage = "Error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        search = Array((try container.decodeIfPresent([OMDbSearchItem].self, forKey: .search) ?? [])
+            .prefix(OMDbResponseLimits.searchItems))
+        totalResults = try container.decodeIfPresent(String.self, forKey: .totalResults)
+        response = try container.decodeIfPresent(String.self, forKey: .response)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+    }
+}
+
+private struct OMDbSearchItem: Decodable {
+    let title: String
+    let year: String?
+    let imdbID: String
+    let type: String?
+    let poster: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title = "Title"
+        case year = "Year"
+        case imdbID
+        case type = "Type"
+        case poster = "Poster"
+    }
+
+    var mediaPreview: MediaPreview? {
+        guard let mediaType = MediaType(omdbType: type), let stableID = imdbID.validIMDbID else { return nil }
+        return MediaPreview(
+            id: stableID,
+            type: mediaType,
+            title: title.nilIfPlaceholder ?? "Unknown",
+            year: year.omdbYear,
+            posterPath: poster.validOMDbArtworkPath,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: nil
+        )
+    }
+}
+
+private struct OMDbTitleResponse: Decodable, OMDbResponseChecking {
+    let title: String?
+    let year: String?
+    let rated: String?
+    let released: String?
+    let runtime: String?
+    let genre: String?
+    let plot: String?
+    let poster: String?
+    let backdrop: String?
+    let backdropURL: String?
+    let banner: String?
+    let bannerURL: String?
+    let fanart: String?
+    let background: String?
+    let imdbRating: String?
+    let imdbID: String?
+    let type: String?
+    let totalSeasons: String?
+    let response: String?
+    let errorMessage: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title = "Title"
+        case year = "Year"
+        case rated = "Rated"
+        case released = "Released"
+        case runtime = "Runtime"
+        case genre = "Genre"
+        case plot = "Plot"
+        case poster = "Poster"
+        case backdrop = "Backdrop"
+        case backdropURL = "BackdropURL"
+        case banner = "Banner"
+        case bannerURL = "BannerURL"
+        case fanart = "Fanart"
+        case background = "Background"
+        case imdbRating
+        case imdbID
+        case type = "Type"
+        case totalSeasons
+        case response = "Response"
+        case errorMessage = "Error"
+    }
+
+    func mediaItem(fallbackType: MediaType, includesPaidArtwork: Bool = false) -> MediaItem {
+        let mediaType = MediaType(omdbType: type) ?? fallbackType
+        let normalizedTitle = title.nilIfPlaceholder
+        let displayTitle = normalizedTitle ?? "Unknown"
+        let parsedYear = year.omdbYear
+        let stableID: String
+        if let imdbID = imdbID?.validIMDbID {
+            stableID = imdbID
+        } else if let normalizedTitle {
+            stableID = parsedYear.map { "\(normalizedTitle) (\($0))" } ?? normalizedTitle
+        } else {
+            stableID = parsedYear.map { "Unknown (\($0))" } ?? "Unknown"
+        }
+        return MediaItem(
+            id: stableID,
+            type: mediaType,
+            title: displayTitle,
+            year: parsedYear,
+            posterPath: poster.validOMDbArtworkPath,
+            backdropPath: includesPaidArtwork ? paidArtworkBackdropPath : nil,
+            overview: plot.nilIfPlaceholder,
+            genres: genre.omdbGenres,
+            imdbRating: MediaRatingPolicy.normalizedOMDbIMDbRating(imdbRating),
+            runtime: runtime.omdbRuntimeMinutes,
+            status: rated.nilIfPlaceholder,
+            tmdbId: nil,
+            lastFetched: Date()
+        )
+    }
+
+    var normalizedIMDbID: String? {
+        imdbID?.validIMDbID
+    }
+
+    private var paidArtworkBackdropPath: String? {
+        [
+            backdrop,
+            backdropURL,
+            banner,
+            bannerURL,
+            fanart,
+            background,
+        ]
+        .compactMap(\.validOMDbArtworkPath)
+        .first
+    }
+}
+
+private struct OMDbSeasonResponse: Decodable, OMDbResponseChecking {
+    let title: String?
+    let season: String?
+    let episodes: [OMDbEpisodeItem]
+    let response: String?
+    let errorMessage: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title = "Title"
+        case season = "Season"
+        case episodes = "Episodes"
+        case response = "Response"
+        case errorMessage = "Error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        season = try container.decodeIfPresent(String.self, forKey: .season)
+        episodes = Array((try container.decodeIfPresent([OMDbEpisodeItem].self, forKey: .episodes) ?? [])
+            .prefix(OMDbResponseLimits.seasonEpisodes))
+        response = try container.decodeIfPresent(String.self, forKey: .response)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+    }
+}
+
+private struct OMDbEpisodeItem: Decodable {
+    let title: String?
+    let released: String?
+    let episode: String?
+    let imdbRating: String?
+    let imdbID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title = "Title"
+        case released = "Released"
+        case episode = "Episode"
+        case imdbRating
+        case imdbID
+    }
+}
+
+enum OMDbError: LocalizedError, Equatable, Sendable {
+    case invalidURL
+    case invalidResponse
+    case unauthorized
+    case notFound
+    case unsupported(String)
+    case apiError(String)
+    case httpError(Int, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Invalid OMDb URL."
+        case .invalidResponse:
+            return "Invalid OMDb response."
+        case .unauthorized:
+            return "Invalid OMDb API key."
+        case .notFound:
+            return "OMDb title not found."
+        case .unsupported(let message):
+            return message
+        case .apiError(let message):
+            return message
+        case .httpError(let status, let message):
+            return "OMDb HTTP \(status): \(message)"
+        }
+    }
+}
+
+private enum OMDbDiscoveryCatalog {
+    static func trendingIDs(for type: MediaType) -> [String] {
+        switch type {
+        case .movie:
+            return ["tt15239678", "tt15398776", "tt9362722", "tt6263850", "tt1517268", "tt16426418", "tt17526714", "tt6718170"]
+        case .series:
+            return ["tt11280740", "tt3581920", "tt11198330", "tt0944947", "tt0903747", "tt14452776", "tt12637874", "tt2861424"]
+        }
+    }
+
+    static func ids(for category: MediaCategory, type: MediaType) -> [String] {
+        switch (category, type) {
+        case (.topRated, .movie):
+            return ["tt0111161", "tt0068646", "tt0468569", "tt0167260", "tt0108052", "tt0137523", "tt0120737", "tt1375666"]
+        case (.topRated, .series):
+            return ["tt0903747", "tt0185906", "tt5491994", "tt7366338", "tt0306414", "tt0944947", "tt2395695", "tt2098220"]
+        case (.nowPlaying, .movie), (.upcoming, .movie):
+            return ["tt15239678", "tt6263850", "tt17526714", "tt16426418", "tt14230458", "tt19847976", "tt9218128", "tt14948432"]
+        case (.airingToday, .series), (.onTheAir, .series):
+            return ["tt11280740", "tt3581920", "tt14452776", "tt12637874", "tt11198330", "tt2861424", "tt2085059", "tt10986410"]
+        default:
+            return trendingIDs(for: type)
+        }
+    }
+
+    static func query(for genreId: Int?, type: MediaType) -> String {
+        guard let genreId else { return type == .movie ? "movie" : "series" }
+        switch genreId {
+        case 28, 10759: return "action"
+        case 12: return "adventure"
+        case 16: return "animated"
+        case 35: return "comedy"
+        case 80: return "crime"
+        case 99: return "documentary"
+        case 18: return "drama"
+        case 14, 10765: return "fantasy"
+        case 27: return "horror"
+        case 9648: return "mystery"
+        case 10749: return "romance"
+        case 878: return "sci-fi"
+        case 53: return "thriller"
+        default: return type == .movie ? "movie" : "series"
+        }
+    }
+
+    static func genres(for type: MediaType) -> [Genre] {
+        switch type {
+        case .movie:
+            return [
+                Genre(id: 28, name: "Action"), Genre(id: 12, name: "Adventure"),
+                Genre(id: 16, name: "Animation"), Genre(id: 35, name: "Comedy"),
+                Genre(id: 80, name: "Crime"), Genre(id: 99, name: "Documentary"),
+                Genre(id: 18, name: "Drama"), Genre(id: 14, name: "Fantasy"),
+                Genre(id: 27, name: "Horror"), Genre(id: 9648, name: "Mystery"),
+                Genre(id: 10749, name: "Romance"), Genre(id: 878, name: "Science Fiction"),
+                Genre(id: 53, name: "Thriller"),
+            ]
+        case .series:
+            return [
+                Genre(id: 10759, name: "Action & Adventure"), Genre(id: 16, name: "Animation"),
+                Genre(id: 35, name: "Comedy"), Genre(id: 80, name: "Crime"),
+                Genre(id: 99, name: "Documentary"), Genre(id: 18, name: "Drama"),
+                Genre(id: 10765, name: "Sci-Fi & Fantasy"), Genre(id: 9648, name: "Mystery"),
+            ]
+        }
+    }
+}
+
+private extension MediaItem {
+    var mediaPreview: MediaPreview {
+        MediaPreview(
+            id: id,
+            type: type,
+            title: title,
+            year: year,
+            posterPath: posterPath,
+            backdropPath: backdropPath,
+            imdbRating: imdbRating,
+            tmdbId: tmdbId
+        )
+    }
+}
+
+private extension MediaType {
+    var omdbType: String {
+        switch self {
+        case .movie: return "movie"
+        case .series: return "series"
+        }
+    }
+
+    init?(omdbType: String?) {
+        switch omdbType?.lowercased() {
+        case "movie": self = .movie
+        case "series": self = .series
+        default: return nil
+        }
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var validIMDbID: String? {
+        guard let value = self else { return nil }
+        return value.validIMDbID
+    }
+
+    var validOMDbArtworkPath: String? {
+        guard let value = self else { return nil }
+        return value.validOMDbArtworkPath
+    }
+
+    var nilIfPlaceholder: String? {
+        guard let value = self else { return nil }
+        return value.nilIfPlaceholder
+    }
+
+    var omdbYear: Int? {
+        guard let value = self else { return nil }
+        return value.omdbYear
+    }
+
+    var omdbRuntimeMinutes: Int? {
+        guard let value = self else { return nil }
+        return value.omdbRuntimeMinutes
+    }
+
+    var omdbGenres: [String] {
+        guard let value = self else { return [] }
+        return value.omdbGenres
+    }
+}
+
+private extension String {
+    var validIMDbID: String? {
+        IMDbIdentifierPolicy.normalizedID(from: self)
+    }
+
+    var validOMDbArtworkPath: String? {
+        guard let trimmed = nilIfPlaceholder else { return nil }
+        guard let url = URL(string: trimmed),
+              OMDbArtworkURLPolicy.isAllowed(url) else {
+            return nil
+        }
+        return OMDbArtworkURLPolicy.displayURLString(for: url)
+    }
+
+    var nilIfPlaceholder: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "n/a" else { return nil }
+        return trimmed
+    }
+
+    var omdbYear: Int? {
+        guard let value = nilIfPlaceholder else { return nil }
+        let prefix = value.prefix(4)
+        return prefix.count == 4 ? Int(prefix) : nil
+    }
+
+    var omdbRuntimeMinutes: Int? {
+        guard let value = nilIfPlaceholder,
+              let number = value.split(separator: " ").first.flatMap({ Int($0) }),
+              number > 0 else {
+            return nil
+        }
+        return number
+    }
+
+    var omdbGenres: [String] {
+        split(separator: ",")
+            .compactMap { String($0).nilIfPlaceholder }
+    }
+}

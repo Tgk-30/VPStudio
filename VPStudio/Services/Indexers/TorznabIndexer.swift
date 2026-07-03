@@ -9,6 +9,7 @@ struct TorznabIndexer: TorrentIndexer {
     private let apiKeyTransport: IndexerConfig.APIKeyTransport
     private let session: URLSession
     private static let requestLimiter = IndexerRequestLimiter()
+    private static let maximumParsedResults = 500
 
     init(
         name: String,
@@ -78,11 +79,14 @@ struct TorznabIndexer: TorrentIndexer {
         }
     }
 
-    private var isProwlarrEndpoint: Bool {
-        endpointPath.lowercased().contains("/api/v1/search")
+    internal var isProwlarrEndpoint: Bool {
+        let baseSegments = Self.pathSegments(URLComponents(string: baseURL)?.path ?? "")
+        let endpointSegments = Self.pathSegments(endpointPath)
+        return Self.isProwlarrEndpointPath(baseSegments)
+            || Self.isProwlarrEndpointPath(baseSegments + endpointSegments)
     }
 
-    private func prowlarrSearchType(for type: MediaType) -> String {
+    internal func prowlarrSearchType(for type: MediaType) -> String {
         switch type {
         case .movie:
             return "moviesearch"
@@ -91,7 +95,7 @@ struct TorznabIndexer: TorrentIndexer {
         }
     }
 
-    private func prowlarrStructuredQuery(
+    internal func prowlarrStructuredQuery(
         imdbId: String,
         type: MediaType,
         season: Int?,
@@ -132,14 +136,17 @@ struct TorznabIndexer: TorrentIndexer {
         }
     }
 
-    private func parseTorznabXML(_ data: Data) throws -> [TorrentResult] {
+    internal func parseTorznabXML(_ data: Data) throws -> [TorrentResult] {
         let parser = XMLParser(data: data)
-        let delegate = TorznabXMLParserDelegate(indexerName: name)
+        let delegate = TorznabXMLParserDelegate(
+            indexerName: name,
+            maximumResults: Self.maximumParsedResults
+        )
         parser.delegate = delegate
         parser.shouldProcessNamespaces = false
         parser.shouldResolveExternalEntities = false
 
-        guard parser.parse() else {
+        guard parser.parse() || delegate.didReachResultLimit else {
             let reason = parser.parserError.map { $0.localizedDescription } ?? "unknown XML parser error"
             throw IndexerParseError.invalidPayload(
                 indexer: name,
@@ -160,7 +167,7 @@ struct TorznabIndexer: TorrentIndexer {
         return results
     }
 
-    private func parseProwlarrJSON(_ data: Data) throws -> [TorrentResult] {
+    internal func parseProwlarrJSON(_ data: Data) throws -> [TorrentResult] {
         let object: Any
         do {
             object = try JSONSerialization.jsonObject(with: data)
@@ -184,7 +191,7 @@ struct TorznabIndexer: TorrentIndexer {
             )
         }
 
-        let results: [TorrentResult] = items.compactMap { item in
+        let results: [TorrentResult] = items.prefix(Self.maximumParsedResults).compactMap { item in
             let title = (item["title"] as? String) ?? (item["name"] as? String) ?? "Unknown"
             let infoHash = (item["infoHash"] as? String)
                 ?? (item["hash"] as? String)
@@ -217,29 +224,19 @@ struct TorznabIndexer: TorrentIndexer {
         return results
     }
 
-    private func dataLooksLikeJSON(_ data: Data) -> Bool {
+    internal func dataLooksLikeJSON(_ data: Data) -> Bool {
         let bytes = data.stripLeadingBOMAndWhitespace()
         guard let first = bytes.first else { return false }
         return first == UInt8(ascii: "{") || first == UInt8(ascii: "[")
     }
 
-    private func buildRequest(queryItems: [URLQueryItem]) throws -> URLRequest {
+    internal func buildRequest(queryItems: [URLQueryItem]) throws -> URLRequest {
         guard var components = URLComponents(string: baseURL) else {
             throw URLError(.badURL)
         }
 
-        let endpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        switch (basePath.isEmpty, endpoint.isEmpty) {
-        case (true, false):
-            components.path = "/\(endpoint)"
-        case (false, true):
-            components.path = "/\(basePath)"
-        case (false, false):
-            components.path = "/\(basePath)/\(endpoint)"
-        default:
-            components.path = ""
-        }
+        let baseSegments = Self.pathSegments(components.path)
+        components.path = Self.path(from: baseSegments + endpointSegments(for: baseSegments))
 
         var merged: [URLQueryItem] = []
         for item in queryItems where item.value != nil {
@@ -249,28 +246,64 @@ struct TorznabIndexer: TorrentIndexer {
         if let categoryFilter, !categoryFilter.isEmpty {
             merged.append(URLQueryItem(name: "cat", value: categoryFilter))
         }
+        let normalizedAPIKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         if apiKeyTransport == .query,
-           let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !apiKey.isEmpty {
-            merged.append(URLQueryItem(name: "apikey", value: apiKey))
+           let normalizedAPIKey,
+           !normalizedAPIKey.isEmpty {
+            merged.append(URLQueryItem(name: "apikey", value: normalizedAPIKey))
         }
         components.queryItems = merged
 
         guard let url = components.url else {
             throw URLError(.badURL)
         }
-        guard url.scheme?.lowercased() == "https" else {
+        guard IndexerURLSecurityPolicy.permits(url: url) else {
             throw URLError(.unsupportedURL)
         }
+        // NOTE: the API-key cleartext-transport rule (`permitsAPIKeyTransport`) is
+        // deliberately NOT re-enforced on the search path. It is enforced where
+        // users configure indexers (IndexerSettingsView draft validation) and when
+        // they test them (IndexerConnectivityTester.makeRequest). Re-enforcing it
+        // on every search request silently zeroes results from configs persisted
+        // before the rule existed (e.g. Jackett/Prowlarr at http://<LAN-IP> with
+        // an API key), which users experience as "half my sources disappeared".
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         if apiKeyTransport == .header,
-           let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
+           let normalizedAPIKey,
+           !normalizedAPIKey.isEmpty {
+            request.setValue(normalizedAPIKey, forHTTPHeaderField: "X-Api-Key")
         }
         return request
+    }
+
+    private func endpointSegments(for baseSegments: [String]) -> [String] {
+        let endpointSegments = Self.pathSegments(endpointPath)
+        guard !endpointSegments.isEmpty else { return [] }
+        if baseSegments.suffix(endpointSegments.count) == ArraySlice(endpointSegments) {
+            return []
+        }
+        if Self.isProwlarrEndpointPath(baseSegments), endpointSegments == ["api"] {
+            return []
+        }
+        return endpointSegments
+    }
+
+    private static func pathSegments(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
+    }
+
+    private static func path(from segments: [String]) -> String {
+        segments.isEmpty ? "" : "/" + segments.joined(separator: "/")
+    }
+
+    private static func isProwlarrEndpointPath(_ segments: [String]) -> Bool {
+        let suffix = segments.suffix(3).map { $0.lowercased() }
+        return suffix.count == 3
+            && suffix[0] == "api"
+            && suffix[1] == "v1"
+            && suffix[2] == "search"
     }
 
 }
@@ -291,18 +324,34 @@ private final class TorznabXMLParserDelegate: NSObject, XMLParserDelegate {
     private static let textElements: Set<String> = ["title", "link", "guid"]
 
     let indexerName: String
+    let maximumResults: Int
     private(set) var results: [TorrentResult] = []
     private(set) var rawText = ""
+    private(set) var didReachResultLimit = false
 
     private var currentItem: ParsedItem?
     private var currentElement: String?
     private var currentCharacters = ""
 
-    init(indexerName: String) {
+    init(indexerName: String, maximumResults: Int) {
         self.indexerName = indexerName
+        self.maximumResults = max(1, maximumResults)
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
+        rawText += string
+        guard let currentElement,
+              currentItem != nil,
+              Self.textElements.contains(currentElement) else { return }
+        currentCharacters += string
+    }
+
+    // Many Torznab/Jackett trackers CDATA-wrap <title>/<link>. Foundation delivers CDATA via
+    // this separate callback; without it a CDATA <title> leaves currentCharacters empty and the
+    // whole <item> is dropped. (CDATA and foundCharacters are mutually exclusive per text node,
+    // so this never double-appends.)
+    func parser(_ parser: XMLParser, foundCDATABlock CDATABlock: Data) {
+        guard let string = String(data: CDATABlock, encoding: .utf8) else { return }
         rawText += string
         guard let currentElement,
               currentItem != nil,
@@ -389,7 +438,10 @@ private final class TorznabXMLParserDelegate: NSObject, XMLParserDelegate {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             currentCharacters = ""
         } else if lower == "item" {
-            if let item = currentItem,
+            if results.count >= maximumResults {
+                didReachResultLimit = true
+                parser.abortParsing()
+            } else if let item = currentItem,
                let title = item.title, !title.isEmpty,
                let infoHash = resolvedInfoHash(for: item), !infoHash.isEmpty {
                 results.append(TorrentResult.fromSearch(

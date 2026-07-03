@@ -10,19 +10,21 @@ struct SettingsDestinationRow: View {
         return SettingsRowIndicatorPolicy.statusKind(from: status.kind)
     }
 
+    private var destinationTint: Color { destination.tintColor }
+
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(LinearGradient.vpAccent.opacity(0.14))
+                    .fill(destinationTint.opacity(0.16))
                     .overlay {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(LinearGradient.vpAccent.opacity(0.35), lineWidth: 0.8)
+                            .strokeBorder(destinationTint.opacity(0.38), lineWidth: 0.8)
                     }
 
                 Image(systemName: destination.icon)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(LinearGradient.vpAccent)
+                    .foregroundStyle(destinationTint)
 
                 // Indicator dot overlay
                 if SettingsRowIndicatorPolicy.shouldShowIndicator(for: indicatorStatus) {
@@ -103,6 +105,31 @@ struct SettingsDestinationRow: View {
         case .positive: return .green.opacity(0.14)
         case .warning: return .orange.opacity(0.14)
         case .neutral: return .white.opacity(0.08)
+        }
+    }
+}
+
+extension SettingsDestination {
+    /// Distinct per-category accent so Settings reads as a varied catalog (iOS Settings
+    /// style) instead of a wall of identical red "alert" tiles. Used by the obsidian
+    /// `VPRow` icons and the legacy destination row alike.
+    var tintColor: Color {
+        switch self {
+        case .debrid: return .blue
+        case .debridCloud: return .cyan
+        case .indexers: return .teal
+        case .metadata: return .green
+        case .ai: return .purple
+        case .trakt: return .pink
+        case .simkl: return .indigo
+        case .imdbImport: return Color(red: 0.96, green: 0.77, blue: 0.10)
+        case .player: return .orange
+        case .subtitles: return .cyan
+        case .environments: return .mint
+        case .library: return .blue
+        case .downloads: return .green
+        case .resetData: return .red
+        case .testMode: return .gray
         }
     }
 }

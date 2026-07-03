@@ -62,6 +62,7 @@ struct GlassTag: View {
     var tintColor: Color?
     var symbol: String?
     var weight: Font.Weight = .medium
+    var foregroundColor: Color?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -80,17 +81,14 @@ struct GlassTag: View {
             Capsule()
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                        colors: [VPColor.specularBright, VPColor.specularDim],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     lineWidth: 1
                 )
         }
-        .foregroundStyle(tintColor.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
-        #if os(visionOS)
-        .hoverEffect(.highlight)
-        #endif
+        .foregroundStyle(foregroundStyle)
     }
 
     private var tagBackground: AnyShapeStyle {
@@ -99,6 +97,14 @@ struct GlassTag: View {
         } else {
             AnyShapeStyle(.ultraThinMaterial)
         }
+    }
+
+    private var foregroundStyle: AnyShapeStyle {
+        if let foregroundColor {
+            return AnyShapeStyle(foregroundColor)
+        }
+
+        return tintColor.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary)
     }
 }
 
@@ -126,12 +132,12 @@ struct SpatialButton: View {
                 .fontWeight(.medium)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(buttonBackground, in: RoundedRectangle(cornerRadius: 12))
+                .background(buttonBackground, in: RoundedRectangle(cornerRadius: VPRadius.control, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12)
+                    RoundedRectangle(cornerRadius: VPRadius.control, style: .continuous)
                         .strokeBorder(
                             LinearGradient(
-                                colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                                colors: [VPColor.specularBright, VPColor.specularDim],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),
@@ -158,27 +164,31 @@ struct SpatialButton: View {
 
 /// A circular icon-only glass button for compact actions (play, delete, etc.).
 ///
-/// Uses ultra-thin material with specular stroke and dual-layer shadows.
+/// Uses ultra-thin material with the token specular stroke and dual-layer shadows.
+/// The circle is clamped to at least `VPSpace.minTapTarget` (60pt) so it always
+/// meets the spatial tap-target floor, and scales to 0.97 while pressed.
 struct GlassIconButton: View {
     let icon: String
     var tint: Color?
-    var size: CGFloat = 36
+    var size: CGFloat = VPSpace.minTapTarget
     var accessibilityLabel: String?
     var accessibilityHint: String?
     let action: () -> Void
 
+    private var diameter: CGFloat { max(size, VPSpace.minTapTarget) }
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: size * 0.4, weight: .semibold))
+                .font(.system(size: diameter * 0.4, weight: .semibold))
                 .foregroundStyle(tint ?? .white)
-                .frame(width: size, height: size)
+                .frame(width: diameter, height: diameter)
                 .background(.ultraThinMaterial, in: Circle())
                 .overlay {
                     Circle()
                         .strokeBorder(
                             LinearGradient(
-                                colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                                colors: [VPColor.specularBright, VPColor.specularDim],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),
@@ -186,7 +196,7 @@ struct GlassIconButton: View {
                         )
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GlassIconButtonStyle())
         .shadow(color: .black.opacity(0.07), radius: 24, y: 0)
         .shadow(color: .black.opacity(0.13), radius: 8, y: 4)
         .modifier(
@@ -198,6 +208,15 @@ struct GlassIconButton: View {
         #if os(visionOS)
         .hoverEffect(.lift)
         #endif
+    }
+}
+
+/// Plain glass button style that adds a subtle pressed-scale (0.97) animation.
+private struct GlassIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -243,7 +262,7 @@ struct GlassProgressBar: View {
             Capsule()
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                        colors: [VPColor.specularBright, VPColor.specularDim],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -285,7 +304,8 @@ enum ArtworkFallbackStyle {
         }
 
         let letters = trimmed.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        return String(String.UnicodeScalarView(letters).prefix(2)).uppercased()
+        let fallback = String(String.UnicodeScalarView(letters).prefix(2)).uppercased()
+        return fallback.isEmpty ? "VP" : fallback
     }
 
     static func palette(for title: String, type: MediaType?) -> [Color] {
@@ -332,11 +352,11 @@ struct ArtworkFallbackPosterView: View {
     var backdropURL: URL? = nil
     var compact: Bool = false
 
-    private var palette: [Color] {
+    var palette: [Color] {
         ArtworkFallbackStyle.palette(for: title, type: type)
     }
 
-    private var initials: String {
+    var initials: String {
         ArtworkFallbackStyle.initials(for: title)
     }
 
@@ -450,7 +470,8 @@ struct CinematicStateCard<Content: View>: View {
                 Image(artworkName)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .frame(height: minHeight, alignment: .center)
                     .opacity(0.28)
                     .clipped()
                     .allowsHitTesting(false)
@@ -496,16 +517,17 @@ struct CinematicStateCard<Content: View>: View {
 
 /// The signature neon red/pink gradient used throughout the cinematic UI.
 extension LinearGradient {
-    static let vpAccent = LinearGradient(
-        colors: [Color(red: 1.0, green: 0.16, blue: 0.33), Color(red: 1.0, green: 0.35, blue: 0.35)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    /// Aliased to the canonical `VPColor.accentGradient` — single source of truth, identical value.
+    static let vpAccent = VPColor.accentGradient
 }
 
 extension Color {
-    static let vpRed = Color(red: 1.0, green: 0.16, blue: 0.33)
-    static let vpRedLight = Color(red: 1.0, green: 0.35, blue: 0.35)
+    /// Aliased to the canonical accent tokens (identical RGB) so there is one source of truth.
+    /// Specular strokes in this file now use VPColor.specularBright/specularDim to match
+    /// glassSurface() neighbors. The dual glass shadow pair (glassShadow()) is intentionally
+    /// kept as-is: it has no VPElevation equivalent and unifying it is a separate visual pass.
+    static let vpRed = VPColor.accent
+    static let vpRedLight = VPColor.accentLight
 }
 
 // MARK: - Paste Button
@@ -545,12 +567,12 @@ struct PasteFieldButton: View {
 
 extension View {
     /// Standard glass morphism specular stroke overlay.
-    func glassStroke(cornerRadius: CGFloat = 16, lineWidth: CGFloat = 1) -> some View {
+    func glassStroke(cornerRadius: CGFloat = VPRadius.control, lineWidth: CGFloat = 1) -> some View {
         self.overlay {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                        colors: [VPColor.specularBright, VPColor.specularDim],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -567,7 +589,7 @@ extension View {
     }
 
     /// Combined glass card treatment (material background + stroke + shadow).
-    func glassCard(cornerRadius: CGFloat = 16, material: Material = .ultraThinMaterial) -> some View {
+    func glassCard(cornerRadius: CGFloat = VPRadius.control, material: Material = .ultraThinMaterial) -> some View {
         self
             .background(material, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .glassStroke(cornerRadius: cornerRadius)

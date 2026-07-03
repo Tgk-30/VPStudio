@@ -1,0 +1,145 @@
+# VPStudio CI Workflow
+#
+# Automatically builds and tests VPStudio on every push to main and on all
+# pull requests. Runs on macOS with Xcode 16+ targeting the visionOS Simulator.
+#
+# For local verification, run:
+#   xcodebuild -scheme VPStudio -destination 'platform=visionOS Simulator,name=Apple Vision Pro' build
+#   xcodebuild test -scheme VPStudio -destination 'platform=visionOS Simulator,name=Apple Vision Pro' -only-testing:VPStudioTests
+
+name: Build and Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-test:
+    name: Build & Test (visionOS Simulator)
+    runs-on: macos-15
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout repository
+      # ------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Select Xcode 16 (visionOS development requires Xcode 16+)
+      #
+      # GitHub's macos-15 runner ships with multiple Xcode versions.
+      # We explicitly select Xcode 16.x and verify the selection.
+      # ------------------------------------------------------------------
+      - name: Select Xcode
+        run: |
+          # The app targets the visionOS 26 SDK and uses Swift 6.2 language features
+          # (e.g. stable `isolated deinit`), matching the dev toolchain (Xcode 27). The
+          # runner ships Xcode 26.x alongside 16.x and DEFAULTS to 16.4 — pinning to 16.x
+          # breaks dependency resolution (GRDB 7.10 needs Swift 6.1) and compilation. So
+          # select the NEWEST installed Xcode (26.x) to match the dev toolchain.
+          XCODE="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$XCODE" ]; then
+            echo "Selecting $XCODE"
+            sudo xcode-select -s "$XCODE"
+          fi
+
+          echo "Selected Xcode version:"
+          xcodebuild -version
+          echo ""
+          echo "Available SDKs:"
+          xcodebuild -showsdks | grep -i visionos || true
+
+      # ------------------------------------------------------------------
+      # 2b. Resolve a concrete visionOS simulator
+      #
+      # Newer Xcodes ship multiple "Apple Vision Pro" devices (e.g. visionOS
+      # 26.1, 26.2), so `name=Apple Vision Pro` is ambiguous. Pick the newest
+      # available one by UDID and reuse it for both build and test.
+      # ------------------------------------------------------------------
+      - name: Resolve visionOS simulator
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available --json | jq -r '
+            [ .devices | to_entries[]
+              | (.key | capture("[^0-9]*(?<maj>[0-9]+)[-.](?<min>[0-9]+)")) as $v
+              | .value[]
+              | select(.isAvailable and (.name | test("Vision Pro")))
+              | { sort: (($v.maj | tonumber) * 1000 + ($v.min | tonumber)), udid }
+            ] | sort_by(.sort) | last.udid // empty')
+          test -n "$UDID" || { echo "No available Apple Vision Pro simulator"; xcrun simctl list devices available; exit 1; }
+          echo "Using visionOS simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          echo "VISIONOS_UDID=$UDID" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------
+      # 3. Build for testing
+      #
+      # Separating build and test steps lets us isolate compilation failures
+      # from test failures and speeds up iteration when only tests change.
+      # ------------------------------------------------------------------
+      - name: Build for testing
+        run: |
+          set -o pipefail
+          # The app target compiles VPStudio/*.swift directly (synced folders), so the
+          # package-level swiftSettings don't reach it. `isolated deinit` is experimental
+          # on the CI toolchain (Xcode 16.x / Swift 6.1), so enable it here for the build.
+          xcodebuild build-for-testing \
+            -scheme VPStudio \
+            -destination "platform=visionOS Simulator,id=${VISIONOS_UDID}" \
+            -enableCodeCoverage YES \
+            OTHER_SWIFT_FLAGS='$(inherited) -enable-experimental-feature IsolatedDeinit' \
+            | xcpretty
+
+      # ------------------------------------------------------------------
+      # 4. Run tests
+      #
+      # Tests are executed against the pre-built test bundle produced above.
+      # Results are written to a named bundle so we can upload them on failure.
+      # ------------------------------------------------------------------
+      - name: Run tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -scheme VPStudio \
+            -destination "platform=visionOS Simulator,id=${VISIONOS_UDID}" \
+            -only-testing:VPStudioTests \
+            -resultBundlePath TestResults.xcresult \
+            -enableCodeCoverage YES \
+            | xcpretty --report junit
+
+      # ------------------------------------------------------------------
+      # 5. Generate coverage report
+      # ------------------------------------------------------------------
+      - name: Generate coverage report
+        if: always()
+        run: |
+          if [ ! -d TestResults.xcresult ]; then
+            echo "Missing TestResults.xcresult; cannot generate coverage."
+            exit 1
+          fi
+          xcrun xccov view --report --json TestResults.xcresult > coverage.json
+          xcrun xccov view --report TestResults.xcresult > coverage.txt
+          test -s coverage.json
+          test -s coverage.txt
+
+      # ------------------------------------------------------------------
+      # 6. Upload test and coverage results
+      #
+      # Preserve the xcresult bundle, coverage reports, and JUnit XML so
+      # coverage regressions and failures can be diagnosed offline.
+      # ------------------------------------------------------------------
+      - name: Upload test and coverage results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: |
+            TestResults.xcresult
+            coverage.json
+            coverage.txt
+            build/reports/junit.xml
+          if-no-files-found: error
+          retention-days: 7

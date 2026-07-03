@@ -1,21 +1,78 @@
 import Testing
 @testable import VPStudio
 
-struct SettingsNavigationCatalogTests {
+struct SettingsNavigationCatalogTestsSettingsSettingsnavigationcatalogtests {
+    @Test
+    func categoryMetadataCoversEverySection() {
+        let expected: [(SettingsCategory, String, String)] = [
+            (.connect, "Connect", "Accounts, providers, and API keys"),
+            (.watch, "Watch", "Playback, quality, and subtitles"),
+            (.discover, "Discover", "Environments and browsing"),
+            (.library, "Library", "Downloads and local content"),
+            (.about, "About", "App info, health, and data"),
+        ]
+
+        #expect(SettingsCategory.allCases == expected.map(\.0))
+        for (category, title, subtitle) in expected {
+            #expect(category.id == category.rawValue)
+            #expect(category.title == title)
+            #expect(category.subtitle == subtitle)
+        }
+    }
+
+    @Test
+    func destinationMetadataCoversEveryDestination() {
+        let expected: [(SettingsDestination, String, String, SettingsCategory, String)] = [
+            (.debrid, "Streaming Providers (Debrid)", "cloud", .connect, "realdebrid"),
+            (.debridCloud, "Debrid Cloud", "cloud.fill", .connect, "premium"),
+            (.indexers, "Search Providers", "magnifyingglass.circle", .connect, "torznab"),
+            (.metadata, "Movie & TV Metadata", "film", .connect, "metadata"),
+            (.ai, "AI Recommendations", "brain", .connect, "openai"),
+            (.trakt, "Trakt", "arrow.triangle.2.circlepath", .connect, "watch history"),
+            (.simkl, "Simkl", "arrow.triangle.2.circlepath.circle", .connect, "cleanup-only"),
+            (.imdbImport, "IMDb Import", "film.stack", .connect, "csv"),
+            (.player, "Playback", "play.circle", .watch, "hdr"),
+            (.subtitles, "Subtitles", "captions.bubble", .watch, "opensubtitles"),
+            (.environments, "Environments", "mountain.2", .discover, "immersive"),
+            (.library, "Library", "books.vertical", .library, "collection"),
+            (.downloads, "Downloads", "arrow.down.circle", .library, "offline"),
+            (.resetData, "Reset All Data", "trash", .about, "factory reset"),
+            (.testMode, "Test Mode", "flame", .about, "qa"),
+        ]
+
+        #expect(SettingsDestination.allCases == expected.map(\.0))
+        for (destination, title, icon, category, token) in expected {
+            #expect(destination.id == destination.rawValue)
+            #expect(destination.title == title)
+            #expect(destination.icon == icon)
+            #expect(destination.category == category)
+            #expect(destination.summary.isEmpty == false)
+            #expect(destination.searchTokens.contains(token))
+        }
+    }
+
     @Test
     func emptyQueryReturnsAllDestinationsGroupedByCategory() {
         let groups = SettingsNavigationCatalog.groups(matching: "")
         let flattened = groups.flatMap(\.destinations)
 
         #expect(groups.count == SettingsCategory.allCases.count)
+        #expect(groups.map(\.id) == groups.map(\.category))
         #expect(flattened.count == SettingsNavigationCatalog.orderedDestinations.count)
         #expect(Set(flattened.map(\.rawValue)).count == SettingsNavigationCatalog.orderedDestinations.count)
     }
 
     @Test
-    func tmdbQueryFindsOnlyMetadataDestination() {
-        let groups = SettingsNavigationCatalog.groups(matching: "tmdb")
+    func omdbQueryFindsOnlyMetadataDestination() {
+        let groups = SettingsNavigationCatalog.groups(matching: "omdb")
         let flattened = groups.flatMap(\.destinations)
+
+        #expect(flattened == [.metadata])
+    }
+
+    @Test
+    func tmdbQueryFindsMetadataDestination() {
+        let flattened = SettingsNavigationCatalog.groups(matching: "tmdb").flatMap(\.destinations)
 
         #expect(flattened == [.metadata])
     }
@@ -25,7 +82,7 @@ struct SettingsNavigationCatalogTests {
         let groups = SettingsNavigationCatalog.groups(matching: "realdebrid")
         let flattened = groups.flatMap(\.destinations)
 
-        #expect(flattened == [.debrid])
+        #expect(flattened == [.debrid, .debridCloud])
     }
 
     @Test
@@ -58,6 +115,15 @@ struct SettingsNavigationCatalogTests {
 
         #expect(matched.contains(.ai))
         #expect(unmatched.isEmpty)
+    }
+
+    @Test
+    func queryMatchingTrimsWhitespaceAndIgnoresCase() {
+        let aiMatches = SettingsNavigationCatalog.groups(matching: "  AI   ").flatMap(\.destinations)
+        let providerMatches = SettingsNavigationCatalog.groups(matching: "  OpenRouter  ").flatMap(\.destinations)
+
+        #expect(aiMatches.contains(.ai))
+        #expect(providerMatches == [.ai])
     }
 
     @Test
@@ -101,6 +167,7 @@ struct SettingsNavigationCatalogTests {
         #expect(SettingsDestination.ai.isEssential == true)
         #expect(SettingsDestination.trakt.isEssential == true)
         #expect(SettingsDestination.simkl.isEssential == false)
+        #expect(SettingsDestination.debridCloud.isEssential == false)
 
         // Non-essential: work with defaults
         #expect(SettingsDestination.player.isEssential == false)

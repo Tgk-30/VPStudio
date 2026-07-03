@@ -2,6 +2,14 @@ import SwiftUI
 
 struct AIRecommendationCard: View {
     let recommendation: AIMovieRecommendation
+    /// Optional one-tap play affordance. When provided, a primary "Play" button
+    /// is rendered that requests playback of the best cached source on open.
+    var onPlay: (() -> Void)?
+
+    init(recommendation: AIMovieRecommendation, onPlay: (() -> Void)? = nil) {
+        self.recommendation = recommendation
+        self.onPlay = onPlay
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -37,6 +45,24 @@ struct AIRecommendationCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
+            }
+
+            if let onPlay {
+                Button(action: onPlay) {
+                    Label("Play", systemImage: "play.fill")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(.purple.opacity(0.30), in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+                .accessibilityLabel("Play \(recommendation.title)")
+                .accessibilityHint("Opens the title and plays the best cached source if one is available.")
+                #if os(visionOS)
+                .hoverEffect(.highlight)
+                #endif
             }
         }
         .padding(14)

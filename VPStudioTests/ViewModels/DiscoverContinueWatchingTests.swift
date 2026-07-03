@@ -5,12 +5,26 @@ import Testing
 @Suite("DiscoverViewModel - Continue Watching")
 @MainActor
 struct DiscoverContinueWatchingTests {
+    private static func waitUntil(
+        timeout: Duration = .milliseconds(5000),
+        _ condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("waitUntil timed out after \(timeout)")
+                return
+            }
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
     private func makeDB() async throws -> DatabaseManager {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let dbPath = tempDir.appendingPathComponent("discover-test.sqlite").path
-        let db = try DatabaseManager(path: dbPath)
+        let db = try DatabaseManager(inMemoryNamed: "discover-test-\(UUID().uuidString)")
         try await db.migrate()
         return db
     }
@@ -49,6 +63,109 @@ struct DiscoverContinueWatchingTests {
 
         #expect(vm.continueWatching.count == 1)
         #expect(vm.continueWatching.first?.preview.title == "Test Movie")
+    }
+
+    @Test func continueWatchingResolvesOMDbHistoryIDToIMDbCachedItem() async throws {
+        let db = try await makeDB()
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "tt0133093",
+                type: .movie,
+                title: "The Matrix",
+                year: 1999,
+                posterPath: "/matrix.jpg",
+                backdropPath: nil,
+                overview: nil,
+                genres: [],
+                imdbRating: 8.7,
+                runtime: 136,
+                status: nil,
+                tmdbId: nil,
+                lastFetched: Date()
+            )
+        )
+        try await db.saveWatchHistory(
+            WatchHistory(
+                id: "matrix-omdb-history",
+                mediaId: "movie-omdb-tt0133093",
+                episodeId: nil,
+                title: "The Matrix",
+                progress: 3600,
+                duration: 7200,
+                quality: nil,
+                debridService: nil,
+                streamURL: nil,
+                watchedAt: Date(),
+                isCompleted: false
+            )
+        )
+
+        let vm = DiscoverViewModel(database: db)
+        await vm.loadContinueWatching()
+
+        #expect(vm.continueWatching.count == 1)
+        #expect(vm.continueWatching.first?.preview.id == "tt0133093")
+        #expect(vm.continueWatching.first?.preview.title == "The Matrix")
+    }
+
+    @Test func continueWatchingDedupesHistoryRowsAfterAliasResolution() async throws {
+        let db = try await makeDB()
+        try await db.saveMediaItem(
+            MediaItem(
+                id: "tt0133093",
+                type: .movie,
+                title: "The Matrix",
+                year: 1999,
+                posterPath: "/matrix.jpg",
+                backdropPath: nil,
+                overview: nil,
+                genres: [],
+                imdbRating: 8.7,
+                runtime: 136,
+                status: nil,
+                tmdbId: nil,
+                lastFetched: Date()
+            )
+        )
+        let older = Date().addingTimeInterval(-60)
+        let newer = Date()
+        try await db.saveWatchHistory(
+            WatchHistory(
+                id: "matrix-imdb-history",
+                mediaId: "tt0133093",
+                episodeId: nil,
+                title: "The Matrix",
+                progress: 1200,
+                duration: 7200,
+                quality: nil,
+                debridService: nil,
+                streamURL: nil,
+                watchedAt: older,
+                isCompleted: false
+            )
+        )
+        try await db.saveWatchHistory(
+            WatchHistory(
+                id: "matrix-omdb-history",
+                mediaId: "movie-omdb-tt0133093",
+                episodeId: nil,
+                title: "The Matrix",
+                progress: 3600,
+                duration: 7200,
+                quality: nil,
+                debridService: nil,
+                streamURL: nil,
+                watchedAt: newer,
+                isCompleted: false
+            )
+        )
+
+        let vm = DiscoverViewModel(database: db)
+        await vm.loadContinueWatching()
+
+        #expect(vm.continueWatching.count == 1)
+        #expect(vm.continueWatching.first?.preview.continueWatchingRowID == "tt0133093")
+        #expect(vm.continueWatching.first?.history.mediaId == "movie-omdb-tt0133093")
     }
 
     @Test func continueWatchingCarriesEpisodeContextIntoPreview() async throws {
@@ -158,7 +275,7 @@ struct DiscoverContinueWatchingTests {
         let vm = DiscoverViewModel()
         vm.hasPerformedInitialLoad = true
         vm.configure(database: db)
-        try? await Task.sleep(for: .milliseconds(25))
+        try await Self.waitUntil(timeout: .seconds(8)) { vm.continueWatching.count == 1 }
 
         #expect(vm.continueWatching.count == 1)
         #expect(vm.continueWatching.first?.preview.title == "Configured Late")
@@ -183,6 +300,7 @@ struct DiscoverContinueWatchingTests {
 
         #expect(route.preview == preview)
         #expect(route.initialAction == .resumePlayback)
+        #expect(route.id == "ttyoungpope-123-s2e5-resumePlayback")
     }
 
     @Test func browseNavigationDoesNotAutoResumePlayback() {
@@ -201,5 +319,65 @@ struct DiscoverContinueWatchingTests {
 
         #expect(route.preview == preview)
         #expect(route.initialAction == .none)
+        #expect(route.id == "tt1234567-none-none")
+    }
+
+    @Test func browseNavigationRouteIncludesEpisodeContextWhenPresent() {
+        let preview = MediaPreview(
+            id: "ttseries",
+            type: .series,
+            title: "Test Series",
+            year: 2026,
+            posterPath: nil,
+            backdropPath: nil,
+            imdbRating: nil,
+            tmdbId: 321,
+            episodeId: "321-s1e2",
+            seasonNumber: 1,
+            episodeNumber: 2
+        )
+
+        let route = DiscoverNavigationPolicy.browseRoute(for: preview)
+
+        #expect(route.preview == preview)
+        #expect(route.initialAction == .none)
+        #expect(route.id == "ttseries-321-s1e2-none")
+    }
+
+    @Test func continueWatchingArtworkIgnoresMissingCachedFrameFiles() throws {
+        let mediaId = "continue-watching-artwork-\(UUID().uuidString)"
+        let corruptMediaId = "continue-watching-corrupt-\(UUID().uuidString)"
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("continue-watching-artwork-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            FrameCaptureService.removeFrame(mediaId: mediaId, episodeId: nil)
+            FrameCaptureService.removeFrame(mediaId: corruptMediaId, episodeId: nil)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let validPath = try #require(FrameCaptureService.store(
+            jpegData: Data([0xFF, 0xD8, 0xFF, 0xD9]),
+            mediaId: mediaId,
+            episodeId: nil
+        ))
+        let validFrame = URL(fileURLWithPath: validPath).resolvingSymlinksInPath()
+
+        let corruptFrame = try #require(FrameCaptureService.fileURL(mediaId: corruptMediaId, episodeId: nil))
+        try Data([0x00, 0x01, 0x02, 0x03]).write(to: corruptFrame)
+
+        let directory = tempDir.appendingPathComponent("not-a-frame", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let outsideFrame = tempDir.appendingPathComponent("outside-frame.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: outsideFrame)
+
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: nil) == nil)
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: "   ") == nil)
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: tempDir.appendingPathComponent("missing.jpg").path) == nil)
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: directory.path) == nil)
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: corruptFrame.path) == nil)
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: outsideFrame.path) == nil)
+        #expect(ContinueWatchingArtworkPolicy.lastFrameURL(from: " \(validFrame.path) ") == validFrame)
     }
 }

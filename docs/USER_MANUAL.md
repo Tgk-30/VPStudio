@@ -34,7 +34,7 @@ Quick install summary:
 Optional setup for full streaming features:
 
 1. Open `Settings` -> `Quick Actions` -> `Run Setup Wizard`.
-2. Add TMDB and Debrid credentials.
+2. Add OMDb and Debrid credentials.
 3. Configure optional Trakt/AI/Subtitles integrations.
 4. Use the Simkl settings screen only to review or clear saved authorization; Simkl is cleanup-only in this build and sync/scrobbling are unavailable.
 
@@ -115,7 +115,7 @@ If playback fails on a stream:
 
 Common configuration areas:
 
-- TMDB metadata key
+- OMDb metadata key
 - Debrid provider tokens
 - Trakt sync
 - Simkl cleanup-only surface in this build
@@ -155,7 +155,7 @@ If sync appears stale:
 
 ### Metadata missing
 
-1. Verify TMDB key.
+1. Verify the OMDb key.
 2. Confirm network access.
 3. Re-open the affected title.
 
@@ -174,7 +174,7 @@ If sync appears stale:
 ## 11) FAQ
 
 ### Do I need all integrations to use VPStudio?
-No. You can browse local sections without integrations and connect services later. TMDB is still required for Discover/Search metadata.
+No. You can browse local sections without integrations and connect services later. OMDb is still required for Discover/Search metadata.
 
 ### Can I change settings after onboarding?
 Yes. Everything can be updated in `Settings`.

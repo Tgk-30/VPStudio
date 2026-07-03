@@ -85,9 +85,15 @@ actor RealDebridService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
-        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
-        let body = "magnet=\(magnet.addingPercentEncoding(withAllowedCharacters: Self.formEncodingAllowed) ?? magnet)"
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: hash,
+            suppliedMagnetURI: magnetURI
+        )
+        let body = "magnet=\(Self.formEncodedValue(magnet))"
         let response: RDAddMagnetResponse = try await request(method: "POST", path: "/torrents/addMagnet", body: body)
         return response.id
     }
@@ -109,7 +115,8 @@ actor RealDebridService: DebridServiceProtocol {
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             resolvedFileNameHint: nil,
-            resolvedFileSizeHint: nil
+            resolvedFileSizeHint: nil,
+            allowSingleVideoFallback: false
         ) else {
             return false
         }
@@ -130,7 +137,8 @@ actor RealDebridService: DebridServiceProtocol {
             seasonNumber: seasonNumber,
             episodeNumber: episodeNumber,
             resolvedFileNameHint: resolvedFileNameHint,
-            resolvedFileSizeHint: resolvedFileSizeHint
+            resolvedFileSizeHint: resolvedFileSizeHint,
+            allowSingleVideoFallback: false
         ) else {
             return false
         }
@@ -153,41 +161,83 @@ actor RealDebridService: DebridServiceProtocol {
             throw DebridError.fileNotReady(info.status ?? "unknown")
         }
 
-        guard let links = info.links, let firstLink = links.first else {
+        guard let candidate = preferredStreamLinkCandidate(from: info) else {
             throw DebridError.torrentNotFound(torrentId)
         }
 
-        let unrestricted = try await unrestrict(link: firstLink)
-        let fileName = info.filename ?? "Unknown"
+        let unrestricted = try await unrestrictFile(link: candidate.link)
+        let fileName = displayFileName(
+            unrestrictFileName: unrestricted.filename,
+            selectedPath: candidate.file?.path,
+            torrentFileName: info.filename
+        )
+        let sizeBytes = normalizedPositiveBytes(unrestricted.filesize)
+            ?? normalizedPositiveBytes(candidate.file?.bytes)
+            ?? normalizedPositiveBytes(info.bytes)
 
         return StreamInfo(
-            streamURL: unrestricted,
+            streamURL: unrestricted.downloadURL,
             quality: VideoQuality.parse(from: fileName),
             codec: VideoCodec.parse(from: fileName),
             audio: AudioFormat.parse(from: fileName),
             source: SourceType.parse(from: fileName),
             hdr: HDRFormat.parse(from: fileName),
             fileName: fileName,
-            sizeBytes: info.bytes,
+            sizeBytes: sizeBytes,
             debridService: serviceType.rawValue
         )
     }
 
     func unrestrict(link: String) async throws -> URL {
-        let body = "link=\(link.addingPercentEncoding(withAllowedCharacters: Self.formEncodingAllowed) ?? link)"
-        let response: RDUnrestrictResponse = try await request(method: "POST", path: "/unrestrict/link", body: body)
-        guard let url = URL(string: response.download) else {
-            throw DebridError.networkError("Invalid unrestrict URL")
-        }
-        return url
+        try await unrestrictFile(link: link).downloadURL
     }
 
-    private func preferredEpisodeFile(
+    private func unrestrictFile(link: String) async throws -> RDUnrestrictedFile {
+        let body = "link=\(Self.formEncodedValue(link))"
+        let response: RDUnrestrictResponse = try await request(method: "POST", path: "/unrestrict/link", body: body)
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: response.download,
+            errorMessage: "Invalid unrestrict URL"
+        )
+        return RDUnrestrictedFile(
+            downloadURL: url,
+            filename: response.filename,
+            filesize: response.filesize
+        )
+    }
+
+    private func preferredStreamLinkCandidate(from info: RDTorrentInfo) -> RDStreamLinkCandidate? {
+        guard let links = info.links, !links.isEmpty else {
+            return nil
+        }
+
+        guard let files = info.files, !files.isEmpty else {
+            return RDStreamLinkCandidate(link: links[0], file: nil)
+        }
+
+        let selectedFiles = files.filter { $0.selected == 1 }
+        let linkFiles = selectedFiles.isEmpty ? files : selectedFiles
+
+        if let preferredFile = Self.preferredPlayableFile(in: linkFiles),
+           let index = linkFiles.firstIndex(where: { $0.id == preferredFile.id }),
+           links.indices.contains(index) {
+            return RDStreamLinkCandidate(link: links[index], file: preferredFile)
+        }
+
+        if links.count == 1 {
+            return RDStreamLinkCandidate(link: links[0], file: linkFiles.first)
+        }
+
+        return RDStreamLinkCandidate(link: links[0], file: linkFiles.first)
+    }
+
+    func preferredEpisodeFile(
         in files: [RDFile]?,
         seasonNumber: Int,
         episodeNumber: Int,
         resolvedFileNameHint: String?,
-        resolvedFileSizeHint: Int64?
+        resolvedFileSizeHint: Int64?,
+        allowSingleVideoFallback: Bool = true
     ) -> RDFile? {
         guard let files else { return nil }
         let videoFiles = files.filter { file in
@@ -209,13 +259,13 @@ actor RealDebridService: DebridServiceProtocol {
             return tokens.contains { path.contains($0) }
         }
 
-        if matchedVideoFiles.isEmpty, videoFiles.count == 1 {
+        if allowSingleVideoFallback, matchedVideoFiles.isEmpty, videoFiles.count == 1 {
             return videoFiles.first
         }
         return matchedVideoFiles.max(by: { ($0.bytes ?? 0) < ($1.bytes ?? 0) })
     }
 
-    private func bestExactMatch(
+    func bestExactMatch(
         in files: [RDFile],
         resolvedFileNameHint: String?,
         resolvedFileSizeHint: Int64?
@@ -238,7 +288,7 @@ actor RealDebridService: DebridServiceProtocol {
         return candidates.max(by: { ($0.bytes ?? 0) < ($1.bytes ?? 0) })
     }
 
-    private func episodeMatchTokens(seasonNumber: Int, episodeNumber: Int) -> [String] {
+    func episodeMatchTokens(seasonNumber: Int, episodeNumber: Int) -> [String] {
         let s2 = String(format: "%02d", seasonNumber)
         let e2 = String(format: "%02d", episodeNumber)
         return [
@@ -250,22 +300,57 @@ actor RealDebridService: DebridServiceProtocol {
         ]
     }
 
-    private static func isProbablyVideoFile(_ path: String) -> Bool {
+    static func isProbablyVideoFile(_ path: String) -> Bool {
         [".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts"].contains { path.hasSuffix($0) }
     }
 
-    private static func normalizedFileName(_ value: String?) -> String? {
+    static func preferredPlayableFile(in files: [RDFile]) -> RDFile? {
+        files
+            .filter { file in
+                guard let path = file.path?.lowercased() else { return false }
+                return isProbablyVideoFile(path)
+            }
+            .max(by: { ($0.bytes ?? 0) < ($1.bytes ?? 0) })
+    }
+
+    static func normalizedFileName(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return URL(fileURLWithPath: trimmed).lastPathComponent.lowercased()
     }
 
-    private static let formEncodingAllowed: CharacterSet = {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "+&=")
-        return allowed
-    }()
+    private static func normalizedDisplayFileName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lastComponent = URL(fileURLWithPath: trimmed).lastPathComponent
+        return lastComponent.isEmpty ? trimmed : lastComponent
+    }
+
+    private func displayFileName(
+        unrestrictFileName: String?,
+        selectedPath: String?,
+        torrentFileName: String?
+    ) -> String {
+        Self.normalizedDisplayFileName(unrestrictFileName)
+            ?? Self.normalizedDisplayFileName(selectedPath)
+            ?? Self.normalizedDisplayFileName(torrentFileName)
+            ?? "Unknown"
+    }
+
+    private func normalizedPositiveBytes(_ bytes: Int64?) -> Int64? {
+        guard let bytes, bytes > 0 else { return nil }
+        return bytes
+    }
+
+    private static let formEncodingAllowed = CharacterSet.alphanumerics
+        .union(CharacterSet(charactersIn: "-._*"))
+
+    private static func formEncodedValue(_ value: String) -> String {
+        value.precomposedStringWithCanonicalMapping
+            .addingPercentEncoding(withAllowedCharacters: formEncodingAllowed) ?? value
+    }
 
     // MARK: - HTTP
 
@@ -292,6 +377,13 @@ actor RealDebridService: DebridServiceProtocol {
             throw DebridError.unauthorized
         case 429:
             throw DebridError.rateLimited
+        case 451:
+            let message = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = message?.isEmpty == false ? message ?? "HTTP 451" : "HTTP 451"
+            throw DebridError.unavailableForLegalReasons(
+                "Real-Debrid \(path) returned \(detail)"
+            )
         default:
             let msg = String(data: data, encoding: .utf8) ?? ""
             throw DebridError.httpError(httpResponse.statusCode, msg)
@@ -302,7 +394,7 @@ actor RealDebridService: DebridServiceProtocol {
         return try decoder.decode(T.self, from: data)
     }
 
-    private static func isDisabledCacheEndpoint(_ error: DebridError) -> Bool {
+    internal static func isDisabledCacheEndpoint(_ error: DebridError) -> Bool {
         guard case .httpError(403, let message) = error else {
             return false
         }
@@ -340,7 +432,12 @@ private struct RDTorrentInfo: Sendable {
 }
 extension RDTorrentInfo: Decodable {}
 
-private struct RDFile: Sendable {
+private struct RDStreamLinkCandidate: Sendable {
+    let link: String
+    let file: RDFile?
+}
+
+struct RDFile: Sendable {
     let id: Int
     let path: String?
     let bytes: Int64?
@@ -355,6 +452,12 @@ private struct RDUnrestrictResponse: Sendable {
     let filesize: Int64?
 }
 extension RDUnrestrictResponse: Decodable {}
+
+private struct RDUnrestrictedFile: Sendable {
+    let downloadURL: URL
+    let filename: String
+    let filesize: Int64?
+}
 
 private struct EmptyResponse: Sendable {}
 extension EmptyResponse: Decodable {}

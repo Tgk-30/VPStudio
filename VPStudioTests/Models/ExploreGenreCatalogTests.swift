@@ -66,6 +66,17 @@ struct ExploreMoodCardTests {
         #expect(upcoming.isSpecialCard == true)
     }
 
+    @Test func otherNegativeGenreIdsAreSpecialWithoutReleaseShortcut() {
+        let card = ExploreMoodCard(
+            id: "special", title: "Special", subtitle: "SPECIAL",
+            symbol: "star", color: .red, movieGenreId: -99, tvGenreId: -99
+        )
+
+        #expect(card.isSpecialCard)
+        #expect(card.isNewReleases == false)
+        #expect(card.isFutureReleases == false)
+    }
+
     @Test func isSpecialCardReturnsFalseForPositiveGenreIds() {
         let card = ExploreMoodCard(
             id: "test", title: "Test", subtitle: "TEST",
@@ -92,6 +103,16 @@ struct ExploreMoodCardTests {
         )
         #expect(card.artImageName == nil)
         #expect(card.hasResolvedArtImage == false)
+    }
+
+    @Test func knownArtImageNameResolves() {
+        let card = ExploreMoodCard(
+            id: "test", title: "Test", subtitle: "TEST",
+            symbol: "star", artImageName: "genre-art-scifi",
+            color: .red, movieGenreId: 878, tvGenreId: 10765
+        )
+        #expect(card.artImageName == "genre-art-scifi")
+        #expect(card.hasResolvedArtImage)
     }
 }
 

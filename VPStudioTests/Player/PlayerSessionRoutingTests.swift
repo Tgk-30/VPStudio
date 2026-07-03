@@ -30,8 +30,10 @@ struct PlayerSessionRoutingTests {
         let preview = MediaPreview(id: "series-tmdb-100", type: .series, title: "Preview Show", year: 2025, posterPath: nil, imdbRating: nil, tmdbId: 100)
         let request = viewModel.makePlayerSessionRequest(stream: primaryStream, preview: preview)
 
-        #expect(request.mediaId == "tt1234567")
+        #expect(request.mediaId == "series-omdb-tt1234567")
+        #expect(request.imdbId == "tt1234567")
         #expect(request.mediaTitle == "Example Show")
+        #expect(request.tmdbId == 100)
         #expect(request.episodeId == episode.id)
         #expect(request.availableStreams == [primaryStream, secondaryStream])
     }
@@ -46,10 +48,43 @@ struct PlayerSessionRoutingTests {
 
         let request = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
 
-        #expect(request.mediaId == preview.id)
+        #expect(request.mediaId == "movie-tmdb-90")
+        #expect(request.imdbId == nil)
         #expect(request.mediaTitle == preview.title)
+        #expect(request.tmdbId == 90)
         #expect(request.episodeId == nil)
         #expect(request.availableStreams == [stream])
+    }
+
+    @MainActor
+    @Test func appScopedOMDbMediaItemCarriesIMDbAliasIntoPlayerSession() {
+        let appState = AppState(testHooks: .init())
+        let viewModel = DetailViewModel(appState: appState)
+
+        viewModel.mediaItem = MediaItem(
+            id: "movie-omdb-tt1160419",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            tmdbId: 438_631
+        )
+
+        let stream = makeStream(url: "https://cdn.example.com/dune.mkv", name: "dune.mkv")
+        let preview = MediaPreview(
+            id: "movie-tmdb-438631",
+            type: .movie,
+            title: "Dune",
+            year: 2021,
+            posterPath: nil,
+            imdbRating: nil,
+            tmdbId: 438_631
+        )
+
+        let request = viewModel.makePlayerSessionRequest(stream: stream, preview: preview)
+
+        #expect(request.mediaId == "movie-omdb-tt1160419")
+        #expect(request.imdbId == "tt1160419")
+        #expect(request.tmdbId == 438_631)
     }
 
     @MainActor

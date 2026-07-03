@@ -41,6 +41,172 @@ actor DatabaseManager {
         return "watch::\(mediaId)::\(episodeComponent)::\(timestamp)::\(UUID().uuidString)"
     }
 
+    private static func deleteInProgressWatchCheckpoints(
+        in db: Database,
+        mediaIDCandidates: Set<String>,
+        episodeId: String?,
+        excludingID: String? = nil
+    ) throws {
+        guard !mediaIDCandidates.isEmpty else { return }
+
+        var request = WatchHistory
+            .filter(Array(mediaIDCandidates).contains(WatchHistory.Columns.mediaId))
+            .filter(WatchHistory.Columns.isCompleted == false)
+
+        if let episodeId {
+            request = request.filter(WatchHistory.Columns.episodeId == episodeId)
+        } else {
+            request = request.filter(WatchHistory.Columns.episodeId == nil)
+        }
+
+        if let excludingID {
+            request = request.filter(WatchHistory.Columns.id != excludingID)
+        }
+
+        try request.deleteAll(db)
+    }
+
+    private static func mediaIDLookupCandidates(for mediaId: String) -> Set<String> {
+        let trimmed = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var candidates = Set([trimmed])
+        if let imdbID = IMDbIdentifierPolicy.appScopedID(in: trimmed) {
+            candidates.formUnion([
+                imdbID,
+                "imdb-\(imdbID)",
+                "omdb-\(imdbID)",
+                "movie-imdb-\(imdbID)",
+                "series-imdb-\(imdbID)",
+                "movie-omdb-\(imdbID)",
+                "series-omdb-\(imdbID)",
+            ])
+        }
+        if let tmdbID = MetadataProviderIdentifierPolicy.tmdbID(from: trimmed) {
+            if let hintedType = mediaTypeHint(from: trimmed) {
+                candidates.formUnion([
+                    "tmdb-\(tmdbID)",
+                    "\(hintedType.rawValue)-tmdb-\(tmdbID)",
+                ])
+            } else {
+                candidates.formUnion([
+                    "tmdb-\(tmdbID)",
+                    "movie-tmdb-\(tmdbID)",
+                    "series-tmdb-\(tmdbID)",
+                ])
+            }
+        }
+        return candidates
+    }
+
+    private static func mediaIDLookupCandidates(in db: Database, for mediaId: String) throws -> Set<String> {
+        var candidates = mediaIDLookupCandidates(for: mediaId)
+        guard !candidates.isEmpty else { return [] }
+
+        let requestedType = mediaTypeHint(from: mediaId)
+        func isCompatible(_ item: MediaItem) -> Bool {
+            guard let requestedType else { return true }
+            return item.type == requestedType
+        }
+
+        var linkedItems: [MediaItem] = []
+        linkedItems.append(contentsOf: try MediaItem
+            .filter(candidates.contains(MediaItem.Columns.id))
+            .fetchAll(db)
+            .filter(isCompatible))
+
+        let imdbIDs = Set(candidates.compactMap { IMDbIdentifierPolicy.appScopedID(in: $0) })
+        if !imdbIDs.isEmpty {
+            let imdbAliasCandidates = imdbIDs.reduce(into: Set<String>()) { partial, imdbID in
+                partial.formUnion(mediaIDLookupCandidates(for: imdbID))
+            }
+            linkedItems.append(contentsOf: try MediaItem
+                .filter(Array(imdbAliasCandidates).contains(MediaItem.Columns.id))
+                .fetchAll(db)
+                .filter(isCompatible))
+        }
+
+        let tmdbIDs = Set(candidates.compactMap { MetadataProviderIdentifierPolicy.tmdbID(from: $0) })
+        if !tmdbIDs.isEmpty {
+            linkedItems.append(contentsOf: try MediaItem
+                .filter(Array(tmdbIDs).contains(MediaItem.Columns.tmdbId))
+                .fetchAll(db)
+                .filter(isCompatible))
+        }
+
+        for item in linkedItems {
+            candidates.formUnion(mediaIDLookupCandidates(for: item.id))
+            if let tmdbID = item.tmdbId {
+                if requestedType != nil {
+                    candidates.formUnion(mediaIDLookupCandidates(for: "\(item.type.rawValue)-tmdb-\(tmdbID)"))
+                } else {
+                    candidates.formUnion(mediaIDLookupCandidates(for: "tmdb-\(tmdbID)"))
+                }
+            }
+        }
+
+        return candidates
+    }
+
+    private static func mediaTypeHint(from mediaId: String) -> MediaType? {
+        let normalized = mediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+
+        for mediaType in MediaType.allCases {
+            let prefix = "\(mediaType.rawValue)-"
+            if normalized.hasPrefix(prefix) {
+                return mediaType
+            }
+        }
+
+        return nil
+    }
+
+    private static func mediaIDAliasPreferenceRank(_ candidate: String, requestedMediaId: String) -> Int {
+        let normalizedCandidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedRequested = requestedMediaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalizedCandidate == normalizedRequested {
+            return 0
+        }
+
+        if let requestedIMDbID = IMDbIdentifierPolicy.appScopedID(in: normalizedRequested),
+           IMDbIdentifierPolicy.appScopedID(in: normalizedCandidate) == requestedIMDbID {
+            return 10
+        }
+
+        if let requestedTMDBID = MetadataProviderIdentifierPolicy.tmdbID(from: normalizedRequested),
+           MetadataProviderIdentifierPolicy.tmdbID(from: normalizedCandidate) == requestedTMDBID {
+            return 20
+        }
+
+        return 100
+    }
+
+    private static func deduplicatedEpisodesForAliasLookup(
+        _ episodes: [Episode],
+        requestedMediaId: String
+    ) -> [Episode] {
+        var seenEpisodes = Set<String>()
+        return episodes
+            .sorted { lhs, rhs in
+                if lhs.episodeNumber != rhs.episodeNumber {
+                    return lhs.episodeNumber < rhs.episodeNumber
+                }
+
+                let lhsRank = mediaIDAliasPreferenceRank(lhs.mediaId, requestedMediaId: requestedMediaId)
+                let rhsRank = mediaIDAliasPreferenceRank(rhs.mediaId, requestedMediaId: requestedMediaId)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+
+                return lhs.id < rhs.id
+            }
+            .filter { episode in
+                seenEpisodes.insert("\(episode.seasonNumber)::\(episode.episodeNumber)").inserted
+            }
+    }
+
     private static func databaseConfiguration() -> Configuration {
         var config = Configuration()
         #if DEBUG
@@ -588,6 +754,27 @@ actor DatabaseManager {
             )
         }
 
+        migrator.registerMigration("v16_watch_history_resume_artwork") { db in
+            let columns = try db.columns(in: "watch_history")
+            func hasColumn(_ name: String) -> Bool {
+                columns.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            }
+            if !hasColumn("lastFrameImagePath") {
+                try db.execute(sql: "ALTER TABLE \"watch_history\" ADD COLUMN \"lastFrameImagePath\" TEXT")
+            }
+            if !hasColumn("recoveryContextJSON") {
+                try db.execute(sql: "ALTER TABLE \"watch_history\" ADD COLUMN \"recoveryContextJSON\" TEXT")
+            }
+        }
+
+        migrator.registerMigration("v17_environment_tag") { db in
+            let columns = try db.columns(in: "environment_assets")
+            let hasColumn = columns.contains { $0.name.caseInsensitiveCompare("environmentTag") == .orderedSame }
+            if !hasColumn {
+                try db.execute(sql: "ALTER TABLE \"environment_assets\" ADD COLUMN \"environmentTag\" TEXT")
+            }
+        }
+
         let writer = try dbPool
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             migrator.asyncMigrate(writer) { result in
@@ -631,12 +818,36 @@ actor DatabaseManager {
         try await dbPool.read { db in try MediaItem.fetchOne(db, key: id) }
     }
 
+    func fetchMediaItemResolvingAliases(id: String) async throws -> MediaItem? {
+        try await fetchMediaItemsResolvingAliases(ids: [id])[id]
+    }
+
     func fetchMediaItems(ids: [String]) async throws -> [MediaItem] {
         let uniqueIDs = Array(Set(ids))
         guard !uniqueIDs.isEmpty else { return [] }
         return try await dbPool.read { db in
             try MediaItem
                 .filter(uniqueIDs.contains(MediaItem.Columns.id))
+                .fetchAll(db)
+        }
+    }
+
+    func fetchMediaItems(tmdbId: Int) async throws -> [MediaItem] {
+        try await dbPool.read { db in
+            try MediaItem
+                .filter(MediaItem.Columns.tmdbId == tmdbId)
+                .fetchAll(db)
+        }
+    }
+
+    func fetchMediaItemsForTasteRatingAliases(limit: Int = 4_000) async throws -> [MediaItem] {
+        let boundedLimit = max(0, min(limit, 10_000))
+        guard boundedLimit > 0 else { return [] }
+
+        return try await dbPool.read { db in
+            try MediaItem
+                .order(MediaItem.Columns.lastFetched.desc)
+                .limit(boundedLimit)
                 .fetchAll(db)
         }
     }
@@ -655,25 +866,54 @@ actor DatabaseManager {
                 resolved[item.id] = item
             }
 
-            let unresolvedIDs = uniqueIDs.filter { resolved[$0] == nil }
+            var unresolvedIDs = uniqueIDs.filter { resolved[$0] == nil }
             guard !unresolvedIDs.isEmpty else { return resolved }
 
             let tmdbAliasMap = unresolvedIDs.reduce(into: [Int: [String]]()) { partial, id in
                 guard let tmdbID = Self.extractTMDBID(from: id) else { return }
                 partial[tmdbID, default: []].append(id)
             }
-            guard !tmdbAliasMap.isEmpty else { return resolved }
 
-            let aliasTMDBIDs = Array(tmdbAliasMap.keys)
-            let aliasItems = try MediaItem
-                .filter(aliasTMDBIDs.contains(MediaItem.Columns.tmdbId))
-                .fetchAll(db)
+            if !tmdbAliasMap.isEmpty {
+                let aliasTMDBIDs = Array(tmdbAliasMap.keys)
+                let aliasItems = try MediaItem
+                    .filter(aliasTMDBIDs.contains(MediaItem.Columns.tmdbId))
+                    .fetchAll(db)
 
-            for item in aliasItems {
-                guard let tmdbID = item.tmdbId,
-                      let aliases = tmdbAliasMap[tmdbID] else { continue }
-                for alias in aliases where resolved[alias] == nil {
-                    resolved[alias] = item
+                for item in aliasItems {
+                    guard let tmdbID = item.tmdbId,
+                          let aliases = tmdbAliasMap[tmdbID] else { continue }
+                    for alias in aliases where resolved[alias] == nil {
+                        if let expectedType = Self.extractMediaType(fromAlias: alias),
+                           expectedType != item.type {
+                            continue
+                        }
+                        resolved[alias] = item
+                    }
+                }
+            }
+
+            unresolvedIDs = uniqueIDs.filter { resolved[$0] == nil }
+            let imdbAliasMap = unresolvedIDs.reduce(into: [String: [String]]()) { partial, id in
+                guard let imdbID = IMDbIdentifierPolicy.appScopedID(in: id) else { return }
+                partial[imdbID, default: []].append(id)
+            }
+
+            if !imdbAliasMap.isEmpty {
+                let imdbIDs = Array(imdbAliasMap.keys)
+                let imdbAliasCandidates = imdbIDs.reduce(into: Set<String>()) { partial, imdbID in
+                    partial.formUnion(Self.mediaIDLookupCandidates(for: imdbID))
+                }
+                let aliasItems = try MediaItem
+                    .filter(Array(imdbAliasCandidates).contains(MediaItem.Columns.id))
+                    .fetchAll(db)
+
+                for item in aliasItems {
+                    guard let imdbID = IMDbIdentifierPolicy.appScopedID(in: item.id),
+                          let aliases = imdbAliasMap[imdbID] else { continue }
+                    for alias in aliases where resolved[alias] == nil {
+                        resolved[alias] = item
+                    }
                 }
             }
 
@@ -682,20 +922,15 @@ actor DatabaseManager {
     }
 
     private static func extractTMDBID(from id: String) -> Int? {
-        if id.hasPrefix("tmdb-") {
-            let suffix = String(id.dropFirst(5))
-            if let value = Int(suffix) {
-                return value
-            }
-        }
+        MetadataProviderIdentifierPolicy.tmdbID(from: id)
+    }
 
-        if id.contains("tmdb-"),
-           let suffix = id.split(separator: "-").last,
-           let value = Int(suffix) {
-            return value
+    private static func extractMediaType(fromAlias alias: String) -> MediaType? {
+        guard alias.contains("tmdb-"),
+              let prefix = alias.split(separator: "-").first else {
+            return nil
         }
-
-        return nil
+        return MediaType(rawValue: String(prefix))
     }
 
     // MARK: - Watch History
@@ -707,15 +942,27 @@ actor DatabaseManager {
 
             sanitized.streamURL = nil
 
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: sanitized.mediaId)
             let resumeCheckpointID = Self.resumeCheckpointID(mediaId: sanitized.mediaId, episodeId: sanitized.episodeId)
             let legacyProgressID = Self.legacyProgressID(mediaId: sanitized.mediaId, episodeId: sanitized.episodeId)
             let legacyWatchedID = Self.legacyWatchedID(mediaId: sanitized.mediaId, episodeId: sanitized.episodeId)
 
             if sanitized.isCompleted {
+                try Self.deleteInProgressWatchCheckpoints(
+                    in: db,
+                    mediaIDCandidates: mediaIDCandidates,
+                    episodeId: sanitized.episodeId
+                )
+
                 if sanitized.id == resumeCheckpointID
                     || sanitized.id == legacyProgressID
                     || sanitized.id == legacyWatchedID
                 {
+                    // A finished title should leave Continue Watching: drop any leftover
+                    // in-progress checkpoint row for this media/episode. (Completion rows are
+                    // intentionally kept distinct per watch event for rewatch history.)
+                    try WatchHistory.deleteOne(db, key: resumeCheckpointID)
+
                     sanitized.id = Self.completionEntryID(
                         mediaId: sanitized.mediaId,
                         episodeId: sanitized.episodeId,
@@ -727,6 +974,15 @@ actor DatabaseManager {
                         || existingWithSameID?.isCompleted == true
             {
                 sanitized.id = resumeCheckpointID
+            }
+
+            if !sanitized.isCompleted {
+                try Self.deleteInProgressWatchCheckpoints(
+                    in: db,
+                    mediaIDCandidates: mediaIDCandidates,
+                    episodeId: sanitized.episodeId,
+                    excludingID: sanitized.id
+                )
             }
 
             try sanitized.save(db)
@@ -758,8 +1014,9 @@ actor DatabaseManager {
 
     func fetchWatchHistory(mediaId: String, episodeId: String? = nil) async throws -> WatchHistory? {
         try await dbPool.read { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             var request = WatchHistory
-                .filter(WatchHistory.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
             if let episodeId {
                 request = request.filter(WatchHistory.Columns.episodeId == episodeId)
             }
@@ -776,8 +1033,9 @@ actor DatabaseManager {
         tolerance: TimeInterval = 1
     ) async throws -> Bool {
         try await dbPool.read { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             var request = WatchHistory
-                .filter(WatchHistory.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
                 .filter(WatchHistory.Columns.isCompleted == true)
 
             if let episodeId {
@@ -795,11 +1053,30 @@ actor DatabaseManager {
         }
     }
 
+    func fetchCompletedWatchHistory(
+        mediaId: String,
+        watchedAt: Date,
+        tolerance: TimeInterval = 1
+    ) async throws -> [WatchHistory] {
+        try await dbPool.read { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
+            let lowerBound = watchedAt.addingTimeInterval(-tolerance)
+            let upperBound = watchedAt.addingTimeInterval(tolerance)
+            return try WatchHistory
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
+                .filter(WatchHistory.Columns.isCompleted == true)
+                .filter(WatchHistory.Columns.watchedAt >= lowerBound)
+                .filter(WatchHistory.Columns.watchedAt <= upperBound)
+                .fetchAll(db)
+        }
+    }
+
     /// Fetches all watch history entries for a given media (series), returning a dictionary keyed by episodeId.
     func fetchEpisodeWatchStates(mediaId: String) async throws -> [String: WatchHistory] {
         try await dbPool.read { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             let entries = try WatchHistory
-                .filter(WatchHistory.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
                 .filter(WatchHistory.Columns.episodeId != nil)
                 .filter(WatchHistory.Columns.isCompleted == true)
                 .order(WatchHistory.Columns.watchedAt.desc)
@@ -865,8 +1142,9 @@ actor DatabaseManager {
     /// Marks an episode as unwatched by deleting its watch history entry.
     func markEpisodeUnwatched(mediaId: String, episodeId: String) async throws {
         _ = try await dbPool.write { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             try WatchHistory
-                .filter(WatchHistory.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
                 .filter(WatchHistory.Columns.episodeId == episodeId)
                 .deleteAll(db)
         }
@@ -875,8 +1153,9 @@ actor DatabaseManager {
     /// Marks a movie as unwatched by deleting all movie-level watch history entries.
     func markMovieUnwatched(mediaId: String) async throws {
         _ = try await dbPool.write { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             try WatchHistory
-                .filter(WatchHistory.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
                 .filter(WatchHistory.Columns.episodeId == nil)
                 .deleteAll(db)
         }
@@ -885,8 +1164,9 @@ actor DatabaseManager {
     /// Clears all episode-level watch history entries for a series.
     func markSeriesUnwatched(mediaId: String) async throws {
         _ = try await dbPool.write { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             try WatchHistory
-                .filter(WatchHistory.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(WatchHistory.Columns.mediaId))
                 .filter(WatchHistory.Columns.episodeId != nil)
                 .deleteAll(db)
         }
@@ -1029,8 +1309,9 @@ actor DatabaseManager {
         folderId: String? = nil
     ) async throws {
         try await dbPool.write { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             var request = UserLibraryEntry
-                .filter(UserLibraryEntry.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(UserLibraryEntry.Columns.mediaId))
                 .filter(UserLibraryEntry.Columns.listType == listType.rawValue)
             if let folderId {
                 request = request.filter(UserLibraryEntry.Columns.folderId == folderId)
@@ -1048,6 +1329,7 @@ actor DatabaseManager {
             let mediaID: String
             let key: String
             let userRating: Double?
+            let hasExactUserRating: Bool
             let imdbRating: Double?
             let addedAt: Date
         }
@@ -1061,15 +1343,7 @@ actor DatabaseManager {
                     ul.mediaId AS mediaId,
                     ul.addedAt AS addedAt,
                     m.title AS mediaTitle,
-                    m.imdbRating AS imdbRating,
-                    (
-                        SELECT te.feedbackValue
-                        FROM taste_events te
-                        WHERE te.mediaId = ul.mediaId
-                          AND te.eventType = 'rated'
-                        ORDER BY te.createdAt DESC
-                        LIMIT 1
-                    ) AS latestRating
+                    m.imdbRating AS imdbRating
                 FROM user_library ul
                 LEFT JOIN media_cache m ON m.id = ul.mediaId
                 WHERE ul.listType = ?
@@ -1077,29 +1351,40 @@ actor DatabaseManager {
                 arguments: [listType.rawValue]
             )
 
-            let candidates: [Candidate] = rows.compactMap { row in
+            var candidates: [Candidate] = []
+            candidates.reserveCapacity(rows.count)
+            for row in rows {
                 guard let entryID: String = row["entryId"],
                       let mediaID: String = row["mediaId"],
-                      let addedAt: Date = row["addedAt"]
-                else { return nil }
+                      let addedAt: Date = row["addedAt"] else {
+                    continue
+                }
 
                 let title: String = row["mediaTitle"] ?? mediaID
                 let key = Self.normalizedTitleEquivalenceKey(title)
                 if key.isEmpty {
-                    return nil
+                    continue
                 }
 
-                let userRating: Double? = row["latestRating"]
+                let exactRating = try Self.fetchLatestExactTasteRating(in: db, mediaId: mediaID, userId: "default")
+                let aliasRating: TasteEvent?
+                if let exactRating {
+                    aliasRating = exactRating
+                } else {
+                    aliasRating = try Self.fetchLatestTasteRating(in: db, mediaId: mediaID, userId: "default")
+                }
+                let userRating = aliasRating?.feedbackValue
                 let imdbRating: Double? = row["imdbRating"]
 
-                return Candidate(
+                candidates.append(Candidate(
                     entryID: entryID,
                     mediaID: mediaID,
                     key: key,
                     userRating: userRating,
+                    hasExactUserRating: exactRating != nil,
                     imdbRating: imdbRating,
                     addedAt: addedAt
-                )
+                ))
             }
 
             var grouped: [String: [Candidate]] = [:]
@@ -1115,6 +1400,10 @@ actor DatabaseManager {
                     let lhsUser = lhs.userRating ?? -Double.greatestFiniteMagnitude
                     let rhsUser = rhs.userRating ?? -Double.greatestFiniteMagnitude
                     if lhsUser != rhsUser { return lhsUser > rhsUser }
+
+                    if lhs.hasExactUserRating != rhs.hasExactUserRating {
+                        return lhs.hasExactUserRating
+                    }
 
                     let lhsIMDb = lhs.imdbRating ?? -Double.greatestFiniteMagnitude
                     let rhsIMDb = rhs.imdbRating ?? -Double.greatestFiniteMagnitude
@@ -1145,8 +1434,9 @@ actor DatabaseManager {
         folderId: String? = nil
     ) async throws -> Bool {
         try await dbPool.read { db in
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
             var request = UserLibraryEntry
-                .filter(UserLibraryEntry.Columns.mediaId == mediaId)
+                .filter(mediaIDCandidates.contains(UserLibraryEntry.Columns.mediaId))
                 .filter(UserLibraryEntry.Columns.listType == listType.rawValue)
             if let folderId {
                 request = request.filter(UserLibraryEntry.Columns.folderId == folderId)
@@ -1337,13 +1627,21 @@ actor DatabaseManager {
                 throw DatabaseError(message: "Destination folder is invalid for the selected list.")
             }
 
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId).sorted()
+            guard !mediaIDCandidates.isEmpty else { return }
+
+            let placeholders = Array(repeating: "?", count: mediaIDCandidates.count).joined(separator: ", ")
+            var arguments: [any DatabaseValueConvertible] = [folderId]
+            arguments.append(contentsOf: mediaIDCandidates)
+            arguments.append(listType.rawValue)
+
             try db.execute(
                 sql: """
                 UPDATE user_library
                 SET folderId = ?
-                WHERE mediaId = ? AND listType = ?
+                WHERE mediaId IN (\(placeholders)) AND listType = ?
                 """,
-                arguments: [folderId, mediaId, listType.rawValue]
+                arguments: StatementArguments(arguments)
             )
         }
     }
@@ -1570,6 +1868,23 @@ actor DatabaseManager {
         }
     }
 
+    func claimDownloadTaskForDownloadStart(id: String) async throws -> Bool {
+        try await dbPool.write { db in
+            guard var task = try DownloadTask.fetchOne(db, key: id) else {
+                return false
+            }
+            guard task.status == .queued else {
+                return false
+            }
+
+            task.status = .downloading
+            task.errorMessage = nil
+            task.updatedAt = Date()
+            try task.sanitizedForPersistence.save(db)
+            return true
+        }
+    }
+
     func updateDownloadTaskProgress(
         id: String,
         progress: Double,
@@ -1631,13 +1946,26 @@ actor DatabaseManager {
         }
     }
 
-    func setActiveEnvironmentAsset(id: String) async throws {
+    @discardableResult
+    func setActiveEnvironmentAsset(id: String) async throws -> Bool {
         try await dbPool.write { db in
+            let targetExists = try EnvironmentAsset
+                .filter(EnvironmentAsset.Columns.id == id)
+                .fetchCount(db) > 0
+            guard targetExists else { return false }
+
             try db.execute(sql: "UPDATE environment_assets SET isActive = 0")
             try db.execute(
                 sql: "UPDATE environment_assets SET isActive = 1 WHERE id = ?",
                 arguments: [id]
             )
+            return true
+        }
+    }
+
+    func clearActiveEnvironmentAsset() async throws {
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE environment_assets SET isActive = 0")
         }
     }
 
@@ -1675,11 +2003,18 @@ actor DatabaseManager {
 
     func fetchEpisodes(mediaId: String, season: Int) async throws -> [Episode] {
         try await dbPool.read { db in
-            try Episode
-                .filter(Episode.Columns.mediaId == mediaId)
+            let mediaIDCandidates = try Self.mediaIDLookupCandidates(in: db, for: mediaId)
+            guard !mediaIDCandidates.isEmpty else { return [] }
+
+            let episodes = try Episode
+                .filter(mediaIDCandidates.contains(Episode.Columns.mediaId))
                 .filter(Episode.Columns.seasonNumber == season)
                 .order(Episode.Columns.episodeNumber.asc)
                 .fetchAll(db)
+            return Self.deduplicatedEpisodesForAliasLookup(
+                episodes,
+                requestedMediaId: mediaId
+            )
         }
     }
 
@@ -1790,12 +2125,7 @@ actor DatabaseManager {
         userId: String = "default"
     ) async throws -> TasteEvent? {
         try await dbPool.read { db in
-            try TasteEvent
-                .filter(TasteEvent.Columns.userId == userId)
-                .filter(TasteEvent.Columns.mediaId == mediaId)
-                .filter(TasteEvent.Columns.eventType == TasteEvent.EventType.rated.rawValue)
-                .order(TasteEvent.Columns.createdAt.desc)
-                .fetchOne(db)
+            try Self.fetchLatestTasteRating(in: db, mediaId: mediaId, userId: userId)
         }
     }
 
@@ -1804,16 +2134,49 @@ actor DatabaseManager {
         userId: String = "default"
     ) async throws {
         try await dbPool.write { db in
-            if let event = try TasteEvent
-                .filter(TasteEvent.Columns.userId == userId)
-                .filter(TasteEvent.Columns.mediaId == mediaId)
-                .filter(TasteEvent.Columns.eventType == TasteEvent.EventType.rated.rawValue)
-                .order(TasteEvent.Columns.createdAt.desc)
-                .fetchOne(db)
-            {
+            if let event = try Self.fetchLatestTasteRating(in: db, mediaId: mediaId, userId: userId) {
                 try event.delete(db)
             }
         }
+    }
+
+    private static func fetchLatestTasteRating(
+        in db: Database,
+        mediaId: String,
+        userId: String
+    ) throws -> TasteEvent? {
+        let eventType = TasteEvent.EventType.rated.rawValue
+        let mediaIDCandidates = try mediaIDLookupCandidates(in: db, for: mediaId)
+        let requestedIMDbID = IMDbIdentifierPolicy.appScopedID(in: mediaId)
+        let candidates = try TasteEvent
+            .filter(TasteEvent.Columns.userId == userId)
+            .filter(TasteEvent.Columns.eventType == eventType)
+            .order(TasteEvent.Columns.createdAt.desc, TasteEvent.Columns.id.desc)
+            .fetchAll(db)
+
+        return candidates.first { event in
+            guard let candidateMediaID = event.mediaId else { return false }
+            if mediaIDCandidates.contains(candidateMediaID) {
+                return true
+            }
+            guard let requestedIMDbID else {
+                return candidateMediaID == mediaId
+            }
+            return IMDbIdentifierPolicy.appScopedID(in: candidateMediaID) == requestedIMDbID
+        }
+    }
+
+    private static func fetchLatestExactTasteRating(
+        in db: Database,
+        mediaId: String,
+        userId: String
+    ) throws -> TasteEvent? {
+        try TasteEvent
+            .filter(TasteEvent.Columns.userId == userId)
+            .filter(TasteEvent.Columns.eventType == TasteEvent.EventType.rated.rawValue)
+            .filter(TasteEvent.Columns.mediaId == mediaId)
+            .order(TasteEvent.Columns.createdAt.desc, TasteEvent.Columns.id.desc)
+            .fetchOne(db)
     }
 
     // MARK: - AI Usage Log
@@ -1972,12 +2335,25 @@ actor DatabaseManager {
         }
     }
 
+    func updateLocalModelRevision(id: String, revision: String) async throws {
+        try await dbPool.write { db in
+            guard var model = try LocalModelDescriptor.fetchOne(db, key: id) else { return }
+            model.revision = revision
+            model.updatedAt = Date()
+            try model.update(db)
+        }
+    }
+
     func updateLocalModelProgress(id: String, progress: Double, downloadedBytes: Int64, totalBytes: Int64) async throws {
         try await dbPool.write { db in
             try db.execute(
+                // MAX(...) keeps progress monotonic: download ticks fire from unordered detached
+                // Tasks, so an out-of-order write must not regress the displayed percentage.
+                // A genuine restart resets progress to 0 via updateStatus(.downloading), a
+                // separate statement, so this never blocks a real reset.
                 sql: """
                     UPDATE local_models
-                    SET downloadProgress = ?, downloadedBytes = ?, totalBytes = ?, lastProgressAt = ?, updatedAt = ?
+                    SET downloadProgress = MAX(downloadProgress, ?), downloadedBytes = MAX(downloadedBytes, ?), totalBytes = ?, lastProgressAt = ?, updatedAt = ?
                     WHERE id = ?
                     """,
                 arguments: [progress, downloadedBytes, totalBytes, Date(), Date(), id]

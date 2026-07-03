@@ -30,7 +30,7 @@ actor TorBoxService: DebridServiceProtocol {
     func checkCache(hashes: [String]) async throws -> [String: CacheStatus] {
         guard !hashes.isEmpty else { return [:] }
         let hashParam = hashes.joined(separator: ",")
-        let response: TBResponse<[TBCacheItem]> = try await request(
+        let response: TBResponse<TBCacheData> = try await request(
             method: "GET",
             path: "/torrents/checkcached",
             queryItems: [
@@ -41,7 +41,7 @@ actor TorBoxService: DebridServiceProtocol {
         var result: [String: CacheStatus] = [:]
         for hash in hashes {
             let lowered = hash.lowercased()
-            if response.data?.contains(where: { $0.hash?.lowercased() == lowered }) == true {
+            if response.data?.items.contains(where: { $0.hash?.lowercased() == lowered }) == true {
                 result[lowered] = .cached(fileId: nil, fileName: nil, fileSize: nil)
             } else {
                 result[lowered] = .notCached
@@ -51,10 +51,21 @@ actor TorBoxService: DebridServiceProtocol {
     }
 
     func addMagnet(hash: String) async throws -> String {
-        let normalizedHash = try DebridHashValidator.validatedInfoHash(hash)
-        let magnet = "magnet:?xt=urn:btih:\(normalizedHash)"
-        let body = "magnet=\(magnet.addingPercentEncoding(withAllowedCharacters: Self.formEncodingAllowed) ?? magnet)"
-        let response: TBResponse<TBCreateResponse> = try await request(method: "POST", path: "/torrents/createtorrent", body: body)
+        try await addMagnet(hash: hash, magnetURI: nil)
+    }
+
+    func addMagnet(hash: String, magnetURI: String?) async throws -> String {
+        let magnet = try DebridMagnetInput.preferredMagnetURI(
+            hash: hash,
+            suppliedMagnetURI: magnetURI
+        )
+        let multipart = Self.multipartFormData(fields: [("magnet", magnet)])
+        let response: TBResponse<TBCreateResponse> = try await request(
+            method: "POST",
+            path: "/torrents/createtorrent",
+            body: multipart.body,
+            contentType: multipart.contentType
+        )
         guard let id = response.data?.torrentId else { throw DebridError.invalidHash(hash) }
         return String(id)
     }
@@ -215,66 +226,93 @@ actor TorBoxService: DebridServiceProtocol {
         guard torrent.downloadFinished == true else { throw DebridError.fileNotReady("downloading") }
 
         // Prefer explicitly selected files (episode-specific), fallback to largest file.
-        let fileId: String
+        let selectedFile: TBFile?
         let selectedIDs = selectedFileIDsByTorrent[torrentId] ?? []
         if let files = torrent.files,
            let selected = files.first(where: { file in
                guard let id = file.id else { return false }
                return selectedIDs.contains(id)
-           }),
-           let id = selected.id {
-            fileId = String(id)
+           }) {
+            selectedFile = selected
         } else if let files = torrent.files,
-                  let largest = files.max(by: { ($0.size ?? 0) < ($1.size ?? 0) }),
-                  let id = largest.id {
-            fileId = String(id)
+                  let largest = files.max(by: { ($0.size ?? 0) < ($1.size ?? 0) }) {
+            selectedFile = largest
         } else {
-            fileId = "0"
+            selectedFile = nil
         }
+        let fileId = selectedFile?.id.map(String.init) ?? "0"
 
+        // SECURITY: `/torrents/requestdl` requires the raw API token as a query param to mint the
+        // CDN link (the Bearer header is not honored here), so it cannot be removed. The resulting
+        // URL is therefore secret-bearing — never log `url.absoluteString` for this request, and rely
+        // on the `token` query name being in the log sanitizer's redaction set.
         let linkResponse: TBResponse<TBDownloadLink> = try await request(
             method: "GET",
             path: "/torrents/requestdl",
             queryItems: [
+                URLQueryItem(name: "token", value: apiToken),
                 URLQueryItem(name: "torrent_id", value: torrentId),
                 URLQueryItem(name: "file_id", value: fileId),
             ]
         )
-        guard let urlStr = linkResponse.data?.data, let url = URL(string: urlStr) else {
+        guard let urlStr = linkResponse.data?.urlString else {
             throw DebridError.networkError("No download link")
         }
+        let url = try DebridRemoteStreamURLPolicy.validatedURL(
+            from: urlStr,
+            errorMessage: "Invalid unrestrict URL"
+        )
 
         selectedFileIDsByTorrent.removeValue(forKey: torrentId)
-        let fileName = torrent.name ?? "Unknown"
+        let fileName = selectedFile?.name ?? torrent.name ?? "Unknown"
+        let metadataCandidates = [selectedFile?.name, torrent.name, url.lastPathComponent]
+        let sizeBytes = selectedFile?.size ?? torrent.size
         return StreamInfo(
             streamURL: url,
-            quality: VideoQuality.parse(from: fileName),
-            codec: VideoCodec.parse(from: fileName),
-            audio: AudioFormat.parse(from: fileName),
-            source: SourceType.parse(from: fileName),
-            hdr: HDRFormat.parse(from: fileName),
+            quality: DebridStreamMetadata.quality(from: metadataCandidates),
+            codec: DebridStreamMetadata.codec(from: metadataCandidates),
+            audio: DebridStreamMetadata.audio(from: metadataCandidates),
+            source: DebridStreamMetadata.source(from: metadataCandidates),
+            hdr: DebridStreamMetadata.hdr(from: metadataCandidates),
             fileName: fileName,
-            sizeBytes: torrent.size,
+            sizeBytes: sizeBytes,
             debridService: serviceType.rawValue
         )
     }
 
     func unrestrict(link: String) async throws -> URL {
-        guard let url = URL(string: link) else { throw DebridError.networkError("Invalid URL") }
-        return url
+        try DebridRemoteStreamURLPolicy.validatedURL(from: link, errorMessage: "Invalid URL")
     }
 
-    private static let formEncodingAllowed: CharacterSet = {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "+&=")
-        return allowed
-    }()
+    private struct MultipartFormData {
+        let body: Data
+        let contentType: String
+    }
+
+    private static func multipartFormData(fields: [(name: String, value: String)]) -> MultipartFormData {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+
+        for field in fields {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(field.name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(field.value)\r\n".data(using: .utf8)!)
+        }
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        return MultipartFormData(
+            body: body,
+            contentType: "multipart/form-data; boundary=\(boundary)"
+        )
+    }
+
 
     private func request<T: Decodable>(
         method: String,
         path: String,
         queryItems: [URLQueryItem] = [],
-        body: String? = nil
+        body: Data? = nil,
+        contentType: String? = nil
     ) async throws -> T {
         guard var components = URLComponents(string: baseURL + path) else {
             throw DebridError.networkError("Invalid request URL")
@@ -290,8 +328,10 @@ actor TorBoxService: DebridServiceProtocol {
         request.timeoutInterval = 30
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         if let body {
-            request.httpBody = Data(body.utf8)
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+            if let contentType {
+                request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+            }
         }
         let (data, http) = try await DebridHTTPExecutor.data(for: request, session: session)
 
@@ -336,6 +376,20 @@ private struct TBCacheItem: Sendable {
 }
 extension TBCacheItem: Decodable {}
 
+/// TorBox's `checkcached` returns `"data": [ ... ]` when items are cached, but `"data": {}`
+/// (empty object) or `"data": false` when nothing is cached. Decoding straight into
+/// `[TBCacheItem]` makes those normal "nothing cached" payloads a hard decode error.
+/// This wrapper normalizes any non-array payload to an empty list so an uncached batch is
+/// reported as `.notCached` instead of throwing.
+private struct TBCacheData: Decodable, Sendable {
+    let items: [TBCacheItem]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        items = (try? container.decode([TBCacheItem].self)) ?? []
+    }
+}
+
 private struct TBCreateResponse: Sendable {
     let torrentId: Int?
     enum CodingKeys: String, CodingKey { case torrentId = "torrent_id" }
@@ -361,7 +415,21 @@ private struct TBFile: Sendable {
 }
 extension TBFile: Decodable {}
 
-private struct TBDownloadLink: Sendable {
-    let data: String?
+private struct TBDownloadLink: Decodable, Sendable {
+    let urlString: String?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+    }
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let urlString = try? container.decode(String.self) {
+            self.urlString = urlString
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        urlString = try container.decodeIfPresent(String.self, forKey: .data)
+    }
 }
-extension TBDownloadLink: Decodable {}

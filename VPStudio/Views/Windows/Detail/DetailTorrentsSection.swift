@@ -6,6 +6,9 @@ struct DetailTorrentsSection: View {
     let streamResultsAnchor: String
     @Binding var isPlayerOpening: Bool
     @Binding var playerOpeningError: String?
+    /// Which row triggered the in-progress play. When set, only that row shows the inline
+    /// "Opening player…"/error feedback; `nil` falls back to the shared broadcast behaviour.
+    var openingTorrentID: TorrentResult.ID?
     let onPlayTorrent: (TorrentResult) -> Void
 
     var body: some View {
@@ -64,6 +67,7 @@ struct DetailTorrentsSection: View {
                             torrent: torrent,
                             isPlayerOpening: $isPlayerOpening,
                             playerOpeningError: $playerOpeningError,
+                            isActivePlay: openingTorrentID == nil || openingTorrentID == torrent.id,
                             onPlay: {
                                 onPlayTorrent(torrent)
                             },
@@ -116,6 +120,10 @@ struct TorrentResultRow: View {
     let torrent: TorrentResult
     @Binding var isPlayerOpening: Bool
     @Binding var playerOpeningError: String?
+    /// Whether this row should surface the shared opening/error feedback. The section sets this
+    /// to `true` only for the row that triggered the play (or for every row when the play wasn't
+    /// row-scoped), so a single failed play no longer hides every other row's buttons.
+    var isActivePlay: Bool = true
     let onPlay: () -> Void
     let onDownload: (() -> Void)?
     var downloadState: DownloadButtonState = .idle
@@ -128,8 +136,14 @@ struct TorrentResultRow: View {
                     .lineLimit(2)
 
                 FlowLayout(spacing: 6) {
-                    if torrent.isCached {
-                        GlassTag(text: "Cached", tintColor: .green, symbol: "bolt.fill", weight: .semibold)
+                    if let badgeLabel = descriptor.cacheBadge.label,
+                       let badgeSymbol = descriptor.cacheBadge.symbol {
+                        GlassTag(
+                            text: badgeLabel,
+                            tintColor: cacheBadgeColor(for: descriptor.cacheBadge),
+                            symbol: badgeSymbol,
+                            weight: .semibold
+                        )
                     }
                     if torrent.quality != .unknown {
                         GlassTag(text: torrent.quality.rawValue, tintColor: qualityColor, weight: .bold)
@@ -146,24 +160,35 @@ struct TorrentResultRow: View {
                     if torrent.source != .unknown {
                         GlassTag(text: torrent.source.rawValue)
                     }
+                    if let releaseGroup = descriptor.releaseGroup {
+                        GlassTag(text: releaseGroup, symbol: "person.2.fill")
+                    }
                 }
 
                 HStack(spacing: 8) {
-                    if torrent.seeders > 0 {
-                        Label("\(torrent.seeders)", systemImage: "arrow.up")
+                    if let seedersString = descriptor.seedersString {
+                        Label(seedersString, systemImage: "arrow.up")
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
-                    Text(torrent.indexerName)
+                    Label(descriptor.sizeString, systemImage: "internaldrive")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(descriptor.providerLabel)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    if descriptor.providerLabel != torrent.indexerName {
+                        Text(torrent.indexerName)
+                            .font(.caption2)
+                            .foregroundStyle(.quaternary)
+                    }
                 }
             }
 
             Spacer(minLength: 8)
 
             HStack(spacing: 8) {
-                if isPlayerOpening || playerOpeningError != nil {
+                if isActivePlay && (isPlayerOpening || playerOpeningError != nil) {
                     // Row-level feedback: player is launching
                     VStack(alignment: .leading, spacing: 4) {
                         if let error = playerOpeningError {
@@ -208,6 +233,10 @@ struct TorrentResultRow: View {
                             .font(.title3)
                     }
                     .buttonStyle(.borderedProminent)
+                    // Disable while any play is launching so non-active rows can't start a
+                    // second concurrent resolution (matches the download button and the prior
+                    // all-rows-disabled behaviour, now that per-row scoping keeps these visible).
+                    .disabled(isPlayerOpening)
                     .help("Play")
                     .accessibilityLabel("Play \(torrent.title)")
                     .accessibilityHint("Opens this stream in the player.")
@@ -266,11 +295,26 @@ struct TorrentResultRow: View {
                         .font(.subheadline.weight(.medium))
                 }
                 .buttonStyle(.bordered)
-                .tint(.red)
+                .tint(VPColor.accent)
                 .help("Retry download")
                 .accessibilityLabel("Retry download for \(torrent.title)")
                 .accessibilityHint("Attempts this download again.")
             }
+        }
+    }
+
+    private var descriptor: SourceRowPolicy.Descriptor {
+        SourceRowPolicy.descriptor(for: torrent)
+    }
+
+    private func cacheBadgeColor(for badge: SourceRowPolicy.CacheBadge) -> Color {
+        switch badge.tint {
+        case .green:
+            return .green
+        case .orange:
+            return .orange
+        case nil:
+            return .secondary
         }
     }
 
